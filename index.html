@@ -8927,10 +8927,15 @@ async function gdCarregarDados(forcar) {
         window._gdDados.docsEmpresa.push(doc);
       }
     }
-    // Migração: adicionar acoes aos docs SST que já existem sem esse campo
+    // Migração: adicionar acoes e dataRealizacao
     for (const doc of window._gdDados.docsEmpresa) {
       const seed = GD_SEED_EMPRESA.find(s => s.numero === doc.numero);
       if (seed && seed.acoes && !doc.acoes) doc.acoes = JSON.parse(JSON.stringify(seed.acoes));
+      if (doc.acoes) {
+        for (const a of doc.acoes) {
+          if (a.dataRealizacao === undefined) a.dataRealizacao = '';
+        }
+      }
     }
     try { localStorage.setItem('gd_dados_cache', JSON.stringify(window._gdDados)); } catch(e) {}
   } catch(e) {
@@ -8970,50 +8975,112 @@ function gdDiasStr(venc) {
 
 function gdFecharModal() { const el = document.getElementById('gd-modal-overlay'); if(el) el.remove(); }
 
-async function gdToggleAcao(docIdx, acaoIdx) {
+async function gdSetAcaoStatus(docIdx, acaoIdx, novoStatus) {
   const doc = window._gdDados.docsEmpresa[docIdx];
   if (!doc || !doc.acoes) return;
   const a = doc.acoes[acaoIdx];
   if (!a) return;
-  const ciclo = { pendente: 'em_andamento', em_andamento: 'concluido', concluido: 'pendente' };
-  a.status = ciclo[a.status] || 'pendente';
+  a.status = novoStatus;
+  // Se marcou como concluído e não tem data de realização, preenche com hoje
+  if (novoStatus === 'concluido' && !a.dataRealizacao) {
+    a.dataRealizacao = new Date().toISOString().slice(0,10);
+  }
   await gdSalvar();
   navigate('docs');
+}
+
+async function gdSetAcaoData(docIdx, acaoIdx, data) {
+  const doc = window._gdDados.docsEmpresa[docIdx];
+  if (!doc || !doc.acoes) return;
+  const a = doc.acoes[acaoIdx];
+  if (!a) return;
+  a.dataRealizacao = data;
+  await gdSalvar();
 }
 
 function gdAcoesHtml(doc, realIdx) {
   if (!doc.acoes || !doc.acoes.length) return '';
   const rowId = 'gd-acoes-' + realIdx;
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+
   const stMap = {
     pendente:     { bg: '#fef3c7', cor: '#92400e', icon: '⏳', label: 'Pendente' },
     em_andamento: { bg: '#dbeafe', cor: '#1e40af', icon: '🔄', label: 'Em andamento' },
     concluido:    { bg: '#d1fae5', cor: '#065f46', icon: '✅', label: 'Concluído' },
   };
+
+  function prazoIndicador(a) {
+    // Se concluído: mostrar se foi no prazo ou atrasado
+    if (a.status === 'concluido') {
+      if (a.dataRealizacao && a.prazo && a.prazo.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        const dr = new Date(a.dataRealizacao + 'T00:00:00');
+        const pr = new Date(a.prazo + 'T00:00:00');
+        if (dr <= pr) return '<span style="background:#d1fae5;color:#065f46;border-radius:12px;padding:2px 8px;font-size:.65rem;font-weight:700">✅ No prazo</span>';
+        const dias = Math.round((dr - pr) / 86400000);
+        return '<span style="background:#fee2e2;color:#991b1b;border-radius:12px;padding:2px 8px;font-size:.65rem;font-weight:700">🔴 Atrasado ' + dias + 'd</span>';
+      }
+      return '<span style="background:#d1fae5;color:#065f46;border-radius:12px;padding:2px 8px;font-size:.65rem;font-weight:700">✅ Concluído</span>';
+    }
+    // Prazo fixo (data)
+    if (a.prazo && a.prazo.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      const pr = new Date(a.prazo + 'T00:00:00');
+      const diff = Math.round((pr - hoje) / 86400000);
+      if (diff < 0)  return '<span style="background:#fee2e2;color:#991b1b;border-radius:12px;padding:2px 8px;font-size:.65rem;font-weight:700">🔴 Vencido ' + Math.abs(diff) + 'd</span>';
+      if (diff === 0) return '<span style="background:#fef3c7;color:#92400e;border-radius:12px;padding:2px 8px;font-size:.65rem;font-weight:700">🟡 Vence hoje</span>';
+      if (diff <= 30)  return '<span style="background:#fef3c7;color:#92400e;border-radius:12px;padding:2px 8px;font-size:.65rem;font-weight:700">🟡 ' + diff + 'd restantes</span>';
+      return '<span style="background:#ecfdf5;color:#065f46;border-radius:12px;padding:2px 8px;font-size:.65rem;font-weight:700">🟢 ' + diff + 'd restantes</span>';
+    }
+    // Prazo recorrente (texto)
+    if (a.prazo) return '<span style="background:#f3f4f6;color:#6b7280;border-radius:12px;padding:2px 8px;font-size:.65rem;font-weight:600">🔁 ' + a.prazo + '</span>';
+    return '';
+  }
+
   const linhas = doc.acoes.map((a, ai) => {
     const s = stMap[a.status] || stMap.pendente;
     const prazoFmt = (a.prazo && a.prazo.match(/^\d{4}-\d{2}-\d{2}$/))
       ? new Date(a.prazo + 'T00:00:00').toLocaleDateString('pt-BR') : (a.prazo || '—');
+    const indic = prazoIndicador(a);
+    const dataReal = a.dataRealizacao || '';
+
     return '<tr style="border-top:1px solid #e5e7eb">'
-      + '<td style="padding:6px 10px;font-size:.72rem;color:#374151">' + a.descricao + '</td>'
-      + '<td style="padding:6px 10px;font-size:.72rem;color:#6b7280;white-space:nowrap">' + (a.responsavel||'—') + '</td>'
-      + '<td style="padding:6px 10px;font-size:.72rem;color:#6b7280;white-space:nowrap">' + prazoFmt + '</td>'
-      + '<td style="padding:6px 10px">'
-      +   '<button onclick="gdToggleAcao(' + realIdx + ',' + ai + ')" title="Clique para avançar status" '
-      +     'style="background:' + s.bg + ';color:' + s.cor + ';border:none;border-radius:20px;padding:2px 10px;font-size:.68rem;font-weight:700;cursor:pointer;white-space:nowrap">'
-      +     s.icon + ' ' + s.label
-      +   '</button>'
+      // Ação
+      + '<td style="padding:7px 10px;font-size:.72rem;color:#374151;min-width:180px">' + a.descricao + '</td>'
+      // Responsável
+      + '<td style="padding:7px 10px;font-size:.72rem;color:#6b7280;white-space:nowrap">' + (a.responsavel||'—') + '</td>'
+      // Prazo
+      + '<td style="padding:7px 10px;font-size:.72rem;color:#6b7280;white-space:nowrap">' + prazoFmt + '</td>'
+      // Situação (dentro/fora do prazo)
+      + '<td style="padding:7px 10px;white-space:nowrap">' + indic + '</td>'
+      // Status (select)
+      + '<td style="padding:7px 10px">'
+      +   '<select onchange="gdSetAcaoStatus(' + realIdx + ',' + ai + ',this.value)" '
+      +     'style="background:' + s.bg + ';color:' + s.cor + ';border:1.5px solid ' + s.cor + '33;border-radius:16px;padding:2px 8px;font-size:.68rem;font-weight:700;cursor:pointer">'
+      +     '<option value="pendente"' + (a.status==='pendente'?' selected':'') + '>⏳ Pendente</option>'
+      +     '<option value="em_andamento"' + (a.status==='em_andamento'?' selected':'') + '>🔄 Em andamento</option>'
+      +     '<option value="concluido"' + (a.status==='concluido'?' selected':'') + '>✅ Concluído</option>'
+      +   '</select>'
+      + '</td>'
+      // Data de realização
+      + '<td style="padding:7px 10px;white-space:nowrap">'
+      +   '<input type="date" value="' + dataReal + '" '
+      +     'onchange="gdSetAcaoData(' + realIdx + ',' + ai + ',this.value)" '
+      +     'title="Data de realização" '
+      +     'style="font-size:.68rem;border:1px solid #d1d5db;border-radius:8px;padding:2px 6px;color:#374151;cursor:pointer" />'
       + '</td>'
       + '</tr>';
   }).join('');
+
   return '<tr id="' + rowId + '" style="display:none"><td colspan="7" style="padding:0;background:#f8fafc;border-top:2px solid #e0e7ef">'
-    + '<div style="padding:10px 16px 14px">'
-    +   '<div style="font-size:.72rem;font-weight:700;color:#1e3a5f;margin-bottom:6px;display:flex;align-items:center;gap:6px">📋 Plano de Ação</div>'
-    +   '<table style="width:100%;border-collapse:collapse">'
+    + '<div style="padding:10px 16px 14px;overflow-x:auto">'
+    +   '<div style="font-size:.72rem;font-weight:700;color:#1e3a5f;margin-bottom:8px;display:flex;align-items:center;gap:6px">📋 Plano de Ação</div>'
+    +   '<table style="width:100%;border-collapse:collapse;min-width:600px">'
     +     '<thead><tr style="background:#e8f0f8">'
     +       '<th style="padding:5px 10px;text-align:left;font-size:.70rem;color:#374151;font-weight:700">Ação</th>'
     +       '<th style="padding:5px 10px;text-align:left;font-size:.70rem;color:#374151;font-weight:700;white-space:nowrap">Responsável</th>'
     +       '<th style="padding:5px 10px;text-align:left;font-size:.70rem;color:#374151;font-weight:700;white-space:nowrap">Prazo</th>'
+    +       '<th style="padding:5px 10px;text-align:left;font-size:.70rem;color:#374151;font-weight:700;white-space:nowrap">Situação</th>'
     +       '<th style="padding:5px 10px;text-align:left;font-size:.70rem;color:#374151;font-weight:700">Status</th>'
+    +       '<th style="padding:5px 10px;text-align:left;font-size:.70rem;color:#374151;font-weight:700;white-space:nowrap">Data Realização</th>'
     +     '</tr></thead>'
     +     '<tbody>' + linhas + '</tbody>'
     +   '</table>'
