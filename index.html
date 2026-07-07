@@ -1065,7 +1065,7 @@ const menus = {
     { group: 'sistema', icon: '⚡', label: 'Sistema', children: [
       { id: 'aprovacoes', icon: '✅', label: 'Aprovações' },
       { id: 'docs', icon: '📁', label: 'Gestão Documental' },
-      { id: 'relatorios', icon: '📈', label: 'Relatórios Gerenciais' },
+      { id: 'relatorios', icon: '🌿', label: 'Licenciamento' },
       { id: 'config', icon: '⚙️', label: 'Configurações' },
     ]},
   ],
@@ -1093,7 +1093,7 @@ const menus = {
       { id: 'aprovacoes', icon: '✅', label: 'Aprovações Pendentes' },
       { id: 'docs', icon: '📁', label: 'Gestão Documental' },
       { id: 'inspecoes', icon: '🔍', label: 'Controle de Inspeções' },
-      { id: 'relatorios', icon: '📈', label: 'Relatórios' },
+      { id: 'relatorios', icon: '🌿', label: 'Licenciamento' },
     ]},
   ],
   // -- COLABORADOR --
@@ -4599,20 +4599,390 @@ function pageAgenda() {
   </div>`;
 }
 
-/* -- RELATÓRIOS -- */
+/* ===============================
+   LICENCIAMENTO AMBIENTAL
+=============================== */
+
+let LA_DADOS = [];
+
+const LA_SEED = [
+  {
+    id: 'la-001',
+    cliente: 'AUTO POSTO ESTRADA EIRELLI',
+    cnpj: '42.918.306/0001-71',
+    municipio: 'Alta Floresta d\'Oeste',
+    uf: 'RO',
+    atividade: 'Comércio varejista de combustíveis para veículos automotores',
+    tipo: 'LO',
+    numero: '159943',
+    orgao: 'SEDAM',
+    processo: '1801/02292/2018',
+    emissao: '2026-07-02',
+    vencimento: '2030-07-01',
+    obs: 'Renovar 120 dias antes do vencimento (até 02/03/2030). RMA semestral obrigatório conforme Resolução CONSEPA nº 02/2020.',
+    rmas: [
+      { id: 'rma-001', periodo: '1º Semestre 2026', prazo: '2026-07-31', status: 'pendente', dataEnvio: '', obs: '' },
+      { id: 'rma-002', periodo: '2º Semestre 2026', prazo: '2027-01-31', status: 'pendente', dataEnvio: '', obs: '' },
+    ]
+  }
+];
+
+async function laCarregar() {
+  const saved = await getLocal('la_dados');
+  if (saved && Array.isArray(saved) && saved.length) {
+    LA_DADOS = saved;
+  } else {
+    LA_DADOS = JSON.parse(JSON.stringify(LA_SEED));
+    saveLocal('la_dados', JSON.stringify(LA_DADOS));
+  }
+}
+
+function laSalvar() {
+  saveLocal('la_dados', JSON.stringify(LA_DADOS));
+}
+
+function laStatus(vencimento) {
+  if (!vencimento) return { label: 'Sem data', cor: '#999', dias: null, classe: 'gray' };
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const venc = new Date(vencimento + 'T00:00:00');
+  const dias = Math.round((venc - hoje) / 86400000);
+  if (dias < 0)    return { label: 'Vencida',                 cor: '#dc3545', dias, classe: 'red' };
+  if (dias <= 90)  return { label: 'Vence em ' + dias + 'd', cor: '#fd7e14', dias, classe: 'amber' };
+  if (dias <= 180) return { label: 'Vence em ' + dias + 'd', cor: '#ffc107', dias, classe: 'yellow' };
+  return { label: 'Válida — ' + dias + 'd', cor: '#28a745', dias, classe: 'green' };
+}
+
+function laFormatarData(iso) {
+  if (!iso) return '—';
+  const [y,m,d] = iso.split('-');
+  return d + '/' + m + '/' + y;
+}
+
+function laUid() {
+  return 'la-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+}
+
+function laRenderizarKPIs() {
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const total    = LA_DADOS.length;
+  const vencidas = LA_DADOS.filter(l => new Date(l.vencimento+'T00:00:00') < hoje).length;
+  const vencendo = LA_DADOS.filter(l => { const d = Math.round((new Date(l.vencimento+'T00:00:00')-hoje)/86400000); return d>=0&&d<=90; }).length;
+  const rmasPend = LA_DADOS.reduce((a,l) => a+(l.rmas||[]).filter(r=>r.status==='pendente').length, 0);
+  const ids = { total:'la-kpi-total', vencendo:'la-kpi-vencendo', vencidas:'la-kpi-vencidas', rmas:'la-kpi-rmas' };
+  const vals = { total, vencendo, vencidas, rmas: rmasPend };
+  Object.keys(ids).forEach(k => { const e = document.getElementById(ids[k]); if(e) e.textContent = vals[k]; });
+}
+
+function laRenderizarLista() {
+  const el = document.getElementById('la-lista');
+  if (!el) return;
+  if (LA_DADOS.length === 0) {
+    el.innerHTML = '<div class="card" style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma licença cadastrada.<br><br><button class="btn-primary" onclick="laAbrirModal()">+ Cadastrar Primeira Licença</button></div>';
+    laRenderizarKPIs();
+    return;
+  }
+  el.innerHTML = LA_DADOS.map(function(l) {
+    var st      = laStatus(l.vencimento);
+    var rmaPend = (l.rmas||[]).filter(function(r){return r.status==='pendente';}).length;
+    var rmaEnv  = (l.rmas||[]).filter(function(r){return r.status==='enviado';}).length;
+    var rmaApr  = (l.rmas||[]).filter(function(r){return r.status==='aprovado';}).length;
+    var rmaTotal= (l.rmas||[]).length;
+    var cor  = st.classe==='red'?'#dc3545':st.classe==='amber'?'#fd7e14':st.classe==='yellow'?'#ffc107':'#28a745';
+    var bgSt = st.classe==='red'?'#fff5f5':st.classe==='amber'?'#fff8f0':st.classe==='yellow'?'#fffde7':'#f0fff4';
+    var obsEsc = (l.obs||'').replace(/"/g,'&quot;');
+    return '<div class="card" style="margin-bottom:14px;border-left:4px solid '+cor+'">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">' +
+        '<div>' +
+          '<div style="font-family:Mont,sans-serif;font-weight:800;font-size:.95rem;color:var(--brand-brown)">'+l.cliente+'</div>' +
+          '<div style="font-size:.78rem;color:var(--text-muted);margin-top:2px">CNPJ: '+l.cnpj+' &nbsp;·&nbsp; '+l.municipio+(l.uf?' / '+l.uf:'')+'</div>' +
+          (l.atividade?'<div style="font-size:.78rem;color:var(--text-muted)">'+l.atividade+'</div>':'') +
+        '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button class="btn-secondary" style="font-size:.75rem;padding:5px 10px" onclick="laAbrirRma(\''+l.id+'\')">📊 RMAs</button>' +
+          '<button class="btn-secondary" style="font-size:.75rem;padding:5px 10px" onclick="laEditar(\''+l.id+'\')">✏️ Editar</button>' +
+          '<button style="font-size:.75rem;padding:5px 10px;border:1px solid #dc354533;background:#fff5f5;color:#dc3545;border-radius:8px;cursor:pointer" onclick="laExcluir(\''+l.id+'\')">🗑️</button>' +
+        '</div>' +
+      '</div>' +
+      '<div style="margin-top:14px;display:flex;flex-wrap:wrap;gap:14px;align-items:center">' +
+        '<div style="background:var(--green-pale);border-radius:8px;padding:6px 12px;font-size:.8rem"><span style="color:var(--text-muted)">Tipo </span><strong>'+l.tipo+' Nº '+l.numero+'</strong></div>' +
+        '<div style="font-size:.8rem"><span style="color:var(--text-muted)">Órgão: </span>'+(l.orgao||'—')+'</div>' +
+        '<div style="font-size:.8rem"><span style="color:var(--text-muted)">Emissão: </span>'+laFormatarData(l.emissao)+'</div>' +
+        '<div style="font-size:.8rem"><span style="color:var(--text-muted)">Vencimento: </span><strong>'+laFormatarData(l.vencimento)+'</strong></div>' +
+        '<div style="background:'+bgSt+';border:1px solid '+cor+'44;border-radius:20px;padding:4px 12px;font-size:.78rem;font-weight:700;color:'+cor+'">'+st.label+'</div>' +
+        (l.processo?'<div style="font-size:.78rem;color:var(--text-muted)">Proc: '+l.processo+'</div>':'') +
+      '</div>' +
+      '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+        '<span style="font-size:.8rem;color:var(--text-muted);font-weight:600">RMAs:</span>' +
+        (rmaPend>0?'<span style="font-size:.78rem;background:#fff8f0;color:#fd7e14;border-radius:6px;padding:2px 8px;border:1px solid #fd7e1433">'+rmaPend+' pendente'+(rmaPend>1?'s':'')+'</span>':'') +
+        (rmaEnv >0?'<span style="font-size:.78rem;background:#e8f4fd;color:#0d6efd;border-radius:6px;padding:2px 8px;border:1px solid #0d6efd33">'+rmaEnv +' enviado' +(rmaEnv >1?'s':'')+'</span>':'') +
+        (rmaApr >0?'<span style="font-size:.78rem;background:#f0fff4;color:#28a745;border-radius:6px;padding:2px 8px;border:1px solid #28a74533">'+rmaApr +' aprovado'+(rmaApr >1?'s':'')+'</span>':'') +
+        (rmaTotal===0?'<span style="font-size:.78rem;color:var(--text-muted)">Nenhum RMA cadastrado</span>':'') +
+        (l.obs?'<span style="font-size:.75rem;color:var(--text-muted);margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px" title="'+obsEsc+'">📝 '+l.obs+'</span>':'') +
+      '</div>' +
+    '</div>';
+  }).join('');
+  laRenderizarKPIs();
+}
+
+/* -- RELATÓRIOS (Licenciamento Ambiental) -- */
 function pageRelatorios() {
+  laCarregar().then(function() { laRenderizarLista(); });
   return `
-  <div class="page-header"><h1>Relatórios Gerenciais</h1><p>Indicadores de desempenho e exportações</p></div>
-  <div class="module-cards">
-    ${[
-      ['📊','Faturamento','Mensal / Anual'],
-      ['🌿','Ambiental','Flash, Semanal, Mensal'],
-      ['👥','RH / Documentos','Vencimentos e alertas'],
-      ['📋','APRs','Por obra e período'],
-      ['🚗','Frota','Checklists e km'],
-      ['💰','Financeiro','DRE e Fluxo de Caixa'],
-    ].map(([i, t, s]) => `<div class="module-card" onclick="showToast('Gerando ${t}...')"><div class="mc-icon">${i}</div><div class="mc-title">${t}</div><div class="mc-count">${s}</div></div>`).join('')}
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+    <div>
+      <h1>🌿 Licenciamento Ambiental</h1>
+      <p>Controle de licenças ambientais e relatórios semestrais de monitoramento</p>
+    </div>
+    <button class="btn-primary" onclick="laAbrirModal()">+ Nova Licença</button>
+  </div>
+
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card green"><div class="kpi-label">Total de Licenças</div><div class="kpi-value" id="la-kpi-total">—</div><div class="kpi-icon">📋</div></div>
+    <div class="kpi-card yellow"><div class="kpi-label">Vencendo em 90d</div><div class="kpi-value" id="la-kpi-vencendo">—</div><div class="kpi-icon">⚠️</div></div>
+    <div class="kpi-card red"><div class="kpi-label">Vencidas</div><div class="kpi-value" id="la-kpi-vencidas">—</div><div class="kpi-icon">❌</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">RMAs Pendentes</div><div class="kpi-value" id="la-kpi-rmas">—</div><div class="kpi-icon">📊</div></div>
+  </div>
+
+  <div id="la-lista"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+
+  <!-- MODAL: Nova/Editar Licença -->
+  <div id="la-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px">
+    <div style="background:var(--surface);border-radius:16px;width:min(560px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+      <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
+        <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)" id="la-modal-titulo">Nova Licença Ambiental</div>
+        <button onclick="laFecharModal()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
+      </div>
+      <div style="padding:20px">
+        <input type="hidden" id="la-id">
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em">Dados do Cliente</div>
+        <div class="form-row">
+          <div class="form-group" style="flex:2"><label>Razão Social / Cliente</label><input type="text" id="la-cliente" placeholder="Nome do empreendedor"></div>
+          <div class="form-group"><label>CNPJ / CPF</label><input type="text" id="la-cnpj" placeholder="00.000.000/0001-00"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Município</label><input type="text" id="la-municipio" placeholder="Cidade"></div>
+          <div class="form-group" style="flex:0 0 80px"><label>UF</label><input type="text" id="la-uf" placeholder="RO" maxlength="2" style="text-transform:uppercase"></div>
+        </div>
+        <div class="form-group"><label>Atividade</label><input type="text" id="la-atividade" placeholder="Atividade econômica / CNAE"></div>
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Licença</div>
+        <div class="form-row">
+          <div class="form-group" style="flex:0 0 130px"><label>Tipo</label>
+            <select id="la-tipo">
+              <option value="LP">LP — Prévia</option>
+              <option value="LI">LI — Instalação</option>
+              <option value="LO" selected>LO — Operação</option>
+              <option value="LAO">LAO — Simplificada</option>
+              <option value="LSA">LSA — Saneamento</option>
+              <option value="OUTRO">Outro</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Número da Licença</label><input type="text" id="la-numero" placeholder="Ex: 159943"></div>
+          <div class="form-group"><label>Órgão Emissor</label><input type="text" id="la-orgao" placeholder="SEDAM / SEMUR / IBAMA"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Nº do Processo</label><input type="text" id="la-processo" placeholder="Ex: 1801/02292/2018"></div>
+          <div class="form-group"><label>Data de Emissão</label><input type="date" id="la-emissao"></div>
+          <div class="form-group"><label>Vencimento</label><input type="date" id="la-vencimento"></div>
+        </div>
+        <div class="form-group"><label>Observações / Condicionantes</label>
+          <textarea id="la-obs" rows="3" placeholder="RMA semestral, renovar X dias antes do vencimento..."></textarea>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" onclick="laSalvarRegistro()">💾 Salvar</button>
+          <button class="btn-secondary" onclick="laFecharModal()">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: RMAs -->
+  <div id="la-rma-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1001;align-items:center;justify-content:center;padding:16px">
+    <div style="background:var(--surface);border-radius:16px;width:min(520px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+      <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)">📊 Relatórios de Monitoramento</div>
+          <div style="font-size:.78rem;color:var(--text-muted)" id="la-rma-subtitle"></div>
+        </div>
+        <button onclick="laFecharRma()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
+      </div>
+      <div style="padding:20px">
+        <input type="hidden" id="la-rma-lic-id">
+        <div id="la-rma-lista"></div>
+        <div style="background:var(--green-pale);border-radius:12px;padding:16px;margin-top:16px">
+          <div style="font-size:.82rem;font-weight:700;color:var(--brand-green);margin-bottom:12px">+ Novo Relatório</div>
+          <div class="form-row">
+            <div class="form-group"><label>Período</label><input type="text" id="la-rma-periodo" placeholder="Ex: 1º Semestre 2026"></div>
+            <div class="form-group"><label>Prazo de entrega</label><input type="date" id="la-rma-prazo"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:0 0 160px"><label>Status</label>
+              <select id="la-rma-status">
+                <option value="pendente">🟡 Pendente</option>
+                <option value="enviado">🔵 Enviado</option>
+                <option value="aprovado">🟢 Aprovado</option>
+              </select>
+            </div>
+            <div class="form-group"><label>Data de Envio</label><input type="date" id="la-rma-dataenvio"></div>
+          </div>
+          <div class="form-group"><label>Observação</label><input type="text" id="la-rma-obs" placeholder="Nº do protocolo, analista..."></div>
+          <button class="btn-primary" style="margin-top:8px" onclick="laRmaAdicionarNovo()">+ Adicionar</button>
+        </div>
+      </div>
+    </div>
   </div>`;
+}
+
+function laAbrirModal() {
+  ['la-id','la-cliente','la-cnpj','la-municipio','la-uf','la-atividade','la-numero','la-orgao','la-processo','la-emissao','la-vencimento','la-obs'].forEach(function(id) {
+    var e = document.getElementById(id); if(e) e.value='';
+  });
+  document.getElementById('la-tipo').value = 'LO';
+  document.getElementById('la-modal-titulo').textContent = 'Nova Licença Ambiental';
+  document.getElementById('la-modal').style.display = 'flex';
+}
+
+function laEditar(id) {
+  var l = LA_DADOS.find(function(x){return x.id===id;}); if(!l) return;
+  document.getElementById('la-id').value        = l.id;
+  document.getElementById('la-cliente').value   = l.cliente||'';
+  document.getElementById('la-cnpj').value      = l.cnpj||'';
+  document.getElementById('la-municipio').value = l.municipio||'';
+  document.getElementById('la-uf').value        = l.uf||'';
+  document.getElementById('la-atividade').value = l.atividade||'';
+  document.getElementById('la-tipo').value      = l.tipo||'LO';
+  document.getElementById('la-numero').value    = l.numero||'';
+  document.getElementById('la-orgao').value     = l.orgao||'';
+  document.getElementById('la-processo').value  = l.processo||'';
+  document.getElementById('la-emissao').value   = l.emissao||'';
+  document.getElementById('la-vencimento').value= l.vencimento||'';
+  document.getElementById('la-obs').value       = l.obs||'';
+  document.getElementById('la-modal-titulo').textContent = 'Editar — ' + (l.cliente||'');
+  document.getElementById('la-modal').style.display = 'flex';
+}
+
+function laFecharModal() { document.getElementById('la-modal').style.display='none'; }
+
+function laSalvarRegistro() {
+  var id      = document.getElementById('la-id').value;
+  var cliente = document.getElementById('la-cliente').value.trim();
+  var venc    = document.getElementById('la-vencimento').value;
+  if (!cliente) { showToast('⚠️ Informe o nome do cliente.'); return; }
+  if (!venc)    { showToast('⚠️ Informe o vencimento.'); return; }
+  var reg = {
+    id:        id || laUid(),
+    cliente:   cliente,
+    cnpj:      document.getElementById('la-cnpj').value.trim(),
+    municipio: document.getElementById('la-municipio').value.trim(),
+    uf:        document.getElementById('la-uf').value.trim().toUpperCase(),
+    atividade: document.getElementById('la-atividade').value.trim(),
+    tipo:      document.getElementById('la-tipo').value,
+    numero:    document.getElementById('la-numero').value.trim(),
+    orgao:     document.getElementById('la-orgao').value.trim(),
+    processo:  document.getElementById('la-processo').value.trim(),
+    emissao:   document.getElementById('la-emissao').value,
+    vencimento: venc,
+    obs:       document.getElementById('la-obs').value.trim(),
+  };
+  if (id) {
+    var idx = LA_DADOS.findIndex(function(l){return l.id===id;});
+    if (idx!==-1) { reg.rmas = LA_DADOS[idx].rmas||[]; LA_DADOS[idx]=reg; }
+  } else {
+    reg.rmas = [];
+    LA_DADOS.push(reg);
+  }
+  laSalvar(); laFecharModal(); laRenderizarLista();
+  showToast('✅ Licença salva!');
+}
+
+function laExcluir(id) {
+  if (!confirm('Excluir esta licença e todos os RMAs?')) return;
+  LA_DADOS = LA_DADOS.filter(function(l){return l.id!==id;});
+  laSalvar(); laRenderizarLista();
+  showToast('🗑️ Licença removida.');
+}
+
+/* ---- RMA ---- */
+function laAbrirRma(licId) {
+  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
+  document.getElementById('la-rma-lic-id').value = licId;
+  document.getElementById('la-rma-subtitle').textContent = l.cliente + ' — ' + l.tipo + ' Nº ' + l.numero;
+  ['la-rma-periodo','la-rma-prazo','la-rma-dataenvio','la-rma-obs'].forEach(function(id){var e=document.getElementById(id);if(e)e.value='';});
+  document.getElementById('la-rma-status').value = 'pendente';
+  laRenderizarRmaLista(licId);
+  document.getElementById('la-rma-modal').style.display = 'flex';
+}
+
+function laFecharRma() {
+  document.getElementById('la-rma-modal').style.display = 'none';
+  laRenderizarLista();
+}
+
+function laRenderizarRmaLista(licId) {
+  var l  = LA_DADOS.find(function(x){return x.id===licId;});
+  var el = document.getElementById('la-rma-lista');
+  if (!l||!el) return;
+  var rmas = l.rmas||[];
+  var si = { pendente:'🟡', enviado:'🔵', aprovado:'🟢' };
+  el.innerHTML = rmas.length===0
+    ? '<div style="text-align:center;color:var(--text-muted);font-size:.85rem;padding:16px 0">Nenhum RMA cadastrado.</div>'
+    : rmas.map(function(r) {
+        return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
+            '<div>' +
+              '<div style="font-weight:700;font-size:.88rem">'+(si[r.status]||'⚪')+' '+r.periodo+'</div>' +
+              '<div style="font-size:.76rem;color:var(--text-muted);margin-top:4px">Prazo: <strong>'+laFormatarData(r.prazo)+'</strong>' +
+                (r.dataEnvio?' &nbsp;·&nbsp; Enviado: <strong>'+laFormatarData(r.dataEnvio)+'</strong>':'') +
+                (r.obs?' &nbsp;·&nbsp; '+r.obs:'') +
+              '</div>' +
+            '</div>' +
+            '<div style="display:flex;gap:6px;align-items:center">' +
+              '<select style="font-size:.75rem;padding:4px 6px;border:1px solid var(--border);border-radius:6px;cursor:pointer" onchange="laRmaAlterarStatus(\''+licId+'\',\''+r.id+'\',this.value)">' +
+                '<option value="pendente"'+(r.status==='pendente'?' selected':'')+'>🟡 Pendente</option>' +
+                '<option value="enviado"'+(r.status==='enviado'?' selected':'')+'>🔵 Enviado</option>' +
+                '<option value="aprovado"'+(r.status==='aprovado'?' selected':'')+'>🟢 Aprovado</option>' +
+              '</select>' +
+              '<button style="font-size:.75rem;padding:4px 8px;border:1px solid #dc354533;background:#fff5f5;color:#dc3545;border-radius:6px;cursor:pointer" onclick="laRmaExcluir(\''+licId+'\',\''+r.id+'\')">✕</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+}
+
+function laRmaAdicionarNovo() {
+  var licId   = document.getElementById('la-rma-lic-id').value;
+  var periodo = document.getElementById('la-rma-periodo').value.trim();
+  if (!periodo) { showToast('⚠️ Informe o período.'); return; }
+  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
+  if (!l.rmas) l.rmas=[];
+  l.rmas.push({
+    id:        laUid(),
+    periodo:   periodo,
+    prazo:     document.getElementById('la-rma-prazo').value,
+    status:    document.getElementById('la-rma-status').value,
+    dataEnvio: document.getElementById('la-rma-dataenvio').value,
+    obs:       document.getElementById('la-rma-obs').value.trim(),
+  });
+  laSalvar();
+  ['la-rma-periodo','la-rma-prazo','la-rma-dataenvio','la-rma-obs'].forEach(function(id){var e=document.getElementById(id);if(e)e.value='';});
+  document.getElementById('la-rma-status').value='pendente';
+  laRenderizarRmaLista(licId);
+  showToast('📊 RMA adicionado!');
+}
+
+function laRmaAlterarStatus(licId, rmaId, novoStatus) {
+  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
+  var r = (l.rmas||[]).find(function(x){return x.id===rmaId;}); if(!r) return;
+  r.status = novoStatus;
+  if (novoStatus==='enviado' && !r.dataEnvio) r.dataEnvio = new Date().toISOString().slice(0,10);
+  laSalvar(); laRenderizarRmaLista(licId);
+  showToast('✅ Status atualizado!');
+}
+
+function laRmaExcluir(licId, rmaId) {
+  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
+  l.rmas = (l.rmas||[]).filter(function(r){return r.id!==rmaId;});
+  laSalvar(); laRenderizarRmaLista(licId);
+  showToast('🗑️ RMA removido.');
 }
 
 /* -- DOCUMENTOS (colaborador) -- */
