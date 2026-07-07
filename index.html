@@ -4621,24 +4621,29 @@ const LA_SEED = [
     vencimento: '2030-07-01',
     obs: 'Renovar 120 dias antes do vencimento (até 02/03/2030). RMA semestral obrigatório conforme Resolução CONSEPA nº 02/2020.',
     rmas: [
-      { id: 'rma-001', periodo: '1º Semestre 2026', prazo: '2026-07-31', status: 'pendente', dataEnvio: '', obs: '' },
-      { id: 'rma-002', periodo: '2º Semestre 2026', prazo: '2027-01-31', status: 'pendente', dataEnvio: '', obs: '' },
+      { id: 'rma-001', periodo: '1º Semestre — 07/2026 a 01/2027', prazo: '2027-01-02', status: 'pendente', dataEnvio: '', obs: '' },
+      { id: 'rma-002', periodo: '2º Semestre — 01/2027 a 07/2027', prazo: '2027-07-02', status: 'pendente', dataEnvio: '', obs: '' },
+      { id: 'rma-003', periodo: '3º Semestre — 07/2027 a 01/2028', prazo: '2028-01-02', status: 'pendente', dataEnvio: '', obs: '' },
+      { id: 'rma-004', periodo: '4º Semestre — 01/2028 a 07/2028', prazo: '2028-07-02', status: 'pendente', dataEnvio: '', obs: '' },
+      { id: 'rma-005', periodo: '5º Semestre — 07/2028 a 01/2029', prazo: '2029-01-02', status: 'pendente', dataEnvio: '', obs: '' },
+      { id: 'rma-006', periodo: '6º Semestre — 01/2029 a 07/2029', prazo: '2029-07-02', status: 'pendente', dataEnvio: '', obs: '' },
+      { id: 'rma-007', periodo: '7º Semestre — 07/2029 a 01/2030', prazo: '2030-01-02', status: 'pendente', dataEnvio: '', obs: '' },
     ]
   }
 ];
 
 async function laCarregar() {
-  const saved = await getLocal('la_dados');
+  const saved = await getLocal('la_dados_v2');
   if (saved && Array.isArray(saved) && saved.length) {
     LA_DADOS = saved;
   } else {
     LA_DADOS = JSON.parse(JSON.stringify(LA_SEED));
-    saveLocal('la_dados', JSON.stringify(LA_DADOS));
+    saveLocal('la_dados_v2', JSON.stringify(LA_DADOS));
   }
 }
 
 function laSalvar() {
-  saveLocal('la_dados', JSON.stringify(LA_DADOS));
+  saveLocal('la_dados_v2', JSON.stringify(LA_DADOS));
 }
 
 function laStatus(vencimento) {
@@ -4660,6 +4665,44 @@ function laFormatarData(iso) {
 
 function laUid() {
   return 'la-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+}
+
+function laGerarCronogramaRmas(emissaoISO, vencimentoISO) {
+  if (!emissaoISO) return [];
+  var rmas = [];
+  var emissao = new Date(emissaoISO + 'T00:00:00');
+  var vencimento = vencimentoISO ? new Date(vencimentoISO + 'T00:00:00') : null;
+  for (var n = 1; n <= 30; n++) {
+    var fim = new Date(emissao); fim.setMonth(fim.getMonth() + n * 6);
+    if (vencimento && fim > vencimento) break;
+    var ini = new Date(emissao); ini.setMonth(ini.getMonth() + (n-1) * 6);
+    var fmtMes = function(d) {
+      var mm = String(d.getMonth()+1).padStart(2,'0');
+      return mm + '/' + d.getFullYear();
+    };
+    var prazoISO = fim.toISOString().slice(0,10);
+    rmas.push({
+      id:        laUid(),
+      periodo:   n + 'º Semestre — ' + fmtMes(ini) + ' a ' + fmtMes(fim),
+      prazo:     prazoISO,
+      status:    'pendente',
+      dataEnvio: '',
+      obs:       '',
+    });
+  }
+  return rmas;
+}
+
+function laGerarCronogramaClick() {
+  var licId = document.getElementById('la-rma-lic-id').value;
+  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
+  if (!l.emissao) { showToast('⚠️ Cadastre a data de emissão primeiro.'); return; }
+  if (l.rmas && l.rmas.length > 0) {
+    if (!confirm('Isso substituirá o cronograma atual. Continuar?')) return;
+  }
+  l.rmas = laGerarCronogramaRmas(l.emissao, l.vencimento);
+  laSalvar(); laRenderizarRmaLista(licId);
+  showToast('✅ Cronograma gerado: ' + l.rmas.length + ' RMAs semestrais!');
 }
 
 function laRenderizarKPIs() {
@@ -4807,6 +4850,10 @@ function pageRelatorios() {
       </div>
       <div style="padding:20px">
         <input type="hidden" id="la-rma-lic-id">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <span style="font-size:.82rem;font-weight:700;color:var(--brand-brown)">Cronograma Semestral</span>
+          <button class="btn-secondary" style="font-size:.75rem;padding:5px 10px" onclick="laGerarCronogramaClick()">🔄 Gerar a partir da Emissão</button>
+        </div>
         <div id="la-rma-lista"></div>
         <div style="background:var(--green-pale);border-radius:12px;padding:16px;margin-top:16px">
           <div style="font-size:.82rem;font-weight:700;color:var(--brand-green);margin-bottom:12px">+ Novo Relatório</div>
@@ -4887,7 +4934,7 @@ function laSalvarRegistro() {
     var idx = LA_DADOS.findIndex(function(l){return l.id===id;});
     if (idx!==-1) { reg.rmas = LA_DADOS[idx].rmas||[]; LA_DADOS[idx]=reg; }
   } else {
-    reg.rmas = [];
+    reg.rmas = (reg.emissao && reg.vencimento) ? laGerarCronogramaRmas(reg.emissao, reg.vencimento) : [];
     LA_DADOS.push(reg);
   }
   laSalvar(); laFecharModal(); laRenderizarLista();
