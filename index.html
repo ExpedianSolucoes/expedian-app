@@ -4621,31 +4621,32 @@ const LA_SEED = [
     vencimento: '2030-07-01',
     obs: 'Renovar 120 dias antes do vencimento (até 02/03/2030). RMA semestral obrigatório conforme Resolução CONSEPA nº 02/2020.',
     rmas: [
-      { id: 'rma-001', periodo: '1º Semestre — 07/2026 a 01/2027', prazo: '2027-01-02', status: 'pendente', dataEnvio: '', obs: '' },
-      { id: 'rma-002', periodo: '2º Semestre — 01/2027 a 07/2027', prazo: '2027-07-02', status: 'pendente', dataEnvio: '', obs: '' },
-      { id: 'rma-003', periodo: '3º Semestre — 07/2027 a 01/2028', prazo: '2028-01-02', status: 'pendente', dataEnvio: '', obs: '' },
-      { id: 'rma-004', periodo: '4º Semestre — 01/2028 a 07/2028', prazo: '2028-07-02', status: 'pendente', dataEnvio: '', obs: '' },
-      { id: 'rma-005', periodo: '5º Semestre — 07/2028 a 01/2029', prazo: '2029-01-02', status: 'pendente', dataEnvio: '', obs: '' },
-      { id: 'rma-006', periodo: '6º Semestre — 01/2029 a 07/2029', prazo: '2029-07-02', status: 'pendente', dataEnvio: '', obs: '' },
-      { id: 'rma-007', periodo: '7º Semestre — 07/2029 a 01/2030', prazo: '2030-01-02', status: 'pendente', dataEnvio: '', obs: '' },
+      { id: 'rma-001', periodo: '1º Semestre — 07/2026 a 01/2027', prazo: '2027-02-01', status: 'pendente', dataEnvio: '', protocolo: '', obs: '' },
+      { id: 'rma-002', periodo: '2º Semestre — 01/2027 a 07/2027', prazo: '2027-08-01', status: 'pendente', dataEnvio: '', protocolo: '', obs: '' },
+      { id: 'rma-003', periodo: '3º Semestre — 07/2027 a 01/2028', prazo: '2028-02-01', status: 'pendente', dataEnvio: '', protocolo: '', obs: '' },
+      { id: 'rma-004', periodo: '4º Semestre — 01/2028 a 07/2028', prazo: '2028-08-01', status: 'pendente', dataEnvio: '', protocolo: '', obs: '' },
+      { id: 'rma-005', periodo: '5º Semestre — 07/2028 a 01/2029', prazo: '2029-02-01', status: 'pendente', dataEnvio: '', protocolo: '', obs: '' },
+      { id: 'rma-006', periodo: '6º Semestre — 01/2029 a 07/2029', prazo: '2029-08-01', status: 'pendente', dataEnvio: '', protocolo: '', obs: '' },
+      { id: 'rma-007', periodo: '7º Semestre — 07/2029 a 01/2030', prazo: '2030-02-01', status: 'pendente', dataEnvio: '', protocolo: '', obs: '' },
     ]
   }
 ];
 
 async function laCarregar() {
-  const saved = await getLocal('la_dados_v2');
+  const saved = await getLocal('la_dados_v3');
   if (saved && Array.isArray(saved) && saved.length) {
     LA_DADOS = saved;
   } else {
     LA_DADOS = JSON.parse(JSON.stringify(LA_SEED));
-    saveLocal('la_dados_v2', JSON.stringify(LA_DADOS));
+    saveLocal('la_dados_v3', JSON.stringify(LA_DADOS));
   }
 }
 
 function laSalvar() {
-  saveLocal('la_dados_v2', JSON.stringify(LA_DADOS));
+  saveLocal('la_dados_v3', JSON.stringify(LA_DADOS));
 }
 
+/* ---- Status da LICENÇA ---- */
 function laStatus(vencimento) {
   if (!vencimento) return { label: 'Sem data', cor: '#999', dias: null, classe: 'gray' };
   const hoje = new Date(); hoje.setHours(0,0,0,0);
@@ -4655,6 +4656,18 @@ function laStatus(vencimento) {
   if (dias <= 90)  return { label: 'Vence em ' + dias + 'd', cor: '#fd7e14', dias, classe: 'amber' };
   if (dias <= 180) return { label: 'Vence em ' + dias + 'd', cor: '#ffc107', dias, classe: 'yellow' };
   return { label: 'Válida — ' + dias + 'd', cor: '#28a745', dias, classe: 'green' };
+}
+
+/* ---- Status do RMA (calculado por data) ---- */
+function laRmaStatus(rma) {
+  if (rma.status === 'entregue') {
+    return { label: 'Entregue', cor: '#0d6efd', bg: '#e8f4fd', icon: '🔵' };
+  }
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const prazo = new Date(rma.prazo + 'T00:00:00');
+  const dias = Math.round((prazo - hoje) / 86400000);
+  if (dias < 0) return { label: 'Vencido', cor: '#dc3545', bg: '#fff5f5', icon: '🔴', diasVencido: Math.abs(dias) };
+  return { label: 'Vigente',  cor: '#28a745', bg: '#f0fff4', icon: '🟢', diasRestantes: dias };
 }
 
 function laFormatarData(iso) {
@@ -4667,6 +4680,7 @@ function laUid() {
   return 'la-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 }
 
+/* ---- Gerar cronograma semestral a partir da emissão ---- */
 function laGerarCronogramaRmas(emissaoISO, vencimentoISO) {
   if (!emissaoISO) return [];
   var rmas = [];
@@ -4676,17 +4690,16 @@ function laGerarCronogramaRmas(emissaoISO, vencimentoISO) {
     var fim = new Date(emissao); fim.setMonth(fim.getMonth() + n * 6);
     if (vencimento && fim > vencimento) break;
     var ini = new Date(emissao); ini.setMonth(ini.getMonth() + (n-1) * 6);
-    var fmtMes = function(d) {
-      var mm = String(d.getMonth()+1).padStart(2,'0');
-      return mm + '/' + d.getFullYear();
-    };
-    var prazoISO = fim.toISOString().slice(0,10);
+    /* Prazo = fim do período + 30 dias */
+    var prazoDate = new Date(fim); prazoDate.setDate(prazoDate.getDate() + 30);
+    var fmtMes = function(d) { return String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear(); };
     rmas.push({
       id:        laUid(),
       periodo:   n + 'º Semestre — ' + fmtMes(ini) + ' a ' + fmtMes(fim),
-      prazo:     prazoISO,
+      prazo:     prazoDate.toISOString().slice(0,10),
       status:    'pendente',
       dataEnvio: '',
+      protocolo: '',
       obs:       '',
     });
   }
@@ -4705,17 +4718,21 @@ function laGerarCronogramaClick() {
   showToast('✅ Cronograma gerado: ' + l.rmas.length + ' RMAs semestrais!');
 }
 
+/* ---- KPIs ---- */
 function laRenderizarKPIs() {
   const hoje = new Date(); hoje.setHours(0,0,0,0);
   const total    = LA_DADOS.length;
-  const vencidas = LA_DADOS.filter(l => new Date(l.vencimento+'T00:00:00') < hoje).length;
-  const vencendo = LA_DADOS.filter(l => { const d = Math.round((new Date(l.vencimento+'T00:00:00')-hoje)/86400000); return d>=0&&d<=90; }).length;
-  const rmasPend = LA_DADOS.reduce((a,l) => a+(l.rmas||[]).filter(r=>r.status==='pendente').length, 0);
-  const ids = { total:'la-kpi-total', vencendo:'la-kpi-vencendo', vencidas:'la-kpi-vencidas', rmas:'la-kpi-rmas' };
-  const vals = { total, vencendo, vencidas, rmas: rmasPend };
-  Object.keys(ids).forEach(k => { const e = document.getElementById(ids[k]); if(e) e.textContent = vals[k]; });
+  const vencidas = LA_DADOS.filter(function(l){ return new Date(l.vencimento+'T00:00:00') < hoje; }).length;
+  const vencendo = LA_DADOS.filter(function(l){ var d=Math.round((new Date(l.vencimento+'T00:00:00')-hoje)/86400000); return d>=0&&d<=90; }).length;
+  const rmasPend = LA_DADOS.reduce(function(a,l){
+    return a + (l.rmas||[]).filter(function(r){ return r.status !== 'entregue'; }).length;
+  }, 0);
+  var ids = { total:'la-kpi-total', vencendo:'la-kpi-vencendo', vencidas:'la-kpi-vencidas', rmas:'la-kpi-rmas' };
+  var vals = { total:total, vencendo:vencendo, vencidas:vencidas, rmas:rmasPend };
+  Object.keys(ids).forEach(function(k){ var e=document.getElementById(ids[k]); if(e) e.textContent=vals[k]; });
 }
 
+/* ---- Lista de licenças ---- */
 function laRenderizarLista() {
   const el = document.getElementById('la-lista');
   if (!el) return;
@@ -4724,12 +4741,13 @@ function laRenderizarLista() {
     laRenderizarKPIs();
     return;
   }
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
   el.innerHTML = LA_DADOS.map(function(l) {
     var st      = laStatus(l.vencimento);
-    var rmaPend = (l.rmas||[]).filter(function(r){return r.status==='pendente';}).length;
-    var rmaEnv  = (l.rmas||[]).filter(function(r){return r.status==='enviado';}).length;
-    var rmaApr  = (l.rmas||[]).filter(function(r){return r.status==='aprovado';}).length;
-    var rmaTotal= (l.rmas||[]).length;
+    var rmas    = l.rmas||[];
+    var rmaEntregue = rmas.filter(function(r){return r.status==='entregue';}).length;
+    var rmaVencido  = rmas.filter(function(r){return r.status!=='entregue' && new Date(r.prazo+'T00:00:00')<hoje;}).length;
+    var rmaVigente  = rmas.filter(function(r){return r.status!=='entregue' && new Date(r.prazo+'T00:00:00')>=hoje;}).length;
     var cor  = st.classe==='red'?'#dc3545':st.classe==='amber'?'#fd7e14':st.classe==='yellow'?'#ffc107':'#28a745';
     var bgSt = st.classe==='red'?'#fff5f5':st.classe==='amber'?'#fff8f0':st.classe==='yellow'?'#fffde7':'#f0fff4';
     var obsEsc = (l.obs||'').replace(/"/g,'&quot;');
@@ -4756,10 +4774,10 @@ function laRenderizarLista() {
       '</div>' +
       '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
         '<span style="font-size:.8rem;color:var(--text-muted);font-weight:600">RMAs:</span>' +
-        (rmaPend>0?'<span style="font-size:.78rem;background:#fff8f0;color:#fd7e14;border-radius:6px;padding:2px 8px;border:1px solid #fd7e1433">'+rmaPend+' pendente'+(rmaPend>1?'s':'')+'</span>':'') +
-        (rmaEnv >0?'<span style="font-size:.78rem;background:#e8f4fd;color:#0d6efd;border-radius:6px;padding:2px 8px;border:1px solid #0d6efd33">'+rmaEnv +' enviado' +(rmaEnv >1?'s':'')+'</span>':'') +
-        (rmaApr >0?'<span style="font-size:.78rem;background:#f0fff4;color:#28a745;border-radius:6px;padding:2px 8px;border:1px solid #28a74533">'+rmaApr +' aprovado'+(rmaApr >1?'s':'')+'</span>':'') +
-        (rmaTotal===0?'<span style="font-size:.78rem;color:var(--text-muted)">Nenhum RMA cadastrado</span>':'') +
+        (rmaVencido >0?'<span style="font-size:.78rem;background:#fff5f5;color:#dc3545;border-radius:6px;padding:2px 8px;border:1px solid #dc354533">'+rmaVencido +' vencido'  +(rmaVencido >1?'s':'')+'</span>':'') +
+        (rmaVigente>0?'<span style="font-size:.78rem;background:#f0fff4;color:#28a745;border-radius:6px;padding:2px 8px;border:1px solid #28a74533">'+rmaVigente+' vigente' +(rmaVigente>1?'s':'')+'</span>':'') +
+        (rmaEntregue>0?'<span style="font-size:.78rem;background:#e8f4fd;color:#0d6efd;border-radius:6px;padding:2px 8px;border:1px solid #0d6efd33">'+rmaEntregue+' entregue'+(rmaEntregue>1?'s':'')+'</span>':'') +
+        (rmas.length===0?'<span style="font-size:.78rem;color:var(--text-muted)">Nenhum RMA cadastrado</span>':'') +
         (l.obs?'<span style="font-size:.75rem;color:var(--text-muted);margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px" title="'+obsEsc+'">📝 '+l.obs+'</span>':'') +
       '</div>' +
     '</div>';
@@ -4782,7 +4800,7 @@ function pageRelatorios() {
   <div class="kpi-grid" style="margin-bottom:20px">
     <div class="kpi-card green"><div class="kpi-label">Total de Licenças</div><div class="kpi-value" id="la-kpi-total">—</div><div class="kpi-icon">📋</div></div>
     <div class="kpi-card yellow"><div class="kpi-label">Vencendo em 90d</div><div class="kpi-value" id="la-kpi-vencendo">—</div><div class="kpi-icon">⚠️</div></div>
-    <div class="kpi-card red"><div class="kpi-label">Vencidas</div><div class="kpi-value" id="la-kpi-vencidas">—</div><div class="kpi-icon">❌</div></div>
+    <div class="kpi-card red"><div class="kpi-label">Licenças Vencidas</div><div class="kpi-value" id="la-kpi-vencidas">—</div><div class="kpi-icon">❌</div></div>
     <div class="kpi-card amber"><div class="kpi-label">RMAs Pendentes</div><div class="kpi-value" id="la-kpi-rmas">—</div><div class="kpi-icon">📊</div></div>
   </div>
 
@@ -4840,10 +4858,10 @@ function pageRelatorios() {
 
   <!-- MODAL: RMAs -->
   <div id="la-rma-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1001;align-items:center;justify-content:center;padding:16px">
-    <div style="background:var(--surface);border-radius:16px;width:min(520px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+    <div style="background:var(--surface);border-radius:16px;width:min(540px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
       <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
         <div>
-          <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)">📊 Relatórios de Monitoramento</div>
+          <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)">📊 Relatórios Semestrais (RMAs)</div>
           <div style="font-size:.78rem;color:var(--text-muted)" id="la-rma-subtitle"></div>
         </div>
         <button onclick="laFecharRma()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
@@ -4851,29 +4869,25 @@ function pageRelatorios() {
       <div style="padding:20px">
         <input type="hidden" id="la-rma-lic-id">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:.82rem;font-weight:700;color:var(--brand-brown)">Cronograma Semestral</span>
+          <span style="font-size:.82rem;font-weight:700;color:var(--brand-brown)">Cronograma</span>
           <button class="btn-secondary" style="font-size:.75rem;padding:5px 10px" onclick="laGerarCronogramaClick()">🔄 Gerar a partir da Emissão</button>
         </div>
-        <div id="la-rma-lista"></div>
-        <div style="background:var(--green-pale);border-radius:12px;padding:16px;margin-top:16px">
-          <div style="font-size:.82rem;font-weight:700;color:var(--brand-green);margin-bottom:12px">+ Novo Relatório</div>
-          <div class="form-row">
-            <div class="form-group"><label>Período</label><input type="text" id="la-rma-periodo" placeholder="Ex: 1º Semestre 2026"></div>
-            <div class="form-group"><label>Prazo de entrega</label><input type="date" id="la-rma-prazo"></div>
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:0 0 160px"><label>Status</label>
-              <select id="la-rma-status">
-                <option value="pendente">🟡 Pendente</option>
-                <option value="enviado">🔵 Enviado</option>
-                <option value="aprovado">🟢 Aprovado</option>
-              </select>
-            </div>
-            <div class="form-group"><label>Data de Envio</label><input type="date" id="la-rma-dataenvio"></div>
-          </div>
-          <div class="form-group"><label>Observação</label><input type="text" id="la-rma-obs" placeholder="Nº do protocolo, analista..."></div>
-          <button class="btn-primary" style="margin-top:8px" onclick="laRmaAdicionarNovo()">+ Adicionar</button>
+        <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:12px;background:var(--green-pale);border-radius:8px;padding:8px 12px">
+          💡 Prazo de entrega: <strong>30 dias após o vencimento de cada período semestral</strong>. Status calculado automaticamente.
         </div>
+        <div id="la-rma-lista"></div>
+        <!-- Form: adicionar RMA avulso -->
+        <details style="margin-top:16px">
+          <summary style="font-size:.82rem;font-weight:700;color:var(--brand-green);cursor:pointer;padding:8px 0">+ Adicionar RMA Avulso</summary>
+          <div style="background:var(--green-pale);border-radius:12px;padding:16px;margin-top:8px">
+            <div class="form-row">
+              <div class="form-group"><label>Período</label><input type="text" id="la-rma-periodo" placeholder="Ex: 1º Semestre 2026"></div>
+              <div class="form-group"><label>Prazo de entrega</label><input type="date" id="la-rma-prazo"></div>
+            </div>
+            <div class="form-group"><label>Observação</label><input type="text" id="la-rma-obs" placeholder="Nº do protocolo, observações..."></div>
+            <button class="btn-primary" style="margin-top:8px" onclick="laRmaAdicionarNovo()">+ Adicionar</button>
+          </div>
+        </details>
       </div>
     </div>
   </div>`;
@@ -4938,7 +4952,7 @@ function laSalvarRegistro() {
     LA_DADOS.push(reg);
   }
   laSalvar(); laFecharModal(); laRenderizarLista();
-  showToast('✅ Licença salva!');
+  showToast('✅ Licença salva!' + (reg.rmas && reg.rmas.length ? ' Cronograma de ' + reg.rmas.length + ' RMAs gerado.' : ''));
 }
 
 function laExcluir(id) {
@@ -4953,8 +4967,7 @@ function laAbrirRma(licId) {
   var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
   document.getElementById('la-rma-lic-id').value = licId;
   document.getElementById('la-rma-subtitle').textContent = l.cliente + ' — ' + l.tipo + ' Nº ' + l.numero;
-  ['la-rma-periodo','la-rma-prazo','la-rma-dataenvio','la-rma-obs'].forEach(function(id){var e=document.getElementById(id);if(e)e.value='';});
-  document.getElementById('la-rma-status').value = 'pendente';
+  ['la-rma-periodo','la-rma-prazo','la-rma-obs'].forEach(function(id){var e=document.getElementById(id);if(e)e.value='';});
   laRenderizarRmaLista(licId);
   document.getElementById('la-rma-modal').style.display = 'flex';
 }
@@ -4969,30 +4982,54 @@ function laRenderizarRmaLista(licId) {
   var el = document.getElementById('la-rma-lista');
   if (!l||!el) return;
   var rmas = l.rmas||[];
-  var si = { pendente:'🟡', enviado:'🔵', aprovado:'🟢' };
-  el.innerHTML = rmas.length===0
-    ? '<div style="text-align:center;color:var(--text-muted);font-size:.85rem;padding:16px 0">Nenhum RMA cadastrado.</div>'
-    : rmas.map(function(r) {
-        return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px">' +
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
-            '<div>' +
-              '<div style="font-weight:700;font-size:.88rem">'+(si[r.status]||'⚪')+' '+r.periodo+'</div>' +
-              '<div style="font-size:.76rem;color:var(--text-muted);margin-top:4px">Prazo: <strong>'+laFormatarData(r.prazo)+'</strong>' +
-                (r.dataEnvio?' &nbsp;·&nbsp; Enviado: <strong>'+laFormatarData(r.dataEnvio)+'</strong>':'') +
-                (r.obs?' &nbsp;·&nbsp; '+r.obs:'') +
-              '</div>' +
-            '</div>' +
-            '<div style="display:flex;gap:6px;align-items:center">' +
-              '<select style="font-size:.75rem;padding:4px 6px;border:1px solid var(--border);border-radius:6px;cursor:pointer" onchange="laRmaAlterarStatus(\''+licId+'\',\''+r.id+'\',this.value)">' +
-                '<option value="pendente"'+(r.status==='pendente'?' selected':'')+'>🟡 Pendente</option>' +
-                '<option value="enviado"'+(r.status==='enviado'?' selected':'')+'>🔵 Enviado</option>' +
-                '<option value="aprovado"'+(r.status==='aprovado'?' selected':'')+'>🟢 Aprovado</option>' +
-              '</select>' +
-              '<button style="font-size:.75rem;padding:4px 8px;border:1px solid #dc354533;background:#fff5f5;color:#dc3545;border-radius:6px;cursor:pointer" onclick="laRmaExcluir(\''+licId+'\',\''+r.id+'\')">✕</button>' +
-            '</div>' +
+  if (rmas.length === 0) {
+    el.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:.85rem;padding:16px 0">Nenhum RMA cadastrado. Use o botão acima para gerar o cronograma.</div>';
+    return;
+  }
+  el.innerHTML = rmas.map(function(r) {
+    var st = laRmaStatus(r);
+    return '<div style="border:1px solid '+st.cor+'33;border-radius:10px;padding:12px 14px;margin-bottom:8px;background:'+st.bg+'">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-weight:700;font-size:.88rem;color:var(--brand-brown)">'+r.periodo+'</div>' +
+          '<div style="font-size:.76rem;color:var(--text-muted);margin-top:4px">' +
+            'Prazo de entrega: <strong>'+laFormatarData(r.prazo)+'</strong>' +
+            (r.dataEnvio ? ' &nbsp;·&nbsp; Protocolado em: <strong>'+laFormatarData(r.dataEnvio)+'</strong>' : '') +
+            (r.protocolo ? ' &nbsp;·&nbsp; Protocolo: <strong>'+r.protocolo+'</strong>' : '') +
+            (r.obs && !r.protocolo ? ' &nbsp;·&nbsp; '+r.obs : '') +
           '</div>' +
-        '</div>';
-      }).join('');
+        '</div>' +
+        '<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">' +
+          '<span style="font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:20px;border:1px solid '+st.cor+'55;color:'+st.cor+';white-space:nowrap">'+st.icon+' '+st.label+'</span>' +
+          (r.status !== 'entregue'
+            ? '<button style="font-size:.73rem;padding:4px 8px;border:1px solid var(--brand-green);background:white;color:var(--brand-green);border-radius:6px;cursor:pointer;white-space:nowrap" onclick="laRmaProtocolar(\''+licId+'\',\''+r.id+'\')">✅ Protocolar</button>'
+            : '<button style="font-size:.73rem;padding:4px 8px;border:1px solid #ccc;background:white;color:#888;border-radius:6px;cursor:pointer" onclick="laRmaDesfazer(\''+licId+'\',\''+r.id+'\')" title="Desfazer entrega">↩</button>'
+          ) +
+          '<button style="font-size:.73rem;padding:4px 8px;border:1px solid #dc354533;background:white;color:#dc3545;border-radius:6px;cursor:pointer" onclick="laRmaExcluir(\''+licId+'\',\''+r.id+'\')">✕</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function laRmaProtocolar(licId, rmaId) {
+  var protocolo = prompt('Número do protocolo (deixe em branco se não tiver):') ;
+  if (protocolo === null) return; // cancelou
+  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
+  var r = (l.rmas||[]).find(function(x){return x.id===rmaId;}); if(!r) return;
+  r.status    = 'entregue';
+  r.dataEnvio = new Date().toISOString().slice(0,10);
+  r.protocolo = (protocolo||'').trim();
+  laSalvar(); laRenderizarRmaLista(licId);
+  showToast('✅ RMA registrado como Entregue!');
+}
+
+function laRmaDesfazer(licId, rmaId) {
+  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
+  var r = (l.rmas||[]).find(function(x){return x.id===rmaId;}); if(!r) return;
+  r.status = 'pendente'; r.dataEnvio = ''; r.protocolo = '';
+  laSalvar(); laRenderizarRmaLista(licId);
+  showToast('↩ Entrega desfeita.');
 }
 
 function laRmaAdicionarNovo() {
@@ -5005,24 +5042,15 @@ function laRmaAdicionarNovo() {
     id:        laUid(),
     periodo:   periodo,
     prazo:     document.getElementById('la-rma-prazo').value,
-    status:    document.getElementById('la-rma-status').value,
-    dataEnvio: document.getElementById('la-rma-dataenvio').value,
+    status:    'pendente',
+    dataEnvio: '',
+    protocolo: '',
     obs:       document.getElementById('la-rma-obs').value.trim(),
   });
   laSalvar();
-  ['la-rma-periodo','la-rma-prazo','la-rma-dataenvio','la-rma-obs'].forEach(function(id){var e=document.getElementById(id);if(e)e.value='';});
-  document.getElementById('la-rma-status').value='pendente';
+  ['la-rma-periodo','la-rma-prazo','la-rma-obs'].forEach(function(id){var e=document.getElementById(id);if(e)e.value='';});
   laRenderizarRmaLista(licId);
   showToast('📊 RMA adicionado!');
-}
-
-function laRmaAlterarStatus(licId, rmaId, novoStatus) {
-  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
-  var r = (l.rmas||[]).find(function(x){return x.id===rmaId;}); if(!r) return;
-  r.status = novoStatus;
-  if (novoStatus==='enviado' && !r.dataEnvio) r.dataEnvio = new Date().toISOString().slice(0,10);
-  laSalvar(); laRenderizarRmaLista(licId);
-  showToast('✅ Status atualizado!');
 }
 
 function laRmaExcluir(licId, rmaId) {
@@ -5031,6 +5059,8 @@ function laRmaExcluir(licId, rmaId) {
   laSalvar(); laRenderizarRmaLista(licId);
   showToast('🗑️ RMA removido.');
 }
+
+
 
 /* -- DOCUMENTOS (colaborador) -- */
 function pageDocumentos() {
