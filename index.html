@@ -7984,13 +7984,27 @@ function exportarEROpdf() {
     const d = window._eroData;
     const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
 
-    // Calculate totals
-    let totalPossivel = 0, totalAlcancado = 0;
+    // Calculate totals (excluindo N/A e não respondidos, igual ao dashboard)
+    let totalPossivel = 0, totalAlcancado = 0, totalItens = 0, totalNA = 0, totalAplicaveis = 0;
     eroGrupos.forEach(g => g.itens.forEach(i => {
+      totalItens++;
+      if (d['na_' + i.id]) { totalNA++; return; }
+      const ptsRaw = d['pts_' + i.id];
+      if (ptsRaw === '' || ptsRaw === undefined || ptsRaw === null) return;
+      totalAplicaveis++;
       totalPossivel += i.peso;
-      totalAlcancado += parseFloat(d['pts_' + i.id] || 0);
+      const val = parseFloat(ptsRaw);
+      totalAlcancado += isNaN(val) ? 0 : val;
     }));
     const pct = totalPossivel > 0 ? ((totalAlcancado / totalPossivel) * 100).toFixed(1) : 0;
+    // Oportunidades de melhoria
+    let melSim = 0, melNao = 0, melNA = 0;
+    eroMelhorias.forEach((_, i) => {
+      const v = d['mel_' + i];
+      if (v === 'sim') melSim++;
+      else if (v === 'nao') melNao++;
+      else if (v === 'na') melNA++;
+    });
 
     // -- Construir HTML como string (para reutilizar no upload OneDrive) --
     const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
@@ -8057,39 +8071,63 @@ function exportarEROpdf() {
         <strong>${pct >= 80 ? '✅ Conformidade Satisfatória' : pct >= 60 ? '⚠️ Atenção Necessária' : '🔴 Não Conformidade Crítica'}</strong>
       </div>
     </div>
+    <div style="font-size:7.5pt;color:#555;background:#fffdf0;border:1px solid #e0c96b;border-radius:5px;padding:6px 10px;margin-bottom:10px">
+      <strong>📋 Base de cálculo:</strong> ${totalItens} quesitos no total · ${totalAplicaveis} pontuáveis · ${totalNA} N/A
+      &nbsp;|&nbsp; <strong style="color:#b07700">🔶 Oportunidades de Melhoria (${eroMelhorias.length} itens — não impactam a pontuação):</strong>
+      Conforme: <strong>${melSim}</strong> · Não conforme: <strong>${melNao}</strong> · N/A: <strong>${melNA}</strong>
+    </div>
 
     <div class="section-title">📊 Quadro de Notas por Categoria</div>
     <table style="margin-bottom:12px">
-      <thead><tr><th style="width:46%">Categoria</th><th style="width:14%">Peso</th><th style="width:14%">Pts Alc.</th><th style="width:13%">GAP</th><th style="width:13%">%</th></tr></thead>
+      <thead><tr><th style="width:34%">Categoria</th><th style="width:8%">Peso</th><th style="width:10%">Pts Alc.</th><th style="width:8%">GAP</th><th style="width:8%">%</th><th style="width:10%">✔ Conf.</th><th style="width:10%">✖ N.Conf.</th><th style="width:8%">N/A</th></tr></thead>
       <tbody>
         ${eroGrupos.map(g => {
-          const gAlc  = g.itens.reduce((s,i) => s + (parseFloat(d['pts_'+i.id])||0), 0);
-          const gPoss = g.itens.reduce((s,i) => s + i.peso, 0);
-          const gPct  = gPoss > 0 ? ((gAlc/gPoss)*100).toFixed(0) : 0;
-          const gCor  = gPct >= 80 ? '#2d8c5a' : gPct >= 60 ? '#b07700' : '#e03d3d';
+          let gPoss = 0, gAlc = 0, gConf = 0, gNC = 0, gNA = 0;
+          g.itens.forEach(i => {
+            if (d['na_'+i.id]) { gNA++; return; }
+            const r = d['pts_'+i.id];
+            if (r === '' || r === undefined || r === null) return;
+            gPoss += i.peso;
+            const v = parseFloat(r);
+            gAlc += isNaN(v) ? 0 : v;
+            if (v >= i.peso) gConf++; else gNC++;
+          });
+          const gPct = gPoss > 0 ? ((gAlc/gPoss)*100).toFixed(0) : 0;
+          const gCor = gPoss === 0 ? '#2d8c5a' : gPct >= 80 ? '#2d8c5a' : gPct >= 60 ? '#b07700' : '#e03d3d';
           return `<tr>
             <td><strong>${g.titulo}</strong></td>
-            <td style="text-align:center">${gPoss}</td>
+            <td style="text-align:center">${gPoss.toFixed(1)}</td>
             <td class="pts" style="text-align:center">${gAlc.toFixed(1)}</td>
             <td class="gap" style="text-align:center">${(gAlc-gPoss).toFixed(1)}</td>
             <td style="text-align:center;font-weight:800;color:${gCor}">${gPct}%</td>
+            <td style="text-align:center;color:#2d8c5a;font-weight:700">${gConf}</td>
+            <td style="text-align:center;color:#e03d3d;font-weight:700">${gNC}</td>
+            <td style="text-align:center;color:#777">${gNA}</td>
           </tr>`;
         }).join('')}
         <tr style="background:#e6f5ed">
           <td style="font-weight:800">TOTAL GERAL</td>
-          <td style="text-align:center;font-weight:800">${totalPossivel}</td>
+          <td style="text-align:center;font-weight:800">${totalPossivel.toFixed(1)}</td>
           <td class="pts" style="text-align:center;font-weight:800">${totalAlcancado.toFixed(1)}</td>
           <td class="gap" style="text-align:center;font-weight:800">${(totalAlcancado-totalPossivel).toFixed(1)}</td>
           <td style="text-align:center;font-weight:800">${pct}%</td>
+          <td colspan="3"></td>
         </tr>
       </tbody>
     </table>
 
     ${eroGrupos.map(g => {
-      const gAlc = g.itens.reduce((s,i) => s + (parseFloat(d['pts_'+i.id])||0), 0);
-      const gPoss = g.itens.reduce((s,i) => s + i.peso, 0);
+      let gPoss2 = 0, gAlc2 = 0;
+      g.itens.forEach(i => {
+        if (d['na_'+i.id]) return;
+        const r = d['pts_'+i.id];
+        if (r === '' || r === undefined || r === null) return;
+        gPoss2 += i.peso;
+        const v = parseFloat(r);
+        gAlc2 += isNaN(v) ? 0 : v;
+      });
       return `
-      <div class="section-title">${g.titulo} — ${gAlc.toFixed(1)} / ${gPoss}</div>
+      <div class="section-title">${g.titulo} — ${gAlc2.toFixed(1)} / ${gPoss2.toFixed(1)}</div>
       <table>
         <thead><tr><th style="width:5%">Item</th><th style="width:45%">Requisito</th><th style="width:8%">Peso</th><th style="width:10%">Pts Alc.</th><th style="width:8%">GAP</th><th style="width:24%">Observação</th></tr></thead>
         <tbody>
