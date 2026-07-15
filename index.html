@@ -4606,6 +4606,27 @@ function pageAgenda() {
 =============================== */
 
 let LA_DADOS = [];
+let LA_FILTRO_TIPO = '';
+let LA_FILTRO_ORGAO = '';
+
+function laDetectarTipo(atividade) {
+  var a = (atividade || '').toLowerCase();
+  if (/combustív|gasolina|posto|diesel|etanol|gnv|lubrif|borracharia/.test(a)) return 'posto';
+  if (/industri|fabric|produção|manufat|benefici/.test(a)) return 'industria';
+  if (/agrícol|pecuár|agropec|fazenda|soja|milho|bovino|avicul|suinoc|lavoura/.test(a)) return 'agro';
+  if (/miner|extraç|garimpo|minério/.test(a)) return 'mineracao';
+  if (/hospital|clínica|saúde|laborató|farmác/.test(a)) return 'saude';
+  if (/madei|serraria|reflorest|carvoar|lenha/.test(a)) return 'florestal';
+  if (/hotel|pousada|turismo|restaurante|alimentíc/.test(a)) return 'servicos';
+  return 'comercio';
+}
+
+function laNomeTipo(tipo) {
+  var map = { posto:'Posto de Combustível', industria:'Indústria', agro:'Agropecuária',
+    mineracao:'Mineração', saude:'Saúde', florestal:'Florestal/Madeireiro',
+    servicos:'Serviços/Turismo', comercio:'Comércio/Outros' };
+  return map[tipo] || tipo;
+}
 
 const LA_SEED = [
   {
@@ -4744,7 +4765,16 @@ function laRenderizarLista() {
     return;
   }
   const hoje = new Date(); hoje.setHours(0,0,0,0);
-  el.innerHTML = LA_DADOS.map(function(l) {
+  var dadosFiltrados = LA_DADOS.filter(function(l) {
+    if (LA_FILTRO_TIPO && laDetectarTipo(l.atividade) !== LA_FILTRO_TIPO) return false;
+    if (LA_FILTRO_ORGAO && (l.orgao||'').toLowerCase() !== LA_FILTRO_ORGAO.toLowerCase()) return false;
+    return true;
+  });
+  if (dadosFiltrados.length === 0) {
+    el.innerHTML = '<div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">Nenhuma licença encontrada com os filtros selecionados.<br><br><button onclick="LA_FILTRO_TIPO=\'\';LA_FILTRO_ORGAO=\'\';laRenderizarLista()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);cursor:pointer">Limpar filtros</button></div>';
+    laRenderizarKPIs(); return;
+  }
+  el.innerHTML = dadosFiltrados.map(function(l) {
     var st      = laStatus(l.vencimento);
     var rmas    = l.rmas||[];
     var rmaEntregue = rmas.filter(function(r){return r.status==='entregue';}).length;
@@ -4804,6 +4834,31 @@ function pageRelatorios() {
     <div class="kpi-card yellow"><div class="kpi-label">Vencendo em 90d</div><div class="kpi-value" id="la-kpi-vencendo">—</div><div class="kpi-icon">⚠️</div></div>
     <div class="kpi-card red"><div class="kpi-label">Licenças Vencidas</div><div class="kpi-value" id="la-kpi-vencidas">—</div><div class="kpi-icon">❌</div></div>
     <div class="kpi-card amber"><div class="kpi-label">RMAs Pendentes</div><div class="kpi-value" id="la-kpi-rmas">—</div><div class="kpi-icon">📊</div></div>
+  </div>
+
+  <!-- BARRA DE FILTROS -->
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
+    <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
+    <select onchange="LA_FILTRO_TIPO=this.value;laRenderizarLista()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);cursor:pointer">
+      <option value="">Todos os tipos</option>
+      <option value="posto">Posto de Combustível</option>
+      <option value="industria">Indústria</option>
+      <option value="agro">Agropecuária</option>
+      <option value="mineracao">Mineração</option>
+      <option value="saude">Saúde</option>
+      <option value="florestal">Florestal/Madeireiro</option>
+      <option value="servicos">Serviços/Turismo</option>
+      <option value="comercio">Comércio/Outros</option>
+    </select>
+    <select onchange="LA_FILTRO_ORGAO=this.value;laRenderizarLista()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);cursor:pointer">
+      <option value="">Todos os órgãos</option>
+      <option value="SEDAM">SEDAM</option>
+      <option value="SEMUR">SEMUR</option>
+      <option value="IBAMA">IBAMA</option>
+      <option value="SEMA">SEMA</option>
+      <option value="FEMA">FEMA</option>
+    </select>
+    <button onclick="LA_FILTRO_TIPO='';LA_FILTRO_ORGAO='';document.querySelectorAll('#la-filtros select').forEach(s=>s.value='');laRenderizarLista()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.78rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
   </div>
 
   <div id="la-lista"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
@@ -4893,6 +4948,177 @@ function pageRelatorios() {
       </div>
     </div>
   </div>`;
+}
+
+function laGerarModeloRMA(licId, rmaId) {
+  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
+  var r = (l.rmas||[]).find(function(x){return x.id===rmaId;});
+  var tipo = laDetectarTipo(l.atividade);
+  var dataHoje = new Date().toLocaleDateString('pt-BR');
+  var periodo = r ? r.periodo : '___';
+  var prazo   = r ? laFormatarData(r.prazo) : '___';
+
+  // Legislação por UF
+  var legMap = {
+    RO: 'Resolução CONSEPA nº 02/2020 e Instrução Normativa SEDAM nº 02/2012',
+    MT: 'Lei Estadual MT nº 9.502/2010 e Instrução Normativa SEMA/MT',
+    AM: 'Decreto AM nº 24.665/2005 e Instrução Normativa IPAAM',
+    PA: 'Lei PA nº 6.381/2001 e Instrução Normativa SEMAS/PA',
+  };
+  var leg = legMap[l.uf] || 'Resolução CONAMA nº 237/1997 e legislação estadual aplicável';
+
+  // Seções específicas por tipo de empreendimento
+  var secoes = '';
+  if (tipo === 'posto') {
+    secoes = `
+    <div class="secao"><div class="sec-titulo">3. GERENCIAMENTO DE COMBUSTÍVEIS E TANQUES</div>
+    <table class="tb-form">
+      <tr><td class="label">Quantidade de tanques subterrâneos</td><td class="campo">___</td><td class="label">Capacidade total (litros)</td><td class="campo">___</td></tr>
+      <tr><td class="label">Material dos tanques</td><td class="campo" colspan="3">☐ Simples parede &nbsp; ☐ Dupla parede &nbsp; ☐ Fibra de vidro &nbsp; ☐ Outro: ___</td></tr>
+      <tr><td class="label">Última inspeção dos tanques</td><td class="campo">___/___/______</td><td class="label">Empresa responsável</td><td class="campo">___</td></tr>
+      <tr><td class="label">Sistema de detecção de vazamentos</td><td class="campo" colspan="3">☐ Monitor eletrônico &nbsp; ☐ Tubo de monitoramento &nbsp; ☐ Visual &nbsp; ☐ Não possui</td></tr>
+      <tr><td class="label">Resultado do monitoramento</td><td class="campo" colspan="3">☐ Sem indícios de vazamento &nbsp; ☐ Com indícios — descrever: ___</td></tr>
+    </table></div>
+
+    <div class="secao"><div class="sec-titulo">4. CAIXA SEPARADORA DE ÁGUA E ÓLEO (CSAO)</div>
+    <table class="tb-form">
+      <tr><td class="label">Situação estrutural</td><td class="campo">☐ Adequada &nbsp; ☐ Inadequada</td><td class="label">Presença de óleo/graxas</td><td class="campo">☐ Sim &nbsp; ☐ Não</td></tr>
+      <tr><td class="label">Frequência de limpeza</td><td class="campo">___</td><td class="label">Empresa de limpeza (CNPJ)</td><td class="campo">___</td></tr>
+      <tr><td class="label">Nº Manifesto de resíduos</td><td class="campo">___</td><td class="label">Data da última limpeza</td><td class="campo">___/___/______</td></tr>
+      <tr><td class="label">Destinação final dos resíduos</td><td class="campo" colspan="3">☐ Co-processamento &nbsp; ☐ Rerrefino &nbsp; ☐ Incineração &nbsp; ☐ Outro: ___</td></tr>
+    </table></div>
+
+    <div class="secao"><div class="sec-titulo">5. GESTÃO DE RESÍDUOS SÓLIDOS (Resolução CONAMA nº 362/2005)</div>
+    <table class="tb-form">
+      <tr><th>Tipo de Resíduo</th><th>Quantidade Estimada</th><th>Acondicionamento</th><th>Destinação Final</th></tr>
+      <tr><td>Embalagens de lubrificantes</td><td class="campo">___</td><td class="campo">___</td><td class="campo">___</td></tr>
+      <tr><td>Filtros de óleo usados</td><td class="campo">___</td><td class="campo">___</td><td class="campo">___</td></tr>
+      <tr><td>Estopas/panos contaminados</td><td class="campo">___</td><td class="campo">___</td><td class="campo">___</td></tr>
+      <tr><td>Resíduos comuns</td><td class="campo">___</td><td class="campo">___</td><td class="campo">___</td></tr>
+    </table></div>`;
+  } else if (tipo === 'agro') {
+    secoes = `
+    <div class="secao"><div class="sec-titulo">3. MONITORAMENTO DE EFLUENTES E DEJETOS</div>
+    <table class="tb-form">
+      <tr><td class="label">Sistema de tratamento de dejetos</td><td class="campo" colspan="3">☐ Biodigestor &nbsp; ☐ Esterqueira &nbsp; ☐ Lagoa de estabilização &nbsp; ☐ Outro: ___</td></tr>
+      <tr><td class="label">Volume estimado gerado (m³/mês)</td><td class="campo">___</td><td class="label">Destinação</td><td class="campo">___</td></tr>
+      <tr><td class="label">Uso de agrotóxicos</td><td class="campo">☐ Sim &nbsp; ☐ Não</td><td class="label">Receituário agronômico</td><td class="campo">☐ Arquivado &nbsp; ☐ Não aplicável</td></tr>
+    </table></div>
+    <div class="secao"><div class="sec-titulo">4. GESTÃO DE RESÍDUOS E EMBALAGENS</div>
+    <table class="tb-form">
+      <tr><td class="label">Embalagens de agrotóxicos (tríplice lavagem)</td><td class="campo">☐ Realizado &nbsp; ☐ Não aplicável</td><td class="label">Ponto de recebimento</td><td class="campo">___</td></tr>
+      <tr><td class="label">Outros resíduos gerados</td><td class="campo" colspan="3">___</td></tr>
+    </table></div>`;
+  } else {
+    secoes = `
+    <div class="secao"><div class="sec-titulo">3. CONTROLE DE EFLUENTES E RESÍDUOS</div>
+    <table class="tb-form">
+      <tr><td class="label">Efluentes gerados</td><td class="campo" colspan="3">☐ Sanitários &nbsp; ☐ Industriais &nbsp; ☐ Pluviais contaminados</td></tr>
+      <tr><td class="label">Sistema de tratamento</td><td class="campo">☐ Fossa/Sumidouro &nbsp; ☐ ETE &nbsp; ☐ Rede pública</td><td class="label">Situação</td><td class="campo">☐ Adequado &nbsp; ☐ Inadequado</td></tr>
+      <tr><td class="label">Resíduos sólidos gerados</td><td class="campo" colspan="3">___</td></tr>
+      <tr><td class="label">Destinação dos resíduos</td><td class="campo" colspan="3">___</td></tr>
+    </table></div>`;
+  }
+
+  var html = `<!DOCTYPE html><html lang="pt-BR"><head>
+  <meta charset="UTF-8">
+  <title>Modelo RMA — ${l.cliente}</title>
+  <style>
+    @page { size: A4; margin: 18mm 15mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 9pt; color: #1a1a1a; }
+    .header { border: 2px solid #2d8c5a; border-radius: 6px; padding: 10px 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .titulo-doc { font-size: 13pt; font-weight: 900; color: #2d8c5a; }
+    .subtitulo { font-size: 8pt; color: #555; margin-top: 2px; }
+    .secao { margin-bottom: 10px; }
+    .sec-titulo { background: #2d8c5a; color: #fff; padding: 5px 10px; font-weight: 700; font-size: 8.5pt; border-radius: 3px; margin-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 2px; }
+    th { background: #e6f5ed; font-size: 7.5pt; font-weight: 700; padding: 4px 6px; text-align: left; border: 1px solid #b0d4be; }
+    td { font-size: 8pt; padding: 4px 6px; border: 1px solid #ccc; vertical-align: top; }
+    .tb-form td.label { background: #f5f9f7; font-weight: 600; width: 22%; font-size: 7.5pt; }
+    .tb-form td.campo { width: 28%; }
+    .assinatura { display: flex; gap: 20px; margin-top: 14px; }
+    .ass-box { flex: 1; border-top: 1.5px solid #333; padding-top: 4px; font-size: 7.5pt; text-align: center; margin-top: 30px; }
+    .aviso { background: #fff8dc; border: 1px solid #e6c84a; border-radius: 4px; padding: 5px 8px; font-size: 7.5pt; color: #7a5e00; margin-bottom: 8px; }
+    .footer { margin-top: 14px; border-top: 1px solid #ccc; padding-top: 6px; font-size: 7pt; color: #888; display: flex; justify-content: space-between; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style></head><body>
+
+  <div class="header">
+    <div>
+      <div class="titulo-doc">RELATÓRIO DE MONITORAMENTO AMBIENTAL — RMA</div>
+      <div class="subtitulo">${laNomeTipo(laDetectarTipo(l.atividade))} · ${leg}</div>
+    </div>
+    <div style="text-align:right;font-size:7.5pt;color:#555">
+      <div><strong>Período:</strong> ${periodo}</div>
+      <div><strong>Prazo:</strong> ${prazo}</div>
+      <div style="margin-top:2px;color:#d00;font-weight:700">MODELO — preencher antes de protocolar</div>
+    </div>
+  </div>
+
+  <div class="aviso">⚠ Este documento é um modelo orientativo baseado na legislação ambiental aplicável. Verifique exigências específicas do órgão licenciador antes de protocolar.</div>
+
+  <div class="secao"><div class="sec-titulo">1. IDENTIFICAÇÃO DO EMPREENDIMENTO</div>
+  <table class="tb-form">
+    <tr><td class="label">Razão Social</td><td class="campo" colspan="3"><strong>${l.cliente||'___'}</strong></td></tr>
+    <tr><td class="label">CNPJ</td><td class="campo">${l.cnpj||'___'}</td><td class="label">Atividade</td><td class="campo">${l.atividade||'___'}</td></tr>
+    <tr><td class="label">Município</td><td class="campo">${l.municipio||'___'}</td><td class="label">UF</td><td class="campo">${l.uf||'___'}</td></tr>
+  </table></div>
+
+  <div class="secao"><div class="sec-titulo">2. DADOS DA LICENÇA AMBIENTAL</div>
+  <table class="tb-form">
+    <tr><td class="label">Tipo de Licença</td><td class="campo">${l.tipo||'___'}</td><td class="label">Nº da Licença</td><td class="campo"><strong>${l.numero||'___'}</strong></td></tr>
+    <tr><td class="label">Órgão Emissor</td><td class="campo">${l.orgao||'___'}</td><td class="label">Nº do Processo</td><td class="campo">${l.processo||'___'}</td></tr>
+    <tr><td class="label">Data de Emissão</td><td class="campo">${laFormatarData(l.emissao)||'___'}</td><td class="label">Validade</td><td class="campo">${laFormatarData(l.vencimento)||'___'}</td></tr>
+  </table></div>
+
+  ${secoes}
+
+  <div class="secao"><div class="sec-titulo">${tipo==='posto'?'6':'4'}. EFLUENTES SANITÁRIOS</div>
+  <table class="tb-form">
+    <tr><td class="label">Sistema</td><td class="campo">☐ Fossa séptica/sumidouro &nbsp; ☐ ETE &nbsp; ☐ Rede pública de esgoto</td><td class="label">Situação</td><td class="campo">☐ Adequado &nbsp; ☐ Inadequado</td></tr>
+    <tr><td class="label">Observações</td><td class="campo" colspan="3" style="height:24px">___</td></tr>
+  </table></div>
+
+  <div class="secao"><div class="sec-titulo">${tipo==='posto'?'7':'5'}. OCORRÊNCIAS AMBIENTAIS NO PERÍODO</div>
+  <table class="tb-form">
+    <tr><td class="label">Houve ocorrências?</td><td class="campo">☐ Sim &nbsp; ☐ Não</td><td class="label" colspan="2">Se sim, data(s): ___/___/______</td></tr>
+    <tr><td class="label" style="vertical-align:top">Descrição</td><td class="campo" colspan="3" style="height:32px">___</td></tr>
+    <tr><td class="label">Medidas adotadas</td><td class="campo" colspan="3" style="height:28px">___</td></tr>
+    <tr><td class="label">Comunicou ao órgão?</td><td class="campo" colspan="3">☐ Sim — protocolo: ___ &nbsp; ☐ Não &nbsp; ☐ Não aplicável</td></tr>
+  </table></div>
+
+  <div class="secao"><div class="sec-titulo">${tipo==='posto'?'8':'6'}. AÇÕES CORRETIVAS E PREVENTIVAS</div>
+  <table>
+    <tr><th>Ação</th><th>Responsável</th><th>Prazo</th><th>Status</th></tr>
+    <tr><td style="height:22px">___</td><td>___</td><td>___</td><td>☐ Concluída &nbsp; ☐ Em andamento</td></tr>
+    <tr><td style="height:22px">___</td><td>___</td><td>___</td><td>☐ Concluída &nbsp; ☐ Em andamento</td></tr>
+  </table></div>
+
+  <div class="secao"><div class="sec-titulo">${tipo==='posto'?'9':'7'}. CONCLUSÃO</div>
+  <table class="tb-form">
+    <tr><td class="label">Situação geral</td><td class="campo" colspan="3">☐ Empreendimento em conformidade com as condicionantes da licença &nbsp; ☐ Irregularidades identificadas (descrever acima)</td></tr>
+    <tr><td class="label">Observações finais</td><td class="campo" colspan="3" style="height:36px">___</td></tr>
+  </table></div>
+
+  <div class="assinatura">
+    <div class="ass-box">Nome completo do responsável técnico<br><span style="font-size:7pt;color:#777">Cargo / Registro profissional (CREA/CFQ/etc.)</span></div>
+    <div class="ass-box">Local e data: _______________, ${dataHoje}<br><span style="font-size:7pt;color:#777">Assinatura e carimbo</span></div>
+    <div class="ass-box">Representante legal do empreendimento<br><span style="font-size:7pt;color:#777">Nome / CPF / Assinatura</span></div>
+  </div>
+
+  <div class="footer">
+    <span>Expedian Soluções Ambientais · Gerado em ${dataHoje}</span>
+    <span>Licença ${l.tipo} nº ${l.numero} — ${l.orgao} · ${periodo}</span>
+  </div>
+
+  <script>window.onload=()=>window.print();<\/script>
+  </body></html>`;
+
+  var win = window.open('', '_blank');
+  if (!win) { showToast('⚠ Permita pop-ups para este site e tente novamente.'); return; }
+  win.document.write(html);
+  win.document.close();
 }
 
 function laAbrirModal() {
@@ -5004,7 +5230,8 @@ function laRenderizarRmaLista(licId) {
         '<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">' +
           '<span style="font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:20px;border:1px solid '+st.cor+'55;color:'+st.cor+';white-space:nowrap">'+st.icon+' '+st.label+'</span>' +
           (r.status !== 'entregue'
-            ? '<button style="font-size:.73rem;padding:4px 8px;border:1px solid var(--brand-green);background:white;color:var(--brand-green);border-radius:6px;cursor:pointer;white-space:nowrap" onclick="laRmaProtocolar(\''+licId+'\',\''+r.id+'\')">✅ Protocolar</button>'
+            ? '<button style="font-size:.73rem;padding:4px 8px;border:1px solid var(--brand-green);background:white;color:var(--brand-green);border-radius:6px;cursor:pointer;white-space:nowrap" onclick="laRmaProtocolar(\''+licId+'\',\''+r.id+'\')">✅ Protocolar</button>' +
+              '<button style="font-size:.73rem;padding:4px 8px;border:1px solid #6c757d;background:white;color:#6c757d;border-radius:6px;cursor:pointer;white-space:nowrap" onclick="laGerarModeloRMA(\''+licId+'\',\''+r.id+'\')">📄 Modelo RMA</button>'
             : '<button style="font-size:.73rem;padding:4px 8px;border:1px solid #ccc;background:white;color:#888;border-radius:6px;cursor:pointer" onclick="laRmaDesfazer(\''+licId+'\',\''+r.id+'\')" title="Desfazer entrega">↩</button>'
           ) +
           '<button style="font-size:.73rem;padding:4px 8px;border:1px solid #dc354533;background:white;color:#dc3545;border-radius:6px;cursor:pointer" onclick="laRmaExcluir(\''+licId+'\',\''+r.id+'\')">✕</button>' +
