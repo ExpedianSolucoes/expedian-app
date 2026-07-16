@@ -4613,6 +4613,26 @@ function pageAgenda() {
 let LA_DADOS = [];
 let LA_FILTRO_TIPO = '';
 let LA_FILTRO_ORGAO = '';
+let LA_FILTRO_STATUS = ''; // '' | 'vencendo' | 'vencidas'
+let LA_FILTRO_RMA = '';    // '' | 'vigente' | 'vencido' | 'entregue'
+
+function laFiltrarStatus(tipo) {
+  LA_FILTRO_STATUS = (LA_FILTRO_STATUS === tipo) ? '' : tipo;
+  LA_FILTRO_RMA = '';
+  laRenderizarLista();
+}
+
+function laFiltrarRma(tipo) {
+  LA_FILTRO_RMA = (LA_FILTRO_RMA === tipo) ? '' : tipo;
+  LA_FILTRO_STATUS = '';
+  laRenderizarLista();
+}
+
+function laResetarFiltrosPrincipais() {
+  LA_FILTRO_STATUS = '';
+  LA_FILTRO_RMA = '';
+  laRenderizarLista();
+}
 
 function laDetectarTipo(atividade) {
   var a = (atividade || '').toLowerCase();
@@ -4752,12 +4772,35 @@ function laRenderizarKPIs() {
   const total    = LA_DADOS.length;
   const vencidas = LA_DADOS.filter(function(l){ return new Date(l.vencimento+'T00:00:00') < hoje; }).length;
   const vencendo = LA_DADOS.filter(function(l){ var d=Math.round((new Date(l.vencimento+'T00:00:00')-hoje)/86400000); return d>=0&&d<=90; }).length;
-  const rmasPend = LA_DADOS.reduce(function(a,l){
-    return a + (l.rmas||[]).filter(function(r){ return r.status !== 'entregue'; }).length;
-  }, 0);
-  var ids = { total:'la-kpi-total', vencendo:'la-kpi-vencendo', vencidas:'la-kpi-vencidas', rmas:'la-kpi-rmas' };
-  var vals = { total:total, vencendo:vencendo, vencidas:vencidas, rmas:rmasPend };
+  var rmaVigente = 0, rmaVencido = 0, rmaEntregue = 0;
+  LA_DADOS.forEach(function(l) {
+    (l.rmas||[]).forEach(function(r) {
+      if (r.status === 'entregue') { rmaEntregue++; return; }
+      if (new Date(r.prazo+'T00:00:00') < hoje) rmaVencido++; else rmaVigente++;
+    });
+  });
+  var ids = { total:'la-kpi-total', vencendo:'la-kpi-vencendo', vencidas:'la-kpi-vencidas',
+              rmaVigente:'la-kpi-rma-vigente', rmaVencido:'la-kpi-rma-vencido', rmaEntregue:'la-kpi-rma-entregue' };
+  var vals = { total:total, vencendo:vencendo, vencidas:vencidas,
+               rmaVigente:rmaVigente, rmaVencido:rmaVencido, rmaEntregue:rmaEntregue };
   Object.keys(ids).forEach(function(k){ var e=document.getElementById(ids[k]); if(e) e.textContent=vals[k]; });
+
+  // Realce visual do filtro ativo nos cartões clicáveis
+  var setActive = function(cardId, ativo, cor) {
+    var e = document.getElementById(cardId); if (!e) return;
+    e.style.boxShadow = ativo ? ('0 0 0 3px ' + cor + '33') : '';
+    e.style.borderColor = ativo ? cor : '';
+  };
+  setActive('la-kpi-card-vencendo', LA_FILTRO_STATUS==='vencendo', '#e0a800');
+  setActive('la-kpi-card-vencidas', LA_FILTRO_STATUS==='vencidas', '#dc3545');
+  setActive('la-kpi-card-total', !LA_FILTRO_STATUS && !LA_FILTRO_RMA, '#2d8c5a');
+  var setActivePill = function(cardId, ativo, cor) {
+    var e = document.getElementById(cardId); if (!e) return;
+    e.style.borderColor = ativo ? cor : 'transparent';
+  };
+  setActivePill('la-kpi-card-rma-vigente', LA_FILTRO_RMA==='vigente', '#28a745');
+  setActivePill('la-kpi-card-rma-vencido', LA_FILTRO_RMA==='vencido', '#dc3545');
+  setActivePill('la-kpi-card-rma-entregue', LA_FILTRO_RMA==='entregue', '#0d6efd');
 }
 
 /* ---- Lista de licenças ---- */
@@ -4773,10 +4816,26 @@ function laRenderizarLista() {
   var dadosFiltrados = LA_DADOS.filter(function(l) {
     if (LA_FILTRO_TIPO && laDetectarTipo(l.atividade) !== LA_FILTRO_TIPO) return false;
     if (LA_FILTRO_ORGAO && (l.orgao||'').toLowerCase() !== LA_FILTRO_ORGAO.toLowerCase()) return false;
+    if (LA_FILTRO_STATUS === 'vencendo') {
+      var dv = Math.round((new Date(l.vencimento+'T00:00:00')-hoje)/86400000);
+      if (!(dv>=0 && dv<=90)) return false;
+    }
+    if (LA_FILTRO_STATUS === 'vencidas') {
+      if (!(new Date(l.vencimento+'T00:00:00') < hoje)) return false;
+    }
+    if (LA_FILTRO_RMA) {
+      var temMatch = (l.rmas||[]).some(function(r) {
+        if (LA_FILTRO_RMA === 'entregue') return r.status === 'entregue';
+        if (LA_FILTRO_RMA === 'vencido')  return r.status !== 'entregue' && new Date(r.prazo+'T00:00:00') < hoje;
+        if (LA_FILTRO_RMA === 'vigente')  return r.status !== 'entregue' && new Date(r.prazo+'T00:00:00') >= hoje;
+        return true;
+      });
+      if (!temMatch) return false;
+    }
     return true;
   });
   if (dadosFiltrados.length === 0) {
-    el.innerHTML = '<div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">Nenhuma licença encontrada com os filtros selecionados.<br><br><button onclick="LA_FILTRO_TIPO=\'\';LA_FILTRO_ORGAO=\'\';laRenderizarLista()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);cursor:pointer">Limpar filtros</button></div>';
+    el.innerHTML = '<div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">Nenhuma licença encontrada com os filtros selecionados.<br><br><button onclick="LA_FILTRO_TIPO=\'\';LA_FILTRO_ORGAO=\'\';LA_FILTRO_STATUS=\'\';LA_FILTRO_RMA=\'\';document.querySelectorAll(\'#la-filtros select\').forEach(function(s){s.value=\'\';});laRenderizarLista()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);cursor:pointer">Limpar filtros</button></div>';
     laRenderizarKPIs(); return;
   }
   el.innerHTML = dadosFiltrados.map(function(l) {
@@ -4835,14 +4894,30 @@ function pageRelatorios() {
   </div>
 
   <div class="kpi-grid" style="margin-bottom:20px">
-    <div class="kpi-card green"><div class="kpi-label">Total de Licenças</div><div class="kpi-value" id="la-kpi-total">—</div><div class="kpi-icon">📋</div></div>
-    <div class="kpi-card yellow"><div class="kpi-label">Vencendo em 90d</div><div class="kpi-value" id="la-kpi-vencendo">—</div><div class="kpi-icon">⚠️</div></div>
-    <div class="kpi-card red"><div class="kpi-label">Licenças Vencidas</div><div class="kpi-value" id="la-kpi-vencidas">—</div><div class="kpi-icon">❌</div></div>
-    <div class="kpi-card amber"><div class="kpi-label">RMAs Pendentes</div><div class="kpi-value" id="la-kpi-rmas">—</div><div class="kpi-icon">📊</div></div>
+    <div class="kpi-card green" id="la-kpi-card-total" onclick="laResetarFiltrosPrincipais()" style="cursor:pointer" title="Ver todas as licenças"><div class="kpi-label">Total de Licenças</div><div class="kpi-value" id="la-kpi-total">—</div><div class="kpi-icon">📋</div></div>
+    <div class="kpi-card yellow" id="la-kpi-card-vencendo" onclick="laFiltrarStatus('vencendo')" style="cursor:pointer" title="Filtrar: vencendo em 90 dias"><div class="kpi-label">Vencendo em 90d</div><div class="kpi-value" id="la-kpi-vencendo">—</div><div class="kpi-icon">⚠️</div></div>
+    <div class="kpi-card red" id="la-kpi-card-vencidas" onclick="laFiltrarStatus('vencidas')" style="cursor:pointer" title="Filtrar: licenças vencidas"><div class="kpi-label">Licenças Vencidas</div><div class="kpi-value" id="la-kpi-vencidas">—</div><div class="kpi-icon">❌</div></div>
+    <div class="kpi-card amber" style="cursor:default">
+      <div class="kpi-label" style="margin-bottom:8px">RMAs (Relatórios de Monitoramento)</div>
+      <div style="display:flex;gap:6px">
+        <div id="la-kpi-card-rma-vigente" onclick="laFiltrarRma('vigente')" style="cursor:pointer;flex:1;text-align:center;padding:7px 4px;border-radius:9px;background:#f0fff4;border:1.5px solid transparent;transition:border-color .15s" title="Filtrar: RMAs a vencer">
+          <div style="font-family:'Mont',sans-serif;font-size:1.15rem;font-weight:800;color:#28a745;line-height:1" id="la-kpi-rma-vigente">—</div>
+          <div style="font-size:.6rem;color:var(--text-muted);font-weight:700;margin-top:2px">A Vencer</div>
+        </div>
+        <div id="la-kpi-card-rma-vencido" onclick="laFiltrarRma('vencido')" style="cursor:pointer;flex:1;text-align:center;padding:7px 4px;border-radius:9px;background:#fff5f5;border:1.5px solid transparent;transition:border-color .15s" title="Filtrar: RMAs vencidos">
+          <div style="font-family:'Mont',sans-serif;font-size:1.15rem;font-weight:800;color:#dc3545;line-height:1" id="la-kpi-rma-vencido">—</div>
+          <div style="font-size:.6rem;color:var(--text-muted);font-weight:700;margin-top:2px">Vencidos</div>
+        </div>
+        <div id="la-kpi-card-rma-entregue" onclick="laFiltrarRma('entregue')" style="cursor:pointer;flex:1;text-align:center;padding:7px 4px;border-radius:9px;background:#e8f4fd;border:1.5px solid transparent;transition:border-color .15s" title="Filtrar: RMAs entregues">
+          <div style="font-family:'Mont',sans-serif;font-size:1.15rem;font-weight:800;color:#0d6efd;line-height:1" id="la-kpi-rma-entregue">—</div>
+          <div style="font-size:.6rem;color:var(--text-muted);font-weight:700;margin-top:2px">Entregues</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- BARRA DE FILTROS -->
-  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
+  <div id="la-filtros" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
     <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
     <select onchange="LA_FILTRO_TIPO=this.value;laRenderizarLista()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);cursor:pointer">
       <option value="">Todos os tipos</option>
@@ -4863,7 +4938,7 @@ function pageRelatorios() {
       <option value="SEMA">SEMA</option>
       <option value="FEMA">FEMA</option>
     </select>
-    <button onclick="LA_FILTRO_TIPO='';LA_FILTRO_ORGAO='';document.querySelectorAll('#la-filtros select').forEach(s=>s.value='');laRenderizarLista()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.78rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
+    <button onclick="LA_FILTRO_TIPO='';LA_FILTRO_ORGAO='';LA_FILTRO_STATUS='';LA_FILTRO_RMA='';document.querySelectorAll('#la-filtros select').forEach(s=>s.value='');laRenderizarLista()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.78rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
   </div>
 
   <div id="la-lista"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
@@ -5121,13 +5196,13 @@ function laGerarModeloRMA(licId, rmaId) {
     @page { size: A4; margin: 16mm 14mm; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: Arial, sans-serif; font-size: 9pt; color: #1a1a1a; }
-    .header { border: 2.5px solid #2d8c5a; border-radius: 6px; padding: 10px 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: flex-start; }
+    .header { border: 2.5px solid #3a7030; border-radius: 6px; padding: 10px 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: flex-start; }
     .logo-area { display: flex; flex-direction: column; gap: 2px; }
-    .titulo-doc { font-size: 12.5pt; font-weight: 900; color: #2d8c5a; letter-spacing: .5px; }
+    .titulo-doc { font-size: 12.5pt; font-weight: 900; color: #3a7030; letter-spacing: .5px; }
     .subtitulo { font-size: 7.5pt; color: #555; margin-top: 2px; }
     .secao { margin-bottom: 9px; }
-    .sec-titulo { background: #2d8c5a; color: #fff; padding: 5px 10px; font-weight: 700; font-size: 8.5pt; border-radius: 3px; margin-bottom: 4px; }
-    .sec-narrativo { background: #f5f9f7; border-left: 4px solid #2d8c5a; padding: 8px 12px; font-size: 8.5pt; line-height: 1.55; color: #2a2a2a; border-radius: 0 4px 4px 0; margin-bottom: 4px; }
+    .sec-titulo { background: #3a7030; color: #fff; padding: 5px 10px; font-weight: 700; font-size: 8.5pt; border-radius: 3px; margin-bottom: 4px; }
+    .sec-narrativo { background: #f5f9f7; border-left: 4px solid #3a7030; padding: 8px 12px; font-size: 8.5pt; line-height: 1.55; color: #2a2a2a; border-radius: 0 4px 4px 0; margin-bottom: 4px; }
     table { width: 100%; border-collapse: collapse; margin-bottom: 2px; }
     th { background: #e6f5ed; font-size: 7.5pt; font-weight: 700; padding: 4px 6px; text-align: left; border: 1px solid #b0d4be; }
     td { font-size: 8pt; padding: 4px 6px; border: 1px solid #ccc; vertical-align: top; }
@@ -5141,16 +5216,50 @@ function laGerarModeloRMA(licId, rmaId) {
     .badge-nc { background:#f8d7da;color:#721c24;padding:2px 7px;border-radius:3px;font-weight:700; }
     .badge-parc { background:#fff3cd;color:#856404;padding:2px 7px;border-radius:3px;font-weight:700; }
     @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } .no-print { display: none !important; } }
+    :root { --rma-green:#80C476; --rma-green-deep:#3a7030; --rma-brown:#3F261F; --rma-pale:#eef7ec; --rma-amber:#f0a500; }
+    .ed { border: none; border-bottom: 1.5px solid #8fa88a; background: #fbfdfa; font-size: 8pt; font-family: Arial, sans-serif; padding: 2px 4px; border-radius: 2px; }
+    .ed:focus { outline: none; border-bottom: 1.5px solid var(--rma-green-deep); background: #fff; }
+    .ed-date { border: none; border-bottom: 1.5px solid #8fa88a; background: #fbfdfa; font-size: 7.5pt; font-family: Arial, sans-serif; padding: 2px 4px; border-radius: 2px; }
+    .ed-ta { border: 1px solid #cfe0c9; background: #fbfdfa; font-size: 8pt; font-family: Arial, sans-serif; padding: 4px 6px; border-radius: 4px; width: 100%; resize: vertical; }
+    .ed-chk { transform: scale(1.2); vertical-align: middle; margin-right: 4px; cursor: pointer; accent-color: var(--rma-green-deep); }
+    .toolbar-no-print { background: var(--rma-brown); color: #fff; padding: 10px 16px; border-radius: 8px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+    .toolbar-no-print .aviso-txt { font-size: 8pt; opacity: .9; }
+    .toolbar-no-print button { background: var(--rma-green); color: var(--rma-brown); border: none; padding: 9px 18px; border-radius: 20px; font-weight: 800; font-size: 8.5pt; cursor: pointer; }
+    .toolbar-no-print button.secundario { background: transparent; color: #fff; border: 1.5px solid #fff5; }
+    .foto-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 6px; }
+    .foto-slot { border: 1.5px dashed #b0c9a8; border-radius: 8px; padding: 8px; text-align: center; background: var(--rma-pale); min-height: 150px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 6px; }
+    .foto-slot img { width: 100%; height: 110px; object-fit: cover; border-radius: 6px; }
+    .foto-slot .foto-btn { font-size: 7.5pt; color: var(--rma-green-deep); font-weight: 700; cursor: pointer; }
+    .foto-slot input[type=text] { width: 100%; font-size: 7.5pt; border: none; border-top: 1px solid #cfe0c9; padding-top: 4px; background: transparent; text-align: center; }
+    .foto-slot .foto-remover { font-size: 7pt; color: #c0392b; cursor: pointer; }
+    @media print {
+      .foto-slot.vazio { display: none; }
+      .foto-slot { border: 1px solid #ccc; background: #fff; }
+      .foto-slot .foto-remover, .foto-slot .foto-btn { display: none; }
+      .ed, .ed-date { border-bottom: 1px solid #333; background: transparent; }
+      .ed-ta { border: 1px solid #999; background: transparent; }
+    }
   </style></head><body>
 
-  <div class="header">
-    <div class="logo-area">
-      <div class="titulo-doc">RELATÓRIO DE MONITORAMENTO AMBIENTAL — RMA</div>
-      <div class="subtitulo">${laNomeTipo(tipo)} &nbsp;·&nbsp; ${leg}</div>
-      <div style="margin-top:5px;font-size:7.5pt;color:#2d8c5a;font-weight:700">Período de Referência: ${periodo} &nbsp;|&nbsp; Prazo de entrega: ${prazo}</div>
+  <div class="toolbar-no-print no-print">
+    <div class="aviso-txt">✏️ Preencha os campos direto na tela (inclusive as fotos) e depois clique em Imprimir / Salvar PDF.</div>
+    <div style="display:flex;gap:8px">
+      <button class="secundario" onclick="adicionarFotoSlot()">📷 + Foto</button>
+      <button onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>
     </div>
-    <div style="text-align:right;font-size:7.5pt;color:#555;min-width:110px">
-      <div style="color:#d00;font-weight:700;font-size:8pt">MODELO — preencher</div>
+  </div>
+
+  <div class="header" style="border-top:5px solid var(--rma-green)">
+    <div class="logo-area" style="flex-direction:row;align-items:center;gap:12px">
+      <img src="${(typeof ASO_LOGO_B64!=='undefined'?ASO_LOGO_B64:'')}" alt="Logo Expedian" style="height:46px;width:auto;object-fit:contain">
+      <div>
+        <div class="titulo-doc">RELATÓRIO DE MONITORAMENTO AMBIENTAL — RMA</div>
+        <div class="subtitulo">${laNomeTipo(tipo)} &nbsp;·&nbsp; ${leg}</div>
+        <div style="margin-top:5px;font-size:7.5pt;color:var(--rma-green-deep);font-weight:700">Período de Referência: ${periodo} &nbsp;|&nbsp; Prazo de entrega: ${prazo}</div>
+      </div>
+    </div>
+    <div style="text-align:right;font-size:7.5pt;color:#555;min-width:120px">
+      <div style="color:var(--rma-brown);font-weight:800;font-size:8pt">PREENCHA E IMPRIMA</div>
       <div style="margin-top:2px">Gerado em ${dataHoje}</div>
     </div>
   </div>
@@ -5200,14 +5309,14 @@ function laGerarModeloRMA(licId, rmaId) {
   <div class="secao"><div class="sec-titulo">${nSec}. EFLUENTES SANITÁRIOS</div>
   <table class="tb-form">
     <tr><td class="label">Sistema</td><td class="campo">☐ Fossa séptica/sumidouro &nbsp; ☐ ETE &nbsp; ☐ Rede pública de esgoto</td><td class="label">Situação</td><td class="campo">☐ Adequado &nbsp; ☐ Inadequado</td></tr>
-    <tr><td class="label">Observações</td><td class="campo" colspan="3" style="height:22px">___</td></tr>
+    <tr><td class="label">Observações</td><td class="campo" colspan="3"><textarea class="ed-ta" rows="2"></textarea></td></tr>
   </table></div>
 
   <div class="secao"><div class="sec-titulo">${nSec+1}. OCORRÊNCIAS AMBIENTAIS NO PERÍODO</div>
   <table class="tb-form">
     <tr><td class="label">Houve ocorrências?</td><td class="campo">☐ Sim &nbsp; ☐ Não</td><td class="label" colspan="2">Se sim, data(s): ___/___/______</td></tr>
-    <tr><td class="label" style="vertical-align:top">Descrição</td><td class="campo" colspan="3" style="height:28px">___</td></tr>
-    <tr><td class="label">Medidas adotadas</td><td class="campo" colspan="3" style="height:24px">___</td></tr>
+    <tr><td class="label" style="vertical-align:top">Descrição</td><td class="campo" colspan="3"><textarea class="ed-ta" rows="2"></textarea></td></tr>
+    <tr><td class="label">Medidas adotadas</td><td class="campo" colspan="3"><textarea class="ed-ta" rows="2"></textarea></td></tr>
     <tr><td class="label">Comunicou ao órgão?</td><td class="campo" colspan="3">☐ Sim — protocolo: ___ &nbsp; ☐ Não &nbsp; ☐ N/A</td></tr>
   </table></div>
 
@@ -5219,7 +5328,12 @@ function laGerarModeloRMA(licId, rmaId) {
     <tr><td style="height:20px">___</td><td>___</td><td>___</td><td>☐ Concluída &nbsp; ☐ Em andamento</td></tr>
   </table></div>
 
-  <div class="secao"><div class="sec-titulo">${nSec+3}. CONCLUSÃO</div>
+  <div class="secao"><div class="sec-titulo">${nSec+3}. REGISTRO FOTOGRÁFICO</div>
+    <div class="sec-narrativo" style="margin-bottom:6px">Anexe fotos do local relativas ao período de referência (instalações, pontos de monitoramento, não conformidades, etc.). Clique em uma foto para adicionar uma legenda.</div>
+    <div class="foto-grid" id="fotoGrid"></div>
+  </div>
+
+  <div class="secao"><div class="sec-titulo">${nSec+4}. CONCLUSÃO</div>
   <table class="tb-form">
     <tr>
       <td class="label">Situação geral do empreendimento</td>
@@ -5230,7 +5344,7 @@ function laGerarModeloRMA(licId, rmaId) {
       </td>
     </tr>
     <tr><td class="label" style="vertical-align:top">Observações / Conclusão</td>
-        <td class="campo" colspan="3" style="min-height:36px;white-space:pre-wrap">${extras.obsFinais || '___'}</td></tr>
+        <td class="campo" colspan="3"><textarea class="ed-ta" rows="3">${extras.obsFinais || ''}</textarea></td></tr>
   </table></div>
 
   <div class="assinatura">
@@ -5255,8 +5369,56 @@ function laGerarModeloRMA(licId, rmaId) {
     <span>${l.tipo||'Licença'} nº ${l.numero||'—'} &nbsp;·&nbsp; ${l.orgao||'—'} &nbsp;·&nbsp; ${periodo}</span>
   </div>
 
-  <script>window.onload=()=>window.print();<\/script>
+  <script>
+  function criarSlotFoto() {
+    var slot = document.createElement('div');
+    slot.className = 'foto-slot vazio';
+    var btn = document.createElement('div');
+    btn.className = 'foto-btn';
+    btn.innerHTML = '📷 Clique para<br>adicionar foto';
+    var inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*'; inp.style.display = 'none';
+    btn.onclick = function() { inp.click(); };
+    inp.onchange = function() {
+      var file = inp.files && inp.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        slot.classList.remove('vazio');
+        slot.innerHTML = '';
+        var img = document.createElement('img');
+        img.src = e.target.result;
+        var cap = document.createElement('input');
+        cap.type = 'text'; cap.placeholder = 'Legenda da foto...';
+        var rem = document.createElement('span');
+        rem.className = 'foto-remover no-print';
+        rem.textContent = '✕ remover foto';
+        rem.onclick = function() {
+          var novo = criarSlotFoto();
+          slot.parentNode.replaceChild(novo, slot);
+        };
+        slot.appendChild(img); slot.appendChild(cap); slot.appendChild(rem);
+      };
+      reader.readAsDataURL(file);
+    };
+    slot.appendChild(btn); slot.appendChild(inp);
+    return slot;
+  }
+  function adicionarFotoSlot() {
+    document.getElementById('fotoGrid').appendChild(criarSlotFoto());
+  }
+  for (var _fi = 0; _fi < 3; _fi++) { adicionarFotoSlot(); }
+  <\/script>
   </body></html>`;
+
+  html = html
+    .replace(/_{3,}\/_{3,}\/_{3,}/g, '<input type="date" class="ed-date">')
+    .replace(/☑/g, '<input type="checkbox" class="ed-chk" checked>')
+    .replace(/☐/g, '<input type="checkbox" class="ed-chk">')
+    .replace(/_{3,}/g, function(m) {
+      var w = Math.max(40, Math.min(220, m.length * 9));
+      return '<input type="text" class="ed" style="width:' + w + 'px">';
+    });
 
   var win = window.open('', '_blank');
   if (!win) { showToast('⚠ Permita pop-ups para este site e tente novamente.'); return; }
