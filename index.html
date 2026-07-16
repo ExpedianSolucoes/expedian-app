@@ -8029,12 +8029,12 @@ function coletarDadosAPRForm(id) {
 /* Pausa a APR — salva progresso no OneDrive sem fechar nem gerar PDF */
 async function aprPausar(idTipo) {
   const dados = coletarDadosAPRForm(idTipo);
-  window._aprFormData = dados;
-  const dadosJSON = JSON.stringify(dados);
   const existeId = window._aprRascunhoId;
 
   showSyncStatus('Salvando progresso...');
   if (existeId) {
+    window._aprFormData = dados;
+    const dadosJSON = JSON.stringify(dados);
     const ok = await dbAtualizar('APRs', existeId, {
       Status: 'Em Andamento',
       DadosFormulario: dadosJSON,
@@ -8043,9 +8043,27 @@ async function aprPausar(idTipo) {
     showSyncStatus(ok ? 'Progresso salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', 4000);
     showToast(ok ? '⏸️ APR pausada. Retome quando quiser em "Histórico de APRs".' : '❌ Erro ao salvar. Verifique o login com Microsoft.');
   } else {
+    // Primeiro salvamento: reserva o número sequencial já aqui (não só na finalização),
+    // assim o número fica visível desde o início e a APR finalizada reaproveita o mesmo número.
+    showSyncStatus('Reservando número sequencial...');
+    const numero = await obterProximoNumero('APR');
+    const numFmt = new Date().getFullYear() + '-' + String(numero).padStart(4, '0');
+    const numeroAPR = 'APR-' + numFmt;
+    dados.numeroAPR = numeroAPR;
+    window._aprFormData = dados;
+    const dadosJSON = JSON.stringify(dados);
+
+    const campoNum = document.getElementById('apr_numero_' + idTipo);
+    if (campoNum) {
+      campoNum.value = numeroAPR;
+      campoNum.style.color = 'var(--amber)';
+      campoNum.style.fontStyle = 'normal';
+      campoNum.style.fontWeight = '700';
+    }
+
     const reg = {
-      Title: 'APR Em Andamento — ' + (dados.empreendimento || 'Tipo ' + idTipo),
-      NumeroAPR: 'EM-ANDAMENTO-' + Date.now(),
+      Title: numeroAPR + ' — Em Andamento — ' + (dados.empreendimento || 'Tipo ' + idTipo),
+      NumeroAPR: numFmt,
       TipoAPR: idTipo,
       Status: 'Em Andamento',
       Responsavel: window._currentUser ? window._currentUser.name : '—',
@@ -8055,8 +8073,8 @@ async function aprPausar(idTipo) {
     const novo = await dbInserir('APRs', reg);
     if (novo) {
       window._aprRascunhoId = novo.Id;
-      showSyncStatus('Progresso salvo!', 'ok', 4000);
-      showToast('⏸️ APR pausada. Retome quando quiser em "Histórico de APRs".');
+      showSyncStatus('Progresso salvo! Número reservado: ' + numeroAPR, 'ok', 4000);
+      showToast('⏸️ APR ' + numeroAPR + ' pausada. Retome quando quiser em "Histórico de APRs".');
     } else {
       showSyncStatus('Falha ao salvar', 'err', 4000);
       showToast('❌ Erro ao salvar. Verifique o login com Microsoft.');
@@ -8067,15 +8085,21 @@ async function aprPausar(idTipo) {
 /* Finaliza a APR — gera número sequencial, salva, sincroniza e abre o PDF */
 async function aprFinalizar(idTipo) {
   const dados = coletarDadosAPRForm(idTipo);
-  window._aprFormData = dados;
 
   if (!dados.empreendimento && !dados.data) {
     if (!confirm('O empreendimento e a data estão em branco. Deseja finalizar mesmo assim?')) return;
   }
 
-  showSyncStatus('Gerando número sequencial...');
-  const numero = await obterProximoNumero('APR');
-  const numFmt = new Date().getFullYear() + '-' + String(numero).padStart(4, '0');
+  // Reaproveita o número já reservado no primeiro "Pausar" (aprPausar); só gera um
+  // número novo se o usuário for direto em Finalizar sem nunca ter pausado antes.
+  let numFmt = (window._aprFormData && window._aprFormData.numeroAPR)
+    ? window._aprFormData.numeroAPR.replace(/^APR-/, '')
+    : null;
+  if (!numFmt) {
+    showSyncStatus('Gerando número sequencial...');
+    const numero = await obterProximoNumero('APR');
+    numFmt = new Date().getFullYear() + '-' + String(numero).padStart(4, '0');
+  }
   const campoNum = document.getElementById('apr_numero_' + idTipo);
   if (campoNum) {
     campoNum.value = 'APR-' + numFmt;
