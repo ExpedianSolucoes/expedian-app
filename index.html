@@ -4877,6 +4877,15 @@ function pageRelatorios() {
       </div>
       <div style="padding:20px">
         <input type="hidden" id="la-id">
+
+        <div style="background:var(--green-pale);border:1px dashed var(--brand-green);border-radius:12px;padding:14px;margin-bottom:18px">
+          <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin-bottom:6px">📎 Preencher automaticamente a partir de um PDF</div>
+          <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:10px">Envie a licença em PDF — o app lê o documento e preenche os campos abaixo. Confira os dados antes de salvar.</div>
+          <input type="file" id="la-import-file" accept="application/pdf,image/*" style="display:none" onchange="laImportarPDF(this.files[0])">
+          <button type="button" class="btn-secondary" style="font-size:.8rem;padding:7px 14px" onclick="document.getElementById('la-import-file').click()">📄 Escolher PDF da licença</button>
+          <div id="la-import-log" style="display:none;margin-top:10px;font-size:.72rem;font-family:monospace;background:#fff;border-radius:8px;padding:8px 10px;max-height:120px;overflow-y:auto;white-space:pre-wrap"></div>
+        </div>
+
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em">Dados do Cliente</div>
         <div class="form-row">
           <div class="form-group" style="flex:2"><label>Razão Social / Cliente</label><input type="text" id="la-cliente" placeholder="Nome do empreendedor"></div>
@@ -5255,11 +5264,172 @@ function laGerarModeloRMA(licId, rmaId) {
   win.document.close();
 }
 
+/* ===========================================================
+   IMPORTAR LICENÇA DE PDF — leitura automática (100% no navegador)
+   Reaproveita o mesmo leitor de PDF/OCR usado em Gestão de Prazos
+   (extrairTextoPDF / extrairTextoImagem) e aplica regras específicas
+   para achar os campos de uma licença ambiental. Sempre deixa os
+   campos editáveis — é uma sugestão, não substitui a conferência.
+   =========================================================== */
+function laLog(msg, tipo) {
+  var log = document.getElementById('la-import-log');
+  if (!log) return;
+  log.style.display = 'block';
+  var cor = tipo === 'ok' ? '#1a7f4b' : tipo === 'err' ? '#b91c1c' : '#555';
+  log.innerHTML += '<div style="color:' + cor + '">' + msg + '</div>';
+  log.scrollTop = log.scrollHeight;
+}
+
+var LA_ORGAOS_CONHECIDOS = ['SEDAM', 'SEMUR', 'IBAMA', 'SEMA', 'FEMA', 'IDARON', 'ITERON'];
+var LA_UFS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
+var LA_TIPOS_MAP = [
+  { re: /licen[çc]a\s+pr[ée]via|(?:^|\s)LP(?:\s|$)/i, tipo: 'LP' },
+  { re: /licen[çc]a\s+de\s+instala[çc][ãa]o|(?:^|\s)LI(?:\s|$)/i, tipo: 'LI' },
+  { re: /licen[çc]a\s+ambiental\s+de\s+opera[çc][ãa]o\s+simplificada|(?:^|\s)LAO(?:\s|$)/i, tipo: 'LAO' },
+  { re: /licen[çc]a\s+de\s+opera[çc][ãa]o|(?:^|\s)LO(?:\s|$)/i, tipo: 'LO' },
+  { re: /licen[çc]a\s+de\s+saneamento|(?:^|\s)LSA(?:\s|$)/i, tipo: 'LSA' },
+];
+
+function laExtrairCNPJouCPF(t) {
+  var m = t.match(/\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/);
+  if (m) return m[0];
+  m = t.match(/\d{3}\.\d{3}\.\d{3}-\d{2}/);
+  return m ? m[0] : '';
+}
+
+function laExtrairCampoPorRotulo(t, rotulos, maxLen) {
+  for (var i = 0; i < rotulos.length; i++) {
+    var re = new RegExp(rotulos[i] + '\\s*[:\\-]?\\s*([^\\n\\r]{2,' + (maxLen||80) + '})', 'i');
+    var m = t.match(re);
+    if (m && m[1]) return m[1].replace(/\s{2,}/g, ' ').trim().replace(/[.,;]+$/, '');
+  }
+  return '';
+}
+
+function laExtrairTipo(t) {
+  for (var i = 0; i < LA_TIPOS_MAP.length; i++) {
+    if (LA_TIPOS_MAP[i].re.test(t)) return LA_TIPOS_MAP[i].tipo;
+  }
+  return '';
+}
+
+function laExtrairOrgao(t) {
+  var maiusc = t.toUpperCase();
+  for (var i = 0; i < LA_ORGAOS_CONHECIDOS.length; i++) {
+    if (maiusc.indexOf(LA_ORGAOS_CONHECIDOS[i]) !== -1) return LA_ORGAOS_CONHECIDOS[i];
+  }
+  return '';
+}
+
+function laExtrairUF(t) {
+  var m = t.match(/\b(?:UF|Estado)\s*[:\-]?\s*([A-Z]{2})\b/);
+  if (m && LA_UFS.indexOf(m[1].toUpperCase()) !== -1) return m[1].toUpperCase();
+  m = t.match(/\/\s*([A-Z]{2})\b/);
+  if (m && LA_UFS.indexOf(m[1].toUpperCase()) !== -1) return m[1].toUpperCase();
+  return '';
+}
+
+function laExtrairNumeroLicenca(t) {
+  var m = t.match(/licen[çc]a[^\d\n]{0,25}(?:n[ºo°]?\.?)?\s*[:\-]?\s*(\d{2,10})/i);
+  if (m) return m[1];
+  m = t.match(/\b(?:LP|LI|LO|LAO|LSA)[^\d\n]{0,15}(?:n[ºo°]?\.?)?\s*[:\-]?\s*(\d{2,10})/i);
+  return m ? m[1] : '';
+}
+
+function laExtrairProcesso(t) {
+  var m = t.match(/processo[^\d\n]{0,20}(?:n[ºo°]?\.?)?\s*[:\-]?\s*([\d./\-]{5,25})/i);
+  return m ? m[1].replace(/[.,;]+$/, '') : '';
+}
+
+/* Acha, entre todas as datas do texto, a que está mais perto de uma das palavras-chave dadas */
+function laExtrairDataProxima(t, todasDatas, keywords) {
+  var melhor = null, melhorDist = Infinity;
+  keywords.forEach(function(kw) {
+    var re = new RegExp(kw, 'gi'), m;
+    while ((m = re.exec(t))) {
+      todasDatas.forEach(function(d) {
+        var dist = Math.abs(d.index - m.index);
+        if (dist < 80 && dist < melhorDist) { melhorDist = dist; melhor = d; }
+      });
+    }
+  });
+  return melhor ? melhor.iso : '';
+}
+
+function laAnalisarTextoLicenca(texto) {
+  var todasDatas = extrairDatas(texto);
+  var emissao    = laExtrairDataProxima(texto, todasDatas, ['emiss[ãa]o', 'emitid[ao]', 'data\\s+de\\s+expedi']);
+  var vencimento = laExtrairDataProxima(texto, todasDatas, ['vencimento', 'validade', 'vence\\s+em', 'v[áa]lid[ao]\\s+at[ée]']);
+  // fallback: se não achou por palavra-chave, usa a data mais antiga como emissão e a mais futura como vencimento
+  if ((!emissao || !vencimento) && todasDatas.length >= 2) {
+    var ordenadas = todasDatas.slice().sort(function(a,b){ return a.iso.localeCompare(b.iso); });
+    if (!emissao) emissao = ordenadas[0].iso;
+    if (!vencimento) vencimento = ordenadas[ordenadas.length-1].iso;
+  }
+  return {
+    cliente: laExtrairCampoPorRotulo(texto, ['raz[ãa]o\\s+social', 'empreendedor', 'requerente', 'interessado']),
+    cnpj: laExtrairCNPJouCPF(texto),
+    municipio: laExtrairCampoPorRotulo(texto, ['munic[íi]pio'], 40),
+    uf: laExtrairUF(texto),
+    atividade: laExtrairCampoPorRotulo(texto, ['atividade(?:\\s+desenvolvida)?', 'atividade\\s+licenciada', 'objeto\\s+d[ao]\\s+licen[çc]a'], 100),
+    tipo: laExtrairTipo(texto),
+    numero: laExtrairNumeroLicenca(texto),
+    orgao: laExtrairOrgao(texto),
+    processo: laExtrairProcesso(texto),
+    emissao: emissao,
+    vencimento: vencimento,
+  };
+}
+
+async function laImportarPDF(file) {
+  if (!file) return;
+  var log = document.getElementById('la-import-log');
+  if (log) { log.style.display = 'block'; log.innerHTML = ''; }
+  laLog('> Arquivo: ' + file.name, '');
+  try {
+    var isPDF = file.type === 'application/pdf';
+    laLog(isPDF ? '✓ Lendo texto do PDF...' : '✓ Lendo imagem (OCR, pode levar alguns segundos)...', '');
+    var texto = isPDF ? await extrairTextoPDF(file) : await extrairTextoImagem(file);
+    if (!texto || texto.trim().length < 10) throw new Error('Não consegui ler texto neste documento (PDF escaneado sem texto, ou imagem de baixa qualidade).');
+    laLog('✓ Texto extraído (' + texto.length + ' caracteres). Procurando os campos da licença...', 'ok');
+
+    var d = laAnalisarTextoLicenca(texto);
+    var encontrados = 0;
+    var set = function(id, val) { if (val) { var e = document.getElementById(id); if (e) { e.value = val; encontrados++; } } };
+    set('la-cliente', d.cliente);
+    set('la-cnpj', d.cnpj);
+    set('la-municipio', d.municipio);
+    set('la-uf', d.uf);
+    set('la-atividade', d.atividade);
+    if (d.tipo) { document.getElementById('la-tipo').value = d.tipo; encontrados++; }
+    set('la-numero', d.numero);
+    set('la-orgao', d.orgao);
+    set('la-processo', d.processo);
+    set('la-emissao', d.emissao);
+    set('la-vencimento', d.vencimento);
+
+    if (encontrados > 0) {
+      laLog('✓ ' + encontrados + ' campo(s) preenchido(s) automaticamente. Confira tudo antes de salvar!', 'ok');
+      showToast('📄 Licença lida! Confira os campos preenchidos antes de salvar.');
+    } else {
+      laLog('⚠ Não encontrei os campos automaticamente neste documento. Preencha manualmente.', 'err');
+      showToast('⚠️ Não consegui identificar os dados automaticamente — preencha manualmente.');
+    }
+  } catch (e) {
+    laLog('✗ Erro: ' + (e.message || e), 'err');
+    showToast('⚠️ Erro ao ler o documento: ' + (e.message || e));
+  }
+}
+
 function laAbrirModal() {
   ['la-id','la-cliente','la-cnpj','la-municipio','la-uf','la-atividade','la-numero','la-orgao','la-processo','la-emissao','la-vencimento','la-obs'].forEach(function(id) {
     var e = document.getElementById(id); if(e) e.value='';
   });
   document.getElementById('la-tipo').value = 'LO';
+  var logEl = document.getElementById('la-import-log');
+  if (logEl) { logEl.style.display = 'none'; logEl.innerHTML = ''; }
+  var fileEl = document.getElementById('la-import-file');
+  if (fileEl) fileEl.value = '';
   document.getElementById('la-modal-titulo').textContent = 'Nova Licença Ambiental';
   document.getElementById('la-modal').style.display = 'flex';
 }
@@ -5279,6 +5449,10 @@ function laEditar(id) {
   document.getElementById('la-emissao').value   = l.emissao||'';
   document.getElementById('la-vencimento').value= l.vencimento||'';
   document.getElementById('la-obs').value       = l.obs||'';
+  var logEl2 = document.getElementById('la-import-log');
+  if (logEl2) { logEl2.style.display = 'none'; logEl2.innerHTML = ''; }
+  var fileEl2 = document.getElementById('la-import-file');
+  if (fileEl2) fileEl2.value = '';
   document.getElementById('la-modal-titulo').textContent = 'Editar — ' + (l.cliente||'');
   document.getElementById('la-modal').style.display = 'flex';
 }
