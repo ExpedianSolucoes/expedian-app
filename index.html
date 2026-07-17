@@ -1070,12 +1070,12 @@ const menus = {
       { id: 'reembolso', icon: '🧾', label: 'Reembolsos' },
       { id: 'prestacao', icon: '📑', label: 'Prestação de Contas' },
     ]},
-    { group: 'gestao', icon: '🏢', label: 'Gestão', children: [
+    // { group: 'gestao', icon: '🏢', label: 'Gestão', children: [
       // { id: 'rh', icon: '👥', label: 'RH' },             // DESABILITADO TEMPORARIAMENTE
-      { id: 'equipe', icon: '🧑‍💼', label: 'Equipe' },
+      // { id: 'equipe', icon: '🧑‍💼', label: 'Equipe' },  // MOVIDO PARA DENTRO DE CONFIGURAÇÕES
       // { id: 'ambiental', icon: '🌳', label: 'Gestão Ambiental' }, // DESABILITADO TEMPORARIAMENTE
       // { id: 'agenda', icon: '📅', label: 'Agenda Corporativa' },  // DESABILITADO TEMPORARIAMENTE
-    ]},
+    // ]},
     { group: 'sistema', icon: '⚡', label: 'Sistema', children: [
       { id: 'aprovacoes', icon: '✅', label: 'Aprovações' },
       { id: 'docs', icon: '📁', label: 'Gestão Documental' },
@@ -3381,6 +3381,7 @@ async function carregarPainelEquipe(isGestorGeral) {
         });
       }
       carregarHistoricoAtividade();
+      carregarProdutividadeEquipe();
     }
   } catch(e) {
     console.warn('carregarPainelEquipe:', e);
@@ -3408,6 +3409,47 @@ async function carregarHistoricoAtividade() {
         <td style="font-size:.75rem">${i.Timestamp?new Date(i.Timestamp).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—'}</td>
       </tr>`).join('')+'</tbody></table></div>';
   } catch(e){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar histórico.</div>';}
+}
+
+/* -- Produtividade por colaborador: quantas APRs e Checklists ERO cada um já emitiu -- */
+async function carregarProdutividadeEquipe() {
+  const el = document.getElementById('eq-produtividade'); if (!el) return;
+  try {
+    const [aprs, eros] = await Promise.all([
+      dbLer('APRs').catch(() => []),
+      dbLer('ChecklistERO').catch(() => []),
+    ]);
+    const porUsuario = {};
+    const bump = (nome, campo) => {
+      nome = (nome || 'Desconhecido').trim() || 'Desconhecido';
+      if (!porUsuario[nome]) porUsuario[nome] = { apr: 0, ero: 0 };
+      porUsuario[nome][campo]++;
+    };
+    (aprs || []).forEach(a => bump(a.Responsavel, 'apr'));
+    (eros || []).forEach(r => bump(r.Responsavel, 'ero'));
+
+    const nomes = Object.keys(porUsuario).sort((a, b) =>
+      (porUsuario[b].apr + porUsuario[b].ero) - (porUsuario[a].apr + porUsuario[a].ero));
+
+    if (!nomes.length) {
+      el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Sem APRs ou Checklists ERO registrados ainda.</div>';
+      return;
+    }
+    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Colaborador</th><th>APRs</th><th>Checklists ERO</th><th>Total</th></tr></thead><tbody>' +
+      nomes.map(n => {
+        const c = porUsuario[n];
+        const total = c.apr + c.ero;
+        return `<tr>
+          <td><strong>${n}</strong></td>
+          <td style="text-align:center">${c.apr}</td>
+          <td style="text-align:center">${c.ero}</td>
+          <td style="text-align:center;font-weight:800;color:var(--green-main)">${total}</td>
+        </tr>`;
+      }).join('') + '</tbody></table></div>';
+  } catch (e) {
+    console.warn('carregarProdutividadeEquipe:', e);
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar produtividade.</div>';
+  }
 }
 
 /* -- RH -- */
@@ -5878,9 +5920,21 @@ function pageMinhaArea() {
 
 /* -- CONFIG -- */
 function pageConfig() {
+  // Painel de Equipe (presença, atividade e produtividade) mora aqui dentro de Configurações.
+  // Todos da diretoria veem a lista de colaboradores — só Tiago vê o monitoramento em tempo real.
+  const isGestorGeral = window._currentUser &&
+    window._currentUser.name &&
+    (window._currentUser.name.toLowerCase().includes('tiago') ||
+     window._currentUser.name.toLowerCase().includes('tavares') ||
+     (window._currentUser.profile === 'diretoria' &&
+      (window._currentUser.initials === 'TT' ||
+       window._currentUser.role === 'Gestor Geral')));
+
+  setTimeout(() => carregarPainelEquipe(isGestorGeral), 200);
+
   return `
   <div class="page-header"><h1>Configurações</h1></div>
-  <div class="form-card">
+  <div class="form-card" style="margin-bottom:24px">
     <div class="card-title" style="font-size:.88rem;font-weight:700;margin-bottom:16px">Notificações</div>
     ${['Alertas de documentos vencendo','APRs pendentes de aprovação','Novos reembolsos enviados','Condicionantes próximas do prazo','Relatórios disponíveis'].map(t => `
     <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
@@ -5890,7 +5944,70 @@ function pageConfig() {
     <div class="form-actions" style="margin-top:16px">
       <button class="btn-primary" onclick="showToast('Configurações salvas!')">💾 Salvar</button>
     </div>
-  </div>`;
+  </div>
+
+  <div class="card-title" style="font-size:1rem;font-weight:800;margin-bottom:2px">🧑‍💼 Equipe</div>
+  <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:16px">Colaboradores, presença e atividade no app</p>
+
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card green"><div class="kpi-label">Colaboradores</div><div class="kpi-value" id="eq-kpi-total">—</div><div class="kpi-sub">Cadastrados</div><div class="kpi-icon">👥</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Online Agora</div><div class="kpi-value" id="eq-kpi-online">—</div><div class="kpi-sub">Última hora</div><div class="kpi-icon">🟢</div></div>
+    <div class="kpi-card blue"><div class="kpi-label">Acessos Hoje</div><div class="kpi-value" id="eq-kpi-hoje">—</div><div class="kpi-sub">Usuários únicos</div><div class="kpi-icon">📲</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Sem acesso +7d</div><div class="kpi-value" id="eq-kpi-inativos">—</div><div class="kpi-sub">Verificar</div><div class="kpi-icon">⚠️</div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="margin:0">Colaboradores</div>
+      <select id="eq-filtro-perfil" onchange="carregarPainelEquipe(${isGestorGeral})"
+        style="font-size:.78rem;padding:5px 10px;border-radius:7px;border:1px solid var(--border);outline:none">
+        <option value="">Todos</option>
+        <option value="diretoria">Diretoria</option>
+        <option value="coordenador">Coordenador</option>
+        <option value="colaborador">Colaborador</option>
+      </select>
+    </div>
+    <div id="eq-lista-colaboradores"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
+
+  ${isGestorGeral ? `
+  <div class="card" style="border-left:4px solid var(--green-main);margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+      <div class="card-title" style="margin:0;color:var(--green-main)">👁️ Monitoramento em Tempo Real</div>
+      <span style="font-size:.68rem;background:var(--green-pale);color:var(--green-main);border:1px solid var(--green-main);padding:2px 8px;border-radius:20px;font-weight:700">Somente você vê isso</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div>
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">🟢 Online agora (última 1h)</div>
+        <div id="eq-online-agora"><div style="color:var(--text-muted);font-size:.82rem;font-style:italic">Carregando...</div></div>
+      </div>
+      <div>
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">📲 Últimos acessos (4h)</div>
+        <div id="eq-atividade-recente"><div style="color:var(--text-muted);font-size:.82rem;font-style:italic">Carregando...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      <div class="card-title" style="margin:0">📈 Produtividade por Colaborador</div>
+      <span style="font-size:.68rem;background:var(--green-pale);color:var(--green-main);border:1px solid var(--green-main);padding:2px 8px;border-radius:20px;font-weight:700">Somente você vê isso</span>
+    </div>
+    <div id="eq-produtividade"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="margin:0">📋 Histórico de Atividade</div>
+      <select id="eq-filtro-usuario" onchange="carregarHistoricoAtividade()"
+        style="font-size:.78rem;padding:5px 10px;border-radius:7px;border:1px solid var(--border);outline:none">
+        <option value="">Todos</option>
+      </select>
+    </div>
+    <div id="eq-historico-atividade"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
+  ` : ''}
+  `;
 }
 
 /* ===============================
