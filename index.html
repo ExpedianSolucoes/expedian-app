@@ -3272,30 +3272,25 @@ function pageEquipe() {
 }
 
 async function carregarPainelEquipe(isGestorGeral) {
-  const token = await getSharePointToken();
   const elLista = document.getElementById('eq-lista-colaboradores');
-  if (!token) {
-    if (elLista) elLista.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>';
-    return;
-  }
   try {
     const filtroPerfilEl = document.getElementById('eq-filtro-perfil');
     const filtroPerfil   = filtroPerfilEl ? filtroPerfilEl.value : '';
-    let q = `${SP_SITE}/_api/web/lists/getbytitle('Colaboradores')/items?$orderby=Title asc&$top=200&$select=Id,Title,Cargo,Perfil,Email,Status`;
-    if (filtroPerfil) q += `&$filter=Perfil eq '${filtroPerfil}'`;
-    const r = await fetch(q, {headers:{'Authorization':'Bearer '+token,'Accept':'application/json;odata=nometadata'}});
+
+    // O quadro de colaboradores vem do cadastro local (mesmo usado no login), não depende
+    // mais de uma lista SharePoint externa (que estava com endpoint quebrado/vazio).
+    let cols = Object.entries(users).map(([email, u]) => ({
+      Title: u.name, Cargo: u.role, Perfil: u.profile, Email: email,
+    }));
+    if (filtroPerfil) cols = cols.filter(c => c.Perfil === filtroPerfil);
 
     const agora         = new Date();
     const umaHoraAtras  = new Date(agora - 3600000).toISOString();
     const inicioDia     = new Date(new Date().setHours(0,0,0,0)).toISOString();
     const seteDiasAtras = new Date(Date.now() - 7*86400000).toISOString();
 
-    const rAtiv = await fetch(
-      `${SP_SITE}/_api/web/lists/getbytitle('AtividadeApp')/items?$orderby=Timestamp desc&$top=500&$select=Usuario,Perfil,Pagina,Timestamp,Acao&$filter=Timestamp ge datetime'${inicioDia}'`,
-      {headers:{'Authorization':'Bearer '+token,'Accept':'application/json;odata=nometadata'}}
-    );
-    let atividadesHoje = [];
-    if (rAtiv.ok) { const dA = await rAtiv.json(); atividadesHoje = dA.value||[]; }
+    const todasAtividades = await dbLer('AtividadeApp').catch(() => []);
+    const atividadesHoje  = (todasAtividades||[]).filter(a => a.Timestamp >= inicioDia);
 
     const onlineAgora = [...new Set(atividadesHoje.filter(a=>a.Timestamp>=umaHoraAtras).map(a=>a.Usuario))];
     const acessosHoje = [...new Set(atividadesHoje.map(a=>a.Usuario))];
@@ -3305,23 +3300,17 @@ async function carregarPainelEquipe(isGestorGeral) {
     if (kpiOnline) kpiOnline.textContent = onlineAgora.length;
     if (kpiHoje)   kpiHoje.textContent   = acessosHoje.length;
 
-    if (r.ok && elLista) {
-      const d = await r.json(); const cols = d.value||[];
-      const kpiTotal = document.getElementById('eq-kpi-total');
-      if (kpiTotal) kpiTotal.textContent = cols.length;
+    const kpiTotal = document.getElementById('eq-kpi-total');
+    if (kpiTotal) kpiTotal.textContent = cols.length;
 
-      const rInat = await fetch(
-        `${SP_SITE}/_api/web/lists/getbytitle('AtividadeApp')/items?$filter=Timestamp ge datetime'${seteDiasAtras}'&$select=Usuario&$top=500`,
-        {headers:{'Authorization':'Bearer '+token,'Accept':'application/json;odata=nometadata'}}
-      );
-      let ativosRecente = [];
-      if (rInat.ok) { const di = await rInat.json(); ativosRecente=[...new Set((di.value||[]).map(a=>a.Usuario))]; }
-      const inativos = cols.filter(c=>!ativosRecente.includes(c.Title)).length;
-      const kpiInat = document.getElementById('eq-kpi-inativos');
-      if (kpiInat) kpiInat.textContent = inativos;
+    const ativosRecente = [...new Set((todasAtividades||[]).filter(a=>a.Timestamp>=seteDiasAtras).map(a=>a.Usuario))];
+    const inativos = cols.filter(c=>!ativosRecente.includes(c.Title)).length;
+    const kpiInat = document.getElementById('eq-kpi-inativos');
+    if (kpiInat) kpiInat.textContent = inativos;
 
+    if (elLista) {
       if (!cols.length) {
-        elLista.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum colaborador cadastrado na lista SharePoint.</div>';
+        elLista.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum colaborador cadastrado.</div>';
       } else {
         const perfilColor = p=>p==='diretoria'?'blue':p==='coordenador'?'green':'amber';
         elLista.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>Cargo</th><th>Perfil</th><th>Status App</th><th>Último Acesso</th></tr></thead><tbody>'+
@@ -3391,15 +3380,12 @@ async function carregarPainelEquipe(isGestorGeral) {
 
 async function carregarHistoricoAtividade() {
   const el = document.getElementById('eq-historico-atividade'); if(!el)return;
-  const token = await getSharePointToken(); if(!token)return;
   try {
     const selUsr = document.getElementById('eq-filtro-usuario');
     const usuario = selUsr ? selUsr.value : '';
-    let q = `${SP_SITE}/_api/web/lists/getbytitle('AtividadeApp')/items?$orderby=Timestamp desc&$top=50&$select=Usuario,Perfil,Pagina,Timestamp,Acao`;
-    if (usuario) q += `&$filter=Usuario eq '${usuario}'`;
-    const r = await fetch(q,{headers:{'Authorization':'Bearer '+token,'Accept':'application/json;odata=nometadata'}});
-    if (!r.ok){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Sem dados ainda.</div>';return;}
-    const d=await r.json();const items=d.value||[];
+    let items = await dbLer('AtividadeApp').catch(() => []);
+    if (usuario) items = items.filter(i => i.Usuario === usuario);
+    items = items.slice().sort((a,b)=>(b.Timestamp||'').localeCompare(a.Timestamp||'')).slice(0,50);
     if (!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Sem histórico registrado.</div>';return;}
     el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Usuário</th><th>Ação</th><th>Data</th><th>Hora</th></tr></thead><tbody>'+
       items.map(i=>`<tr>
