@@ -6169,6 +6169,22 @@ function applyLogin(user) {
    Só Tiago (gestor geral) enxerga
 =============================== */
 
+/* Grava um evento de atividade no OneDrive (tabela AtividadeApp). Mantém só os
+   registros mais recentes (LIMITE) pra o arquivo não crescer sem limite, já que
+   isso passa a ser chamado a cada navegação de todo mundo, não só no login. */
+async function _gravarAtividadeApp(entry) {
+  const registro = { ...entry, Id: Date.now(), Created: new Date().toISOString() };
+  try {
+    const token = navigator.onLine ? await getOneDriveToken() : null;
+    if (!token) { queueSync('AtividadeApp', { op: 'inserir', registro }); return; }
+    const lista = await dbLer('AtividadeApp');
+    lista.push(registro);
+    const LIMITE = 500;
+    const podado = lista.length > LIMITE ? lista.slice(lista.length - LIMITE) : lista;
+    await dbSalvar('AtividadeApp', podado);
+  } catch (e) { console.warn('[AtividadeApp] falha ao gravar:', e); }
+}
+
 // Registrar que o usuário está online + última atividade
 async function registrarPresenca(user) {
   if (!user || !user.name) return;
@@ -6183,28 +6199,22 @@ async function registrarPresenca(user) {
   };
   // Salvar localmente no IndexedDB para acesso rápido
   saveLocal('presenca_' + user.name, JSON.stringify(entrada));
-  // Enviar ao SharePoint se online
+  // Grava no OneDrive (AtividadeApp) se online
   if (navigator.onLine) {
-    try {
-      const token = await getSharePointToken();
-      if (token) {
-        await salvarNoSharePoint('AtividadeApp', {
-          Title: user.name + ' · ' + new Date().toLocaleDateString('pt-BR'),
-          Usuario: user.name,
-          Perfil: user.profile,
-          Acao: 'login',
-          Pagina: 'App',
-          Timestamp: entrada.timestamp,
-        });
-      }
-    } catch(e) {}
+    _gravarAtividadeApp({
+      Title: user.name + ' · ' + new Date().toLocaleDateString('pt-BR'),
+      Usuario: user.name,
+      Perfil: user.profile,
+      Acao: 'login',
+      Pagina: 'App',
+      Timestamp: entrada.timestamp,
+    }).catch(() => {});
   }
 }
 
 // Registrar navegação entre páginas (chamado no navigate)
 async function registrarAtividade(pageId, titulo) {
   if (!window._currentUser) return;
-  // Não registrar para o próprio Tiago (desnecessário)
   // Salvar last_activity no IndexedDB
   const reg = {
     usuario: window._currentUser.name,
@@ -6214,26 +6224,16 @@ async function registrarAtividade(pageId, titulo) {
     timestamp: new Date().toISOString(),
   };
   saveLocal('activity_' + window._currentUser.name, JSON.stringify(reg));
-  // Enviar ao SharePoint de forma não-bloqueante
+  // Grava no OneDrive (AtividadeApp) de forma não-bloqueante, pra "Online agora" e o
+  // histórico de atividade refletirem navegação real entre páginas, não só o login.
   if (navigator.onLine) {
-    getSharePointToken().then(token => {
-      if (!token) return;
-      if(false) fetch(`DISABLED`, {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + token,
-          'Accept': 'application/json;odata=nometadata',
-          'Content-Type': 'application/json;odata=nometadata',
-        },
-        body: JSON.stringify({
-          Title: window._currentUser.name + ' · ' + titulo,
-          Usuario: window._currentUser.name,
-          Perfil: window._currentUser.profile,
-          Acao: 'navegacao',
-          Pagina: titulo,
-          Timestamp: reg.timestamp,
-        }),
-      }).catch(() => {});
+    _gravarAtividadeApp({
+      Title: window._currentUser.name + ' · ' + titulo,
+      Usuario: window._currentUser.name,
+      Perfil: window._currentUser.profile,
+      Acao: 'navegacao',
+      Pagina: titulo,
+      Timestamp: reg.timestamp,
     }).catch(() => {});
   }
 }
