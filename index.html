@@ -1061,6 +1061,7 @@ const menus = {
     { group: 'checklist', icon: '✔️', label: 'Checklist', children: [
       { id: 'checklist', icon: '🚗', label: 'Checklist Veicular' },
       { id: 'checklist_ero', icon: '🌿', label: 'Inspeção ERO' },
+      { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
     ]},
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
       { id: 'servicos', icon: '💼', label: 'Catálogo de Serviços' },
@@ -1093,6 +1094,7 @@ const menus = {
     { group: 'checklist', icon: '✔️', label: 'Checklist', children: [
       { id: 'checklist', icon: '🚗', label: 'Checklist Veicular' },
       { id: 'checklist_ero', icon: '🌿', label: 'Inspeção ERO' },
+      { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
     ]},
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
       { id: 'servicos', icon: '💼', label: 'Catálogo de Serviços' },
@@ -1125,6 +1127,7 @@ const menus = {
     { group: 'checklist', icon: '✔️', label: 'Checklist', children: [
       { id: 'checklist', icon: '🚗', label: 'Checklist Veicular' },
       { id: 'checklist_ero', icon: '🌿', label: 'Inspeção ERO' },
+      { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
     ]},
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
       { id: 'pagar', icon: '💸', label: 'Contas a Pagar' },
@@ -1270,6 +1273,7 @@ function renderPage(id) {
     servicos: () => pageServicos(),
     custos: () => pageCustos(),
     checklist_ero: () => pageChecklistERO(),
+    checklist_bombeamento: () => pageChecklistBombeamento(),
     docs: () => pageGestaoDocumental(),
     documentos: () => pageDocumentos(),
     solicitacoes: () => pageSolicitacoes(),
@@ -7910,6 +7914,428 @@ function removeEROPhoto(itemId, fn) {
 }
 
 /* ===============================
+   CHECKLIST — TESTE DE BOMBEAMENTO E RECUPERAÇÃO
+   Relatório de campo para teste de bombeamento de poços artesianos/tubulares.
+=============================== */
+if (typeof window._bombData === 'undefined') window._bombData = {};
+if (typeof window._bombHistorico === 'undefined') window._bombHistorico = null; // null = ainda não carregado
+if (typeof window._bombRegistroAtualId === 'undefined') window._bombRegistroAtualId = null;
+
+const BOMB_TEMPOS_BOMBEAMENTO = [1,5,10,15,20,25,30,35,40,45,50,55,60,90,120];
+const BOMB_TEMPOS_RECUPERACAO = [1,2,3,4,5,10,15,20,25,30,35,40,45,50,55,60,90,120,150,180];
+
+const BOMB_FOTO_SLOTS = [
+  { key: 'poco_montado',   label: 'Poço montado (laje, hidrômetro, torneira, cano guia)' },
+  { key: 'hidrometro',     label: 'Número do hidrômetro' },
+  { key: 'revestimento',   label: 'Material do revestimento (detalhe)' },
+  { key: 'nivel_estatico', label: 'Medição do nível estático' },
+  { key: 'cronometro',     label: 'Cronômetro + recipiente (vazão)' },
+  { key: 'bomba',          label: 'Bomba instalada' },
+];
+
+function bombCampo(campo, valor) { window._bombData[campo] = valor; }
+function bombLinha(tabela, tempo, campo, valor) { window._bombData[tabela + '_' + tempo + '_' + campo] = valor; }
+
+function bombNovoTeste() {
+  if (window._bombData && Object.keys(window._bombData).length && !confirm('Isso vai limpar o formulário atual (os dados não salvos serão perdidos). Deseja continuar?')) return;
+  window._bombData = {};
+  window._bombRegistroAtualId = null;
+  navigate('checklist_bombeamento');
+}
+
+async function carregarBombeamentoHistorico(forcar) {
+  if (window._bombHistorico !== null && !forcar) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('bomb_historico_cache') || '[]'); } catch(e) { cacheLocal = []; }
+  if (window._bombHistorico === null) window._bombHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('ChecklistBombeamento');
+    if (Array.isArray(lista)) {
+      window._bombHistorico = lista;
+      try { localStorage.setItem('bomb_historico_cache', JSON.stringify(lista)); } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('[Bombeamento] Falha ao carregar histórico, usando cache local.', e);
+  }
+  navigate('checklist_bombeamento');
+}
+
+function renderBombHistoricoLista() {
+  const historico = Array.isArray(window._bombHistorico) ? window._bombHistorico : [];
+  if (window._bombHistorico === null) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</div>';
+  if (!historico.length) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum teste salvo ainda.</div>';
+  const ordenado = historico.slice().sort((a,b)=>(b.Id||0)-(a.Id||0));
+  return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Empreendimento</th><th>Data</th><th>Responsável</th><th>Ações</th></tr></thead><tbody>' +
+    ordenado.map(r => `<tr>
+      <td><strong>${r.empreendimento||'—'}</strong></td>
+      <td>${r.data?new Date(r.data+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
+      <td>${r.responsavel||'—'}</td>
+      <td style="white-space:nowrap;display:flex;gap:4px;flex-wrap:wrap">
+        <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="bombEditarChecklist(${r.Id})">✏️ Editar</button>
+        <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" title="${r.documentoUrl?'Ver PDF/documento gerado':'Ainda sem PDF exportado'}" onclick="bombVerChecklist(${r.Id})">👁️ Ver</button>
+      </td>
+    </tr>`).join('') + '</tbody></table></div>';
+}
+
+function pageChecklistBombeamento() {
+  const d = window._bombData;
+  if (window._bombHistorico === null) carregarBombeamentoHistorico();
+
+  return `
+  <div class="page-header">
+    <h1>Teste de Bombeamento</h1>
+    <p>Relatório de campo — Teste de Bombeamento e Recuperação de Poço</p>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap">
+    <button class="btn-secondary" onclick="bombNovoTeste()">🆕 Novo Teste</button>
+    <button class="btn-primary" onclick="salvarBombeamento()">💾 Salvar Progresso</button>
+    <button class="btn-primary" style="background:var(--brand-brown,#3F261F)" onclick="exportarBombeamentoPdf()">🖨️ Exportar PDF</button>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Dados Gerais</div>
+    <div class="form-row">
+      <div class="form-group" style="flex:2"><label>Cliente / Empreendimento</label><input id="bomb_empreendimento" value="${d.empreendimento||''}" oninput="bombCampo('empreendimento',this.value)" placeholder="Nome do cliente / empreendimento"></div>
+      <div class="form-group"><label>Responsável</label><input id="bomb_responsavel" value="${d.responsavel||(window._currentUser?window._currentUser.name:'')}" oninput="bombCampo('responsavel',this.value)"></div>
+      <div class="form-group"><label>Data</label><input type="date" id="bomb_data" value="${d.data||''}" oninput="bombCampo('data',this.value)"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Dados do Poço</div>
+    <div class="form-row">
+      <div class="form-group"><label>Latitude (SIRGAS 2000)</label><input id="bomb_lat" value="${d.latitude||''}" oninput="bombCampo('latitude',this.value)" placeholder="Ex: -11.123456"></div>
+      <div class="form-group"><label>Longitude (SIRGAS 2000)</label><input id="bomb_lng" value="${d.longitude||''}" oninput="bombCampo('longitude',this.value)" placeholder="Ex: -61.123456"></div>
+      <div class="form-group"><label>Diâmetro do poço (pol)</label><input id="bomb_diam" value="${d.diametroPoco||''}" oninput="bombCampo('diametroPoco',this.value)"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:2"><label>Material do revestimento</label><input id="bomb_material" value="${d.materialRevestimento||''}" oninput="bombCampo('materialRevestimento',this.value)" placeholder="Tirar foto de detalhe"></div>
+      <div class="form-group"><label>Nº do hidrômetro</label><input id="bomb_hidrometro" value="${d.numHidrometro||''}" oninput="bombCampo('numHidrometro',this.value)" placeholder="Gravado na lateral"></div>
+    </div>
+    <div class="form-group">
+      <label>Tipo da Bomba</label>
+      <div style="display:flex;gap:16px;margin-top:6px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer"><input type="radio" name="bomb_tipo_bomba" value="superficie" ${d.tipoBomba==='superficie'?'checked':''} onchange="bombCampo('tipoBomba',this.value)"> Superfície</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer"><input type="radio" name="bomb_tipo_bomba" value="submersa" ${d.tipoBomba==='submersa'?'checked':''} onchange="bombCampo('tipoBomba',this.value)"> Submersa</label>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Marca da Bomba</label><input id="bomb_marca" value="${d.marcaBomba||''}" oninput="bombCampo('marcaBomba',this.value)"></div>
+      <div class="form-group"><label>Modelo da Bomba</label><input id="bomb_modelo" value="${d.modeloBomba||''}" oninput="bombCampo('modeloBomba',this.value)"></div>
+      <div class="form-group"><label>Potência da Bomba</label><input id="bomb_potencia" value="${d.potenciaBomba||''}" oninput="bombCampo('potenciaBomba',this.value)"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Crivo da Bomba (m)</label><input id="bomb_crivo" value="${d.crivoBomba||''}" oninput="bombCampo('crivoBomba',this.value)" placeholder="Profundidade em que está instalada"></div>
+      <div class="form-group"><label>Profundidade do poço (m)</label><input id="bomb_prof" value="${d.profundidadePoco||''}" oninput="bombCampo('profundidadePoco',this.value)"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Volume do tambor/balde usado (L)</label><input id="bomb_volume" value="${d.volumeTambor||''}" oninput="bombCampo('volumeTambor',this.value)"></div>
+      <div class="form-group"><label>Nível Estático (m)</label><input id="bomb_nivel_est" value="${d.nivelEstatico||''}" oninput="bombCampo('nivelEstatico',this.value)" placeholder="Medido com o poço desligado"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Tabela do Teste de Bombeamento</div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">Desligue a bomba do automático, deixe no manual. Ligue e só desligue ao terminar o teste. Meça a vazão no 1º minuto e repita em cada linha até o poço estabilizar.</div>
+    <div style="overflow-x:auto">
+      <table class="data-table">
+        <thead><tr><th>Tempo (min)</th><th>Nível Dinâmico (m)</th><th>Tempo p/ encher recipiente (s) ou vazão (m³/h)</th></tr></thead>
+        <tbody>
+          ${BOMB_TEMPOS_BOMBEAMENTO.map(t => `<tr>
+            <td>${t}</td>
+            <td><input style="width:100%" value="${d['bombeamento_'+t+'_nivel']||''}" oninput="bombLinha('bombeamento',${t},'nivel',this.value)"></td>
+            <td><input style="width:100%" value="${d['bombeamento_'+t+'_vazao']||''}" oninput="bombLinha('bombeamento',${t},'vazao',this.value)"></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Tabela do Teste de Recuperação</div>
+    <div style="overflow-x:auto">
+      <table class="data-table">
+        <thead><tr><th>Tempo (min)</th><th>Nível Dinâmico (m)</th></tr></thead>
+        <tbody>
+          ${BOMB_TEMPOS_RECUPERACAO.map(t => `<tr>
+            <td>${t}</td>
+            <td><input style="width:100%" value="${d['recuperacao_'+t+'_nivel']||''}" oninput="bombLinha('recuperacao',${t},'nivel',this.value)"></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Observações</div>
+    <textarea id="bomb_obs" rows="3" style="width:100%" oninput="bombCampo('obs',this.value)" placeholder="Observações do teste de bombeamento...">${d.obs||''}</textarea>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">📷 Registro Fotográfico</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:10px">
+      ${BOMB_FOTO_SLOTS.map(s => `
+      <div style="width:120px;text-align:center">
+        <label style="cursor:pointer;display:block">
+          <div id="bomb_foto_prev_${s.key}" style="width:120px;height:120px;border-radius:10px;border:2px dashed ${d['foto_'+s.key]?'var(--green-main)':'var(--border)'};background:${d['foto_'+s.key]?'transparent':'var(--surface2)'};display:flex;align-items:center;justify-content:center;overflow:hidden">
+            ${d['foto_'+s.key] ? `<img src="${d['foto_'+s.key]}" style="width:100%;height:100%;object-fit:cover">` : `<span style="font-size:1.6rem;opacity:.5">📷</span>`}
+          </div>
+          <input type="file" accept="image/*" capture="environment" style="display:none" onchange="loadBombFoto(event,'${s.key}')">
+        </label>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">${s.label}</div>
+        ${d['foto_'+s.key] ? `<button onclick="removeBombFoto('${s.key}')" style="font-size:.65rem;color:var(--red);background:none;border:none;cursor:pointer;margin-top:2px">✕ remover</button>` : ''}
+      </div>`).join('')}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Histórico de Testes</div>
+    <div id="bomb-historico-lista">${renderBombHistoricoLista()}</div>
+  </div>
+  `;
+}
+
+/* -- Carrega foto e redimensiona para 6×8, respeitando a orientação original -- */
+function loadBombFoto(event, slotKey) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const horizontal = img.width >= img.height;
+      const TARGET_W = horizontal ? 640 : 480;
+      const TARGET_H = horizontal ? 480 : 640;
+      const canvas = document.createElement('canvas');
+      canvas.width  = TARGET_W;
+      canvas.height = TARGET_H;
+      const ctx = canvas.getContext('2d');
+      const scale = Math.max(TARGET_W / img.width, TARGET_H / img.height);
+      const dw = img.width * scale, dh = img.height * scale;
+      const dx = (TARGET_W - dw) / 2, dy = (TARGET_H - dh) / 2;
+      ctx.drawImage(img, 0, 0, img.width, img.height, dx, dy, dw, dh);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      window._bombData['foto_' + slotKey] = dataUrl;
+      window._bombData['foto_' + slotKey + '_h'] = horizontal;
+      const prev = document.getElementById('bomb_foto_prev_' + slotKey);
+      if (prev) {
+        prev.innerHTML = `<img src="${dataUrl}" style="width:100%;height:100%;object-fit:cover">`;
+        prev.style.borderColor = 'var(--green-main)';
+      }
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function removeBombFoto(slotKey) {
+  delete window._bombData['foto_' + slotKey];
+  delete window._bombData['foto_' + slotKey + '_h'];
+  navigate('checklist_bombeamento');
+}
+
+/* -- Salva o teste (resumo leve na tabela + snapshot completo com fotos em arquivo à parte) -- */
+async function salvarBombeamento() {
+  if (typeof saveLocal === 'function') saveLocal('bomb_checklist', JSON.stringify(window._bombData));
+  const d = window._bombData || {};
+  const editando = !!window._bombRegistroAtualId;
+  const meuId = editando ? window._bombRegistroAtualId : Date.now();
+
+  const registro = {
+    Id: meuId,
+    Title: 'Bombeamento - ' + (d.empreendimento || 'Sem empreendimento') + ' - ' + (d.data || new Date().toLocaleDateString('pt-BR')),
+    empreendimento: d.empreendimento || '',
+    responsavel: d.responsavel || (window._currentUser ? window._currentUser.name : ''),
+    data: d.data || '',
+    arquivoDados: 'Checklists/Bombeamento/dados/' + meuId + '.json',
+  };
+
+  showSyncStatus('Enviando para OneDrive...');
+
+  const novo = editando
+    ? (await dbAtualizar('ChecklistBombeamento', meuId, registro)) ? registro : null
+    : await dbInserir('ChecklistBombeamento', registro);
+
+  // Snapshot completo (todos os campos + fotos) num arquivo à parte, pra reabrir e editar depois
+  const blobDados = new Blob([JSON.stringify(d)], { type: 'application/json' });
+  await uploadParaOneDrive(blobDados, 'Checklists/Bombeamento/dados', meuId + '.json');
+
+  window._bombRegistroAtualId = meuId;
+
+  if (!Array.isArray(window._bombHistorico)) window._bombHistorico = [];
+  const idxExistente = window._bombHistorico.findIndex(r => r.Id === meuId);
+  const registroSalvo = novo || { ...registro, Created: new Date().toISOString() };
+  if (idxExistente >= 0) window._bombHistorico[idxExistente] = registroSalvo;
+  else window._bombHistorico.unshift(registroSalvo);
+  try { localStorage.setItem('bomb_historico_cache', JSON.stringify(window._bombHistorico)); } catch(e) {}
+
+  if (novo) {
+    showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
+    showToast(editando ? '☁️ Teste atualizado no OneDrive!' : '☁️ Teste salvo e sincronizado com o OneDrive!');
+  } else {
+    showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
+    showToast('⚠️ Salvo apenas neste dispositivo. Verifique o login com Microsoft e tente sincronizar de novo.');
+  }
+  navigate('checklist_bombeamento');
+}
+
+/* -- Carrega de volta um teste já salvo, pra continuar editando -- */
+async function bombEditarChecklist(id) {
+  showSyncStatus('Carregando teste para edição...');
+  const texto = await baixarArquivoCentral('Checklists/Bombeamento/dados/' + id + '.json');
+  if (!texto) {
+    showSyncStatus('Não foi possível carregar', 'err', 4000);
+    showToast('⚠️ Não encontrei os dados completos desse teste (pode ter sido salvo antes desse recurso existir).');
+    return;
+  }
+  try {
+    window._bombData = JSON.parse(texto);
+    window._bombRegistroAtualId = id;
+    showSyncStatus('Teste carregado!', 'ok', 3000);
+    showToast('✏️ Teste carregado para edição. Altere o que precisar e clique em Salvar.');
+    navigate('checklist_bombeamento');
+  } catch(e) {
+    showToast('⚠️ Erro ao interpretar os dados salvos desse teste.');
+  }
+}
+
+/* -- Abre o PDF/documento já gerado desse teste (se já foi exportado alguma vez) -- */
+function bombVerChecklist(id) {
+  const r = (window._bombHistorico || []).find(r => r.Id === id);
+  if (r && r.documentoUrl) {
+    window.open(r.documentoUrl, '_blank');
+  } else {
+    showToast('📄 Esse teste ainda não tem um PDF exportado. Abra-o (Editar) e clique em "Exportar PDF" primeiro.');
+  }
+}
+
+/* -- Gera o relatório em PDF (janela de impressão) e sincroniza como HTML no OneDrive -- */
+function exportarBombeamentoPdf() {
+  showToast('🔄 Gerando relatório... aguarde.');
+  setTimeout(async () => {
+    const d = window._bombData;
+    const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
+    const tipoBombaLabel = d.tipoBomba === 'submersa' ? 'Submersa' : d.tipoBomba === 'superficie' ? 'Superfície' : '—';
+
+    const linhasBombeamento = BOMB_TEMPOS_BOMBEAMENTO.map(t => `<tr>
+      <td>${t}</td>
+      <td>${d['bombeamento_'+t+'_nivel'] || '—'}</td>
+      <td>${d['bombeamento_'+t+'_vazao'] || '—'}</td>
+    </tr>`).join('');
+
+    const linhasRecuperacao = BOMB_TEMPOS_RECUPERACAO.map(t => `<tr>
+      <td>${t}</td>
+      <td>${d['recuperacao_'+t+'_nivel'] || '—'}</td>
+    </tr>`).join('');
+
+    const fotosHtml = BOMB_FOTO_SLOTS.filter(s => d['foto_'+s.key]).map(s => `
+      <div style="text-align:center">
+        <img src="${d['foto_'+s.key]}" style="width:100%;aspect-ratio:${d['foto_'+s.key+'_h']?'4/3':'3/4'};object-fit:cover;border:1px solid #ccc;border-radius:4px">
+        <div style="font-size:7pt;color:#555;margin-top:2px">${s.label}</div>
+      </div>`).join('');
+
+    const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
+    <meta charset="UTF-8">
+    <title>Relatório de Teste de Bombeamento</title>
+    <style>
+      :root{--b-green:#80C476;--b-green-deep:#3a7030;--b-brown:#3F261F;--b-pale:#eef7ec;}
+      @page { size: A4; margin: 15mm 12mm; }
+      * { box-sizing: border-box; margin:0; padding:0; }
+      body { font-family: Arial, sans-serif; font-size: 9pt; color:#1a1a1a; }
+      .header-box { border: 2px solid var(--b-green-deep); border-radius:6px; padding:10px 14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; }
+      .header-info { text-align:right; font-size:7.5pt; color:#555; }
+      .section-title { background: var(--b-green-deep); color:#fff; padding:6px 10px; font-weight:700; font-size:9pt; margin:10px 0 6px; border-radius:4px; }
+      table { width:100%; border-collapse:collapse; margin-bottom:8px; }
+      th { background:#f0f4f1; font-size:7.5pt; font-weight:700; padding:4px 6px; text-align:left; border:1px solid #ccc; }
+      td { font-size:8pt; padding:4px 6px; border:1px solid #ddd; }
+      tr:nth-child(even) td { background:#f9fbf9; }
+      .foto-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:6px; }
+      .footer { margin-top:16px; border-top:1.5px solid #ccc; padding-top:8px; font-size:7pt; color:#888; display:flex; justify-content:space-between; }
+      @media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
+    </style></head><body>
+
+    <div class="header-box">
+      <img src="${(typeof ASO_LOGO_B64!=='undefined'?ASO_LOGO_B64:'')}" alt="Logo Expedian" style="height:44px;object-fit:contain">
+      <div class="header-info">
+        <strong style="font-size:10pt">RELATÓRIO DE TESTE DE BOMBEAMENTO E RECUPERAÇÃO</strong><br>
+        EXPEDIAN Soluções Ambientais
+      </div>
+    </div>
+
+    <table>
+      <tr><th style="width:50%">Cliente / Empreendimento</th><th style="width:25%">Data</th><th style="width:25%">Responsável</th></tr>
+      <tr><td><strong>${d.empreendimento||'—'}</strong></td><td>${dataFmt}</td><td>${d.responsavel||'—'}</td></tr>
+    </table>
+
+    <div class="section-title">Dados do Poço</div>
+    <table>
+      <tr><td style="font-weight:700;width:25%">Latitude</td><td style="width:25%">${d.latitude||'—'}</td><td style="font-weight:700;width:25%">Longitude</td><td style="width:25%">${d.longitude||'—'}</td></tr>
+      <tr><td style="font-weight:700">Diâmetro do poço (pol)</td><td>${d.diametroPoco||'—'}</td><td style="font-weight:700">Material do revestimento</td><td>${d.materialRevestimento||'—'}</td></tr>
+      <tr><td style="font-weight:700">Nº do hidrômetro</td><td>${d.numHidrometro||'—'}</td><td style="font-weight:700">Tipo da bomba</td><td>${tipoBombaLabel}</td></tr>
+      <tr><td style="font-weight:700">Marca da bomba</td><td>${d.marcaBomba||'—'}</td><td style="font-weight:700">Modelo da bomba</td><td>${d.modeloBomba||'—'}</td></tr>
+      <tr><td style="font-weight:700">Potência da bomba</td><td>${d.potenciaBomba||'—'}</td><td style="font-weight:700">Crivo da bomba (m)</td><td>${d.crivoBomba||'—'}</td></tr>
+      <tr><td style="font-weight:700">Profundidade do poço (m)</td><td>${d.profundidadePoco||'—'}</td><td style="font-weight:700">Volume do tambor/balde (L)</td><td>${d.volumeTambor||'—'}</td></tr>
+      <tr><td style="font-weight:700">Nível Estático (m)</td><td colspan="3">${d.nivelEstatico||'—'}</td></tr>
+    </table>
+
+    <div class="section-title">Tabela do Teste de Bombeamento</div>
+    <table>
+      <thead><tr><th>Tempo (min)</th><th>Nível Dinâmico (m)</th><th>Tempo p/ encher recipiente (s) ou vazão (m³/h)</th></tr></thead>
+      <tbody>${linhasBombeamento}</tbody>
+    </table>
+
+    <div class="section-title">Tabela do Teste de Recuperação</div>
+    <table>
+      <thead><tr><th>Tempo (min)</th><th>Nível Dinâmico (m)</th></tr></thead>
+      <tbody>${linhasRecuperacao}</tbody>
+    </table>
+
+    ${d.obs ? `<div class="section-title">Observações</div><div style="font-size:8.5pt;padding:6px 2px">${d.obs.replace(/\n/g,'<br>')}</div>` : ''}
+
+    ${fotosHtml ? `<div class="section-title">📷 Registro Fotográfico</div><div class="foto-grid">${fotosHtml}</div>` : ''}
+
+    <div class="footer">
+      <span>EXPEDIAN Soluções Ambientais — Nós cuidamos do caminho.</span>
+      <span>Emitido em: ${new Date().toLocaleString('pt-BR')}</span>
+    </div>
+
+    <script>window.onload=()=>window.print();<\/script>
+    </body></html>`;
+
+    const win = window.open('', '_blank');
+    win.document.write(htmlContent);
+    win.document.close();
+
+    if (typeof uploadParaOneDrive === 'function') {
+      try {
+        const dataFmtOD = d.data
+          ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR').replace(/\//g, '-')
+          : new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
+        const empreendOD = (d.empreendimento || 'Bombeamento')
+          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 40);
+        const respOD = (d.responsavel || '')
+          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 20);
+        const nomeBase = `TesteBombeamento_${empreendOD}_${respOD}_${dataFmtOD}`;
+        const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
+        const url = await uploadParaOneDrive(blob, OD_FOLDERS.checklistsBombeamento, nomeBase + '.html');
+        if (url && window._bombRegistroAtualId) {
+          await dbAtualizar('ChecklistBombeamento', window._bombRegistroAtualId, { documentoUrl: url, documentoNome: nomeBase + '.html' });
+          const idx = (window._bombHistorico || []).findIndex(r => r.Id === window._bombRegistroAtualId);
+          if (idx >= 0) { window._bombHistorico[idx].documentoUrl = url; window._bombHistorico[idx].documentoNome = nomeBase + '.html'; }
+          try { localStorage.setItem('bomb_historico_cache', JSON.stringify(window._bombHistorico)); } catch(e) {}
+          showSyncStatus('Relatório sincronizado!', 'ok', 4000);
+        }
+      } catch(e) {
+        console.warn('[OneDrive] Erro ao sincronizar Bombeamento:', e);
+        showSyncStatus('Erro ao sincronizar com OneDrive', 'err', 6000);
+      }
+    }
+  }, 300);
+}
+
+
+/* ===============================
    BANCO DE DADOS — ONEDRIVE JSON
    Substitui SharePoint. Cada "tabela" é um arquivo JSON
    em APP Expedian/db/{tabela}.json no OneDrive centralizado.
@@ -9744,6 +10170,7 @@ const OD_FOLDERS = {
   checklists:         'Checklists',          // mantido por compatibilidade (não usar diretamente p/ novos uploads)
   checklistsERO:       'Checklists/ERO',
   checklistsVeicular:  'Checklists/Veicular',
+  checklistsBombeamento: 'Checklists/Bombeamento',
   aprs:       'APRs',
   prestacao:  'PrestacaoContas',
   reembolso:  'Reembolso',
