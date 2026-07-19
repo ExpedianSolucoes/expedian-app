@@ -8357,12 +8357,96 @@ function exportarBombeamentoPdf() {
 window._equipCatalogo = null;
 window._equipTermos = null;
 window._equipTermoAtivo = null;
+window._equipNotaFiscalArquivo = null;
 
 const EQUIP_TERMO_TEXTO = 'Declaro, para os devidos fins, que recebi da EXPEDIAN SOLUÇÕES AMBIENTAIS o equipamento abaixo descrito, em condições de uso regular (ressalvado o disposto no campo "Condição no Recebimento"), comprometendo-me a: (i) utilizá-lo exclusivamente para fins profissionais relacionados às minhas atividades na empresa; (ii) zelar por sua guarda, conservação e bom funcionamento; (iii) comunicar imediatamente qualquer dano, extravio, furto ou mau funcionamento; (iv) devolvê-lo nas mesmas condições de uso normal, ressalvado o desgaste natural, sempre que solicitado pela empresa ou ao término do vínculo. Estou ciente de que sou responsável pela guarda e conservação do equipamento enquanto estiver sob minha posse, podendo responder por danos decorrentes de mau uso, negligência ou extravio, nos termos da legislação aplicável.';
 
 function equipCategoriaIcon(cat) {
   const m = { 'Notebook/Informática':'💻', 'Ferramenta':'🔧', 'EPI':'🦺', 'Instrumento de Medição':'📐', 'Veículo/Acessório':'🚗', 'Outro':'📦' };
   return m[cat] || '📦';
+}
+
+/* -- Leitura automática da Nota Fiscal (100% no navegador, reaproveita pdf.js/Tesseract
+      já usados em outras telas do sistema) — best-effort, sempre editável antes de salvar -- */
+function equipNormalizarValorMonetario(s) {
+  const v = parseFloat(String(s).replace(/\./g, '').replace(',', '.'));
+  return isNaN(v) ? null : v;
+}
+
+function extrairValorNF(texto) {
+  const alvo = texto.match(/VALOR\s+TOTAL\s+(?:DA\s+NOTA|DA\s+NF-?E|DOS\s+PRODUTOS)?\s*[:\-]?\s*R?\$?\s*([\d.,]+)/i);
+  if (alvo) { const v = equipNormalizarValorMonetario(alvo[1]); if (v !== null) return v.toFixed(2); }
+  const todos = [...texto.matchAll(/R\$\s*([\d]{1,3}(?:\.\d{3})*,\d{2})/g)].map(m => equipNormalizarValorMonetario(m[1])).filter(v => v !== null);
+  return todos.length ? Math.max(...todos).toFixed(2) : '';
+}
+
+function extrairNumeroNF(texto) {
+  const m = texto.match(/N[ºO°]\s*[:.]?\s*(\d{3,9})\b/) || texto.match(/N[uú]mero\s*[:.]?\s*(\d{3,9})\b/i);
+  return m ? m[1] : '';
+}
+
+function extrairDataCompraNF(texto) {
+  if (typeof extrairDatas !== 'function') return '';
+  const datas = extrairDatas(texto);
+  if (!datas.length) return '';
+  const comEmissao = datas.find(d => {
+    const ini = Math.max(0, d.index - 40), fim = Math.min(texto.length, d.index + 40);
+    return /emiss[ãa]o|emitid/i.test(texto.slice(ini, fim));
+  });
+  return (comEmissao || datas[0]).iso;
+}
+
+function extrairSerieNF(texto) {
+  const m = texto.match(/(?:S[ée]rie|S\/N|Serial)\s*[:\-]?\s*([A-Z0-9\-]{4,20})/i);
+  return m ? m[1] : '';
+}
+
+function extrairNomeProdutoNF(texto) {
+  const m = texto.match(/DESCRI[ÇC][ÃA]O\s+DO\s+PRODUTO\s*\/?\s*SERVI[ÇC]O\s*([\s\S]{5,150}?)(?:NCM|CFOP|UNID|CST|C[ÓO]DIGO|QUANT)/i);
+  if (m) {
+    const linha = m[1].replace(/\s+/g, ' ').trim();
+    if (linha.length > 3) return linha.slice(0, 80);
+  }
+  return '';
+}
+
+async function processarNotaFiscalEquipamento(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  window._equipNotaFiscalArquivo = file;
+  const status = document.getElementById('equip_nf_status');
+  const preview = document.getElementById('equip_nf_preview');
+  if (status) status.innerHTML = '<span class="spinner"></span> Lendo nota fiscal...';
+  try {
+    const isPDF = file.type === 'application/pdf';
+    const texto = isPDF ? await extrairTextoPDF(file) : await extrairTextoImagem(file);
+    if (!texto || texto.trim().length < 10) throw new Error('Não consegui ler texto neste arquivo. A nota foi anexada, mas preencha os campos manualmente.');
+
+    const nome = extrairNomeProdutoNF(texto);
+    const valor = extrairValorNF(texto);
+    const numeroNF = extrairNumeroNF(texto);
+    const dataCompra = extrairDataCompraNF(texto);
+    const serie = extrairSerieNF(texto);
+
+    let preenchidos = 0;
+    const nomeEl = document.getElementById('equip_novo_nome');
+    if (nome && nomeEl && !nomeEl.value) { nomeEl.value = nome; preenchidos++; }
+    if (valor) { document.getElementById('equip_novo_valor').value = valor; preenchidos++; }
+    if (numeroNF) { document.getElementById('equip_novo_nf_numero').value = numeroNF; preenchidos++; }
+    if (dataCompra) { document.getElementById('equip_novo_data_compra').value = dataCompra; preenchidos++; }
+    const patrimonioEl = document.getElementById('equip_novo_patrimonio');
+    if (serie && patrimonioEl && !patrimonioEl.value) { patrimonioEl.value = serie; preenchidos++; }
+    const condicaoEl = document.getElementById('equip_novo_condicao');
+    if (condicaoEl) condicaoEl.value = 'Novo';
+
+    if (status) {
+      status.innerHTML = `✅ ${preenchidos} campo(s) preenchido(s) automaticamente — confira antes de cadastrar. ` +
+        `<button type="button" onclick="const p=document.getElementById('equip_nf_preview');p.style.display=p.style.display==='none'?'block':'none';" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">Ver texto lido</button>`;
+    }
+    if (preview) { preview.textContent = texto.slice(0, 2000); }
+  } catch (err) {
+    if (status) status.innerHTML = `⚠️ ${err.message}`;
+  }
 }
 
 async function carregarEquipamentos(forcar) {
@@ -8406,6 +8490,14 @@ function pageEquipamentos() {
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">➕ Cadastrar Novo Equipamento</div>
+
+    <div class="form-group" style="margin-bottom:14px;padding:12px 14px;background:var(--surface2);border:1px dashed var(--border);border-radius:10px">
+      <label>📎 Anexar Nota Fiscal (PDF ou foto) — opcional, preenche os campos automaticamente</label>
+      <input type="file" id="equip_novo_nf_arquivo" accept=".pdf,image/*" onchange="processarNotaFiscalEquipamento(event)">
+      <div id="equip_nf_status" style="font-size:.76rem;margin-top:6px;color:var(--text-muted)"></div>
+      <pre id="equip_nf_preview" style="display:none;margin-top:8px;max-height:160px;overflow:auto;white-space:pre-wrap;font-size:.68rem;background:#fff;border:1px solid var(--border);border-radius:6px;padding:8px;color:#555"></pre>
+    </div>
+
     <div class="form-row">
       <div class="form-group" style="flex:2"><label>Nome do Equipamento</label><input id="equip_novo_nome" placeholder="Ex: Notebook Dell Latitude, GPS Garmin, Furadeira..."></div>
       <div class="form-group"><label>Categoria</label>
@@ -8418,7 +8510,25 @@ function pageEquipamentos() {
           <option value="Outro">📦 Outro</option>
         </select>
       </div>
+      <div class="form-group"><label>Cor</label><input id="equip_novo_cor" placeholder="Ex: Preto, Prata..."></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Condição</label>
+        <select id="equip_novo_condicao">
+          <option value="Novo">🆕 Novo</option>
+          <option value="Usado">♻️ Usado</option>
+        </select>
+      </div>
       <div class="form-group"><label>Patrimônio / Série</label><input id="equip_novo_patrimonio" placeholder="Nº de série ou patrimônio (opcional)"></div>
+      <div class="form-group"><label>Valor Pago (R$)</label><input id="equip_novo_valor" type="number" step="0.01" placeholder="0,00"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Nº Nota Fiscal</label><input id="equip_novo_nf_numero" placeholder="Opcional"></div>
+      <div class="form-group"><label>Data da Compra</label><input id="equip_novo_data_compra" type="date"></div>
+    </div>
+    <div class="form-group">
+      <label>Outras Informações Importantes</label>
+      <textarea id="equip_novo_observacoes" style="min-height:50px" placeholder="Acessórios inclusos, garantia, particularidades do equipamento..."></textarea>
     </div>
     <button class="btn-primary" onclick="salvarNovoEquipamento()">💾 Cadastrar</button>
   </div>
@@ -8443,8 +8553,12 @@ function renderCatalogoEquipamentos(cat) {
   return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Equipamento</th><th>Categoria</th><th>Patrimônio</th><th>Status</th><th>Colaborador Atual</th><th>Ações</th></tr></thead><tbody>' +
     ordenado.map(e => {
       const emPosse = e.Status === 'Em Posse';
+      const detalhes = [e.Cor, e.Condicao].filter(Boolean).join(' · ');
       return `<tr>
-        <td><strong>${equipCategoriaIcon(e.Categoria)} ${e.Title||'—'}</strong></td>
+        <td>
+          <strong>${equipCategoriaIcon(e.Categoria)} ${e.Title||'—'}</strong>
+          ${detalhes ? `<div style="font-size:.68rem;color:var(--text-muted)">${detalhes}</div>` : ''}
+        </td>
         <td style="font-size:.78rem">${e.Categoria||'—'}</td>
         <td style="font-size:.78rem;color:var(--text-muted)">${e.Patrimonio||'—'}</td>
         <td><span class="status-pill ${emPosse?'amber':'green'}">${emPosse?'🔒 Em Posse':'✅ Disponível'}</span></td>
@@ -8453,6 +8567,7 @@ function renderCatalogoEquipamentos(cat) {
           ${!emPosse ? `<button class="btn-primary" style="padding:3px 9px;font-size:.68rem" onclick="abrirTermoEquipamento(${e.Id})">📝 Gerar Termo</button>` : ''}
           ${emPosse ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem;background:var(--amber);color:#fff" onclick="abrirDevolucaoEquipamento(${e.Id})">🔄 Devolver</button>` : ''}
           ${emPosse && e.TermoAtualId ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="verTermoEquipamento(${e.TermoAtualId})">👁️ Ver Termo</button>` : ''}
+          ${e.NotaFiscalUrl ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="window.open('${e.NotaFiscalUrl}','_blank')" title="Ver nota fiscal anexada">🧾 NF</button>` : ''}
           <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem;color:var(--red)" onclick="excluirEquipamento(${e.Id})">🗑️</button>
         </td>
       </tr>`;
@@ -8477,18 +8592,45 @@ async function salvarNovoEquipamento() {
   const nome = (document.getElementById('equip_novo_nome').value || '').trim();
   if (!nome) { showToast('⚠️ Informe o nome do equipamento.'); return; }
   const categoria = document.getElementById('equip_novo_categoria').value;
+  const cor = (document.getElementById('equip_novo_cor').value || '').trim();
+  const condicao = document.getElementById('equip_novo_condicao').value;
   const patrimonio = (document.getElementById('equip_novo_patrimonio').value || '').trim();
+  const valorPago = (document.getElementById('equip_novo_valor').value || '').trim();
+  const numeroNF = (document.getElementById('equip_novo_nf_numero').value || '').trim();
+  const dataCompra = document.getElementById('equip_novo_data_compra').value || '';
+  const observacoes = (document.getElementById('equip_novo_observacoes').value || '').trim();
+
   showSyncStatus('Cadastrando equipamento...');
+
+  // Envia a nota fiscal anexada (se houver) para o OneDrive antes de salvar o registro
+  let notaFiscalUrl = '';
+  const arquivoNF = window._equipNotaFiscalArquivo;
+  if (arquivoNF && typeof uploadParaOneDrive === 'function') {
+    try {
+      const nomeArquivo = `NF_${nome.replace(/[^a-zA-Z0-9À-ú]/g, '_').substring(0, 30)}_${Date.now()}${(arquivoNF.name.match(/\.[a-zA-Z0-9]+$/) || [''])[0]}`;
+      const url = await uploadParaOneDrive(arquivoNF, OD_FOLDERS.notasFiscaisEquip, nomeArquivo);
+      if (url) notaFiscalUrl = url;
+    } catch(e) { console.warn('[Equipamentos] Falha ao enviar nota fiscal:', e); }
+  }
+
   const novo = await dbInserir('Equipamentos', {
     Title: nome,
     Categoria: categoria,
+    Cor: cor,
+    Condicao: condicao,
     Patrimonio: patrimonio,
+    ValorPago: valorPago,
+    NumeroNotaFiscal: numeroNF,
+    DataCompra: dataCompra,
+    Observacoes: observacoes,
+    NotaFiscalUrl: notaFiscalUrl,
     Status: 'Disponível',
     ColaboradorAtual: '',
     TermoAtualId: null,
     CadastradoPor: window._currentUser ? window._currentUser.name : '—',
   });
   if (novo) {
+    window._equipNotaFiscalArquivo = null;
     showToast('✅ Equipamento cadastrado!');
     showSyncStatus('Equipamento salvo!', 'ok', 3000);
     await carregarEquipamentos(true);
@@ -8606,6 +8748,8 @@ async function salvarTermoEquipamento(equipamentoId) {
     EquipamentoNome: eq.Title,
     EquipamentoCategoria: eq.Categoria,
     EquipamentoPatrimonio: eq.Patrimonio,
+    EquipamentoCor: eq.Cor,
+    EquipamentoCondicao: eq.Condicao,
     Colaborador: colaborador,
     DataRecebimento: data,
     CondicaoRecebimento: condicao,
@@ -8703,6 +8847,10 @@ async function exportarTermoEquipamentoPdf(termoId) {
       <div class="field"><div class="field-label">Equipamento</div><div class="field-value">${termo.EquipamentoNome||'—'}</div></div>
       <div class="field"><div class="field-label">Categoria</div><div class="field-value">${termo.EquipamentoCategoria||'—'}</div></div>
       <div class="field"><div class="field-label">Patrimônio/Série</div><div class="field-value">${termo.EquipamentoPatrimonio||'—'}</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+      <div class="field"><div class="field-label">Cor</div><div class="field-value">${termo.EquipamentoCor||'—'}</div></div>
+      <div class="field"><div class="field-label">Condição</div><div class="field-value">${termo.EquipamentoCondicao||'—'}</div></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
       <div class="field"><div class="field-label">Colaborador</div><div class="field-value">${termo.Colaborador||'—'}</div></div>
@@ -10640,6 +10788,7 @@ const OD_FOLDERS = {
   checklistsVeicular:  'Checklists/Veicular',
   checklistsBombeamento: 'Checklists/Bombeamento',
   termosEquipamento: 'Termos/Equipamentos',
+  notasFiscaisEquip: 'Equipamentos/NotasFiscais',
   aprs:       'APRs',
   prestacao:  'PrestacaoContas',
   reembolso:  'Reembolso',
