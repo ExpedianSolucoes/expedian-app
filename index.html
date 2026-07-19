@@ -1722,8 +1722,7 @@ function classifColor(val) {
   return 'blue';
 }
 
-function renderAPRForm(id) {
-  const aprData = {
+const APR_DADOS = {
     '001': {
       title: 'Coleta de Resíduos Sólidos e Efluentes',
       subtitle: 'Área Administrativa e Subestação Energizada',
@@ -1929,6 +1928,9 @@ function renderAPRForm(id) {
       ]
     }
   };
+
+function renderAPRForm(id) {
+  const aprData = APR_DADOS;
 
   const d = aprData[id];
   if (!d) return '<p>APR não encontrada</p>';
@@ -8339,7 +8341,6 @@ function exportarBombeamentoPdf() {
   }, 300);
 }
 
-
 /* ===============================
    BANCO DE DADOS — ONEDRIVE JSON
    Substitui SharePoint. Cada "tabela" é um arquivo JSON
@@ -8768,7 +8769,7 @@ async function emitirAPRSharePoint(idTipo) {
   };
   await dbInserir('APRs', dados);
   showToast('✅ APR-' + numFmt + ' emitida! Gerando PDF...');
-  await gerarPDFapr(numFmt);
+  await gerarPDFapr(numFmt, idTipo);
 }
 
 async function enviarAPRParaGestor(idTipo) {
@@ -8793,7 +8794,7 @@ async function enviarAPRParaGestor(idTipo) {
   };
   const novo = await dbInserir('APRs', dados);
   showToast('📤 Enviando APR e gerando PDF...');
-  await gerarPDFapr(numFmt);
+  await gerarPDFapr(numFmt, idTipo);
   const ok = !!novo;
   if (ok) {
     showSyncStatus('APR sincronizada com OneDrive!', 'ok', 5000);
@@ -9106,7 +9107,7 @@ async function aprFinalizar(idTipo) {
   }
 
   showSyncStatus('Gerando PDF...');
-  await gerarPDFapr(numFmt);
+  await gerarPDFapr(numFmt, idTipo);
   window._aprRascunhoId = null;
   showSyncStatus('APR finalizada e sincronizada!', 'ok', 5000);
   showToast('✅ APR-' + numFmt + ' finalizada, salva no OneDrive e PDF gerado!');
@@ -9190,7 +9191,7 @@ async function aprVerPDF(id) {
   } else {
     // PDF não foi salvo como link — regenerar na hora
     showToast('📄 PDF não arquivado. Gerando visualização...');
-    await gerarPDFapr(reg.NumeroAPR || id);
+    await gerarPDFapr(reg.NumeroAPR || id, reg.TipoAPR);
   }
 }
 
@@ -12180,7 +12181,7 @@ async function uploadChecklistHtml(htmlContent, nomeBase) {
 
 /* -- Patch APRs — sobe JSON ao OneDrive quando emitida ou enviada -- */
 /* -- gerarPDFapr: gera HTML da APR, abre janela de impressão e sincroniza OneDrive -- */
-async function gerarPDFapr(id) {
+async function gerarPDFapr(id, tipoAPR) {
   try {
     const d = window._aprFormData || {};
     const resp = d.responsavel || (window._currentUser ? window._currentUser.name : 'Equipe');
@@ -12209,6 +12210,87 @@ async function gerarPDFapr(id) {
         Número: ${d.lssNumero||'—'} &nbsp;|&nbsp; Operador: ${d.lssOperador||'—'}<br>
         ${d.lssEncerrou === 'suspenso' ? `⚠️ Serviço suspenso — Retorno previsto: ${d.lssHorarioRetorno||'—'} | Operador retorno: ${d.lssOperadorRetorno||'—'}` : ''}
       </div>` : '';
+
+    // Seções 2-5 (Saúde/Riscos/DITAIS/Veículos) — reconstruídas a partir do tipo de APR selecionado
+    const tipo = tipoAPR || window._aprSelected || '';
+    const tipoData = (typeof APR_DADOS !== 'undefined') ? APR_DADOS[tipo] : null;
+    const rg = Array.isArray(d.respostasGerais) ? d.respostasGerais : [];
+    const respLabel = v => v === 'sim' ? '✅ SIM' : v === 'nao' ? '❌ NÃO' : v === 'na' ? '➖ N/A' : '— Não respondido';
+    const classifHex = v => (v === 'CRÍTICO' || v === 'ALTO') ? '#e03d3d' : (v === 'MÉDIO' ? '#b07700' : '#3a7bd5');
+
+    let saudeHTML = '';
+    if (tipoData && Array.isArray(tipoData.saude)) {
+      const perguntas = tipoData.saude.filter((_, i) => i !== 2 && i !== 3);
+      const linhas = perguntas.map((s, i) => `
+        <tr>
+          <td style="width:18px;font-weight:700;color:#2d8c5a">${String.fromCharCode(97 + i)})</td>
+          <td>${s}</td>
+          <td style="width:95px;text-align:center;font-weight:700">${respLabel(rg[i])}</td>
+        </tr>`).join('');
+      saudeHTML = `
+      <div class="section" style="margin-bottom:10px">
+        <div class="section-title">2. Informações Gerais de Saúde e Segurança</div>
+        <table><tbody>${linhas}</tbody></table>
+      </div>`;
+    }
+
+    let riscosHTML = '';
+    if (tipoData && Array.isArray(tipoData.riscos) && tipoData.riscos.length) {
+      const linhasR = tipoData.riscos.map(r => `
+        <tr>
+          <td style="font-size:7.3pt">${r.tarefa}</td>
+          <td style="font-size:7.3pt;color:#555">${r.agente}</td>
+          <td style="font-size:7.3pt">${r.tipo}</td>
+          <td style="font-size:7.3pt">${r.consequencia}</td>
+          <td style="text-align:center;font-weight:700">${r.p}</td>
+          <td style="text-align:center;font-weight:700">${r.s}</td>
+          <td style="text-align:center;font-weight:800">${r.p * r.s}</td>
+          <td style="font-size:7.3pt;font-weight:700;color:${classifHex(r.classif)}">${r.classif}</td>
+          <td style="font-size:7.3pt">${r.controle}</td>
+          <td style="font-size:7.3pt;color:#2d8c5a">${r.epi}</td>
+        </tr>`).join('');
+      riscosHTML = `
+      <div class="section" style="margin-bottom:10px">
+        <div class="section-title">3. Identificação de Riscos, Perigos e Medidas Preventivas</div>
+        <div style="font-size:6.6pt;color:#555;padding:5px 8px;background:#f5f5f5">
+          Legenda NR-01 — P×S: BAIXO ≤4 &nbsp;|&nbsp; MÉDIO 5–9 &nbsp;|&nbsp; ALTO 10–15 &nbsp;|&nbsp; CRÍTICO ≥16
+          &nbsp;&nbsp; P: 1=Improvável 2=Pouco Provável 3=Provável 4=Muito Provável 5=Quase Certo
+          &nbsp;&nbsp; S: 1=Insignificante 2=Leve 3=Moderada 4=Grave 5=Catastrófica
+        </div>
+        <table>
+          <thead><tr><th>Etapa/Tarefa</th><th>Agente/Perigo</th><th>Tipo</th><th>Consequência</th><th>P</th><th>S</th><th>P×S</th><th>Classif.</th><th>Medidas de Controle</th><th>EPIs/EPCs</th></tr></thead>
+          <tbody>${linhasR}</tbody>
+        </table>
+      </div>`;
+    }
+
+    const ditaisPerigosList = ['Choque elétrico por contato direto','Choque elétrico por contato indireto','Indução elétrica (campo eletromagnético)','Arco elétrico / flash elétrico','Queimadura por arco ou explosão','Eletricidade estática','Tensão de passo','Ferramentas mal isoladas','Equipamento sem aterramento','Reenergização acidental'];
+    const ditaisControlesList = ['DESLIGAR os circuitos elétricos envolvidos','BLOQUEAR e travar os dispositivos de manobra','TESTAR ausência de tensão com equipamento adequado','ATERRAR a rede conforme NR-10','ISOLAR todos os circuitos elétricos adjacentes','SINALIZAR a área com fita, cones e placas de alerta','IMPEDIR reenergização dos circuitos elétricos','Verificar se colaborador possui NR-10 (SEP) válido','Respeitar as Distâncias de Segurança (Tabela ANEEL)','Comunicar o responsável pelo setor elétrico'];
+    const veiculoItemsList = ['Realizar check list completo do veículo antes de iniciar o trabalho','Verificar CNH válida e habilitação compatível com o tipo de veículo','Proibido uso de celular ao dirigir – sem exceções','Faróis acesos; velocidade compatível com a via e condições climáticas','Utilizar cinto de segurança – todos os ocupantes do veículo','Condutor com treinamento em direção defensiva em dia','Reduzir velocidade em áreas internas, canteiros de obras e travessias de fauna','Utilizar guia (sinaleiro) para manobras em áreas de risco ou visibilidade reduzida','Isolar área com cones e cavaletes durante operações de carga/descarga','Nunca operar veículo em terreno instável sem inspeção prévia do solo','Verificar amarração e estanqueidade da carga antes do transporte','Evitar deslocamento noturno em estradas rurais – somente em emergências com autorização','Verificar nível de combustível, óleo, água e pneus antes de sair a campo','Manter extintor veicular dentro do prazo de validade e acessível'];
+
+    let ditaisHTML = '';
+    if (tipoData) {
+      const perigosLinhas = ditaisPerigosList.map((p, i) => `<tr><td>${p}</td><td style="width:95px;text-align:center;font-weight:700">${respLabel(rg[6 + i])}</td></tr>`).join('');
+      const controlesLinhas = ditaisControlesList.map((cc, i) => `<tr><td>${cc}</td><td style="width:95px;text-align:center;font-weight:700">${respLabel(rg[16 + i])}</td></tr>`).join('');
+      ditaisHTML = `
+      <div class="section" style="margin-bottom:10px">
+        <div class="section-title">4. Identificação de Riscos Elétricos — NR-10 / DITAIS</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr">
+          <table><thead><tr><th colspan="2">Perigos Elétricos Identificados</th></tr></thead><tbody>${perigosLinhas}</tbody></table>
+          <table><thead><tr><th colspan="2">Medidas DITAIS Aplicadas</th></tr></thead><tbody>${controlesLinhas}</tbody></table>
+        </div>
+      </div>`;
+    }
+
+    let veiculoHTML = '';
+    if (tipoData) {
+      const linhasV = veiculoItemsList.map((v, i) => `<tr><td>${v}</td><td style="width:95px;text-align:center;font-weight:700">${respLabel(rg[26 + i])}</td></tr>`).join('');
+      veiculoHTML = `
+      <div class="section" style="margin-bottom:10px">
+        <div class="section-title">5. Movimentação de Veículos</div>
+        <table><tbody>${linhasV}</tbody></table>
+      </div>`;
+    }
 
     const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
     <meta charset="UTF-8">
@@ -12264,10 +12346,15 @@ async function gerarPDFapr(id) {
 
     ${lssHTML}
 
+    ${saudeHTML}
+    ${riscosHTML}
+    ${ditaisHTML}
+    ${veiculoHTML}
+
     <!-- Participantes -->
     ${partHTML ? `
     <div class="section" style="margin-bottom:10px">
-      <div class="section-title">2. Participantes</div>
+      <div class="section-title">6. Participantes</div>
       <table>
         <thead><tr><th>Nome</th><th>Cargo/Função</th><th>Assinatura</th></tr></thead>
         <tbody>${partHTML}</tbody>
@@ -13491,4 +13578,5 @@ function renderTabelaInspecoes(lista) {
 }
 
 </script>
+<!-- sync-check-marker-001 -->
 </html>
