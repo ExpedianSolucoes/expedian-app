@@ -8454,6 +8454,68 @@ function equipCategoriaIcon(cat) {
   return m[cat] || '📦';
 }
 
+/* -- Checklist de Vistoria (condição física do equipamento no ato do recebimento) --
+      Específico para Celular e Notebook/Computador, inspirado no Modelo de Termo de
+      Responsabilidade (item "Identificação dos Equipamentos" / Estado de conservação). */
+const EQUIP_VISTORIA_CELULAR = [
+  { id: 'estado', label: 'Estado do Aparelho', tipo: 'select', opcoes: ['Novo', 'Usado'] },
+  { id: 'pelicula', label: 'Possui película de proteção?', tipo: 'simnao' },
+  { id: 'capa', label: 'Possui capa/case de proteção?', tipo: 'simnao' },
+  { id: 'carregador', label: 'Carregador incluso?', tipo: 'simnao' },
+  { id: 'tela', label: 'Tela sem trincas ou riscos visíveis?', tipo: 'simnao' },
+  { id: 'bateria', label: 'Bateria carrega e segura carga normalmente?', tipo: 'simnao' },
+  { id: 'chip', label: 'Possui chip (SIM card) instalado?', tipo: 'simnao', extra: { id: 'chip_numero', label: 'Número da linha' } },
+  { id: 'imei', label: 'IMEI (opcional)', tipo: 'text' },
+];
+const EQUIP_VISTORIA_NOTEBOOK = [
+  { id: 'estado', label: 'Estado do Equipamento', tipo: 'select', opcoes: ['Novo', 'Usado'] },
+  { id: 'capa', label: 'Possui capa/case/mochila de transporte?', tipo: 'simnao' },
+  { id: 'carregador', label: 'Carregador/fonte incluso?', tipo: 'simnao' },
+  { id: 'mouse', label: 'Mouse incluso?', tipo: 'simnao' },
+  { id: 'tela', label: 'Tela sem trincas ou riscos visíveis?', tipo: 'simnao' },
+  { id: 'teclado', label: 'Teclado funcionando normalmente?', tipo: 'simnao' },
+  { id: 'bateria', label: 'Bateria em bom estado (carrega e segura carga)?', tipo: 'simnao' },
+  { id: 'senha', label: 'Equipamento com senha de acesso configurada?', tipo: 'simnao' },
+];
+
+function equipObterVistoria(eq) {
+  if (!eq || eq.Categoria !== 'Celular/Computador') return null;
+  const tipo = eq.TipoDispositivo || (/celular|smartphone|telefone/i.test(eq.Title||'') ? 'Celular' : 'Notebook/Computador');
+  return tipo === 'Celular' ? EQUIP_VISTORIA_CELULAR : EQUIP_VISTORIA_NOTEBOOK;
+}
+
+function renderVistoriaEquipamento(eq) {
+  const itens = equipObterVistoria(eq);
+  if (!itens) return '';
+  return `
+  <div class="form-group" style="margin-bottom:14px;padding:12px 14px;background:#eef4ff;border:1px solid #3b6fd6;border-radius:10px">
+    <label style="margin-bottom:8px;display:block;font-weight:700;color:#3b6fd6">🔍 Checklist de Vistoria do Equipamento</label>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${itens.map(item => `
+      <div>
+        <div class="form-row" style="align-items:center;margin-bottom:0">
+          <div class="form-group" style="flex:2;margin-bottom:0"><label style="font-weight:400;font-size:.8rem">${item.label}</label></div>
+          <div class="form-group" style="margin-bottom:0">
+            ${item.tipo === 'simnao' ? `
+            <select id="equip_vist_${item.id}" ${item.extra ? `onchange="document.getElementById('equip_vist_${item.extra.id}_row').style.display=this.value==='Sim'?'flex':'none'"` : ''}>
+              <option value="Sim">Sim</option>
+              <option value="Não">Não</option>
+            </select>` : item.tipo === 'select' ? `
+            <select id="equip_vist_${item.id}">
+              ${item.opcoes.map(o => `<option value="${o}">${o}</option>`).join('')}
+            </select>` : `
+            <input id="equip_vist_${item.id}" placeholder="Opcional">`}
+          </div>
+        </div>
+        ${item.extra ? `
+        <div class="form-row" id="equip_vist_${item.extra.id}_row" style="display:none;margin-top:4px">
+          <div class="form-group" style="flex:2;margin-bottom:0"><input id="equip_vist_${item.extra.id}" placeholder="${item.extra.label}"></div>
+        </div>` : ''}
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
 /* -- Leitura automática da Nota Fiscal (100% no navegador, reaproveita pdf.js/Tesseract
       já usados em outras telas do sistema) — best-effort, sempre editável antes de salvar -- */
 function equipNormalizarValorMonetario(s) {
@@ -9140,6 +9202,8 @@ function renderFormularioTermoEquipamento(ativo) {
       <textarea id="equip_termo_condicao" style="min-height:60px" placeholder="Descreva o estado do equipamento (funcionando normalmente, riscos visíveis, acessórios inclusos, etc.)"></textarea>
     </div>
 
+    ${!isDevolucao ? renderVistoriaEquipamento(eq) : ''}
+
     ${!isDevolucao ? `
     <div style="font-size:.78rem;color:var(--text-muted);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:14px;line-height:1.5">
       <strong>Termo de Responsabilidade:</strong><br>${EQUIP_TERMO_TEXTO}
@@ -9192,6 +9256,17 @@ async function salvarTermoEquipamento(equipamentoId) {
   const totalChecklist = checklistEquip.length;
   const marcados = checklistEquip.filter((_, i) => document.getElementById('equip_chk_' + i)?.checked).length;
   if (marcados < totalChecklist) { showToast(`⚠️ Confirme todos os itens do checklist antes de assinar (${marcados}/${totalChecklist}).`); return; }
+  const vistoriaItens = equipObterVistoria(eq);
+  const vistoriaData = vistoriaItens ? vistoriaItens.map(item => {
+    const el = document.getElementById('equip_vist_' + item.id);
+    const valor = el ? (el.value || '').trim() : '';
+    let extra = null;
+    if (item.extra) {
+      const elExtra = document.getElementById('equip_vist_' + item.extra.id);
+      if (valor === 'Sim' && elExtra) extra = { label: item.extra.label, valor: (elExtra.value || '').trim() };
+    }
+    return { label: item.label, valor, extra };
+  }) : [];
   if (!_sigState['sig_equip_termo']) { showToast('⚠️ É necessário assinar o termo antes de emitir.'); return; }
   const canvas = document.getElementById('sig_equip_termo');
   const assinatura = canvas.toDataURL('image/png');
@@ -9212,6 +9287,7 @@ async function salvarTermoEquipamento(equipamentoId) {
     AssinaturaRecebimento: assinatura,
     ChecklistConfirmado: checklistEquip,
     ChecklistTipo: equipObterChecklist(eq).chave,
+    VistoriaEquipamento: vistoriaData,
     Status: 'Aberto',
     EmitidoPor: window._currentUser ? window._currentUser.name : '—',
   });
@@ -9267,6 +9343,15 @@ async function exportarTermoEquipamentoPdf(termoId) {
   const dataRec = termo.DataRecebimento ? new Date(termo.DataRecebimento + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
   const dataDev = termo.DataDevolucao ? new Date(termo.DataDevolucao + 'T00:00:00').toLocaleDateString('pt-BR') : null;
   const devolvido = termo.Status === 'Devolvido';
+  const temVistoria = Array.isArray(termo.VistoriaEquipamento) && termo.VistoriaEquipamento.length;
+  const temChecklist = Array.isArray(termo.ChecklistConfirmado) && termo.ChecklistConfirmado.length;
+  let _secN = 1;
+  const secIdentificacao = _secN++;
+  const secVistoria = temVistoria ? _secN++ : null;
+  const secTermo = _secN++;
+  const secChecklist = temChecklist ? _secN++ : null;
+  const secCondicao = _secN++;
+  const secDevolucao = devolvido ? _secN++ : null;
 
   const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
   <meta charset="UTF-8">
@@ -9300,7 +9385,7 @@ async function exportarTermoEquipamentoPdf(termoId) {
   <div class="title-bar">📋 Termo Nº ${termo.Id} — ${devolvido ? 'Encerrado (Devolvido)' : 'Em Aberto'}</div>
 
   <div class="section">
-    <div class="section-title">1. Identificação</div>
+    <div class="section-title">${secIdentificacao}. Identificação</div>
     <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:0">
       <div class="field"><div class="field-label">Equipamento</div><div class="field-value">${termo.EquipamentoNome||'—'}</div></div>
       <div class="field"><div class="field-label">Categoria</div><div class="field-value">${termo.EquipamentoCategoria||'—'}</div></div>
@@ -9317,21 +9402,29 @@ async function exportarTermoEquipamentoPdf(termoId) {
     </div>
   </div>
 
+  ${temVistoria ? `
   <div class="section">
-    <div class="section-title">2. Termo de Responsabilidade</div>
+    <div class="section-title">${secVistoria}. Checklist de Vistoria do Equipamento</div>
+    <div style="padding:8px">
+      ${termo.VistoriaEquipamento.map(v => `<div style="font-size:7.6pt;padding:3px 0;display:flex;justify-content:space-between;gap:10px;border-bottom:1px dotted #ddd"><span>${v.label}</span><strong>${v.valor||'—'}${v.extra ? ' — ' + v.extra.label + ': ' + (v.extra.valor||'—') : ''}</strong></div>`).join('')}
+    </div>
+  </div>` : ''}
+
+  <div class="section">
+    <div class="section-title">${secTermo}. Termo de Responsabilidade</div>
     <div style="padding:8px;font-size:7.8pt;line-height:1.5;text-align:justify">${EQUIP_TERMO_TEXTO}</div>
   </div>
 
-  ${Array.isArray(termo.ChecklistConfirmado) && termo.ChecklistConfirmado.length ? `
+  ${temChecklist ? `
   <div class="section">
-    <div class="section-title">3. Checklist Confirmado pelo Colaborador${termo.ChecklistTipo ? ' — ' + termo.ChecklistTipo : ''}</div>
+    <div class="section-title">${secChecklist}. Checklist Confirmado pelo Colaborador${termo.ChecklistTipo ? ' — ' + termo.ChecklistTipo : ''}</div>
     <div style="padding:8px">
       ${termo.ChecklistConfirmado.map(item => `<div style="font-size:7.6pt;padding:3px 0;display:flex;gap:6px"><span style="color:#2d8c5a;font-weight:800">✔</span><span>${item}</span></div>`).join('')}
     </div>
   </div>` : ''}
 
   <div class="section">
-    <div class="section-title">${Array.isArray(termo.ChecklistConfirmado) && termo.ChecklistConfirmado.length ? '4' : '3'}. Condição no Recebimento</div>
+    <div class="section-title">${secCondicao}. Condição no Recebimento</div>
     <div style="padding:8px;font-size:8pt;white-space:pre-wrap">${termo.CondicaoRecebimento || 'Nenhuma ressalva registrada.'}</div>
   </div>
 
@@ -9343,7 +9436,7 @@ async function exportarTermoEquipamentoPdf(termoId) {
 
   ${devolvido ? `
   <div class="section" style="margin-top:14px">
-    <div class="section-title">${Array.isArray(termo.ChecklistConfirmado) && termo.ChecklistConfirmado.length ? '5' : '4'}. Devolução</div>
+    <div class="section-title">${secDevolucao}. Devolução</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
       <div class="field"><div class="field-label">Data da Devolução</div><div class="field-value">${dataDev||'—'}</div></div>
       <div class="field"><div class="field-label">Recebido por (Expedian)</div><div class="field-value">${termo.RecebidoDe||'—'}</div></div>
