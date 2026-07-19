@@ -8359,7 +8359,17 @@ window._equipTermos = null;
 window._equipTermoAtivo = null;
 window._equipNotaFiscalArquivo = null;
 
-const EQUIP_TERMO_TEXTO = 'Declaro, para os devidos fins, que recebi da EXPEDIAN SOLUÇÕES AMBIENTAIS o equipamento abaixo descrito, em condições de uso regular (ressalvado o disposto no campo "Condição no Recebimento"), comprometendo-me a: (i) utilizá-lo exclusivamente para fins profissionais relacionados às minhas atividades na empresa; (ii) zelar por sua guarda, conservação e bom funcionamento; (iii) comunicar imediatamente qualquer dano, extravio, furto ou mau funcionamento; (iv) devolvê-lo nas mesmas condições de uso normal, ressalvado o desgaste natural, sempre que solicitado pela empresa ou ao término do vínculo. Estou ciente de que sou responsável pela guarda e conservação do equipamento enquanto estiver sob minha posse, podendo responder por danos decorrentes de mau uso, negligência ou extravio, nos termos da legislação aplicável.';
+const EQUIP_TERMO_TEXTO = 'Declaro que recebi os equipamentos da empresa e estou ciente das regras estabelecidas no Procedimento de Uso de Celular e Equipamentos (Código: EXP-SGI-PRC-ADM-01), comprometendo-me a utilizá-los corretamente e exclusivamente para fins profissionais.';
+
+const EQUIP_CHECKLIST_ITENS = [
+  'Vou utilizar o equipamento exclusivamente para fins profissionais, sem uso pessoal.',
+  'Vou manter comunicação ativa, responder às mensagens de trabalho e enviar evidências (fotos/relatórios) quando solicitado.',
+  'Vou zelar pela integridade do equipamento, evitando danos e armazenando-o adequadamente.',
+  'Em caso de perda, roubo ou furto, vou comunicar a empresa imediatamente e apresentar Boletim de Ocorrência (B.O.) em até 24 horas.',
+  'Não vou compartilhar informações da empresa ou de clientes sem autorização.',
+  'Estou ciente de que o descumprimento pode resultar em advertência, suspensão ou outras medidas administrativas, e que devolverei o equipamento quando solicitado.',
+  'Li e estou de acordo com o Procedimento de Uso de Celular e Equipamentos (Código: EXP-SGI-PRC-ADM-01).',
+];
 
 function equipCategoriaIcon(cat) {
   const m = { 'Notebook/Informática':'💻', 'Ferramenta':'🔧', 'EPI':'🦺', 'Instrumento de Medição':'📐', 'Veículo/Acessório':'🚗', 'Outro':'📦' };
@@ -8692,9 +8702,13 @@ function renderFormularioTermoEquipamento(ativo) {
           ${ERO_TECNICOS.map(n => `<option value="${n}">`).join('')}
         </datalist>
       </div>
-      <div class="form-group"><label>Data de Recebimento</label><input type="date" id="equip_termo_data" value="${new Date().toISOString().split('T')[0]}"></div>
+      <div class="form-group"><label>CPF</label><input id="equip_termo_cpf" placeholder="000.000.000-00"></div>
       `}
     </div>
+    ${!isDevolucao ? `
+    <div class="form-row">
+      <div class="form-group"><label>Data de Recebimento</label><input type="date" id="equip_termo_data" value="${new Date().toISOString().split('T')[0]}"></div>
+    </div>` : ''}
 
     <div class="form-group">
       <label>${isDevolucao ? 'Condição do Equipamento na Devolução' : 'Condição do Equipamento no Recebimento'}</label>
@@ -8704,6 +8718,16 @@ function renderFormularioTermoEquipamento(ativo) {
     ${!isDevolucao ? `
     <div style="font-size:.78rem;color:var(--text-muted);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:14px;line-height:1.5">
       <strong>Termo de Responsabilidade:</strong><br>${EQUIP_TERMO_TEXTO}
+    </div>
+    <div class="form-group" style="margin-bottom:14px;padding:12px 14px;background:#fffdf5;border:1px solid var(--amber);border-radius:10px">
+      <label style="margin-bottom:8px;display:block">✅ Checklist — confirme antes de assinar</label>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${EQUIP_CHECKLIST_ITENS.map((item, i) => `
+        <label style="display:flex;align-items:flex-start;gap:8px;font-size:.8rem;cursor:pointer;font-weight:400">
+          <input type="checkbox" id="equip_chk_${i}" style="margin-top:2px">
+          <span>${item}</span>
+        </label>`).join('')}
+      </div>
     </div>` : ''}
 
     <div class="form-group">
@@ -8735,8 +8759,13 @@ async function salvarTermoEquipamento(equipamentoId) {
   if (!eq) { showToast('❌ Equipamento não encontrado.'); return; }
   const colaborador = (document.getElementById('equip_termo_colaborador').value || '').trim();
   if (!colaborador) { showToast('⚠️ Informe o colaborador que está recebendo o equipamento.'); return; }
+  const cpf = (document.getElementById('equip_termo_cpf').value || '').trim();
+  if (!cpf) { showToast('⚠️ Informe o CPF do colaborador.'); return; }
   const data = document.getElementById('equip_termo_data').value || new Date().toISOString().split('T')[0];
   const condicao = (document.getElementById('equip_termo_condicao').value || '').trim();
+  const totalChecklist = EQUIP_CHECKLIST_ITENS.length;
+  const marcados = EQUIP_CHECKLIST_ITENS.filter((_, i) => document.getElementById('equip_chk_' + i)?.checked).length;
+  if (marcados < totalChecklist) { showToast(`⚠️ Confirme todos os itens do checklist antes de assinar (${marcados}/${totalChecklist}).`); return; }
   if (!_sigState['sig_equip_termo']) { showToast('⚠️ É necessário assinar o termo antes de emitir.'); return; }
   const canvas = document.getElementById('sig_equip_termo');
   const assinatura = canvas.toDataURL('image/png');
@@ -8751,9 +8780,11 @@ async function salvarTermoEquipamento(equipamentoId) {
     EquipamentoCor: eq.Cor,
     EquipamentoCondicao: eq.Condicao,
     Colaborador: colaborador,
+    ColaboradorCPF: cpf,
     DataRecebimento: data,
     CondicaoRecebimento: condicao,
     AssinaturaRecebimento: assinatura,
+    ChecklistConfirmado: EQUIP_CHECKLIST_ITENS,
     Status: 'Aberto',
     EmitidoPor: window._currentUser ? window._currentUser.name : '—',
   });
@@ -8834,7 +8865,7 @@ async function exportarTermoEquipamentoPdf(termoId) {
     <img src="${_expedianMarromB64}" alt="EXPEDIAN" class="logo-img">
     <div style="text-align:right;font-size:7.5pt;color:#555">
       <strong>TERMO DE RECEBIMENTO E RESPONSABILIDADE DE EQUIPAMENTOS</strong><br>
-      Expedian Soluções Ambientais<br>
+      Expedian Soluções Ambientais · Código: EXP-SGI-PRC-ADM-01<br>
       CNPJ: 37.553.680/0001-80
     </div>
   </div>
@@ -8852,8 +8883,9 @@ async function exportarTermoEquipamentoPdf(termoId) {
       <div class="field"><div class="field-label">Cor</div><div class="field-value">${termo.EquipamentoCor||'—'}</div></div>
       <div class="field"><div class="field-label">Condição</div><div class="field-value">${termo.EquipamentoCondicao||'—'}</div></div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:0">
       <div class="field"><div class="field-label">Colaborador</div><div class="field-value">${termo.Colaborador||'—'}</div></div>
+      <div class="field"><div class="field-label">CPF</div><div class="field-value">${termo.ColaboradorCPF||'—'}</div></div>
       <div class="field"><div class="field-label">Data de Recebimento</div><div class="field-value">${dataRec}</div></div>
     </div>
   </div>
@@ -8863,8 +8895,16 @@ async function exportarTermoEquipamentoPdf(termoId) {
     <div style="padding:8px;font-size:7.8pt;line-height:1.5;text-align:justify">${EQUIP_TERMO_TEXTO}</div>
   </div>
 
+  ${Array.isArray(termo.ChecklistConfirmado) && termo.ChecklistConfirmado.length ? `
   <div class="section">
-    <div class="section-title">3. Condição no Recebimento</div>
+    <div class="section-title">3. Checklist Confirmado pelo Colaborador</div>
+    <div style="padding:8px">
+      ${termo.ChecklistConfirmado.map(item => `<div style="font-size:7.6pt;padding:3px 0;display:flex;gap:6px"><span style="color:#2d8c5a;font-weight:800">✔</span><span>${item}</span></div>`).join('')}
+    </div>
+  </div>` : ''}
+
+  <div class="section">
+    <div class="section-title">${Array.isArray(termo.ChecklistConfirmado) && termo.ChecklistConfirmado.length ? '4' : '3'}. Condição no Recebimento</div>
     <div style="padding:8px;font-size:8pt;white-space:pre-wrap">${termo.CondicaoRecebimento || 'Nenhuma ressalva registrada.'}</div>
   </div>
 
@@ -8876,7 +8916,7 @@ async function exportarTermoEquipamentoPdf(termoId) {
 
   ${devolvido ? `
   <div class="section" style="margin-top:14px">
-    <div class="section-title">4. Devolução</div>
+    <div class="section-title">${Array.isArray(termo.ChecklistConfirmado) && termo.ChecklistConfirmado.length ? '5' : '4'}. Devolução</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
       <div class="field"><div class="field-label">Data da Devolução</div><div class="field-value">${dataDev||'—'}</div></div>
       <div class="field"><div class="field-label">Recebido por (Expedian)</div><div class="field-value">${termo.RecebidoDe||'—'}</div></div>
