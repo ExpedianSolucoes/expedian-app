@@ -8513,7 +8513,74 @@ function renderVistoriaEquipamento(eq) {
         </div>` : ''}
       </div>`).join('')}
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap">
+      <span style="font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);white-space:nowrap">📷 Fotos do equipamento:</span>
+      ${[1,2,3,4].map(fn => `
+      <div style="position:relative;flex-shrink:0">
+        <label style="cursor:pointer;display:block" title="Foto ${fn}">
+          <div id="equip_vist_foto_prev_${fn}"
+            style="width:44px;height:44px;border-radius:8px;border:2px dashed ${window._equipVistFotos && window._equipVistFotos['foto_'+fn] ? 'var(--green-main)' : 'var(--border)'};background:${window._equipVistFotos && window._equipVistFotos['foto_'+fn] ? 'transparent' : 'var(--surface2)'};display:flex;align-items:center;justify-content:center;overflow:hidden;transition:border-color .15s"
+            onmouseover="this.style.borderColor='var(--green-main)'"
+            onmouseout="this.style.borderColor='${window._equipVistFotos && window._equipVistFotos['foto_'+fn] ? 'var(--green-main)' : 'var(--border)'}'">
+            ${window._equipVistFotos && window._equipVistFotos['foto_'+fn]
+              ? `<img src="${window._equipVistFotos['foto_'+fn]}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">`
+              : `<span style="font-size:1.1rem;opacity:.5">📷</span>`}
+          </div>
+          <input type="file" accept="image/*" capture="environment" style="display:none" onchange="loadEquipVistFoto(event,${fn})">
+        </label>
+        ${window._equipVistFotos && window._equipVistFotos['foto_'+fn] ? `<button onclick="removeEquipVistFoto(${fn})" style="position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:var(--red);border:none;color:#fff;font-size:.55rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>` : ''}
+      </div>`).join('')}
+    </div>
   </div>`;
+}
+
+/* -- Fotos do equipamento na vistoria (mesmo padrão do Checklist ERO: redimensiona
+      via canvas preenchendo 6x8/8x6 conforme orientação, comprime JPEG e guarda como dataURL) -- */
+function loadEquipVistFoto(event, fn) {
+  const file = event.target.files[0];
+  if (!file) return;
+  window._equipVistFotos = window._equipVistFotos || {};
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const horizontal = img.width >= img.height;
+      const TARGET_W = horizontal ? 640 : 480;
+      const TARGET_H = horizontal ? 480 : 640;
+      const canvas = document.createElement('canvas');
+      canvas.width = TARGET_W;
+      canvas.height = TARGET_H;
+      const ctx = canvas.getContext('2d');
+      const scale = Math.max(TARGET_W / img.width, TARGET_H / img.height);
+      const dw = img.width * scale, dh = img.height * scale;
+      const dx = (TARGET_W - dw) / 2, dy = (TARGET_H - dh) / 2;
+      ctx.drawImage(img, 0, 0, img.width, img.height, dx, dy, dw, dh);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      window._equipVistFotos['foto_' + fn] = dataUrl;
+      window._equipVistFotos['foto_' + fn + '_h'] = horizontal;
+      const prev = document.getElementById('equip_vist_foto_prev_' + fn);
+      if (prev) {
+        prev.innerHTML = `<img src="${dataUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">`;
+        prev.style.borderColor = 'var(--green-main)';
+        prev.style.background = 'transparent';
+      }
+      const wrap = prev ? prev.closest('div[style*="position:relative"]') : null;
+      if (wrap && !wrap.querySelector('button')) {
+        wrap.insertAdjacentHTML('beforeend', `<button onclick="removeEquipVistFoto(${fn})" style="position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:var(--red);border:none;color:#fff;font-size:.55rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>`);
+      }
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function removeEquipVistFoto(fn) {
+  if (window._equipVistFotos) {
+    delete window._equipVistFotos['foto_' + fn];
+    delete window._equipVistFotos['foto_' + fn + '_h'];
+  }
+  navigate('equipamentos');
+  setTimeout(() => { const el = document.getElementById('equip-termo-form'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 150);
 }
 
 /* -- Leitura automática da Nota Fiscal (100% no navegador, reaproveita pdf.js/Tesseract
@@ -9045,8 +9112,9 @@ function renderCatalogoEquipamentos(cat) {
 function renderHistoricoTermosEquipamento(termos) {
   if (!termos.length) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum termo emitido ainda.</div>';
   const ordenado = termos.slice().sort((a,b)=>(b.Id||0)-(a.Id||0));
-  return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Equipamento</th><th>Colaborador</th><th>Recebimento</th><th>Devolução</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
+  return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nº do Termo</th><th>Equipamento</th><th>Colaborador</th><th>Recebimento</th><th>Devolução</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
     ordenado.map(t => `<tr>
+      <td style="font-size:.78rem;font-weight:700">${t.NumeroTermo||('#'+t.Id)}</td>
       <td><strong>${t.EquipamentoNome||'—'}</strong></td>
       <td>${t.Colaborador||'—'}</td>
       <td style="font-size:.78rem">${t.DataRecebimento?new Date(t.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
@@ -9151,6 +9219,7 @@ async function excluirEquipamento(id) {
 
 function abrirTermoEquipamento(equipamentoId) {
   window._equipTermoAtivo = { modo: 'termo', equipamentoId };
+  window._equipVistFotos = {};
   navigate('equipamentos');
   setTimeout(() => { const el = document.getElementById('equip-termo-form'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 150);
 }
@@ -9165,6 +9234,7 @@ function abrirDevolucaoEquipamento(equipamentoId) {
 
 function fecharFormularioTermoEquipamento() {
   window._equipTermoAtivo = null;
+  window._equipVistFotos = {};
   navigate('equipamentos');
 }
 
@@ -9267,13 +9337,18 @@ async function salvarTermoEquipamento(equipamentoId) {
     }
     return { label: item.label, valor, extra };
   }) : [];
+  const fotosVistData = window._equipVistFotos || {};
+  const fotosVistoria = [1,2,3,4].map(fn => fotosVistData['foto_'+fn] ? { src: fotosVistData['foto_'+fn], h: !!fotosVistData['foto_'+fn+'_h'] } : null).filter(Boolean);
   if (!_sigState['sig_equip_termo']) { showToast('⚠️ É necessário assinar o termo antes de emitir.'); return; }
   const canvas = document.getElementById('sig_equip_termo');
   const assinatura = canvas.toDataURL('image/png');
 
   showSyncStatus('Emitindo termo...');
+  const numeroSeq = await obterProximoNumero('EquipamentoTermo');
+  const numeroTermo = `TRUEC-${new Date().getFullYear()}-${String(numeroSeq).padStart(4,'0')}`;
   const termo = await dbInserir('TermosEquipamento', {
-    Title: `Termo - ${eq.Title} - ${colaborador}`,
+    Title: `Termo ${numeroTermo} - ${eq.Title} - ${colaborador}`,
+    NumeroTermo: numeroTermo,
     EquipamentoId: eq.Id,
     EquipamentoNome: eq.Title,
     EquipamentoCategoria: eq.Categoria,
@@ -9288,6 +9363,7 @@ async function salvarTermoEquipamento(equipamentoId) {
     ChecklistConfirmado: checklistEquip,
     ChecklistTipo: equipObterChecklist(eq).chave,
     VistoriaEquipamento: vistoriaData,
+    FotosVistoria: fotosVistoria,
     Status: 'Aberto',
     EmitidoPor: window._currentUser ? window._currentUser.name : '—',
   });
@@ -9297,6 +9373,7 @@ async function salvarTermoEquipamento(equipamentoId) {
   showSyncStatus('Termo emitido!', 'ok', 4000);
   showToast('✅ Termo emitido! Gerando PDF...');
   window._equipTermoAtivo = null;
+  window._equipVistFotos = {};
   await exportarTermoEquipamentoPdf(termo.Id);
   await carregarEquipamentos(true);
 }
@@ -9353,9 +9430,10 @@ async function exportarTermoEquipamentoPdf(termoId) {
   const secCondicao = _secN++;
   const secDevolucao = devolvido ? _secN++ : null;
 
+  const numeroExibicao = termo.NumeroTermo || termo.Id;
   const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
   <meta charset="UTF-8">
-  <title>Termo-${termo.Id}</title>
+  <title>Termo-${numeroExibicao}</title>
   <style>
     @page { size: A4; margin: 12mm 10mm; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -9369,6 +9447,8 @@ async function exportarTermoEquipamentoPdf(termoId) {
     .field-label { font-size: 6.5pt; font-weight: 700; text-transform: uppercase; color: #555; margin-bottom: 2px; }
     .field-value { font-size: 8.5pt; min-height: 14px; }
     .assin-img { max-width: 260px; max-height: 70px; border-bottom: 1px solid #555; }
+    .foto-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 4px; }
+    .foto-img { width: 100%; height: auto; object-fit: cover; background: #fff; border: 1px solid #ccc; border-radius: 3px; display: block; }
     .footer { margin-top: 12px; border-top: 1.5px solid #ccc; padding-top: 6px; font-size: 6.5pt; color: #888; display: flex; justify-content: space-between; }
     @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
   </style></head><body>
@@ -9382,7 +9462,7 @@ async function exportarTermoEquipamentoPdf(termoId) {
     </div>
   </div>
 
-  <div class="title-bar">📋 Termo Nº ${termo.Id} — ${devolvido ? 'Encerrado (Devolvido)' : 'Em Aberto'}</div>
+  <div class="title-bar">📋 Termo Nº ${numeroExibicao} — ${devolvido ? 'Encerrado (Devolvido)' : 'Em Aberto'}</div>
 
   <div class="section">
     <div class="section-title">${secIdentificacao}. Identificação</div>
@@ -9408,6 +9488,11 @@ async function exportarTermoEquipamentoPdf(termoId) {
     <div style="padding:8px">
       ${termo.VistoriaEquipamento.map(v => `<div style="font-size:7.6pt;padding:3px 0;display:flex;justify-content:space-between;gap:10px;border-bottom:1px dotted #ddd"><span>${v.label}</span><strong>${v.valor||'—'}${v.extra ? ' — ' + v.extra.label + ': ' + (v.extra.valor||'—') : ''}</strong></div>`).join('')}
     </div>
+    ${Array.isArray(termo.FotosVistoria) && termo.FotosVistoria.length ? `
+    <div style="padding:8px;border-top:1px solid #eee">
+      <div style="font-size:6.5pt;font-weight:700;text-transform:uppercase;color:#555;margin-bottom:4px">Fotos do Equipamento</div>
+      <div class="foto-grid">${termo.FotosVistoria.map(f => `<img class="foto-img" style="aspect-ratio:${f.h?'4/3':'3/4'}" src="${f.src}">`).join('')}</div>
+    </div>` : ''}
   </div>` : ''}
 
   <div class="section">
@@ -9469,7 +9554,7 @@ async function exportarTermoEquipamentoPdf(termoId) {
       const nomeColab = (termo.Colaborador || 'Colaborador').replace(/[^a-zA-Z0-9À-ú]/g, '_').substring(0, 20);
       const nomeEquip = (termo.EquipamentoNome || 'Equipamento').replace(/[^a-zA-Z0-9À-ú]/g, '_').substring(0, 25);
       const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
-      const nome = `Termo_${nomeEquip}_${nomeColab}_${termo.Id}.html`;
+      const nome = `Termo_${(termo.NumeroTermo||termo.Id).toString().replace(/[^a-zA-Z0-9\-]/g,'_')}_${nomeEquip}_${nomeColab}.html`;
       showSyncStatus('Enviando termo para OneDrive...');
       const url = await uploadParaOneDrive(blob, OD_FOLDERS.termosEquipamento, nome);
       if (url) {
