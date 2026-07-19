@@ -1063,6 +1063,7 @@ const menus = {
       { id: 'checklist_ero', icon: '🌿', label: 'Inspeção ERO' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
     ]},
+    { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
       { id: 'servicos', icon: '💼', label: 'Catálogo de Serviços' },
       { id: 'custos', icon: '🗂️', label: 'Centros de Custo' },
@@ -1096,6 +1097,7 @@ const menus = {
       { id: 'checklist_ero', icon: '🌿', label: 'Inspeção ERO' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
     ]},
+    { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
       { id: 'servicos', icon: '💼', label: 'Catálogo de Serviços' },
       { id: 'pagar', icon: '💸', label: 'Contas a Pagar' },
@@ -1129,6 +1131,7 @@ const menus = {
       { id: 'checklist_ero', icon: '🌿', label: 'Inspeção ERO' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
     ]},
+    { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
       { id: 'pagar', icon: '💸', label: 'Contas a Pagar' },
       { id: 'reembolso', icon: '🧾', label: 'Reembolsos' },
@@ -1274,6 +1277,7 @@ function renderPage(id) {
     custos: () => pageCustos(),
     checklist_ero: () => pageChecklistERO(),
     checklist_bombeamento: () => pageChecklistBombeamento(),
+    equipamentos: () => pageEquipamentos(),
     docs: () => pageGestaoDocumental(),
     documentos: () => pageDocumentos(),
     solicitacoes: () => pageSolicitacoes(),
@@ -8342,6 +8346,437 @@ function exportarBombeamentoPdf() {
   }, 300);
 }
 
+/* =============================================================
+   EQUIPAMENTOS — Termo de Recebimento e Responsabilidade
+   Catálogo de equipamentos + termo assinado digitalmente (canvas)
+   ao ser entregue a um colaborador. Enquanto o termo estiver
+   "Aberto" o equipamento fica travado (Status: 'Em Posse') e só
+   volta a ficar disponível após a devolução (2ª assinatura).
+   ============================================================= */
+
+window._equipCatalogo = null;
+window._equipTermos = null;
+window._equipTermoAtivo = null;
+
+const EQUIP_TERMO_TEXTO = 'Declaro, para os devidos fins, que recebi da EXPEDIAN SOLUÇÕES AMBIENTAIS o equipamento abaixo descrito, em condições de uso regular (ressalvado o disposto no campo "Condição no Recebimento"), comprometendo-me a: (i) utilizá-lo exclusivamente para fins profissionais relacionados às minhas atividades na empresa; (ii) zelar por sua guarda, conservação e bom funcionamento; (iii) comunicar imediatamente qualquer dano, extravio, furto ou mau funcionamento; (iv) devolvê-lo nas mesmas condições de uso normal, ressalvado o desgaste natural, sempre que solicitado pela empresa ou ao término do vínculo. Estou ciente de que sou responsável pela guarda e conservação do equipamento enquanto estiver sob minha posse, podendo responder por danos decorrentes de mau uso, negligência ou extravio, nos termos da legislação aplicável.';
+
+function equipCategoriaIcon(cat) {
+  const m = { 'Notebook/Informática':'💻', 'Ferramenta':'🔧', 'EPI':'🦺', 'Instrumento de Medição':'📐', 'Veículo/Acessório':'🚗', 'Outro':'📦' };
+  return m[cat] || '📦';
+}
+
+async function carregarEquipamentos(forcar) {
+  if (window._equipCatalogo !== null && window._equipTermos !== null && !forcar) return;
+  try {
+    const [cat, term] = await Promise.all([
+      dbLer('Equipamentos').catch(() => []),
+      dbLer('TermosEquipamento').catch(() => []),
+    ]);
+    window._equipCatalogo = Array.isArray(cat) ? cat : [];
+    window._equipTermos = Array.isArray(term) ? term : [];
+  } catch(e) {
+    console.warn('[Equipamentos] Falha ao carregar:', e);
+    window._equipCatalogo = window._equipCatalogo || [];
+    window._equipTermos = window._equipTermos || [];
+  }
+  navigate('equipamentos');
+}
+
+function pageEquipamentos() {
+  if (window._equipCatalogo === null) carregarEquipamentos();
+  const cat = window._equipCatalogo || [];
+  const termos = window._equipTermos || [];
+
+  const total = cat.length;
+  const disponiveis = cat.filter(e => e.Status !== 'Em Posse').length;
+  const emPosse = cat.filter(e => e.Status === 'Em Posse').length;
+  const ativo = window._equipTermoAtivo;
+
+  return `
+  <div class="page-header">
+    <h1>Equipamentos</h1>
+    <p>Termo de recebimento e responsabilidade — controle de posse de equipamentos</p>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi-card blue"><div class="kpi-label">Total de Equipamentos</div><div class="kpi-value">${total}</div><div class="kpi-sub">Cadastrados</div><div class="kpi-icon">🎒</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Disponíveis</div><div class="kpi-value">${disponiveis}</div><div class="kpi-sub">Prontos para entrega</div><div class="kpi-icon">✅</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Em Posse</div><div class="kpi-value">${emPosse}</div><div class="kpi-sub">Com colaboradores</div><div class="kpi-icon">🔒</div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">➕ Cadastrar Novo Equipamento</div>
+    <div class="form-row">
+      <div class="form-group" style="flex:2"><label>Nome do Equipamento</label><input id="equip_novo_nome" placeholder="Ex: Notebook Dell Latitude, GPS Garmin, Furadeira..."></div>
+      <div class="form-group"><label>Categoria</label>
+        <select id="equip_novo_categoria">
+          <option value="Notebook/Informática">💻 Notebook/Informática</option>
+          <option value="Ferramenta">🔧 Ferramenta</option>
+          <option value="EPI">🦺 EPI</option>
+          <option value="Instrumento de Medição">📐 Instrumento de Medição</option>
+          <option value="Veículo/Acessório">🚗 Veículo/Acessório</option>
+          <option value="Outro">📦 Outro</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Patrimônio / Série</label><input id="equip_novo_patrimonio" placeholder="Nº de série ou patrimônio (opcional)"></div>
+    </div>
+    <button class="btn-primary" onclick="salvarNovoEquipamento()">💾 Cadastrar</button>
+  </div>
+
+  ${ativo ? renderFormularioTermoEquipamento(ativo) : ''}
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">📦 Catálogo de Equipamentos</div>
+    ${window._equipCatalogo === null ? '<div style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</div>' : renderCatalogoEquipamentos(cat)}
+  </div>
+
+  <div class="card">
+    <div class="card-title">📋 Histórico de Termos</div>
+    ${window._equipTermos === null ? '<div style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</div>' : renderHistoricoTermosEquipamento(termos)}
+  </div>
+  `;
+}
+
+function renderCatalogoEquipamentos(cat) {
+  if (!cat.length) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum equipamento cadastrado ainda.</div>';
+  const ordenado = cat.slice().sort((a,b)=>(a.Title||'').localeCompare(b.Title||''));
+  return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Equipamento</th><th>Categoria</th><th>Patrimônio</th><th>Status</th><th>Colaborador Atual</th><th>Ações</th></tr></thead><tbody>' +
+    ordenado.map(e => {
+      const emPosse = e.Status === 'Em Posse';
+      return `<tr>
+        <td><strong>${equipCategoriaIcon(e.Categoria)} ${e.Title||'—'}</strong></td>
+        <td style="font-size:.78rem">${e.Categoria||'—'}</td>
+        <td style="font-size:.78rem;color:var(--text-muted)">${e.Patrimonio||'—'}</td>
+        <td><span class="status-pill ${emPosse?'amber':'green'}">${emPosse?'🔒 Em Posse':'✅ Disponível'}</span></td>
+        <td style="font-size:.8rem">${e.ColaboradorAtual||'—'}</td>
+        <td style="white-space:nowrap;display:flex;gap:4px;flex-wrap:wrap">
+          ${!emPosse ? `<button class="btn-primary" style="padding:3px 9px;font-size:.68rem" onclick="abrirTermoEquipamento(${e.Id})">📝 Gerar Termo</button>` : ''}
+          ${emPosse ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem;background:var(--amber);color:#fff" onclick="abrirDevolucaoEquipamento(${e.Id})">🔄 Devolver</button>` : ''}
+          ${emPosse && e.TermoAtualId ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="verTermoEquipamento(${e.TermoAtualId})">👁️ Ver Termo</button>` : ''}
+          <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem;color:var(--red)" onclick="excluirEquipamento(${e.Id})">🗑️</button>
+        </td>
+      </tr>`;
+    }).join('') + '</tbody></table></div>';
+}
+
+function renderHistoricoTermosEquipamento(termos) {
+  if (!termos.length) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum termo emitido ainda.</div>';
+  const ordenado = termos.slice().sort((a,b)=>(b.Id||0)-(a.Id||0));
+  return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Equipamento</th><th>Colaborador</th><th>Recebimento</th><th>Devolução</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
+    ordenado.map(t => `<tr>
+      <td><strong>${t.EquipamentoNome||'—'}</strong></td>
+      <td>${t.Colaborador||'—'}</td>
+      <td style="font-size:.78rem">${t.DataRecebimento?new Date(t.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
+      <td style="font-size:.78rem">${t.DataDevolucao?new Date(t.DataDevolucao+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
+      <td><span class="status-pill ${t.Status==='Devolvido'?'green':'amber'}">${t.Status==='Devolvido'?'✅ Devolvido':'🔒 Aberto'}</span></td>
+      <td><button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="verTermoEquipamento(${t.Id})">👁️ Ver PDF</button></td>
+    </tr>`).join('') + '</tbody></table></div>';
+}
+
+async function salvarNovoEquipamento() {
+  const nome = (document.getElementById('equip_novo_nome').value || '').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do equipamento.'); return; }
+  const categoria = document.getElementById('equip_novo_categoria').value;
+  const patrimonio = (document.getElementById('equip_novo_patrimonio').value || '').trim();
+  showSyncStatus('Cadastrando equipamento...');
+  const novo = await dbInserir('Equipamentos', {
+    Title: nome,
+    Categoria: categoria,
+    Patrimonio: patrimonio,
+    Status: 'Disponível',
+    ColaboradorAtual: '',
+    TermoAtualId: null,
+    CadastradoPor: window._currentUser ? window._currentUser.name : '—',
+  });
+  if (novo) {
+    showToast('✅ Equipamento cadastrado!');
+    showSyncStatus('Equipamento salvo!', 'ok', 3000);
+    await carregarEquipamentos(true);
+  } else {
+    showToast('❌ Erro ao cadastrar. Verifique o login com Microsoft.');
+    showSyncStatus('Falha ao salvar', 'err', 5000);
+  }
+}
+
+async function excluirEquipamento(id) {
+  const eq = (window._equipCatalogo||[]).find(e => e.Id === id);
+  if (!eq) return;
+  if (eq.Status === 'Em Posse') { showToast('⚠️ Não é possível excluir um equipamento em posse de um colaborador. Registre a devolução primeiro.'); return; }
+  if (!confirm(`Excluir "${eq.Title}" do catálogo? Essa ação não pode ser desfeita.`)) return;
+  const lista = await dbLer('Equipamentos');
+  const nova = lista.filter(e => e.Id !== id);
+  const ok = await dbSalvar('Equipamentos', nova);
+  showToast(ok ? '🗑️ Equipamento excluído.' : '❌ Erro ao excluir.');
+  await carregarEquipamentos(true);
+}
+
+function abrirTermoEquipamento(equipamentoId) {
+  window._equipTermoAtivo = { modo: 'termo', equipamentoId };
+  navigate('equipamentos');
+  setTimeout(() => { const el = document.getElementById('equip-termo-form'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 150);
+}
+
+function abrirDevolucaoEquipamento(equipamentoId) {
+  const eq = (window._equipCatalogo||[]).find(e => e.Id === equipamentoId);
+  if (!eq || !eq.TermoAtualId) { showToast('❌ Termo ativo não encontrado para este equipamento.'); return; }
+  window._equipTermoAtivo = { modo: 'devolucao', equipamentoId, termoId: eq.TermoAtualId };
+  navigate('equipamentos');
+  setTimeout(() => { const el = document.getElementById('equip-termo-form'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 150);
+}
+
+function fecharFormularioTermoEquipamento() {
+  window._equipTermoAtivo = null;
+  navigate('equipamentos');
+}
+
+function renderFormularioTermoEquipamento(ativo) {
+  const eq = (window._equipCatalogo||[]).find(e => e.Id === ativo.equipamentoId);
+  if (!eq) return '';
+  const isDevolucao = ativo.modo === 'devolucao';
+  const termo = isDevolucao ? (window._equipTermos||[]).find(t => t.Id === ativo.termoId) : null;
+
+  return `
+  <div class="card" id="equip-termo-form" style="margin-bottom:16px;border-left:4px solid ${isDevolucao?'var(--amber)':'var(--green-main)'}">
+    <div class="card-title">${isDevolucao ? '🔄 Registrar Devolução' : '📝 Termo de Recebimento e Responsabilidade'}</div>
+    <div class="form-row">
+      <div class="form-group"><label>Equipamento</label><input value="${equipCategoriaIcon(eq.Categoria)} ${eq.Title}" readonly style="background:var(--surface2)"></div>
+      ${isDevolucao ? `
+      <div class="form-group"><label>Colaborador</label><input value="${eq.ColaboradorAtual||'—'}" readonly style="background:var(--surface2)"></div>
+      <div class="form-group"><label>Data do Recebimento</label><input value="${termo && termo.DataRecebimento ? new Date(termo.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}" readonly style="background:var(--surface2)"></div>
+      ` : `
+      <div class="form-group"><label>Colaborador</label>
+        <input id="equip_termo_colaborador" list="dl_equip_colaboradores" placeholder="Digite ou selecione o nome...">
+        <datalist id="dl_equip_colaboradores">
+          ${ERO_TECNICOS.map(n => `<option value="${n}">`).join('')}
+        </datalist>
+      </div>
+      <div class="form-group"><label>Data de Recebimento</label><input type="date" id="equip_termo_data" value="${new Date().toISOString().split('T')[0]}"></div>
+      `}
+    </div>
+
+    <div class="form-group">
+      <label>${isDevolucao ? 'Condição do Equipamento na Devolução' : 'Condição do Equipamento no Recebimento'}</label>
+      <textarea id="equip_termo_condicao" style="min-height:60px" placeholder="Descreva o estado do equipamento (funcionando normalmente, riscos visíveis, acessórios inclusos, etc.)"></textarea>
+    </div>
+
+    ${!isDevolucao ? `
+    <div style="font-size:.78rem;color:var(--text-muted);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:14px;line-height:1.5">
+      <strong>Termo de Responsabilidade:</strong><br>${EQUIP_TERMO_TEXTO}
+    </div>` : ''}
+
+    <div class="form-group">
+      <label>Assinatura do Colaborador ${isDevolucao ? '(confirmando a devolução)' : '(confirmando o recebimento)'}</label>
+      <canvas id="sig_equip_termo" width="500" height="90"
+        style="border:1px solid var(--border);border-radius:8px;background:#fff;cursor:crosshair;touch-action:none;width:100%;max-width:500px;height:90px"
+        onmousedown="startSign(event,'sig_equip_termo')" onmousemove="drawSign(event,'sig_equip_termo')"
+        onmouseup="stopSign('sig_equip_termo')" onmouseleave="stopSign('sig_equip_termo')"
+        ontouchstart="startSign(event,'sig_equip_termo')" ontouchmove="drawSign(event,'sig_equip_termo')" ontouchend="stopSign('sig_equip_termo')">
+      </canvas>
+      <div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">
+        <button onclick="clearSig('sig_equip_termo')" style="font-size:.7rem;padding:4px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;color:var(--text-muted)">🗑️ Limpar</button>
+        <button onclick="stampTime('equip_termo_carimbo')" style="font-size:.7rem;padding:4px 12px;border:1px solid var(--green-main);border-radius:6px;background:var(--green-pale);cursor:pointer;color:var(--green-main)">📅 Registrar Data/Hora</button>
+        <span style="font-size:.72rem;color:var(--text-muted)">Carimbo: <strong id="equip_termo_carimbo" style="color:var(--green-main)">—</strong></span>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn-primary" style="background:${isDevolucao?'var(--amber)':'var(--green-main)'}" onclick="${isDevolucao ? `salvarDevolucaoEquipamento(${ativo.termoId})` : `salvarTermoEquipamento(${ativo.equipamentoId})`}">
+        ✅ ${isDevolucao ? 'Confirmar Devolução' : 'Assinar e Emitir Termo'}
+      </button>
+      <button class="btn-secondary" onclick="fecharFormularioTermoEquipamento()">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+async function salvarTermoEquipamento(equipamentoId) {
+  const eq = (window._equipCatalogo||[]).find(e => e.Id === equipamentoId);
+  if (!eq) { showToast('❌ Equipamento não encontrado.'); return; }
+  const colaborador = (document.getElementById('equip_termo_colaborador').value || '').trim();
+  if (!colaborador) { showToast('⚠️ Informe o colaborador que está recebendo o equipamento.'); return; }
+  const data = document.getElementById('equip_termo_data').value || new Date().toISOString().split('T')[0];
+  const condicao = (document.getElementById('equip_termo_condicao').value || '').trim();
+  if (!_sigState['sig_equip_termo']) { showToast('⚠️ É necessário assinar o termo antes de emitir.'); return; }
+  const canvas = document.getElementById('sig_equip_termo');
+  const assinatura = canvas.toDataURL('image/png');
+
+  showSyncStatus('Emitindo termo...');
+  const termo = await dbInserir('TermosEquipamento', {
+    Title: `Termo - ${eq.Title} - ${colaborador}`,
+    EquipamentoId: eq.Id,
+    EquipamentoNome: eq.Title,
+    EquipamentoCategoria: eq.Categoria,
+    EquipamentoPatrimonio: eq.Patrimonio,
+    Colaborador: colaborador,
+    DataRecebimento: data,
+    CondicaoRecebimento: condicao,
+    AssinaturaRecebimento: assinatura,
+    Status: 'Aberto',
+    EmitidoPor: window._currentUser ? window._currentUser.name : '—',
+  });
+  if (!termo) { showToast('❌ Erro ao emitir termo. Verifique o login com Microsoft.'); showSyncStatus('Falha ao salvar', 'err', 5000); return; }
+
+  await dbAtualizar('Equipamentos', eq.Id, { Status: 'Em Posse', ColaboradorAtual: colaborador, TermoAtualId: termo.Id });
+  showSyncStatus('Termo emitido!', 'ok', 4000);
+  showToast('✅ Termo emitido! Gerando PDF...');
+  window._equipTermoAtivo = null;
+  await exportarTermoEquipamentoPdf(termo.Id);
+  await carregarEquipamentos(true);
+}
+
+async function salvarDevolucaoEquipamento(termoId) {
+  const termo = (window._equipTermos||[]).find(t => t.Id === termoId);
+  if (!termo) { showToast('❌ Termo não encontrado.'); return; }
+  const condicao = (document.getElementById('equip_termo_condicao').value || '').trim();
+  if (!_sigState['sig_equip_termo']) { showToast('⚠️ É necessário assinar a devolução.'); return; }
+  const canvas = document.getElementById('sig_equip_termo');
+  const assinaturaDevolucao = canvas.toDataURL('image/png');
+
+  showSyncStatus('Registrando devolução...');
+  const ok = await dbAtualizar('TermosEquipamento', termoId, {
+    Status: 'Devolvido',
+    DataDevolucao: new Date().toISOString().split('T')[0],
+    CondicaoDevolucao: condicao,
+    AssinaturaDevolucao: assinaturaDevolucao,
+    RecebidoDe: window._currentUser ? window._currentUser.name : '—',
+  });
+  if (!ok) { showToast('❌ Erro ao registrar devolução.'); showSyncStatus('Falha ao salvar', 'err', 5000); return; }
+
+  await dbAtualizar('Equipamentos', termo.EquipamentoId, { Status: 'Disponível', ColaboradorAtual: '', TermoAtualId: null });
+  showSyncStatus('Devolução registrada!', 'ok', 4000);
+  showToast('✅ Equipamento devolvido e disponível novamente!');
+  window._equipTermoAtivo = null;
+  await exportarTermoEquipamentoPdf(termoId);
+  await carregarEquipamentos(true);
+}
+
+async function verTermoEquipamento(termoId) {
+  const termo = (window._equipTermos||[]).find(t => t.Id === termoId);
+  if (!termo) { showToast('❌ Termo não encontrado.'); return; }
+  if (termo.documentoUrl) { window.open(termo.documentoUrl, '_blank'); return; }
+  showToast('📄 PDF não arquivado. Gerando visualização...');
+  await exportarTermoEquipamentoPdf(termoId);
+}
+
+async function exportarTermoEquipamentoPdf(termoId) {
+  const lista = await dbLer('TermosEquipamento');
+  const termo = lista.find(t => t.Id === termoId);
+  if (!termo) { showToast('❌ Termo não encontrado para gerar PDF.'); return; }
+
+  const dataRec = termo.DataRecebimento ? new Date(termo.DataRecebimento + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const dataDev = termo.DataDevolucao ? new Date(termo.DataDevolucao + 'T00:00:00').toLocaleDateString('pt-BR') : null;
+  const devolvido = termo.Status === 'Devolvido';
+
+  const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
+  <meta charset="UTF-8">
+  <title>Termo-${termo.Id}</title>
+  <style>
+    @page { size: A4; margin: 12mm 10mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 8.5pt; color: #1a1a1a; }
+    .header { border: 2px solid #2d8c5a; border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .logo-img { height: 44px; object-fit: contain; }
+    .title-bar { background: #2d8c5a; color: #fff; padding: 7px 12px; font-weight: 700; font-size: 10.5pt; margin-bottom: 10px; border-radius: 4px; text-align: center; }
+    .section { margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px; overflow: hidden; }
+    .section-title { background: #2d8c5a; color: #fff; padding: 5px 10px; font-weight: 700; font-size: 8.5pt; }
+    .field { border: 1px solid #ddd; padding: 5px 8px; }
+    .field-label { font-size: 6.5pt; font-weight: 700; text-transform: uppercase; color: #555; margin-bottom: 2px; }
+    .field-value { font-size: 8.5pt; min-height: 14px; }
+    .assin-img { max-width: 260px; max-height: 70px; border-bottom: 1px solid #555; }
+    .footer { margin-top: 12px; border-top: 1.5px solid #ccc; padding-top: 6px; font-size: 6.5pt; color: #888; display: flex; justify-content: space-between; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style></head><body>
+
+  <div class="header">
+    <img src="${_expedianMarromB64}" alt="EXPEDIAN" class="logo-img">
+    <div style="text-align:right;font-size:7.5pt;color:#555">
+      <strong>TERMO DE RECEBIMENTO E RESPONSABILIDADE DE EQUIPAMENTOS</strong><br>
+      Expedian Soluções Ambientais<br>
+      CNPJ: 37.553.680/0001-80
+    </div>
+  </div>
+
+  <div class="title-bar">📋 Termo Nº ${termo.Id} — ${devolvido ? 'Encerrado (Devolvido)' : 'Em Aberto'}</div>
+
+  <div class="section">
+    <div class="section-title">1. Identificação</div>
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:0">
+      <div class="field"><div class="field-label">Equipamento</div><div class="field-value">${termo.EquipamentoNome||'—'}</div></div>
+      <div class="field"><div class="field-label">Categoria</div><div class="field-value">${termo.EquipamentoCategoria||'—'}</div></div>
+      <div class="field"><div class="field-label">Patrimônio/Série</div><div class="field-value">${termo.EquipamentoPatrimonio||'—'}</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+      <div class="field"><div class="field-label">Colaborador</div><div class="field-value">${termo.Colaborador||'—'}</div></div>
+      <div class="field"><div class="field-label">Data de Recebimento</div><div class="field-value">${dataRec}</div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">2. Termo de Responsabilidade</div>
+    <div style="padding:8px;font-size:7.8pt;line-height:1.5;text-align:justify">${EQUIP_TERMO_TEXTO}</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">3. Condição no Recebimento</div>
+    <div style="padding:8px;font-size:8pt;white-space:pre-wrap">${termo.CondicaoRecebimento || 'Nenhuma ressalva registrada.'}</div>
+  </div>
+
+  <div style="margin:16px 0">
+    <div style="font-size:7pt;font-weight:700;color:#555;text-transform:uppercase;margin-bottom:4px">Assinatura do Colaborador — Recebimento</div>
+    ${termo.AssinaturaRecebimento ? `<img class="assin-img" src="${termo.AssinaturaRecebimento}">` : '<div style="border-bottom:1px solid #555;width:260px;height:70px"></div>'}
+    <div style="font-size:7pt;margin-top:3px">${termo.Colaborador||''}</div>
+  </div>
+
+  ${devolvido ? `
+  <div class="section" style="margin-top:14px">
+    <div class="section-title">4. Devolução</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+      <div class="field"><div class="field-label">Data da Devolução</div><div class="field-value">${dataDev||'—'}</div></div>
+      <div class="field"><div class="field-label">Recebido por (Expedian)</div><div class="field-value">${termo.RecebidoDe||'—'}</div></div>
+    </div>
+    <div style="padding:8px;font-size:8pt;white-space:pre-wrap"><strong>Condição na devolução:</strong><br>${termo.CondicaoDevolucao || 'Nenhuma ressalva registrada.'}</div>
+  </div>
+  <div style="margin:16px 0">
+    <div style="font-size:7pt;font-weight:700;color:#555;text-transform:uppercase;margin-bottom:4px">Assinatura do Colaborador — Devolução</div>
+    ${termo.AssinaturaDevolucao ? `<img class="assin-img" src="${termo.AssinaturaDevolucao}">` : '<div style="border-bottom:1px solid #555;width:260px;height:70px"></div>'}
+    <div style="font-size:7pt;margin-top:3px">${termo.Colaborador||''}</div>
+  </div>` : `
+  <div class="section" style="margin-top:14px;border-color:#f0a500">
+    <div class="section-title" style="background:#f0a500">🔒 Equipamento em Posse</div>
+    <div style="padding:8px;font-size:7.8pt;color:#7a5000">Este equipamento está travado no sistema para outros colaboradores até que a devolução seja registrada.</div>
+  </div>`}
+
+  <div class="footer">
+    <span>EXPEDIAN Soluções Ambientais — Nós cuidamos do caminho.</span>
+    <span>Emitido em: ${new Date().toLocaleString('pt-BR')} · Código: EXP-SSMA-TERMO-EQUIP</span>
+  </div>
+
+  <script>window.onload=()=>{ setTimeout(()=>window.print(), 350); };<\/script>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  if (win) { win.document.write(htmlContent); win.document.close(); }
+
+  if (typeof uploadParaOneDrive === 'function') {
+    try {
+      const nomeColab = (termo.Colaborador || 'Colaborador').replace(/[^a-zA-Z0-9À-ú]/g, '_').substring(0, 20);
+      const nomeEquip = (termo.EquipamentoNome || 'Equipamento').replace(/[^a-zA-Z0-9À-ú]/g, '_').substring(0, 25);
+      const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
+      const nome = `Termo_${nomeEquip}_${nomeColab}_${termo.Id}.html`;
+      showSyncStatus('Enviando termo para OneDrive...');
+      const url = await uploadParaOneDrive(blob, OD_FOLDERS.termosEquipamento, nome);
+      if (url) {
+        await dbAtualizar('TermosEquipamento', termo.Id, { documentoUrl: url, documentoNome: nome });
+        showSyncStatus('Termo sincronizado!', 'ok', 4000);
+      } else {
+        showSyncStatus('Falha ao enviar termo ao OneDrive', 'err', 6000);
+      }
+    } catch(e) {
+      console.warn('[Equipamentos] Erro ao sincronizar termo:', e);
+      showSyncStatus('Erro ao sincronizar termo', 'err', 6000);
+    }
+  }
+}
+
 /* ===============================
    BANCO DE DADOS — ONEDRIVE JSON
    Substitui SharePoint. Cada "tabela" é um arquivo JSON
@@ -10204,6 +10639,7 @@ const OD_FOLDERS = {
   checklistsERO:       'Checklists/ERO',
   checklistsVeicular:  'Checklists/Veicular',
   checklistsBombeamento: 'Checklists/Bombeamento',
+  termosEquipamento: 'Termos/Equipamentos',
   aprs:       'APRs',
   prestacao:  'PrestacaoContas',
   reembolso:  'Reembolso',
