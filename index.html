@@ -4820,6 +4820,7 @@ function laRenderizarLista() {
         '</div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
           '<button class="btn-secondary" style="font-size:.75rem;padding:5px 10px" onclick="laAbrirRma(\''+l.id+'\')">'+(l.tipo==='OUTORGA'?'📊 Laudos':'📊 RMAs')+'</button>' +
+          '<button style="font-size:.75rem;padding:5px 10px;border:1px solid #f0a50055;background:#fffdf5;color:#b07700;border-radius:8px;cursor:pointer" onclick="laNotificarVencimentos(\''+l.id+'\')" title="Ver documentos vencidos ou próximos do vencimento">🔔 Notificar</button>' +
           '<button class="btn-secondary" style="font-size:.75rem;padding:5px 10px" onclick="laEditar(\''+l.id+'\')">✏️ Editar</button>' +
           '<button style="font-size:.75rem;padding:5px 10px;border:1px solid #dc354533;background:#fff5f5;color:#dc3545;border-radius:8px;cursor:pointer" onclick="laExcluir(\''+l.id+'\')">🗑️</button>' +
         '</div>' +
@@ -4889,6 +4890,121 @@ function laTogglePeriodos(licId, tipoStatus) {
   '</div>';
   cont.dataset.tipo = tipoStatus;
   cont.style.display = 'block';
+}
+
+/* -- Alerta de vencimento: mostra, dentro do card da licença, os RMAs/Laudos
+   vencidos ou que vencem nos próximos 30 dias, com opção de notificar o
+   cliente (gera texto pronto para copiar — o app não envia e-mail/WhatsApp). -- */
+var LA_DIAS_ALERTA_VENCIMENTO = 30;
+
+function laNotificarVencimentos(licId) {
+  var l = LA_DADOS.find(function(x){return x.id===licId;});
+  var cont = document.getElementById('la-periodos-'+licId);
+  if (!l || !cont) return;
+
+  if (cont.style.display !== 'none' && cont.dataset.tipo === 'notificar') {
+    cont.style.display = 'none';
+    cont.dataset.tipo = '';
+    return;
+  }
+
+  var hoje = new Date(); hoje.setHours(0,0,0,0);
+  var pendentes = (l.rmas||[]).filter(function(r){ return r.status !== 'entregue'; });
+  var vencidos = pendentes.filter(function(r){ return new Date(r.prazo+'T00:00:00') < hoje; })
+    .sort(function(a,b){ return new Date(a.prazo+'T00:00:00') - new Date(b.prazo+'T00:00:00'); });
+  var proximos = pendentes.filter(function(r){
+    var d = Math.round((new Date(r.prazo+'T00:00:00')-hoje)/86400000);
+    return d >= 0 && d <= LA_DIAS_ALERTA_VENCIMENTO;
+  }).sort(function(a,b){ return new Date(a.prazo+'T00:00:00') - new Date(b.prazo+'T00:00:00'); });
+
+  if (vencidos.length === 0 && proximos.length === 0) {
+    showToast('✅ Nenhum ' + (l.tipo==='OUTORGA'?'laudo':'RMA') + ' vencido ou próximo do vencimento (' + LA_DIAS_ALERTA_VENCIMENTO + ' dias).');
+    cont.style.display = 'none';
+    cont.dataset.tipo = '';
+    return;
+  }
+
+  showToast('🔔 ' + vencidos.length + ' vencido(s) e ' + proximos.length + ' próximo(s) do vencimento.');
+
+  var nomeDoc = l.tipo === 'OUTORGA' ? 'Laudo' : 'RMA';
+  function itemHtml(r, grupo) {
+    var cor    = grupo === 'vencido' ? '#dc3545' : '#f0a500';
+    var bg     = grupo === 'vencido' ? '#fff5f5' : '#fff8ec';
+    var rotulo = grupo === 'vencido' ? 'VENCIDO' : 'PRÓXIMO DO VENCIMENTO';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;border-radius:6px;background:'+bg+';border:1px solid '+cor+'33;margin-bottom:5px;font-size:.78rem">' +
+      '<span><strong style="color:'+cor+'">['+rotulo+']</strong> '+nomeDoc+' — '+r.periodo+' &nbsp;·&nbsp; Prazo: '+laFormatarData(r.prazo)+'</span>' +
+      '<button style="font-size:.72rem;padding:3px 8px;border:1px solid var(--brand-green);background:white;color:var(--brand-green);border-radius:6px;cursor:pointer;white-space:nowrap" onclick="laAbrirNotificacaoCliente(\''+licId+'\',\''+r.id+'\')">✉️ Notificar cliente</button>' +
+    '</div>';
+  }
+
+  var linhas = vencidos.map(function(r){ return itemHtml(r,'vencido'); }).join('') +
+               proximos.map(function(r){ return itemHtml(r,'proximo'); }).join('');
+
+  cont.innerHTML = '<div style="border:1px solid #f0a50033;background:#fffdf5;border-radius:10px;padding:10px 12px">' +
+    '<div style="font-size:.76rem;font-weight:700;color:#7a5e00;margin-bottom:6px">🔔 Documentos que precisam de atenção</div>' +
+    linhas +
+  '</div>';
+  cont.dataset.tipo = 'notificar';
+  cont.style.display = 'block';
+}
+
+function laAbrirNotificacaoCliente(licId, rmaId) {
+  var l = LA_DADOS.find(function(x){return x.id===licId;}); if(!l) return;
+  var r = (l.rmas||[]).find(function(x){return x.id===rmaId;}); if(!r) return;
+
+  var hoje = new Date(); hoje.setHours(0,0,0,0);
+  var vencido = new Date(r.prazo+'T00:00:00') < hoje;
+  var nomeDoc = l.tipo === 'OUTORGA' ? 'Laudo de Potabilidade da Água' : 'RMA (Relatório de Monitoramento Ambiental)';
+  var tipoLic = laNomeTipoLicenca(l.tipo);
+
+  var situacaoTxt = vencido
+    ? 'O prazo já expirou. Recomendamos a regularização o quanto antes, para evitar autuação, multa ou risco à validade da licença.'
+    : 'O prazo está se aproximando. Recomendamos iniciar a elaboração com antecedência para evitar qualquer atraso.';
+
+  var msg = 'Prezado(a) [Nome do contato],\n\n' +
+    'Este é um lembrete referente ao ' + nomeDoc + ' do empreendimento ' + (l.cliente||'[Cliente]') + ' — ' + tipoLic + ' nº ' + (l.numero||'—') + ', junto ao ' + (l.orgao||'órgão competente') + '.\n\n' +
+    'Período de referência: ' + r.periodo + '\n' +
+    'Prazo de entrega: ' + laFormatarData(r.prazo) + '\n' +
+    'Situação: ' + (vencido ? 'em atraso' : 'vencimento próximo') + '\n\n' +
+    situacaoTxt + '\n\n' +
+    'Ficamos à disposição para dar andamento à elaboração e ao protocolo deste documento junto ao órgão ambiental.\n\n' +
+    'Atenciosamente,\n' +
+    'Expedian Soluções Ambientais';
+
+  var old = document.getElementById('la-notif-modal');
+  if (old) old.remove();
+  var m = document.createElement('div');
+  m.id = 'la-notif-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  m.innerHTML = '<div style="background:#fff;border-radius:12px;padding:22px 24px;width:520px;max-width:96vw;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25)">' +
+    '<div style="font-size:1rem;font-weight:800;color:var(--brand-brown);margin-bottom:4px">✉️ Mensagem para o cliente</div>' +
+    '<div style="font-size:.75rem;color:var(--text-muted);margin-bottom:12px">Revise e ajuste antes de enviar. Copie o texto e cole no e-mail ou WhatsApp.</div>' +
+    '<textarea id="la-notif-texto" rows="14" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:.82rem;font-family:Arial,sans-serif;resize:vertical"></textarea>' +
+    '<div style="display:flex;gap:10px;margin-top:14px;justify-content:flex-end">' +
+      '<button onclick="document.getElementById(\'la-notif-modal\').remove()" style="padding:8px 18px;border:1px solid #ccc;background:white;border-radius:8px;cursor:pointer;font-size:.82rem">Fechar</button>' +
+      '<button onclick="laCopiarNotificacao()" style="padding:8px 20px;background:var(--brand-green);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:.82rem">📋 Copiar texto</button>' +
+    '</div>' +
+  '</div>';
+  document.body.appendChild(m);
+  document.getElementById('la-notif-texto').value = msg;
+}
+
+function laCopiarNotificacao() {
+  var ta = document.getElementById('la-notif-texto');
+  if (!ta) return;
+  ta.focus();
+  ta.select();
+  try {
+    navigator.clipboard.writeText(ta.value).then(function(){
+      showToast('📋 Texto copiado!');
+    }).catch(function(){
+      document.execCommand('copy');
+      showToast('📋 Texto copiado!');
+    });
+  } catch(e) {
+    document.execCommand('copy');
+    showToast('📋 Texto copiado!');
+  }
 }
 
 /* -- RELATÓRIOS (Licenciamento Ambiental) -- */
@@ -5460,13 +5576,16 @@ function laGerarModeloRMA(licId, rmaId) {
       <tr><td class="label">Última vistoria estrutural/náutica</td><td class="campo">___/___/______</td><td class="label">Empresa/responsável</td><td class="campo">___</td></tr>
       <tr><td class="label">Certificado de segurança da navegação (Marinha)</td><td class="campo">☐ Válido &nbsp; ☐ Vencido</td><td class="label">Nº do certificado</td><td class="campo">___</td></tr>
       <tr><td class="label">Sinalização náutica/balizamento</td><td class="campo" colspan="3">☐ Adequada &nbsp; ☐ Inadequada &nbsp; ☐ Não possui</td></tr>
+      <tr><td class="label">Dispositivos de proteção contra colisão/abalroamento (pneus/defensas ao longo do costado)</td><td class="campo" colspan="3">☐ Instalados e íntegros &nbsp; ☐ Parcialmente instalados &nbsp; ☐ Não possui</td></tr>
     </table></div>
     <div class="secao"><div class="sec-titulo">5. ARMAZENAMENTO E TRANSFERÊNCIA DE COMBUSTÍVEL</div>
     <table class="tb-form">
       <tr><td class="label">Quantidade de tanques/reservatórios</td><td class="campo">___</td><td class="label">Capacidade total (litros)</td><td class="campo">___</td></tr>
       <tr><td class="label">Sistema de contenção de vazamentos (bandejas/anteparos)</td><td class="campo" colspan="3">☐ Possui &nbsp; ☐ Não possui</td></tr>
       <tr><td class="label">Mangotes e conexões de abastecimento</td><td class="campo">☐ Íntegros &nbsp; ☐ Com desgaste</td><td class="label">Última inspeção de estanqueidade</td><td class="campo">___/___/______</td></tr>
+      <tr><td class="label">Idade dos mangotes dentro do prazo do fabricante</td><td class="campo">☐ Sim &nbsp; ☐ Não — substituir</td><td class="label">Dispositivo de aterramento dos mangotes</td><td class="campo">☐ Possui e funcional &nbsp; ☐ Não possui</td></tr>
       <tr><td class="label">Procedimento de abastecimento de embarcações</td><td class="campo" colspan="3">☐ Conforme &nbsp; ☐ Não conforme — descrever: ___</td></tr>
+      <tr><td class="label">Treinamento da equipe para transferência de produto (acoplamento/desacoplamento)</td><td class="campo" colspan="3">☐ Sim &nbsp; ☐ Não</td></tr>
     </table></div>
     <div class="secao"><div class="sec-titulo">6. QUALIDADE DA ÁGUA E RESPOSTA A EMERGÊNCIAS</div>
     <table class="tb-form">
