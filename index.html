@@ -8255,8 +8255,119 @@ const BOMB_FOTO_SLOTS = [
   { key: 'bomba',          label: 'Bomba instalada' },
 ];
 
-function bombCampo(campo, valor) { window._bombData[campo] = valor; }
-function bombLinha(tabela, tempo, campo, valor) { window._bombData[tabela + '_' + tempo + '_' + campo] = valor; }
+function bombCampo(campo, valor) {
+  window._bombData[campo] = valor;
+  if (campo === 'dataInicio') window._bombData.data = valor; // compatibilidade com código existente (histórico, título)
+  if (campo === 'nivelEstatico') bombRecalcularTodosSw();
+}
+
+/* -- Compatibilidade: testes salvos antes da tabela dinâmica usavam linhas fixas
+   (bombeamento_<t>_nivel/vazao, recuperacao_<t>_nivel). Converte pra bombLinhas/
+   recLinhas na primeira vez que o teste é aberto, sem perder dados antigos. -- */
+function bombMigrarSeNecessario(d) {
+  if (!Array.isArray(d.bombLinhas)) {
+    var linhas = [];
+    BOMB_TEMPOS_BOMBEAMENTO.forEach(function(t) {
+      var nivel = d['bombeamento_'+t+'_nivel'];
+      var vazao = d['bombeamento_'+t+'_vazao'];
+      if (nivel || vazao) linhas.push({ hora:'', t:String(t), nd:nivel||'', q:vazao||'' });
+    });
+    d.bombLinhas = linhas;
+  }
+  if (!Array.isArray(d.recLinhas)) {
+    var linhas2 = [];
+    BOMB_TEMPOS_RECUPERACAO.forEach(function(t) {
+      var nivel = d['recuperacao_'+t+'_nivel'];
+      if (nivel) linhas2.push({ hora:'', tprime:String(t), nd:nivel||'' });
+    });
+    d.recLinhas = linhas2;
+  }
+}
+
+/* -- Sw (rebaixamento) = Nível Dinâmico − Nível Estático, calculado automaticamente
+   a partir do campo "Nível Estático" preenchido no cabeçalho. -- */
+function bombCalcSw(ndStr) {
+  var ne = parseFloat((window._bombData.nivelEstatico||'').toString().replace(',','.'));
+  var nd = parseFloat((ndStr||'').toString().replace(',','.'));
+  if (isNaN(ne) || isNaN(nd)) return '';
+  return (nd - ne).toFixed(2);
+}
+
+/* -- tb = tempo total de bombeamento (min), obtido automaticamente como o maior
+   "t" preenchido na tabela de bombeamento. Usado na razão tb/t'+1 (método de
+   Theis para recuperação, base para estimar a transmissividade do aquífero). -- */
+function bombObterTb() {
+  var linhas = window._bombData.bombLinhas || [];
+  var max = 0;
+  linhas.forEach(function(l) {
+    var t = parseFloat((l.t||'').toString().replace(',','.'));
+    if (!isNaN(t) && t > max) max = t;
+  });
+  return max;
+}
+function bombCalcRatio(tprimeStr) {
+  var tb = bombObterTb();
+  var tprime = parseFloat((tprimeStr||'').toString().replace(',','.'));
+  if (!tb || isNaN(tprime) || tprime <= 0) return '';
+  return ((tb + tprime) / tprime).toFixed(2);
+}
+
+function bombRecalcularTodosSw() {
+  (window._bombData.bombLinhas||[]).forEach(function(l, idx) {
+    var el = document.getElementById('bomb-sw-b-'+idx);
+    if (el) el.textContent = bombCalcSw(l.nd) || '—';
+  });
+  (window._bombData.recLinhas||[]).forEach(function(l, idx) {
+    var el = document.getElementById('bomb-sw-r-'+idx);
+    if (el) el.textContent = bombCalcSw(l.nd) || '—';
+  });
+}
+function bombAtualizarTodosRatios() {
+  (window._bombData.recLinhas||[]).forEach(function(l, idx) {
+    var el = document.getElementById('bomb-ratio-r-'+idx);
+    if (el) el.textContent = bombCalcRatio(l.tprime) || '—';
+  });
+}
+
+function bombAtualizarLinhaBomb(idx, campo, valor) {
+  window._bombData.bombLinhas[idx][campo] = valor;
+  if (campo === 'nd') {
+    var el = document.getElementById('bomb-sw-b-'+idx);
+    if (el) el.textContent = bombCalcSw(valor) || '—';
+  }
+  if (campo === 't') {
+    var tbEl = document.getElementById('bomb-tb-valor');
+    if (tbEl) tbEl.textContent = bombObterTb() || '—';
+    bombAtualizarTodosRatios();
+  }
+}
+function bombAtualizarLinhaRec(idx, campo, valor) {
+  window._bombData.recLinhas[idx][campo] = valor;
+  if (campo === 'nd') {
+    var el = document.getElementById('bomb-sw-r-'+idx);
+    if (el) el.textContent = bombCalcSw(valor) || '—';
+  }
+  if (campo === 'tprime') {
+    var el2 = document.getElementById('bomb-ratio-r-'+idx);
+    if (el2) el2.textContent = bombCalcRatio(valor) || '—';
+  }
+}
+
+function bombAddLinha(tabela) {
+  if (tabela === 'bomb') {
+    if (!Array.isArray(window._bombData.bombLinhas)) window._bombData.bombLinhas = [];
+    window._bombData.bombLinhas.push({ hora:'', t:'', nd:'', q:'' });
+  } else {
+    if (!Array.isArray(window._bombData.recLinhas)) window._bombData.recLinhas = [];
+    window._bombData.recLinhas.push({ hora:'', tprime:'', nd:'' });
+  }
+  navigate('checklist_bombeamento');
+}
+function bombRemoverLinha(tabela, idx) {
+  if (tabela === 'bomb') window._bombData.bombLinhas.splice(idx,1);
+  else window._bombData.recLinhas.splice(idx,1);
+  navigate('checklist_bombeamento');
+}
 
 function bombNovoTeste() {
   if (window._bombData && Object.keys(window._bombData).length && !confirm('Isso vai limpar o formulário atual (os dados não salvos serão perdidos). Deseja continuar?')) return;
@@ -8301,7 +8412,9 @@ function renderBombHistoricoLista() {
 
 function pageChecklistBombeamento() {
   const d = window._bombData;
+  bombMigrarSeNecessario(d);
   if (window._bombHistorico === null) carregarBombeamentoHistorico();
+  const tb = bombObterTb();
 
   return `
   <div class="page-header">
@@ -8319,13 +8432,18 @@ function pageChecklistBombeamento() {
     <div class="card-title">Dados Gerais</div>
     <div class="form-row">
       <div class="form-group" style="flex:2"><label>Cliente / Empreendimento</label><input id="bomb_empreendimento" value="${d.empreendimento||''}" oninput="bombCampo('empreendimento',this.value)" placeholder="Nome do cliente / empreendimento"></div>
-      <div class="form-group"><label>Responsável</label>
+      <div class="form-group"><label>Município/UF</label><input id="bomb_municipio" value="${d.municipio||''}" oninput="bombCampo('municipio',this.value)" placeholder="Ex: Costa Marques/RO"></div>
+      <div class="form-group"><label>Poço nº</label><input id="bomb_poco_num" value="${d.pocoNumero||''}" oninput="bombCampo('pocoNumero',this.value)" placeholder="Ex: 01"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Responsável / Executor</label>
         <select id="bomb_responsavel" onchange="bombCampo('responsavel',this.value)">
           <option value="">Selecione...</option>
           ${ERO_TECNICOS.map(n => `<option value="${n}" ${(d.responsavel||(window._currentUser?window._currentUser.name:''))===n?'selected':''}>${n}</option>`).join('')}
         </select>
       </div>
-      <div class="form-group"><label>Data</label><input type="date" id="bomb_data" value="${d.data||''}" oninput="bombCampo('data',this.value)"></div>
+      <div class="form-group"><label>Data de Início</label><input type="date" id="bomb_data_inicio" value="${d.dataInicio||d.data||''}" oninput="bombCampo('dataInicio',this.value)"></div>
+      <div class="form-group"><label>Data de Término</label><input type="date" id="bomb_data_termino" value="${d.dataTermino||''}" oninput="bombCampo('dataTermino',this.value)"></div>
     </div>
   </div>
 
@@ -8335,6 +8453,11 @@ function pageChecklistBombeamento() {
       <div class="form-group"><label>Latitude (SIRGAS 2000)</label><input id="bomb_lat" value="${d.latitude||''}" oninput="bombCampo('latitude',this.value)" placeholder="Ex: -11.123456"></div>
       <div class="form-group"><label>Longitude (SIRGAS 2000)</label><input id="bomb_lng" value="${d.longitude||''}" oninput="bombCampo('longitude',this.value)" placeholder="Ex: -61.123456"></div>
       <div class="form-group"><label>Diâmetro do poço (pol)</label><input id="bomb_diam" value="${d.diametroPoco||''}" oninput="bombCampo('diametroPoco',this.value)"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Elevação (m)</label><input id="bomb_elevacao" value="${d.elevacao||''}" oninput="bombCampo('elevacao',this.value)"></div>
+      <div class="form-group"><label>Boca do Poço (m)</label><input id="bomb_boca" value="${d.bocaDoPoco||''}" oninput="bombCampo('bocaDoPoco',this.value)"></div>
+      <div class="form-group"><label>Profundidade do poço (m)</label><input id="bomb_prof" value="${d.profundidadePoco||''}" oninput="bombCampo('profundidadePoco',this.value)"></div>
     </div>
     <div class="form-row">
       <div class="form-group" style="flex:2"><label>Material do revestimento</label><input id="bomb_material" value="${d.materialRevestimento||''}" oninput="bombCampo('materialRevestimento',this.value)" placeholder="Tirar foto de detalhe"></div>
@@ -8354,44 +8477,55 @@ function pageChecklistBombeamento() {
     </div>
     <div class="form-row">
       <div class="form-group"><label>Crivo da Bomba (m)</label><input id="bomb_crivo" value="${d.crivoBomba||''}" oninput="bombCampo('crivoBomba',this.value)" placeholder="Profundidade em que está instalada"></div>
-      <div class="form-group"><label>Profundidade do poço (m)</label><input id="bomb_prof" value="${d.profundidadePoco||''}" oninput="bombCampo('profundidadePoco',this.value)"></div>
+      <div class="form-group"><label>Volume do tambor/balde usado (L)</label><input id="bomb_volume" value="${d.volumeTambor||''}" oninput="bombCampo('volumeTambor',this.value)"></div>
+      <div class="form-group"><label>Nível Estático (m)</label><input id="bomb_nivel_est" value="${d.nivelEstatico||''}" oninput="bombCampo('nivelEstatico',this.value)" placeholder="Medido com o poço desligado, antes de iniciar"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>Volume do tambor/balde usado (L)</label><input id="bomb_volume" value="${d.volumeTambor||''}" oninput="bombCampo('volumeTambor',this.value)"></div>
-      <div class="form-group"><label>Nível Estático (m)</label><input id="bomb_nivel_est" value="${d.nivelEstatico||''}" oninput="bombCampo('nivelEstatico',this.value)" placeholder="Medido com o poço desligado"></div>
+      <div class="form-group"><label>Tempo de Bombeamento (h)</label><input id="bomb_tempo_h" value="${d.tempoBombeamentoHoras||''}" oninput="bombCampo('tempoBombeamentoHoras',this.value)" placeholder="Duração total prevista/realizada"></div>
+      <div class="form-group"><label>Vazão média (m³/h)</label><input id="bomb_vazao_media" value="${d.vazaoMedia||''}" oninput="bombCampo('vazaoMedia',this.value)"></div>
     </div>
   </div>
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">Tabela do Teste de Bombeamento</div>
-    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">Desligue a bomba do automático, deixe no manual. Ligue e só desligue ao terminar o teste. Meça a vazão no 1º minuto e repita em cada linha até o poço estabilizar.</div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">Desligue a bomba do automático, deixe no manual. Ligue e só desligue ao terminar o teste. Meça a vazão no 1º minuto e repita em cada linha até o poço estabilizar. O Sw (rebaixamento) é calculado automaticamente a partir do Nível Estático informado acima.</div>
     <div style="overflow-x:auto">
       <table class="data-table">
-        <thead><tr><th>Tempo (min)</th><th>Nível Dinâmico (m)</th><th>Tempo p/ encher recipiente (s) ou vazão (m³/h)</th></tr></thead>
+        <thead><tr><th>Hora</th><th>t (min)</th><th>N.D. (m)</th><th>Sw (m)</th><th>Q (m³/h)</th><th></th></tr></thead>
         <tbody>
-          ${BOMB_TEMPOS_BOMBEAMENTO.map(t => `<tr>
-            <td>${t}</td>
-            <td><input style="width:100%" value="${d['bombeamento_'+t+'_nivel']||''}" oninput="bombLinha('bombeamento',${t},'nivel',this.value)"></td>
-            <td><input style="width:100%" value="${d['bombeamento_'+t+'_vazao']||''}" oninput="bombLinha('bombeamento',${t},'vazao',this.value)"></td>
+          ${(d.bombLinhas||[]).map((l,idx) => `<tr>
+            <td><input type="time" step="1" style="width:100%" value="${l.hora||''}" oninput="bombAtualizarLinhaBomb(${idx},'hora',this.value)"></td>
+            <td><input style="width:64px" value="${l.t||''}" oninput="bombAtualizarLinhaBomb(${idx},'t',this.value)"></td>
+            <td><input style="width:80px" value="${l.nd||''}" oninput="bombAtualizarLinhaBomb(${idx},'nd',this.value)"></td>
+            <td id="bomb-sw-b-${idx}" style="font-weight:700;color:var(--brand-green,#3a7030)">${bombCalcSw(l.nd)||'—'}</td>
+            <td><input style="width:70px" value="${l.q||''}" oninput="bombAtualizarLinhaBomb(${idx},'q',this.value)"></td>
+            <td><button onclick="bombRemoverLinha('bomb',${idx})" style="background:none;border:none;color:#dc3545;cursor:pointer;font-size:.95rem" title="Remover linha">✕</button></td>
           </tr>`).join('')}
         </tbody>
       </table>
     </div>
+    <button class="btn-secondary" style="margin-top:8px;font-size:.78rem" onclick="bombAddLinha('bomb')">+ Adicionar linha</button>
   </div>
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">Tabela do Teste de Recuperação</div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">tb = tempo total de bombeamento = <strong id="bomb-tb-valor">${tb||'—'}</strong> min (maior "t" preenchido na tabela acima). A razão tb/t'+1 é usada no método de Theis para estimar a transmissividade do aquífero.</div>
     <div style="overflow-x:auto">
       <table class="data-table">
-        <thead><tr><th>Tempo (min)</th><th>Nível Dinâmico (m)</th></tr></thead>
+        <thead><tr><th>Hora</th><th>t' (min)</th><th>N.D. (m)</th><th>Sw (m)</th><th>tb/t'+1</th><th></th></tr></thead>
         <tbody>
-          ${BOMB_TEMPOS_RECUPERACAO.map(t => `<tr>
-            <td>${t}</td>
-            <td><input style="width:100%" value="${d['recuperacao_'+t+'_nivel']||''}" oninput="bombLinha('recuperacao',${t},'nivel',this.value)"></td>
+          ${(d.recLinhas||[]).map((l,idx) => `<tr>
+            <td><input type="time" step="1" style="width:100%" value="${l.hora||''}" oninput="bombAtualizarLinhaRec(${idx},'hora',this.value)"></td>
+            <td><input style="width:64px" value="${l.tprime||''}" oninput="bombAtualizarLinhaRec(${idx},'tprime',this.value)"></td>
+            <td><input style="width:80px" value="${l.nd||''}" oninput="bombAtualizarLinhaRec(${idx},'nd',this.value)"></td>
+            <td id="bomb-sw-r-${idx}" style="font-weight:700;color:var(--brand-green,#3a7030)">${bombCalcSw(l.nd)||'—'}</td>
+            <td id="bomb-ratio-r-${idx}">${bombCalcRatio(l.tprime)||'—'}</td>
+            <td><button onclick="bombRemoverLinha('rec',${idx})" style="background:none;border:none;color:#dc3545;cursor:pointer;font-size:.95rem" title="Remover linha">✕</button></td>
           </tr>`).join('')}
         </tbody>
       </table>
     </div>
+    <button class="btn-secondary" style="margin-top:8px;font-size:.78rem" onclick="bombAddLinha('rec')">+ Adicionar linha</button>
   </div>
 
   <div class="card" style="margin-bottom:16px">
@@ -8542,18 +8676,26 @@ function exportarBombeamentoPdf() {
   showToast('🔄 Gerando relatório... aguarde.');
   setTimeout(async () => {
     const d = window._bombData;
-    const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
+    bombMigrarSeNecessario(d);
+    const dataInicioFmt  = (d.dataInicio||d.data) ? new Date((d.dataInicio||d.data) + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
+    const dataTerminoFmt = d.dataTermino ? new Date(d.dataTermino + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
     const tipoBombaLabel = d.tipoBomba === 'submersa' ? 'Submersa' : d.tipoBomba === 'superficie' ? 'Superfície' : '—';
+    const tbMin = bombObterTb();
 
-    const linhasBombeamento = BOMB_TEMPOS_BOMBEAMENTO.map(t => `<tr>
-      <td>${t}</td>
-      <td>${d['bombeamento_'+t+'_nivel'] || '—'}</td>
-      <td>${d['bombeamento_'+t+'_vazao'] || '—'}</td>
+    const linhasBombeamento = (d.bombLinhas||[]).map(l => `<tr>
+      <td>${l.hora || '—'}</td>
+      <td>${l.t || '—'}</td>
+      <td>${l.nd || '—'}</td>
+      <td>${bombCalcSw(l.nd) || '—'}</td>
+      <td>${l.q || '—'}</td>
     </tr>`).join('');
 
-    const linhasRecuperacao = BOMB_TEMPOS_RECUPERACAO.map(t => `<tr>
-      <td>${t}</td>
-      <td>${d['recuperacao_'+t+'_nivel'] || '—'}</td>
+    const linhasRecuperacao = (d.recLinhas||[]).map(l => `<tr>
+      <td>${l.hora || '—'}</td>
+      <td>${l.tprime || '—'}</td>
+      <td>${l.nd || '—'}</td>
+      <td>${bombCalcSw(l.nd) || '—'}</td>
+      <td>${bombCalcRatio(l.tprime) || '—'}</td>
     </tr>`).join('');
 
     const fotosHtml = BOMB_FOTO_SLOTS.filter(s => d['foto_'+s.key]).map(s => `
@@ -8591,30 +8733,35 @@ function exportarBombeamentoPdf() {
     </div>
 
     <table>
-      <tr><th style="width:50%">Cliente / Empreendimento</th><th style="width:25%">Data</th><th style="width:25%">Responsável</th></tr>
-      <tr><td><strong>${d.empreendimento||'—'}</strong></td><td>${dataFmt}</td><td>${d.responsavel||'—'}</td></tr>
+      <tr><th style="width:40%">Cliente / Empreendimento</th><th style="width:20%">Município/UF</th><th style="width:15%">Poço nº</th><th style="width:25%">Responsável / Executor</th></tr>
+      <tr><td><strong>${d.empreendimento||'—'}</strong></td><td>${d.municipio||'—'}</td><td>${d.pocoNumero||'—'}</td><td>${d.responsavel||'—'}</td></tr>
+      <tr><th colspan="2">Data de Início</th><th colspan="2">Data de Término</th></tr>
+      <tr><td colspan="2">${dataInicioFmt}</td><td colspan="2">${dataTerminoFmt}</td></tr>
     </table>
 
     <div class="section-title">Dados do Poço</div>
     <table>
       <tr><td style="font-weight:700;width:25%">Latitude</td><td style="width:25%">${d.latitude||'—'}</td><td style="font-weight:700;width:25%">Longitude</td><td style="width:25%">${d.longitude||'—'}</td></tr>
+      <tr><td style="font-weight:700">Elevação (m)</td><td>${d.elevacao||'—'}</td><td style="font-weight:700">Boca do Poço (m)</td><td>${d.bocaDoPoco||'—'}</td></tr>
       <tr><td style="font-weight:700">Diâmetro do poço (pol)</td><td>${d.diametroPoco||'—'}</td><td style="font-weight:700">Material do revestimento</td><td>${d.materialRevestimento||'—'}</td></tr>
       <tr><td style="font-weight:700">Nº do hidrômetro</td><td>${d.numHidrometro||'—'}</td><td style="font-weight:700">Tipo da bomba</td><td>${tipoBombaLabel}</td></tr>
       <tr><td style="font-weight:700">Marca da bomba</td><td>${d.marcaBomba||'—'}</td><td style="font-weight:700">Modelo da bomba</td><td>${d.modeloBomba||'—'}</td></tr>
       <tr><td style="font-weight:700">Potência da bomba</td><td>${d.potenciaBomba||'—'}</td><td style="font-weight:700">Crivo da bomba (m)</td><td>${d.crivoBomba||'—'}</td></tr>
       <tr><td style="font-weight:700">Profundidade do poço (m)</td><td>${d.profundidadePoco||'—'}</td><td style="font-weight:700">Volume do tambor/balde (L)</td><td>${d.volumeTambor||'—'}</td></tr>
-      <tr><td style="font-weight:700">Nível Estático (m)</td><td colspan="3">${d.nivelEstatico||'—'}</td></tr>
+      <tr><td style="font-weight:700">Nível Estático (m)</td><td>${d.nivelEstatico||'—'}</td><td style="font-weight:700">Tempo de Bombeamento (h)</td><td>${d.tempoBombeamentoHoras||'—'}</td></tr>
+      <tr><td style="font-weight:700">Vazão média (m³/h)</td><td colspan="3">${d.vazaoMedia||'—'}</td></tr>
     </table>
 
     <div class="section-title">Tabela do Teste de Bombeamento</div>
     <table>
-      <thead><tr><th>Tempo (min)</th><th>Nível Dinâmico (m)</th><th>Tempo p/ encher recipiente (s) ou vazão (m³/h)</th></tr></thead>
+      <thead><tr><th>Hora</th><th>t (min)</th><th>N.D. (m)</th><th>Sw (m)</th><th>Q (m³/h)</th></tr></thead>
       <tbody>${linhasBombeamento}</tbody>
     </table>
 
     <div class="section-title">Tabela do Teste de Recuperação</div>
+    <div style="font-size:7.5pt;color:#555;margin-bottom:4px">tb (tempo total de bombeamento) = ${tbMin||'—'} min</div>
     <table>
-      <thead><tr><th>Tempo (min)</th><th>Nível Dinâmico (m)</th></tr></thead>
+      <thead><tr><th>Hora</th><th>t' (min)</th><th>N.D. (m)</th><th>Sw (m)</th><th>tb/t'+1</th></tr></thead>
       <tbody>${linhasRecuperacao}</tbody>
     </table>
 
