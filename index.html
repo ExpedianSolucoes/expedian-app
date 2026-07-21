@@ -6778,9 +6778,17 @@ function pageConfig() {
        window._currentUser.role === 'Gestor Geral')));
 
   setTimeout(() => carregarPainelEquipe(isGestorGeral), 200);
+  setTimeout(() => carregarSyncLog(), 150);
 
   return `
   <div class="page-header"><h1>Configurações</h1></div>
+
+  <div class="card" style="margin-bottom:24px">
+    <div class="card-title" style="font-size:.88rem;font-weight:700;margin-bottom:4px">☁️ Últimos Sincronizados</div>
+    <p style="font-size:.76rem;color:var(--text-muted);margin:0 0 12px">Registros enviados com sucesso ao OneDrive a partir deste dispositivo/navegador</p>
+    <div id="cfg-sync-log-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
+
   <div class="form-card" style="margin-bottom:24px">
     <div class="card-title" style="font-size:.88rem;font-weight:700;margin-bottom:16px">Notificações</div>
     ${['Alertas de documentos vencendo','APRs pendentes de aprovação','Condicionantes próximas do prazo','Relatórios disponíveis'].map(t => `
@@ -14283,7 +14291,7 @@ async function dbInserir(tabela, registro) {
   const novo  = { ...registro, Id: registro.Id || Date.now(), Created: new Date().toISOString() };
   lista.push(novo);
   const ok = await dbSalvar(tabela, lista);
-  if (ok) atualizarBadgeNotificacoes();
+  if (ok) { atualizarBadgeNotificacoes(); registrarSyncLog(tabela, 'inserir', novo); }
   return ok ? novo : null;
 }
 
@@ -14298,7 +14306,66 @@ async function dbAtualizar(tabela, id, campos) {
   const idx   = lista.findIndex(r => r.Id === id);
   if (idx < 0) { console.warn('[DB] Registro nao encontrado:', tabela, id); return false; }
   lista[idx] = { ...lista[idx], ...campos, ModificadoEm: new Date().toISOString() };
-  return dbSalvar(tabela, lista);
+  const ok = await dbSalvar(tabela, lista);
+  if (ok) registrarSyncLog(tabela, 'atualizar', lista[idx]);
+  return ok;
+}
+
+/* == LOG LOCAL DE SINCRONIZAÇÃO ==
+   Guarda, só neste navegador/dispositivo, os últimos registros que foram
+   enviados com sucesso para o OneDrive (via dbInserir/dbAtualizar). Usado
+   pela tela "Últimos Sincronizados" em Configurações. Não é um histórico
+   centralizado entre usuários/dispositivos — é local por natureza, assim
+   como a fila offline. */
+const DB_TABELA_LABEL = {
+  contratos:             'Gestão de Contratos',
+  PrestacaoContas:       'Prestação de Contas',
+  ContasPagar:           'Contas a Pagar',
+  ChecklistBombeamento:  'Teste de Bombeamento',
+  Equipamentos:          'Equipamentos',
+  TermosEquipamento:     'Termo de Equipamento',
+  ChecklistVeicular:     'Checklist Veicular',
+  APRs:                  'APR',
+  ChecklistERO:          'Checklist ERO',
+};
+
+function _dbResumoRegistro(registro) {
+  if (!registro || typeof registro !== 'object') return '';
+  const campos = ['numero', 'Numero', 'cliente', 'Cliente', 'placa', 'Placa', 'nome', 'Nome', 'titulo', 'Titulo', 'objeto', 'Objeto', 'colaborador', 'ColaboradorAtual'];
+  for (const c of campos) { if (registro[c]) return String(registro[c]).slice(0, 60); }
+  return '';
+}
+
+async function registrarSyncLog(tabela, acao, registro) {
+  try {
+    const log = (await getLocal('sync_log_v1')) || [];
+    log.unshift({ tabela, acao, resumo: _dbResumoRegistro(registro), quando: new Date().toISOString() });
+    if (log.length > 50) log.length = 50;
+    saveLocal('sync_log_v1', JSON.stringify(log));
+  } catch(e) { console.warn('[SYNCLOG] erro ao registrar', e); }
+}
+
+async function carregarSyncLog() {
+  const el = document.getElementById('cfg-sync-log-lista');
+  if (!el) return;
+  const log = (await getLocal('sync_log_v1')) || [];
+  if (!log.length) {
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma sincronização registrada neste dispositivo ainda.</div>';
+    return;
+  }
+  el.innerHTML = log.slice(0, 20).map(function(item) {
+    const label = DB_TABELA_LABEL[item.tabela] || item.tabela;
+    const acaoLabel = item.acao === 'inserir' ? 'Novo registro' : 'Atualizado';
+    const dt = new Date(item.quando);
+    const dataFmt = dt.toLocaleDateString('pt-BR') + ' ' + dt.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+    return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">' +
+      '<div style="min-width:0">' +
+        '<div style="font-size:.82rem;font-weight:600">' + label + (item.resumo ? ' — ' + item.resumo : '') + '</div>' +
+        '<div style="font-size:.7rem;color:var(--text-muted)">' + acaoLabel + '</div>' +
+      '</div>' +
+      '<div style="font-size:.72rem;color:var(--text-muted);white-space:nowrap">☁️ ' + dataFmt + '</div>' +
+    '</div>';
+  }).join('');
 }
 
 /* == NUMERAÇÃO AUTOMÁTICA SEQUENCIAL (compartilhada entre todos os usuários, via OneDrive central) ==
