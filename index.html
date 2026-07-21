@@ -4352,8 +4352,51 @@ async function _finalizarReenvio(id, comprovanteUrl, comprovanteNome) {
 async function aprovarPrestacaoFinanceiro(id) {
   _limparSyncError();
   const ok = await dbAtualizar('PrestacaoContas', id, { Status: 'Aprovada', DataAprovacaoFinanceiro: new Date().toISOString().split('T')[0], AprovadoPorFinanceiro: window._currentUser?.name });
+  if (ok) {
+    try {
+      const lista = await dbLer('PrestacaoContas');
+      const registro = lista.find(r => Number(r.Id) === Number(id));
+      if (registro) await _criarSaidaBPOApartirDePrestacao(registro);
+    } catch(e) { console.warn('[BPO] Falha ao gerar Saída a partir da Prestação de Contas', e); }
+  }
   showToast(ok ? '✅ Aprovado pelo financeiro!' : ('❌ Erro' + syncErrorDetalhe()));
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
+}
+
+/* -- Gera automaticamente um lançamento em "Saídas" do BPO Financeiro quando o Financeiro
+      aprova uma Prestação de Contas. Fica na tabela restrita bpo_saidas_v4 (pasta central,
+      só Diretoria). Idempotente: não duplica se rodar duas vezes para a mesma prestação. -- */
+async function _criarSaidaBPOApartirDePrestacao(pc) {
+  const arr = await dbLer('bpo_saidas_v4');
+  if (arr.some(s => s.origemPrestacaoId === pc.Id)) return; // já gerada antes
+  const maxNum = arr.reduce((m, s) => Math.max(m, parseInt(String(s.id||'').replace(/\D/g,''))||0), 0);
+  const tipoPgtoMap = { avista: 'À Vista', parcelado: 'Parcelado', faturado: 'Faturado' };
+  const qtd = pc.Parcelamento === 'parcelado' ? (Number(pc.NumParcelas) || 1) : 1;
+  const valor = Number(pc.Valor) || 0;
+  const novaSaida = {
+    id: 's' + (maxNum + 1),
+    data: pc.DataDespesa || '',
+    subcategoria: 'Prestação de Contas',
+    categoria: '',
+    modalidade: 'Fornecedor',
+    fornecedor: pc.Fornecedor || '',
+    contrato: pc.CentroCusto || '',
+    total: valor,
+    tipoPgto: tipoPgtoMap[pc.Parcelamento] || 'À Vista',
+    qtdParcelas: qtd,
+    valorParcela: qtd ? Math.round((valor / qtd) * 100) / 100 : valor,
+    dataVencimento: pc.DataDespesa || '',
+    formaPgto: pc.FormaPagamento || '',
+    empresa: pc.Empresa || '',
+    dataPagamento: '',
+    status: 'A pagar',
+    banco: '',
+    medicao: '',
+    rateios: [{ contrato: pc.CentroCusto || '', medicao: '', valor: valor }],
+    origemPrestacaoId: pc.Id,
+  };
+  arr.push(novaSaida);
+  await dbSalvar('bpo_saidas_v4', arr);
 }
 
 /* -- Financeiro indefere: volta direto ao colaborador (com motivo) para corrigir e reenviar -- */
@@ -5018,17 +5061,26 @@ const LA_SEED = [
 ];
 
 async function laCarregar() {
+  _limparSyncError();
+  const remoto = await dbLer('Licencas');
+  if (Array.isArray(remoto) && remoto.length) {
+    LA_DADOS = remoto;
+    return;
+  }
+  // Ainda não migrado no OneDrive (ou vazio de verdade): usa o que já existia
+  // localmente neste navegador (ou o registro de exemplo) e sobe uma única vez,
+  // para não perder licenças já cadastradas antes desta correção.
   const saved = await getLocal('la_dados_v3');
   if (saved && Array.isArray(saved) && saved.length) {
     LA_DADOS = saved;
   } else {
     LA_DADOS = JSON.parse(JSON.stringify(LA_SEED));
-    saveLocal('la_dados_v3', JSON.stringify(LA_DADOS));
   }
+  await dbSalvar('Licencas', LA_DADOS);
 }
 
-function laSalvar() {
-  saveLocal('la_dados_v3', JSON.stringify(LA_DADOS));
+async function laSalvar() {
+  await dbSalvar('Licencas', LA_DADOS);
 }
 
 /* ---- Status da LICENÇA ---- */
@@ -13082,8 +13134,14 @@ async function resolverPastaAppExpedian(token) {
    caindo na pasta central de sempre — nada quebra por falta dessa migração. -- */
 const OD_OPERACIONAL_SHARE_URL = 'https://engesolsolucoes-my.sharepoint.com/:f:/g/personal/atendimento_expediansolucoes_com_br2/IgCy9jg7irfET7XjuPvOz7yeAS_858bRrT29Kn_Qfs5eIlE';
 
+// Tabelas do BPO Financeiro (bpo_*) — ficam SEMPRE na pasta central restrita (só Diretoria).
+const TABELAS_BPO_FINANCEIRO = [
+  'bpo_saidas_v4', 'bpo_receitas_v2', 'bpo_medicoes_v1', 'bpo_fornecedores_v1',
+  'bpo_clientes_v1', 'bpo_contratos_v1', 'bpo_servicos_v3', 'bpo_nf_v1',
+  'bpo_impostos_v2', 'bpo_transferencias_v1'
+];
 // Tabelas (dbLer/dbInserir/dbAtualizar/dbSalvar) que ficam SÓ na pasta central restrita.
-const TABELAS_RESTRITAS_DIRETORIA = ['ContasPagar', 'ContasReceber', 'contratos'];
+const TABELAS_RESTRITAS_DIRETORIA = ['ContasPagar', 'ContasReceber', 'contratos', ...TABELAS_BPO_FINANCEIRO];
 // Prefixos de subpasta (OD_FOLDERS ou caminhos relativos de upload) que ficam SÓ na pasta central restrita.
 const PASTAS_RESTRITAS_DIRETORIA = ['Contratos'];
 
