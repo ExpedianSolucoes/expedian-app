@@ -8538,7 +8538,7 @@ function pageChecklistERO() {
                 ? `<img src="${d['foto_'+item.id+'_'+fn]}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">`
                 : `<span style="font-size:1.1rem;opacity:.5">📷</span>`}
             </div>
-            <input type="file" accept="image/*" capture="environment" style="display:none"
+            <input type="file" accept="image/*" capture="environment" multiple style="display:none"
               onchange="loadEROPhoto(event,'${item.id}',${fn})">
           </label>
           ${d['foto_'+item.id+'_'+fn] ? `<button onclick="removeEROPhoto('${item.id}',${fn})" style="position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:var(--red);border:none;color:#fff;font-size:.55rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>` : ''}
@@ -8591,7 +8591,7 @@ function pageChecklistERO() {
             onmouseout="this.style.borderColor='${d['foto_mel'+i+'_'+fn]?'var(--green-main)':'var(--border)'}'">
             ${d['foto_mel'+i+'_'+fn] ? `<img src="${d['foto_mel'+i+'_'+fn]}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">` : `<span style="font-size:1.1rem;opacity:.5">📷</span>`}
           </div>
-          <input type="file" accept="image/*" style="display:none" onchange="loadEROPhotoMel(event,${i},${fn})">
+          <input type="file" accept="image/*" multiple style="display:none" onchange="loadEROPhotoMel(event,${i},${fn})">
         </label>`).join('')}
       </div>
     </div>
@@ -8670,71 +8670,67 @@ function setEROPontosAlcancados(itemId, valor) {
   rerenderEROScore();
 }
 
-/* -- Carrega foto e redimensiona obrigatoriamente para proporção 6×8 (3:4) -- */
-function loadEROPhoto(event, itemId, fn) {
-  const file = event.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    const img = new Image();
-    img.onload = () => {
-      // Padrão 6×8, respeitando a orientação original da foto (retrato -> 480×640,
-      // paisagem -> 640×480) e preenchendo o quadro por completo (corta o excesso,
-      // sem sobrar espaço em branco), em vez de comprimir tudo num quadro retrato fixo.
-      const horizontal = img.width >= img.height;
-      const TARGET_W = horizontal ? 640 : 480;
-      const TARGET_H = horizontal ? 480 : 640;
-      const canvas = document.createElement('canvas');
-      canvas.width  = TARGET_W;
-      canvas.height = TARGET_H;
-      const ctx = canvas.getContext('2d');
-      const scale = Math.max(TARGET_W / img.width, TARGET_H / img.height);
-      const dw = img.width * scale, dh = img.height * scale;
-      const dx = (TARGET_W - dw) / 2, dy = (TARGET_H - dh) / 2;
-      ctx.drawImage(img, 0, 0, img.width, img.height, dx, dy, dw, dh);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      window._eroData['foto_' + itemId + '_' + fn] = dataUrl;
-      window._eroData['foto_' + itemId + '_' + fn + '_h'] = horizontal;
-      const prev = document.getElementById('foto_prev_' + itemId + '_' + fn);
-      if (prev) {
-        prev.innerHTML = `<img src="${dataUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">`;
-        prev.style.borderColor = 'var(--green-main)';
-      }
+/* -- Redimensiona uma foto obrigatoriamente para proporção 6×8 (3:4), preservando orientação -- */
+function _eroRedimensionarFoto(file) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        // Padrão 6×8, respeitando a orientação original da foto (retrato -> 480×640,
+        // paisagem -> 640×480) e preenchendo o quadro por completo (corta o excesso,
+        // sem sobrar espaço em branco), em vez de comprimir tudo num quadro retrato fixo.
+        const horizontal = img.width >= img.height;
+        const TARGET_W = horizontal ? 640 : 480;
+        const TARGET_H = horizontal ? 480 : 640;
+        const canvas = document.createElement('canvas');
+        canvas.width  = TARGET_W;
+        canvas.height = TARGET_H;
+        const ctx = canvas.getContext('2d');
+        const scale = Math.max(TARGET_W / img.width, TARGET_H / img.height);
+        const dw = img.width * scale, dh = img.height * scale;
+        const dx = (TARGET_W - dw) / 2, dy = (TARGET_H - dh) / 2;
+        ctx.drawImage(img, 0, 0, img.width, img.height, dx, dy, dw, dh);
+        resolve({ dataUrl: canvas.toDataURL('image/jpeg', 0.9), horizontal });
+      };
+      img.src = e.target.result;
     };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
+    reader.readAsDataURL(file);
+  });
+}
+
+/* -- Carrega uma ou mais fotos de uma vez, preenchendo o slot clicado e os demais
+      slots vazios do item (1 a 4) na ordem, até o máximo de 4 fotos por item. -- */
+function loadEROPhoto(event, itemId, fn) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  const ordered = [fn, ...[1,2,3,4].filter(n => n !== fn && !window._eroData['foto_' + itemId + '_' + n])];
+  if (files.length > ordered.length) {
+    showToast('⚠️ Só cabem ' + ordered.length + ' foto(s) aqui — as demais foram ignoradas (máximo 4 por item).');
+  }
+  Promise.all(files.slice(0, ordered.length).map((file, idx) =>
+    _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => {
+      const slotFn = ordered[idx];
+      window._eroData['foto_' + itemId + '_' + slotFn] = dataUrl;
+      window._eroData['foto_' + itemId + '_' + slotFn + '_h'] = horizontal;
+    })
+  )).then(() => navigate('checklist_ero'));
 }
 
 function loadEROPhotoMel(event, idx, fn) {
-  const file = event.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    const img = new Image();
-    img.onload = () => {
-      // Mesmo padrão 6×8 (respeita orientação original, preenche o quadro por completo)
-      // usado nos itens principais.
-      const horizontal = img.width >= img.height;
-      const TARGET_W = horizontal ? 640 : 480;
-      const TARGET_H = horizontal ? 480 : 640;
-      const canvas = document.createElement('canvas');
-      canvas.width = TARGET_W;
-      canvas.height = TARGET_H;
-      const ctx = canvas.getContext('2d');
-      const scale = Math.max(TARGET_W / img.width, TARGET_H / img.height);
-      const dw = img.width * scale, dh = img.height * scale;
-      const dx = (TARGET_W - dw) / 2, dy = (TARGET_H - dh) / 2;
-      ctx.drawImage(img, 0, 0, img.width, img.height, dx, dy, dw, dh);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      window._eroData['foto_mel' + idx + '_' + fn] = dataUrl;
-      window._eroData['foto_mel' + idx + '_' + fn + '_h'] = horizontal;
-      const prev = document.getElementById('foto_prev_mel' + idx + '_' + fn);
-      if (prev) prev.innerHTML = `<img src="${dataUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">`;
-    };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  const ordered = [fn, ...[1,2,3,4].filter(n => n !== fn && !window._eroData['foto_mel' + idx + '_' + n])];
+  if (files.length > ordered.length) {
+    showToast('⚠️ Só cabem ' + ordered.length + ' foto(s) aqui — as demais foram ignoradas (máximo 4 por item).');
+  }
+  Promise.all(files.slice(0, ordered.length).map((file, i) =>
+    _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => {
+      const slotFn = ordered[i];
+      window._eroData['foto_mel' + idx + '_' + slotFn] = dataUrl;
+      window._eroData['foto_mel' + idx + '_' + slotFn + '_h'] = horizontal;
+    })
+  )).then(() => navigate('checklist_ero'));
 }
 
 function removeEROPhoto(itemId, fn) {
