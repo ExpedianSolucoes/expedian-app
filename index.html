@@ -8232,9 +8232,34 @@ const servicosDB = {
   ]
 };
 
-// Lançamentos salvos em memória (IndexedDB na versão hospedada)
+// Lançamentos do Catálogo de Serviços — persistidos no OneDrive central (tabela Lancamentos_Servicos),
+// carregados sob demanda pela aba "Lançamentos" (ver carregarLancamentosServicos).
 let lancamentos = [];
-let lancamentoIdCounter = 1;
+
+// Responsável pelo Lançamento: só quem é Diretoria ou Coordenação (accountable pelo lançamento).
+function _servicosResponsaveisDiretoria() {
+  const nomes = new Set();
+  Object.values(users).forEach(u => { if (u.profile === 'diretoria' || u.profile === 'coordenador') nomes.add(u.name); });
+  return [...nomes].sort();
+}
+
+// Beneficiário: qualquer colaborador da empresa (quem de fato recebe/se beneficia do lançamento).
+function _servicosTodosColaboradores() {
+  const nomes = new Set();
+  Object.values(users).forEach(u => nomes.add(u.name));
+  return [...nomes].sort();
+}
+
+// Lista real da frota de veículos da empresa (a mesma usada em Centro de Custos).
+function _servicosFrotaVeiculos() {
+  return (centrosCustoData || [])
+    .filter(c => c.categoria === 'Frota')
+    .map(c => c.contrato.replace(/^Frota\s*-\s*/, ''));
+}
+
+function _servicosPodeLancar() {
+  return currentProfile === 'diretoria' || currentProfile === 'coordenador';
+}
 
 function fmtBRL(v) {
   if (v === null) return 'A consultar';
@@ -8249,6 +8274,8 @@ function pageServicos() {
     { id:'projetos', icon:'📋', label:'Projetos e Relatórios' },
     { id:'lancamentos', icon:'📊', label:'Lançamentos' },
   ];
+
+  if (tab === 'lancamentos') setTimeout(() => carregarLancamentosServicos(), 200);
 
   return `
   <div class="page-header">
@@ -8272,7 +8299,7 @@ function pageServicos() {
   ${tab === 'diarias'   ? renderServicosTab(servicosDB.diarias,  'diarias')  : ''}
   ${tab === 'veiculos'  ? renderServicosTab(servicosDB.veiculos, 'veiculos') : ''}
   ${tab === 'projetos'  ? renderServicosTab(servicosDB.projetos, 'projetos') : ''}
-  ${tab === 'lancamentos' ? renderLancamentos() : ''}
+  ${tab === 'lancamentos' ? '<div id="servicos-lancamentos-container"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>' : ''}
   `;
 }
 
@@ -8284,29 +8311,20 @@ function renderServicosTab(items, tipo) {
     grupos[i.categoria].push(i);
   });
 
-  const responsaveis = [
-    'Acúcio Nunes Abud',
-    'Brendo Lima Brito',
-    'Enoque Lima de Assunção',
-    'Fabíola Rabelo dos Santos',
-    'Felipe Neves Magi',
-    'João Gabriel Veloso de Oliveira',
-    'Leandro Alves dos Santos',
-    'Luiz Evaristo de Almeida Júnior',
-    'Luiz Evaristo de Almeida',
-    'Marcelo Marafon',
-    'Marcos Fernandes da Silva',
-    'Marilene Queiroz Takata',
-    'Matheus Takata Marafon',
-    'Nathalia Olívio Pereira',
-    'Taciane Ramos de Souza Almeida',
-    'Tiago Tavares Ribeiro'
-  ];
+  const responsaveis = _servicosResponsaveisDiretoria();
+  const beneficiarios = _servicosTodosColaboradores();
+  const frota = _servicosFrotaVeiculos();
   const centrosCusto = centrosCustoData
     .filter(c => c.status === 'ativo')
     .map(c => c.id + ' · ' + c.contrato);
+  const podeLancar = _servicosPodeLancar();
 
-  return `
+  const formulario = !podeLancar ? `
+  <div class="card" style="margin-bottom:20px;text-align:center;padding:32px 24px;color:var(--text-muted)">
+    <div style="font-size:1.6rem;margin-bottom:8px">🔒</div>
+    <div style="font-weight:700;color:var(--text)">Lançamentos restritos à Diretoria e Coordenação</div>
+    <div style="font-size:.82rem;margin-top:6px">A tabela de preços abaixo continua disponível para consulta.</div>
+  </div>` : `
   <!-- FORMULÁRIO DE LANÇAMENTO -->
   <div class="card" style="margin-bottom:20px;border-top:3px solid var(--green-main)">
     <div class="card-title" style="font-size:.9rem;margin-bottom:16px">➕ Novo Lançamento</div>
@@ -8339,11 +8357,26 @@ function renderServicosTab(items, tipo) {
         <label>Data</label>
         <input id="val_data_${tipo}" type="date">
       </div>
+      ${tipo === 'veiculos' ? `
       <div class="form-group">
-        <label>Responsável pelo Lançamento</label>
+        <label>Veículo da Empresa</label>
+        <select id="val_veiculo_${tipo}" style="font-size:.82rem">
+          <option value="">Selecione...</option>
+          ${frota.map(v => `<option>${v}</option>`).join('')}
+        </select>
+      </div>` : ''}
+      <div class="form-group">
+        <label>Responsável pelo Lançamento <span style="font-size:.68rem;color:var(--text-muted)">(Diretoria/Coordenação)</span></label>
         <select id="val_resp_${tipo}" style="font-size:.82rem">
           <option value="">Selecione...</option>
           ${responsaveis.map(r => `<option>${r}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Beneficiário</label>
+        <select id="val_benef_${tipo}" style="font-size:.82rem">
+          <option value="">Selecione...</option>
+          ${beneficiarios.map(b => `<option>${b}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -8362,7 +8395,10 @@ function renderServicosTab(items, tipo) {
       <button class="btn-primary" onclick="salvarLancamento('${tipo}')">💾 Salvar Lançamento</button>
       <button class="btn-secondary" onclick="limparForm('${tipo}')">🗑️ Limpar</button>
     </div>
-  </div>
+  </div>`;
+
+  return `
+  ${formulario}
 
   <!-- TABELA DE PREÇOS -->
   <div class="card">
@@ -8401,52 +8437,160 @@ function renderServicosTab(items, tipo) {
   </div>`;
 }
 
-function renderLancamentos() {
-  if (lancamentos.length === 0) return `
+/* -- Lançamentos: KPIs + filtros + busca + exportação Excel, dados de verdade no OneDrive
+      (tabela Lancamentos_Servicos), no mesmo padrão de Prestação de Contas / Contas a Pagar. -- */
+let SERV_FILTRO_MES = '';
+let SERV_FILTRO_TIPO = '';
+let SERV_FILTRO_RESP = '';
+let SERV_FILTRO_BENEF = '';
+let SERV_FILTRO_CC = '';
+let SERV_FILTRO_BUSCA = '';
+
+function servLimparFiltros() {
+  ['serv_filtro_mes','serv_filtro_resp','serv_filtro_benef','serv_filtro_cc','serv_filtro_busca'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  const tipoSel = document.getElementById('serv_filtro_tipo'); if (tipoSel) tipoSel.value = '';
+  SERV_FILTRO_MES=''; SERV_FILTRO_TIPO=''; SERV_FILTRO_RESP=''; SERV_FILTRO_BENEF=''; SERV_FILTRO_CC=''; SERV_FILTRO_BUSCA='';
+  carregarLancamentosServicos();
+}
+
+async function carregarLancamentosServicos() {
+  const el = document.getElementById('servicos-lancamentos-container');
+  if (!el) return;
+  let items;
+  try { items = await dbLer('Lancamentos_Servicos'); }
+  catch(e) { items = []; }
+  lancamentos = items;
+
+  const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
+  const total = items.reduce((s,l) => s + (Number(l.total)||0), 0);
+  const porTipo = t => items.filter(l=>l.tipo===t).reduce((s,l)=>s+(Number(l.total)||0),0);
+
+  // Filtros lidos do DOM (se já renderizado antes) para preservar seleção
+  SERV_FILTRO_MES = (document.getElementById('serv_filtro_mes')||{}).value || SERV_FILTRO_MES;
+  SERV_FILTRO_TIPO = (document.getElementById('serv_filtro_tipo')||{}).value || SERV_FILTRO_TIPO;
+  SERV_FILTRO_RESP = ((document.getElementById('serv_filtro_resp')||{}).value || SERV_FILTRO_RESP);
+  SERV_FILTRO_BENEF = ((document.getElementById('serv_filtro_benef')||{}).value || SERV_FILTRO_BENEF);
+  SERV_FILTRO_CC = ((document.getElementById('serv_filtro_cc')||{}).value || SERV_FILTRO_CC);
+  SERV_FILTRO_BUSCA = ((document.getElementById('serv_filtro_busca')||{}).value || SERV_FILTRO_BUSCA);
+
+  let filtrados = items.slice();
+  if (SERV_FILTRO_MES) filtrados = filtrados.filter(l => (l.dataISO||'').slice(0,7) === SERV_FILTRO_MES);
+  if (SERV_FILTRO_TIPO) filtrados = filtrados.filter(l => l.tipo === SERV_FILTRO_TIPO);
+  if (SERV_FILTRO_RESP) filtrados = filtrados.filter(l => (l.resp||'').toLowerCase().includes(SERV_FILTRO_RESP.toLowerCase()));
+  if (SERV_FILTRO_BENEF) filtrados = filtrados.filter(l => (l.benef||'').toLowerCase().includes(SERV_FILTRO_BENEF.toLowerCase()));
+  if (SERV_FILTRO_CC) filtrados = filtrados.filter(l => (l.cc||'').toLowerCase().includes(SERV_FILTRO_CC.toLowerCase()));
+  if (SERV_FILTRO_BUSCA) {
+    const q = SERV_FILTRO_BUSCA.toLowerCase();
+    filtrados = filtrados.filter(l => (l.descServico||'').toLowerCase().includes(q) || (l.obs||'').toLowerCase().includes(q));
+  }
+  filtrados.sort((a,b) => (b.Id||0) - (a.Id||0));
+  window._servFiltrados = filtrados;
+
+  const tipoLabel = t => t==='diarias' ? 'Diária' : t==='veiculos' ? 'Veículo' : t==='projetos' ? 'Projeto' : t||'—';
+
+  const kpisHtml = `
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card blue"><div class="kpi-label">Total de Lançamentos</div><div class="kpi-value">${items.length}</div><div class="kpi-icon">📑</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Total Geral (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(total)}</div><div class="kpi-icon">💰</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Diárias (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(porTipo('diarias'))}</div><div class="kpi-icon">👷</div></div>
+    <div class="kpi-card"><div class="kpi-label">Veículos (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(porTipo('veiculos'))}</div><div class="kpi-icon">🚗</div></div>
+    <div class="kpi-card"><div class="kpi-label">Projetos (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(porTipo('projetos'))}</div><div class="kpi-icon">📋</div></div>
+  </div>`;
+
+  const filtrosHtml = `
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
+    <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
+    <input type="month" id="serv_filtro_mes" value="${SERV_FILTRO_MES}" onchange="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <select id="serv_filtro_tipo" onchange="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
+      <option value="">Todos os tipos</option>
+      <option value="diarias" ${SERV_FILTRO_TIPO==='diarias'?'selected':''}>Diárias</option>
+      <option value="veiculos" ${SERV_FILTRO_TIPO==='veiculos'?'selected':''}>Veículos</option>
+      <option value="projetos" ${SERV_FILTRO_TIPO==='projetos'?'selected':''}>Projetos</option>
+    </select>
+    <input type="text" id="serv_filtro_resp" value="${SERV_FILTRO_RESP}" placeholder="Responsável..." oninput="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
+    <input type="text" id="serv_filtro_benef" value="${SERV_FILTRO_BENEF}" placeholder="Beneficiário..." oninput="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
+    <input type="text" id="serv_filtro_cc" value="${SERV_FILTRO_CC}" placeholder="Centro de custo..." oninput="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
+    <input type="text" id="serv_filtro_busca" value="${SERV_FILTRO_BUSCA}" placeholder="Buscar serviço/observação..." oninput="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:160px">
+    <button onclick="servLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
+  </div>`;
+
+  if (!items.length) {
+    el.innerHTML = kpisHtml + `
     <div class="card" style="text-align:center;padding:40px;color:var(--text-muted)">
       <div style="font-size:2rem;margin-bottom:12px">📋</div>
       <div style="font-size:.88rem">Nenhum lançamento registrado ainda.</div>
       <div style="font-size:.78rem;margin-top:6px">Use as abas acima para lançar serviços.</div>
     </div>`;
+    return;
+  }
 
-  const total = lancamentos.reduce((s,l) => s + (l.total||0), 0);
-  return `
+  const totalFiltrado = filtrados.reduce((s,l) => s + (Number(l.total)||0), 0);
+  el.innerHTML = kpisHtml + filtrosHtml + `
   <div class="card">
-    <div class="card-title" style="font-size:.9rem;margin-bottom:14px">
-      Lançamentos Registrados
-      <span class="badge">${lancamentos.length} itens · ${fmtBRL(total)}</span>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="margin:0">Lançamentos Registrados <span class="badge">${filtrados.length} itens · ${fmtBRL(totalFiltrado)}</span></div>
+      <button class="btn-secondary" onclick="exportarLancamentosServicosExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
     </div>
+    ${!filtrados.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado com os filtros aplicados.</div>' : `
     <div style="overflow-x:auto">
-    <table class="data-table" style="min-width:700px">
-      <thead><tr><th>#</th><th>Serviço</th><th>Data</th><th>Qtd</th><th style="text-align:right">Unit.</th><th style="text-align:right">Total</th><th>Responsável</th><th>Centro de Custo</th><th></th></tr></thead>
+    <table class="data-table" style="min-width:900px">
+      <thead><tr><th>Tipo</th><th>Serviço</th><th>Data</th><th>Qtd</th><th style="text-align:right">Unit.</th><th style="text-align:right">Total</th><th>Responsável</th><th>Beneficiário</th><th>Centro de Custo</th><th></th></tr></thead>
       <tbody>
-        ${lancamentos.map(l => `
+        ${filtrados.map(l => `
         <tr>
-          <td style="color:var(--text-muted);font-size:.75rem">${l.id}</td>
-          <td style="font-size:.78rem">${l.descServico}</td>
-          <td style="font-size:.75rem">${l.data}</td>
+          <td style="font-size:.72rem;color:var(--text-muted)">${tipoLabel(l.tipo)}</td>
+          <td style="font-size:.78rem">${l.descServico||'—'}${l.veiculo?`<br><span style="font-size:.68rem;color:var(--text-muted)">🚗 ${l.veiculo}</span>`:''}</td>
+          <td style="font-size:.75rem">${l.data||'—'}</td>
           <td style="text-align:center;font-weight:700">${l.qtd}</td>
           <td style="text-align:right;font-size:.78rem">${fmtBRL(l.unit)}</td>
           <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif;color:var(--green-main)">${fmtBRL(l.total)}</td>
-          <td style="font-size:.75rem">${l.resp}</td>
-          <td style="font-size:.72rem;color:var(--text-muted)">${l.cc}</td>
-          <td><button onclick="removerLancamento(${l.id})" style="font-size:.68rem;padding:3px 8px;border:1px solid var(--red);border-radius:6px;background:#fce8e8;cursor:pointer;color:var(--red)">🗑️</button></td>
+          <td style="font-size:.75rem">${l.resp||'—'}</td>
+          <td style="font-size:.75rem">${l.benef||'—'}</td>
+          <td style="font-size:.72rem;color:var(--text-muted)">${l.cc||'—'}</td>
+          <td><button onclick="removerLancamento(${l.Id})" style="font-size:.68rem;padding:3px 8px;border:1px solid var(--red);border-radius:6px;background:#fce8e8;cursor:pointer;color:var(--red)">🗑️</button></td>
         </tr>`).join('')}
       </tbody>
       <tfoot>
         <tr style="background:var(--green-pale)">
-          <td colspan="5" style="font-weight:700;padding:10px 12px;font-size:.82rem">TOTAL GERAL</td>
-          <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif;font-size:1rem;color:var(--green-main);padding:10px 12px">${fmtBRL(total)}</td>
-          <td colspan="3"></td>
+          <td colspan="5" style="font-weight:700;padding:10px 12px;font-size:.82rem">TOTAL (filtrado)</td>
+          <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif;font-size:1rem;color:var(--green-main);padding:10px 12px">${fmtBRL(totalFiltrado)}</td>
+          <td colspan="4"></td>
         </tr>
       </tfoot>
     </table>
-    </div>
-    <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
-      <button class="btn-primary" onclick="showToast('Exportando lançamentos...')">📊 Exportar Excel</button>
-      <button class="btn-secondary" onclick="showToast('Gerando relatório PDF...')">📄 Gerar PDF</button>
-    </div>
+    </div>`}
   </div>`;
+}
+
+async function exportarLancamentosServicosExcel() {
+  const items = window._servFiltrados || [];
+  if (!items.length) { showToast('⚠️ Nenhum registro para exportar.'); return; }
+  showToast('📊 Gerando planilha...');
+  if (typeof XLSX === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  const rows = items.map(l => ({
+    'Tipo': l.tipo==='diarias'?'Diária':l.tipo==='veiculos'?'Veículo':l.tipo==='projetos'?'Projeto':l.tipo||'',
+    'Serviço': l.descServico || '',
+    'Veículo': l.veiculo || '',
+    'Data': l.data || '',
+    'Quantidade': l.qtd || 0,
+    'Valor Unitário': l.unit || 0,
+    'Valor Total': l.total || 0,
+    'Responsável': l.resp || '',
+    'Beneficiário': l.benef || '',
+    'Centro de Custo': l.cc || '',
+    'Observações': l.obs || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Lancamentos Servicos');
+  XLSX.writeFile(wb, 'LancamentosServicos_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
 function onSelectServico(tipo) {
@@ -8479,13 +8623,14 @@ function preencherForm(tipo, id) {
 }
 
 function limparForm(tipo) {
-  ['sel_servico_','val_unit_','val_qtd_','val_data_','val_resp_','val_cc_','val_obs_','val_total_'].forEach(p => {
+  ['sel_servico_','val_unit_','val_qtd_','val_data_','val_veiculo_','val_resp_','val_benef_','val_cc_','val_obs_','val_total_'].forEach(p => {
     const el = document.getElementById(p + tipo);
     if (el) el.value = el.tagName === 'SELECT' ? '' : el.type === 'number' && p === 'val_qtd_' ? '1' : '';
   });
 }
 
-function salvarLancamento(tipo) {
+async function salvarLancamento(tipo) {
+  if (!_servicosPodeLancar()) { showToast('⛔ Lançamentos restritos à Diretoria e Coordenação.'); return; }
   const db = tipo === 'diarias' ? servicosDB.diarias : tipo === 'veiculos' ? servicosDB.veiculos : servicosDB.projetos;
   const selEl   = document.getElementById('sel_servico_' + tipo);
   const selId   = selEl ? selEl.value : '';
@@ -8493,37 +8638,45 @@ function salvarLancamento(tipo) {
   const unit    = parseFloat(document.getElementById('val_unit_' + tipo).value) || 0;
   const qtd     = parseFloat(document.getElementById('val_qtd_'  + tipo).value) || 1;
   const data    = document.getElementById('val_data_' + tipo).value;
+  const veiculo = tipo === 'veiculos' ? (document.getElementById('val_veiculo_' + tipo)||{}).value||'' : '';
   const resp    = document.getElementById('val_resp_' + tipo).value;
+  const benef   = (document.getElementById('val_benef_' + tipo)||{}).value||'';
   const cc      = document.getElementById('val_cc_'   + tipo).value;
   const obs     = document.getElementById('val_obs_'  + tipo).value;
 
   if (!selId)   { showToast('⚠️ Selecione um serviço.'); return; }
   if (!data)    { showToast('⚠️ Informe a data.'); return; }
   if (!resp)    { showToast('⚠️ Informe o responsável.'); return; }
+  if (!benef)   { showToast('⚠️ Informe o beneficiário.'); return; }
+  if (tipo === 'veiculos' && !veiculo) { showToast('⚠️ Selecione o veículo da empresa.'); return; }
   if (!cc)      { showToast('⚠️ Informe o centro de custo.'); return; }
 
   const lancamento = {
-    id: lancamentoIdCounter++,
     tipo,
     codServico: selId,
     descServico: item ? item.desc : selId,
     unit, qtd,
     total: unit * qtd,
+    dataISO: data,
     data: data ? new Date(data + 'T00:00').toLocaleDateString('pt-BR') : '—',
-    resp, cc, obs,
-    criadoEm: new Date().toISOString(),
+    veiculo, resp, benef, cc, obs,
+    LancadoPor: window._currentUser ? window._currentUser.name : '',
   };
 
-  lancamentos.push(lancamento);
-  if (typeof saveLocal === 'function') saveLocal('lancamentos', JSON.stringify(lancamentos));
-  salvarNoSharePoint('Lancamentos_Servicos', lancamento);
-  showToast('✅ Lançamento salvo! Total: ' + fmtBRL(lancamento.total));
+  const novo = await dbInserir('Lancamentos_Servicos', lancamento);
+  showToast(novo ? '✅ Lançamento salvo! Total: ' + fmtBRL(lancamento.total) : '❌ Erro ao salvar lançamento.');
   limparForm(tipo);
 }
 
-function removerLancamento(id) {
-  lancamentos = lancamentos.filter(l => l.id !== id);
-  if (typeof saveLocal === 'function') saveLocal('lancamentos', JSON.stringify(lancamentos));
+async function removerLancamento(id) {
+  if (!_servicosPodeLancar()) { showToast('⛔ Exclusão restrita à Diretoria e Coordenação.'); return; }
+  if (!confirm('Tem certeza que deseja excluir este lançamento?')) return;
+  const lista = await dbLer('Lancamentos_Servicos');
+  const idx = lista.findIndex(l => l.Id === id);
+  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
+  lista.splice(idx, 1);
+  const ok = await dbSalvar('Lancamentos_Servicos', lista);
+  showToast(ok ? '🗑️ Lançamento excluído.' : '❌ Erro ao excluir.');
   window._servicosTab = 'lancamentos';
   navigate('servicos');
 }
