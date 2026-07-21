@@ -12962,6 +12962,76 @@ async function resolverPastaAppExpedian(token) {
   }
 }
 
+/* == PASTA "DADOS OPERACIONAIS" (subpasta compartilhada com TODOS os colaboradores) ==
+   Criada para separar os dados de uso do dia a dia (Checklists, APRs, Prestação
+   de Contas, Fornecedores, Equipamentos, Perfis) da pasta central "APP Expedian",
+   que guarda também Contratos e Contas a Pagar/Receber (acesso restrito à Diretoria).
+   Preencher OD_OPERACIONAL_SHARE_URL com o link gerado por migrarDadosOperacionais()
+   (rodar uma vez, logado como Diretoria). Enquanto estiver vazio, tudo continua
+   caindo na pasta central de sempre — nada quebra por falta dessa migração. -- */
+const OD_OPERACIONAL_SHARE_URL = '';
+
+// Tabelas (dbLer/dbInserir/dbAtualizar/dbSalvar) que ficam SÓ na pasta central restrita.
+const TABELAS_RESTRITAS_DIRETORIA = ['ContasPagar', 'ContasReceber', 'contratos'];
+// Prefixos de subpasta (OD_FOLDERS ou caminhos relativos de upload) que ficam SÓ na pasta central restrita.
+const PASTAS_RESTRITAS_DIRETORIA = ['Contratos'];
+
+function _ehTabelaRestrita(tabela) {
+  return TABELAS_RESTRITAS_DIRETORIA.includes(tabela);
+}
+function _ehPastaRestrita(subpasta) {
+  const s = String(subpasta || '');
+  return PASTAS_RESTRITAS_DIRETORIA.some(p => s === p || s.startsWith(p + '/'));
+}
+
+let _odOperacionalFolderCache = null;
+async function resolverPastaOperacional(token) {
+  if (!OD_OPERACIONAL_SHARE_URL) return resolverPastaAppExpedian(token); // ainda não migrado
+  if (_odOperacionalFolderCache) return _odOperacionalFolderCache;
+  try {
+    const sharingToken = _odEncodeSharingUrl(OD_OPERACIONAL_SHARE_URL);
+    const resp = await fetch(
+      `https://graph.microsoft.com/v1.0/shares/${sharingToken}/driveItem`,
+      { headers: { 'Authorization': 'Bearer ' + token } }
+    );
+    if (!resp.ok) {
+      const errTxt = await resp.text();
+      console.warn('[OD] Falha ao resolver pasta operacional:', resp.status, errTxt);
+      const motivo = (resp.status === 403 || resp.status === 401)
+        ? 'sem permissão para acessar a pasta operacional compartilhada do OneDrive'
+        : resp.status === 404
+        ? 'pasta operacional não encontrada (o link pode ter expirado)'
+        : 'falha ao acessar a pasta operacional compartilhada do OneDrive';
+      _setSyncError(motivo, resp.status);
+      return null;
+    }
+    const data = await resp.json();
+    const driveId = data.parentReference && data.parentReference.driveId;
+    const itemId  = data.id;
+    if (!driveId || !itemId) {
+      console.warn('[OD] Resposta inesperada ao resolver pasta operacional:', data);
+      _setSyncError('resposta inesperada do OneDrive ao localizar a pasta operacional');
+      return null;
+    }
+    _odOperacionalFolderCache = { driveId, itemId };
+    console.log('[OD] Pasta operacional resolvida. driveId:', driveId, 'itemId:', itemId);
+    _limparSyncError();
+    return _odOperacionalFolderCache;
+  } catch(e) {
+    console.warn('[OD] Erro resolverPastaOperacional:', e);
+    _setSyncError('erro de conexão ao localizar a pasta operacional compartilhada');
+    return null;
+  }
+}
+
+/* -- Decide qual pasta-raiz usar: a central restrita (Diretoria) ou a operacional
+      (compartilhada com todos). ehTabela=true -> chave é nome de tabela (dbLer etc);
+      ehTabela=false -> chave é subpasta/caminho de upload. -- */
+async function _resolverRaizPara(chave, ehTabela, token) {
+  const restrito = ehTabela ? _ehTabelaRestrita(chave) : _ehPastaRestrita(chave);
+  return restrito ? resolverPastaAppExpedian(token) : resolverPastaOperacional(token);
+}
+
 /* == GARANTIR SUBPASTA == */
 async function garantirPastaOneDrive(token, driveId, parentId, subpasta) {
   // Verificar se subpasta tem "/" (subpastas aninhadas)
@@ -13018,7 +13088,7 @@ async function deletarArquivoCentral(caminhoRelativo) {
   const token = await getOneDriveToken();
   if (!token) return false;
   try {
-    const pasta = await resolverPastaAppExpedian(token);
+    const pasta = await _resolverRaizPara(caminhoRelativo, false, token);
     if (!pasta) return false;
     const { driveId, itemId } = pasta;
     const encodedPath = caminhoRelativo.split('/').map(encodeURIComponent).join('/');
@@ -13045,7 +13115,7 @@ async function uploadParaOneDrive(blob, subpasta, nomeArquivo) {
     console.warn('[OD] Upload falhou: sem token');
     return false;
   }
-  const pasta = await resolverPastaAppExpedian(token);
+  const pasta = await _resolverRaizPara(subpasta, false, token);
   if (!pasta) {
     console.warn('[OD] Upload falhou: pasta nao resolvida');
     return false;
@@ -14623,7 +14693,7 @@ async function dbLer(tabela) {
   const token = await getOneDriveToken();
   if (!token) { console.warn('[DB] Sem token para ler', tabela); return []; }
   try {
-    const pasta = await resolverPastaAppExpedian(token);
+    const pasta = await _resolverRaizPara(tabela, true, token);
     if (!pasta) return [];
     const { driveId, itemId } = pasta;
     const dbId = await garantirPastaOneDrive(token, driveId, itemId, 'db');
@@ -14649,7 +14719,7 @@ async function baixarArquivoCentral(caminhoRelativo) {
   const token = await getOneDriveToken();
   if (!token) { console.warn('[OD] Sem token para baixar', caminhoRelativo); return null; }
   try {
-    const pasta = await resolverPastaAppExpedian(token);
+    const pasta = await _resolverRaizPara(caminhoRelativo, false, token);
     if (!pasta) return null;
     const { driveId, itemId } = pasta;
     const encodedPath = caminhoRelativo.split('/').map(encodeURIComponent).join('/');
@@ -14670,8 +14740,8 @@ async function dbSalvar(tabela, dados) {
   const token = await getOneDriveToken();
   if (!token) { console.warn('[DB] Sem token para salvar', tabela); _setSyncError('não foi possível obter permissão da sua conta Microsoft — tente sair e entrar novamente'); return false; }
   try {
-    // Garantir pasta db (na pasta central)
-    const pasta = await resolverPastaAppExpedian(token);
+    // Garantir pasta db (na pasta central OU operacional, dependendo da tabela)
+    const pasta = await _resolverRaizPara(tabela, true, token);
     if (!pasta) return false;
     const { driveId, itemId } = pasta;
     const dbId = await garantirPastaOneDrive(token, driveId, itemId, 'db');
@@ -14806,6 +14876,92 @@ async function _salvarNoSharePointOnline(tabela, dados) {
   return !!novo;
 }
 
+/* -- Move um item (arquivo ou pasta) pelo NOME dentro de um pai, pra outro pai.
+      Se o item não existir no pai de origem, não faz nada (ainda não foi usado). -- */
+async function _moverItemPorNome(token, driveId, origemParentId, destinoParentId, nome) {
+  try {
+    const r = await fetch(
+      `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${origemParentId}:/${encodeURIComponent(nome)}`,
+      { headers: { 'Authorization': 'Bearer ' + token } }
+    );
+    if (r.status === 404) { console.log('  (pular, ainda não existe):', nome); return; }
+    if (!r.ok) { console.warn('  Falha ao localizar', nome, r.status); return; }
+    const item = await r.json();
+    const mv = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentReference: { id: destinoParentId } }),
+    });
+    if (mv.ok) console.log('  Movido:', nome);
+    else console.warn('  Falha ao mover', nome, mv.status, await mv.text());
+  } catch(e) { console.warn('  Erro ao mover', nome, e); }
+}
+
+/* == MIGRAÇÃO ÚNICA: separar dados operacionais (colaboradores) dos restritos (Diretoria) ==
+   Rodar UMA VEZ pelo console (F12), logado como Diretoria via Microsoft:
+
+       migrarDadosOperacionais()
+
+   Cria a subpasta "Dados Operacionais" dentro da pasta central "APP Expedian",
+   move pra lá os dados de uso comum de colaborador (Checklists, APRs, Prestação
+   de Contas, Fornecedores, Equipamentos, Perfis etc.) e gera um link de
+   compartilhamento próprio (edição, para toda a organização) — que deve ser
+   colado em OD_OPERACIONAL_SHARE_URL no código (uma linha só). Contratos e
+   Contas a Pagar/Receber ficam de fora — continuam só na pasta central,
+   restrita à Diretoria. Idempotente: pode rodar de novo sem duplicar nada. -- */
+window.migrarDadosOperacionais = async function() {
+  console.group('[MIGRAÇÃO] Dados Operacionais');
+  const token = await getOneDriveToken();
+  if (!token) { console.error('Sem token — faça login com Microsoft primeiro.'); console.groupEnd(); return; }
+
+  const central = await resolverPastaAppExpedian(token);
+  if (!central) { console.error('Pasta central não resolvida — verifique o compartilhamento.'); console.groupEnd(); return; }
+  const { driveId, itemId: centralId } = central;
+  console.log('Pasta central OK:', central);
+
+  const opId = await garantirPastaOneDrive(token, driveId, centralId, 'Dados Operacionais');
+  if (!opId) { console.error('Falha ao criar "Dados Operacionais".'); console.groupEnd(); return; }
+  console.log('Pasta "Dados Operacionais" pronta, id:', opId);
+
+  const opDbId = await garantirPastaOneDrive(token, driveId, opId, 'db');
+  if (!opDbId) { console.error('Falha ao criar "Dados Operacionais/db".'); console.groupEnd(); return; }
+
+  const dbCentralId = await garantirPastaOneDrive(token, driveId, centralId, 'db');
+  console.log('Movendo tabelas não-restritas de db/ para Dados Operacionais/db/...');
+  const TABELAS_CONHECIDAS = ['APRs','ChecklistERO','ChecklistVeicular','ChecklistBombeamento','PrestacaoContas',
+    'Fornecedores','Equipamentos','TermosEquipamento','PerfilUsuario','Contadores','AtividadeApp','CentrosCusto',
+    'GestaoDocumental','Prazos','Inspecoes'];
+  for (const tabela of TABELAS_CONHECIDAS) {
+    if (_ehTabelaRestrita(tabela)) { console.log('  (mantido na pasta restrita):', tabela); continue; }
+    await _moverItemPorNome(token, driveId, dbCentralId, opDbId, tabela + '.json');
+  }
+
+  console.log('Movendo subpastas não-restritas da raiz para Dados Operacionais/...');
+  const PASTAS_CONHECIDAS = ['Checklists','Termos','Equipamentos','APRs','PrestacaoContas','Perfis'];
+  for (const pasta of PASTAS_CONHECIDAS) {
+    if (_ehPastaRestrita(pasta)) { console.log('  (mantido na pasta restrita):', pasta); continue; }
+    await _moverItemPorNome(token, driveId, centralId, opId, pasta);
+  }
+
+  console.log('Gerando link de compartilhamento (edição, organização)...');
+  const linkResp = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${opId}/createLink`, {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'edit', scope: 'organization' }),
+  });
+  if (!linkResp.ok) {
+    console.error('Falha ao criar link de compartilhamento:', linkResp.status, await linkResp.text());
+    console.groupEnd();
+    return;
+  }
+  const linkData = await linkResp.json();
+  const link = linkData.link && linkData.link.webUrl;
+  console.log('%cLINK GERADO — copie e envie para o Claude colar no código:', 'background:#065f46;color:#fff;font-weight:bold;padding:2px 6px', link);
+  alert('Migração concluída!\n\nCopie este link e envie pro Claude colar no código:\n\n' + link);
+  console.groupEnd();
+  return link;
+};
+
 /* == FERRAMENTA DE DIAGNOSTICO (disponivel no console: expedianDiag()) == */
 window.expedianDiag = async function() {
   console.group('[EXPEDIAN] Diagnostico de Sincronizacao');
@@ -14825,6 +14981,9 @@ window.expedianDiag = async function() {
 
   const pasta = await resolverPastaAppExpedian(token);
   console.log('Pasta central APP Expedian (atendimento@):', pasta ? JSON.stringify(pasta) : 'NAO ENCONTRADA — verifique se o link de compartilhamento ainda é válido e se este usuário tem permissão de edição');
+
+  const pastaOp = await resolverPastaOperacional(token);
+  console.log('Pasta operacional (compartilhada com colaboradores):', OD_OPERACIONAL_SHARE_URL ? (pastaOp ? JSON.stringify(pastaOp) : 'NAO ENCONTRADA — verifique o link') : 'ainda não migrada (rode migrarDadosOperacionais())');
 
   if (pasta) {
     const cvList = await dbLer('ChecklistVeicular');
