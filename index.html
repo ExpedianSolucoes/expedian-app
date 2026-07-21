@@ -4536,11 +4536,14 @@ function pagePagar() {
           <option>EXP Brasil</option>
         </select>
       </div>
-      <div class="form-group">
+      <div class="form-group" style="position:relative">
         <label>Centro de Custo</label>
-        <select id="pag_cc">
-          <option value="">Selecione a empresa primeiro...</option>
-        </select>
+        <input type="text" id="pag_cc_input" placeholder="Selecione a empresa e digite para buscar..." autocomplete="off"
+          oninput="pagFiltrarCCs(this.value)" onfocus="pagFiltrarCCs(this.value)"
+          onblur="setTimeout(()=>pagFecharDropdownCC(),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
+        <input type="hidden" id="pag_cc">
+        <div id="pag_cc_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
       </div>
     </div>
 
@@ -4662,13 +4665,60 @@ function pagePagar() {
   </div>`;
 }
 
+// Centro de Custo em "Contas a Pagar" usa a mesma lista cadastrada na aba
+// Centro de Custos (centrosCustoData) — combobox digitável (digita e filtra),
+// não mais uma lista genérica fixa desconectada do cadastro real.
 function atualizarCCsEmpresa() {
-  const empresa = document.getElementById('pag_empresa').value;
-  const sel = document.getElementById('pag_cc');
-  if (!empresa) { sel.innerHTML='<option value="">Selecione a empresa primeiro...</option>'; return; }
-  const ccs = EMPRESAS_CC[empresa] || [];
-  sel.innerHTML = '<option value="">Selecione o centro de custo...</option>' +
-    ccs.map(c => `<option>${c}</option>`).join('');
+  const inp = document.getElementById('pag_cc_input'); if (inp) inp.value = '';
+  const hid = document.getElementById('pag_cc'); if (hid) hid.value = '';
+  pagFecharDropdownCC();
+}
+
+function _pagCCsDisponiveis() {
+  const empresa = (document.getElementById('pag_empresa') || {}).value || '';
+  if (!empresa) return [];
+  return (centrosCustoData || []).filter(c => {
+    const emp = c.empresa || '';
+    const match = (empresa.includes('EXPEDIAN') && emp === 'Expedian') ||
+                  (empresa.includes('TL3') && emp === 'TL3 Engenharia') ||
+                  (empresa.includes('EXP') && emp === 'EXP_Brasil');
+    return match && c.status === 'ativo';
+  });
+}
+
+function pagFiltrarCCs(texto) {
+  const dd = document.getElementById('pag_cc_dropdown');
+  if (!dd) return;
+  const empresa = (document.getElementById('pag_empresa') || {}).value || '';
+  if (!empresa) {
+    dd.innerHTML = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Selecione a empresa primeiro...</div>';
+    dd.style.display = 'block';
+    return;
+  }
+  const t = (texto || '').trim().toLowerCase();
+  const disponiveis = _pagCCsDisponiveis();
+  const matches = (t ? disponiveis.filter(c => (c.id + ' ' + c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0, 40);
+  let html = matches.map(c => {
+    const label = (c.id + ' · ' + c.contrato).replace(/'/g, "\\'");
+    return '<div onclick="pagSelecionarCC(\'' + label + '\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>' + c.id + '</strong> <span style="color:var(--text-muted)">· ' + c.contrato + '</span>' +
+    '</div>';
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum centro de custo cadastrado encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+
+function pagFecharDropdownCC() {
+  const dd = document.getElementById('pag_cc_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+
+function pagSelecionarCC(valor) {
+  const inp = document.getElementById('pag_cc_input'); if (inp) inp.value = valor;
+  const hid = document.getElementById('pag_cc'); if (hid) hid.value = valor;
+  pagFecharDropdownCC();
 }
 
 function atualizarStatusAuto() {
@@ -4769,7 +4819,7 @@ async function salvarContaPagar(enviarFinanceiro=false) {
   };
   const ok=await salvarNoSharePoint('ContasPagar',dados);
   showToast(ok?(enviarFinanceiro?'📤 Enviado ao Financeiro!':'✅ Lançamento salvo!'):'✅ Salvo localmente!');
-  ['pag_empresa','pag_cc','pag_desc','pag_vencimento','pag_valor','pag_obs'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_vencimento','pag_valor','pag_obs'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const sel=document.getElementById('pag_fornecedor_sel');if(sel)sel.selectedIndex=0;
   setTimeout(()=>carregarContasPagar(),900);
 }
