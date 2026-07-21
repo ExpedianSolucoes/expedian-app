@@ -3577,7 +3577,8 @@ function pagePrestacao() {
 
   <!-- FORMULÁRIO DE LANÇAMENTO -->
   <div class="form-card" style="margin-bottom:24px">
-    <div style="font-family:'Mont',sans-serif;font-size:.82rem;font-weight:700;color:var(--green-main);margin-bottom:16px;text-transform:uppercase;letter-spacing:.07em">➕ Nova Despesa</div>
+    <div id="prest-form-titulo" style="font-family:'Mont',sans-serif;font-size:.82rem;font-weight:700;color:var(--green-main);margin-bottom:16px;text-transform:uppercase;letter-spacing:.07em">➕ Nova Despesa</div>
+    <div id="prest-edit-banner"></div>
 
     <!-- Linha 1: Data + Valor -->
     <div class="form-row">
@@ -3652,6 +3653,7 @@ function pagePrestacao() {
         <select id="prest_parcelamento" onchange="pcToggleParcelas()">
           <option value="avista">À vista</option>
           <option value="parcelado">Parcelado</option>
+          <option value="faturado">Faturado</option>
         </select>
       </div>
     </div>
@@ -3897,11 +3899,38 @@ async function confirmarFornecedorPrest() {
   } else showToast('❌ Erro ao cadastrar.' + syncErrorDetalhe());
 }
 
+/* -- Evita lançamento duplicado por clique repetido/engano: mesmo fornecedor,
+      data, valor, NF e colaborador já cadastrados (e ainda não devolvidos). -- */
+async function _prestacaoDuplicada(dados) {
+  try {
+    const lista = await dbLer('PrestacaoContas');
+    return lista.some(r =>
+      r.Status !== 'Devolvida' &&
+      (r.Fornecedor||'').trim().toLowerCase() === (dados.Fornecedor||'').trim().toLowerCase() &&
+      r.DataDespesa === dados.DataDespesa &&
+      Number(r.Valor) === Number(dados.Valor) &&
+      (r.NumeroNF||'').trim() === (dados.NumeroNF||'').trim() &&
+      (r.Responsavel||'') === (dados.Responsavel||'')
+    );
+  } catch(e) { return false; }
+}
+
 async function salvarRascunhoPrestacao() {
   const dados = coletarDadosPrestacao(); if(!dados)return;
-  dados.Status='Rascunho';
+  const editandoId = window._pcEditandoId;
+  if (!editandoId && await _prestacaoDuplicada(dados)) {
+    if (!confirm('⚠️ Já existe uma prestação de contas cadastrada com o mesmo fornecedor, data, valor e NF/Recibo.\n\nDeseja cadastrar mesmo assim?')) return;
+  }
   _limparSyncError();
-  const novo = await dbInserir('PrestacaoContas', dados);
+  let novo;
+  if (editandoId) {
+    const ok = await dbAtualizar('PrestacaoContas', editandoId, dados);
+    novo = ok ? { Id: editandoId } : null;
+  } else {
+    dados.Status='Rascunho';
+    novo = await dbInserir('PrestacaoContas', dados);
+  }
+  window._pcEditandoId = null;
   showToast(novo ? '💾 Rascunho salvo!' : ('❌ Erro ao salvar rascunho.' + syncErrorDetalhe()));
   limparFormPrestacao();
   setTimeout(()=>carregarPrestacoes(),800);
@@ -3910,6 +3939,10 @@ async function salvarRascunhoPrestacao() {
 /* -- Envia direto ao Financeiro (sem etapa de gestor) -- */
 async function enviarPrestacaoFinanceiro() {
   const dados = coletarDadosPrestacao(true); if(!dados) return;
+  const editandoId = window._pcEditandoId;
+  if (!editandoId && await _prestacaoDuplicada(dados)) {
+    if (!confirm('⚠️ Já existe uma prestação de contas cadastrada com o mesmo fornecedor, data, valor e NF/Recibo.\n\nDeseja cadastrar mesmo assim?')) return;
+  }
 
   // Fazer upload do comprovante agora (se houver arquivo selecionado)
   const anexoInput = document.getElementById('prest_anexo');
@@ -3935,8 +3968,16 @@ async function enviarPrestacaoFinanceiro() {
 
   dados.Status = 'Ag. Financeiro';
   _limparSyncError();
-  const novo = await dbInserir('PrestacaoContas', dados);
-  showToast(novo ? '✅ Enviado ao Financeiro!' : ('❌ Erro ao salvar. Tente novamente.' + syncErrorDetalhe()));
+  let ok;
+  if (editandoId) {
+    ok = await dbAtualizar('PrestacaoContas', editandoId, dados);
+    showToast(ok ? '✅ Alterações salvas e enviadas ao Financeiro!' : ('❌ Erro ao salvar. Tente novamente.' + syncErrorDetalhe()));
+  } else {
+    const novo = await dbInserir('PrestacaoContas', dados);
+    ok = !!novo;
+    showToast(novo ? '✅ Enviado ao Financeiro!' : ('❌ Erro ao salvar. Tente novamente.' + syncErrorDetalhe()));
+  }
+  window._pcEditandoId = null;
   limparFormPrestacao();
   setTimeout(()=>carregarPrestacoes(),800);
 }
@@ -3988,6 +4029,9 @@ function limparFormPrestacao() {
   window._prestAnexoFile = null;
   window._prestComprovanteUrl = null;
   window._prestComprovanteNome = null;
+  window._pcEditandoId = null;
+  const banner = document.getElementById('prest-edit-banner');
+  if (banner) banner.innerHTML = '';
 }
 
 window._prestFiltradas = [];
@@ -4096,7 +4140,7 @@ async function carregarPrestacoes() {
         const atrasado = (i.Status === 'Ag. Financeiro' || i.Status === 'Ag. Aprovação Gestor') && dias !== null && dias > 3;
         const podeAgirFinanceiro = i.Status==='Ag. Financeiro' && isGestor;
         const podeAgirGestorLegado = i.Status==='Ag. Aprovação Gestor' && isGestor;
-        const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcelas||'?'}x (${i.TipoParcelamento||''})` : (i.FormaPagamento||'—');
+        const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcelas||'?'}x (${i.TipoParcelamento||''})` : i.Parcelamento==='faturado' ? `${i.FormaPagamento||''} · Faturado` : (i.FormaPagamento||'—');
         return `<tr${atrasado?' style="background:#fffbeb"':''}>
         <td style="font-size:.78rem">${i.DataDespesa?new Date(i.DataDespesa+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
         <td><strong>${i.Fornecedor||'—'}</strong><div style="font-size:.7rem;color:var(--text-muted)">${i.Responsavel||''}</div></td>
@@ -4119,11 +4163,78 @@ async function carregarPrestacoes() {
             <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Devolver</button>`:''}
           ${(i.Status==='Devolvida'||i.Status==='Suspensa')&&i.EnviadoPor===(window._currentUser?window._currentUser.name:'')?`
             <button class="btn-primary" style="padding:3px 8px;font-size:.68rem;background:var(--amber)" onclick="reenviarPrestacaoDevolvida(${i.Id})">🔄 Corrigir e Reenviar</button>`:''}
+          ${(i.EnviadoPor===(window._currentUser?window._currentUser.name:'')&&['Rascunho','Ag. Financeiro','Devolvida'].includes(i.Status))?`
+            <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="pcEditarPrestacao(${i.Id})">✏️ Editar</button>`:''}
+          ${(isGestor||(i.EnviadoPor===(window._currentUser?window._currentUser.name:'')&&['Rascunho','Ag. Financeiro'].includes(i.Status)))?`
+            <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="pcExcluirPrestacao(${i.Id})">🗑️ Excluir</button>`:''}
         </td>
       </tr>`;
       }).join('')+
       '</tbody></table></div>';
   } catch(e){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';}
+}
+
+/* -- Preenche o formulário no topo com os dados de um lançamento já existente,
+      pra corrigir algo que ficou errado no preenchimento original. -- */
+async function pcEditarPrestacao(id) {
+  showToast('Carregando dados para edição...');
+  const lista = await dbLer('PrestacaoContas');
+  const r = lista.find(x => x.Id === id);
+  if (!r) { showToast('❌ Registro não encontrado.'); return; }
+  window._pcEditandoId = id;
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v || ''; };
+  set('prest_data', r.DataDespesa);
+  set('prest_valor', r.Valor);
+  set('prest_empresa', r.Empresa);
+  atualizarCCsPrest();
+  setTimeout(() => set('prest_cc', r.CentroCusto), 60);
+  set('prest_fornecedor_input', r.Fornecedor);
+  set('prest_fornecedor_sel', r.Fornecedor);
+  const hint = document.getElementById('prest_fornecedor_municipio_hint');
+  if (hint) hint.textContent = r.Municipio ? '📍 Município: ' + r.Municipio : '';
+  set('prest_nf', r.NumeroNF);
+  set('prest_obs', r.Observacoes);
+  set('prest_forma_pgto', r.FormaPagamento);
+  set('prest_parcelamento', r.Parcelamento || 'avista');
+  pcToggleParcelas();
+  if (r.Parcelamento === 'parcelado') {
+    set('prest_num_parcelas', r.NumParcelas);
+    set('prest_tipo_parcelamento', r.TipoParcelamento);
+  }
+  const banner = document.getElementById('prest-edit-banner');
+  if (banner) banner.innerHTML = `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;font-size:.78rem;color:#92400e">
+    <span>✏️ Editando lançamento existente — corrija os campos e clique em "Enviar ao Financeiro" ou "Salvar Rascunho".</span>
+    <button onclick="pcCancelarEdicaoPrestacao()" style="border:none;background:none;cursor:pointer;font-size:.78rem;font-weight:700;color:#92400e;text-decoration:underline">Cancelar edição</button>
+  </div>`;
+  showToast('✏️ Editando lançamento — corrija os campos e clique em "Enviar ao Financeiro" ou "Salvar Rascunho" de novo.');
+  const campo = document.getElementById('prest_data');
+  if (campo) campo.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function pcCancelarEdicaoPrestacao() {
+  limparFormPrestacao();
+  showToast('Edição cancelada.');
+}
+
+/* -- Exclui um lançamento (e o comprovante anexado, se houver) da tabela central.
+      Colaborador só pode excluir os próprios lançamentos ainda não aprovados;
+      Diretoria/Gestor pode excluir qualquer um. -- */
+async function pcExcluirPrestacao(id) {
+  if (!confirm('Tem certeza que deseja excluir esta prestação de contas?\n\nEssa ação não pode ser desfeita.')) return;
+  const lista = await dbLer('PrestacaoContas');
+  const idx = lista.findIndex(r => r.Id === id);
+  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
+  const registro = lista[idx];
+  if (registro.ComprovanteNome) {
+    const dt = registro.DataLancamento ? new Date(registro.DataLancamento) : new Date();
+    const pastaMes = OD_FOLDERS.prestacao + '/' + dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
+    await deletarArquivoCentral(pastaMes + '/' + registro.ComprovanteNome);
+  }
+  lista.splice(idx, 1);
+  _limparSyncError();
+  const ok = await dbSalvar('PrestacaoContas', lista);
+  showToast(ok ? '🗑️ Prestação excluída.' : ('❌ Erro ao excluir.' + syncErrorDetalhe()));
+  setTimeout(() => carregarPrestacoes(), 600);
 }
 
 function pcLimparFiltros() {
@@ -4155,7 +4266,7 @@ async function exportarPrestacaoExcel() {
     'NF/Recibo': i.NumeroNF || '',
     'Valor': i.Valor || 0,
     'Forma de Pagamento': i.FormaPagamento || '',
-    'Parcelamento': i.Parcelamento === 'parcelado' ? ((i.NumParcelas||'')+'x — '+(i.TipoParcelamento||'')) : 'À vista',
+    'Parcelamento': i.Parcelamento === 'parcelado' ? ((i.NumParcelas||'')+'x — '+(i.TipoParcelamento||'')) : i.Parcelamento === 'faturado' ? 'Faturado' : 'À vista',
     'Status': i.Status || '',
     'Motivo Devolução': i.MotivoReprovacao || '',
     'Observações': i.Observacoes || '',
