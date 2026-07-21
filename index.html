@@ -1423,7 +1423,7 @@ async function carregarDashboard() {
     }
     set('kpi-prestacoes-total', prests.length);
 
-    const prestPend  = prests.filter(r => r.Status === 'Ag. Aprovação Gestor' || r.Status === 'Pendente');
+    const prestPend  = prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor' || r.Status === 'Pendente');
     const pagarPend  = contas.filter(r => r.Status === 'Pendente');
     const receberPend= receber.filter(r => r.Status === 'Pendente');
 
@@ -3569,7 +3569,8 @@ function pageAmbiental() {
 
 /* -- PRESTAÇÃO DE CONTAS -- */
 function pagePrestacao() {
-  setTimeout(()=>{ carregarPrestacoes(); carregarFornecedoresListaPrest(); }, 200);
+  setTimeout(()=>{ carregarFornecedoresListaPrest().then(()=>carregarPrestacoes()); }, 200);
+  const isGestorFin = currentProfile==='diretoria'||currentProfile==='coordenador';
   return `
   <div class="page-header">
     <h1>Prestação de Contas</h1>
@@ -3611,16 +3612,22 @@ function pagePrestacao() {
       </div>
     </div>
 
-    <!-- Linha 3: Fornecedor + NF -->
+    <!-- Linha 3: Fornecedor (busca) + NF -->
     <div class="form-row">
-      <div class="form-group">
+      <div class="form-group" style="position:relative">
         <label>Estabelecimento / Fornecedor</label>
         <div style="display:flex;gap:8px">
-          <select id="prest_fornecedor_sel" style="flex:1">
-            <option value="">Carregando fornecedores...</option>
-          </select>
+          <div style="flex:1;position:relative">
+            <input type="text" id="prest_fornecedor_input" placeholder="Digite para buscar..." autocomplete="off"
+              oninput="pcFiltrarFornecedores(this.value)" onfocus="pcFiltrarFornecedores(this.value)"
+              onblur="setTimeout(()=>pcFecharDropdownFornecedor(),150)"
+              style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
+            <input type="hidden" id="prest_fornecedor_sel">
+            <div id="prest_fornecedor_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+          </div>
           <button onclick="abrirCadastroFornecedorPrest()" class="btn-secondary" style="padding:6px 12px;font-size:.78rem;white-space:nowrap">+ Novo</button>
         </div>
+        <div id="prest_fornecedor_municipio_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
       </div>
       <div class="form-group">
         <label>Nº NF / Cupom / Recibo</label>
@@ -3628,7 +3635,43 @@ function pagePrestacao() {
       </div>
     </div>
 
-    <!-- Linha 4: Observação -->
+    <!-- Linha 4: Forma de pagamento + parcelamento -->
+    <div class="form-row">
+      <div class="form-group">
+        <label>Forma de Pagamento</label>
+        <select id="prest_forma_pgto">
+          <option value="">Selecione...</option>
+          <option value="Dinheiro">Dinheiro</option>
+          <option value="PIX">PIX</option>
+          <option value="Cartão de Débito">Cartão de Débito</option>
+          <option value="Cartão de Crédito">Cartão de Crédito</option>
+          <option value="Boleto">Boleto</option>
+          <option value="Transferência">Transferência</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>À vista ou parcelado?</label>
+        <select id="prest_parcelamento" onchange="pcToggleParcelas()">
+          <option value="avista">À vista</option>
+          <option value="parcelado">Parcelado</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row" id="prest_parcelas_row" style="display:none">
+      <div class="form-group">
+        <label>Quantas vezes?</label>
+        <input type="number" id="prest_num_parcelas" min="2" step="1" placeholder="Ex: 3">
+      </div>
+      <div class="form-group">
+        <label>Tipo de parcelamento</label>
+        <select id="prest_tipo_parcelamento">
+          <option value="Cartão de Crédito">Cartão de Crédito</option>
+          <option value="Boleto">Boleto</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Linha 5: Observação -->
     <div class="form-row">
       <div class="form-group" style="grid-column:span 2">
         <label>Observação</label>
@@ -3636,7 +3679,7 @@ function pagePrestacao() {
       </div>
     </div>
 
-    <!-- Linha 5: Anexo -->
+    <!-- Linha 6: Anexo -->
     <div class="form-row">
       <div class="form-group" style="grid-column:span 2">
         <label>📎 Anexar Comprovante (NF / Cupom / Foto do Recibo)</label>
@@ -3648,7 +3691,7 @@ function pagePrestacao() {
     <!-- Ações -->
     <div class="form-actions" style="gap:10px;flex-wrap:wrap">
       <button class="btn-secondary" onclick="salvarRascunhoPrestacao()">💾 Salvar Rascunho</button>
-      <button class="btn-primary" onclick="abrirModalEnvioGestorPrest()">📤 Salvar e Enviar ao Gestor</button>
+      <button class="btn-primary" onclick="enviarPrestacaoFinanceiro()">📤 Salvar e Enviar ao Financeiro</button>
     </div>
   </div>
 
@@ -3658,6 +3701,7 @@ function pagePrestacao() {
       <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;margin-bottom:16px">Cadastrar Fornecedor</div>
       <div class="form-group" style="margin-bottom:12px"><label>Razão Social / Nome</label><input type="text" id="pforn_nome" placeholder="Nome do estabelecimento"></div>
       <div class="form-group" style="margin-bottom:12px"><label>CNPJ / CPF</label><input type="text" id="pforn_cnpj" placeholder="00.000.000/0001-00"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>Município</label><input type="text" id="pforn_municipio" placeholder="Cidade/UF"></div>
       <div class="form-group" style="margin-bottom:16px">
         <label>Categoria</label>
         <select id="pforn_cat">
@@ -3672,46 +3716,40 @@ function pagePrestacao() {
     </div>
   </div>
 
-  <!-- Modal seleção de gestor -->
-  <div id="modal-gestor-prest" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center">
-    <div style="background:var(--surface);border-radius:14px;padding:24px;width:min(440px,90vw);box-shadow:0 20px 60px rgba(0,0,0,.4)">
-      <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;margin-bottom:6px">📤 Enviar ao Gestor</div>
-      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:16px">Selecione quem deve aprovar esta prestação de contas:</div>
-      <div class="form-group" style="margin-bottom:20px">
-        <label>Enviar para</label>
-        <select id="prest_gestor_sel" style="border:1.5px solid var(--green-main);border-radius:8px;padding:9px 12px;font-size:.85rem;outline:none;width:100%">
-          <option value="">Selecione o responsável...</option>
-          <optgroup label="Gerente">
-            <option value="Cassiane Scarmucin">Cassiane Scarmucin — Gerente</option>
-          </optgroup>
-          <optgroup label="Diretoria">
-            <option value="Tiago Tavares Ribeiro">Tiago Tavares Ribeiro — Diretoria</option>
-            <option value="Luiz Evaristo">Luiz Evaristo — Diretoria</option>
-            <option value="Marcelo Marafon">Marcelo Marafon — Diretoria</option>
-          </optgroup>
-        </select>
-      </div>
-      <div style="display:flex;gap:10px">
-        <button class="btn-primary" onclick="confirmarEnvioPrestacao()" style="flex:1">📤 Confirmar Envio</button>
-        <button class="btn-secondary" onclick="fecharModalGestorPrest()" style="flex:1">Cancelar</button>
-      </div>
-    </div>
+  <!-- KPIs -->
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card blue"><div class="kpi-label">Total de Lançamentos</div><div class="kpi-value" id="pc-kpi-total">—</div><div class="kpi-icon">📑</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Aguardando Financeiro</div><div class="kpi-value" id="pc-kpi-pendentes">—</div><div class="kpi-icon">⏳</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Aprovadas</div><div class="kpi-value" id="pc-kpi-aprovadas">—</div><div class="kpi-icon">✅</div></div>
+    <div class="kpi-card red"><div class="kpi-label">Devolvidas</div><div class="kpi-value" id="pc-kpi-devolvidas">—</div><div class="kpi-icon">↩️</div></div>
   </div>
 
   <!-- LISTA DE PRESTAÇÕES -->
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-      <div class="card-title" style="margin:0">Minhas Prestações</div>
-      <select id="prest_filtro_status" onchange="carregarPrestacoes()"
-        style="font-size:.78rem;padding:5px 10px;border-radius:7px;border:1px solid var(--border);outline:none">
+      <div class="card-title" style="margin:0">${isGestorFin?'Prestações de Contas':'Minhas Prestações'}</div>
+      <button class="btn-secondary" onclick="exportarPrestacaoExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
+    </div>
+
+    <div id="prest-filtros" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
+      <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
+      <input type="month" id="prest_filtro_mes" onchange="carregarPrestacoes()" title="Mês da despesa" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+      ${isGestorFin?'<select id="prest_filtro_colaborador" onchange="carregarPrestacoes()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer"><option value="">Todos colaboradores</option></select>':''}
+      <input type="text" id="prest_filtro_fornecedor" placeholder="Fornecedor..." oninput="carregarPrestacoes()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:140px">
+      <select id="prest_filtro_municipio" onchange="carregarPrestacoes()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer"><option value="">Todos municípios</option></select>
+      <input type="number" id="prest_filtro_valor_min" placeholder="Valor mín." oninput="carregarPrestacoes()" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+      <input type="number" id="prest_filtro_valor_max" placeholder="Valor máx." oninput="carregarPrestacoes()" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+      <select id="prest_filtro_status" onchange="carregarPrestacoes()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
         <option value="">Todos os status</option>
         <option value="Rascunho">Rascunho</option>
-        <option value="Ag. Aprovação Gestor">Ag. Aprovação Gestor</option>
         <option value="Ag. Financeiro">Ag. Financeiro</option>
         <option value="Aprovada">Aprovada</option>
         <option value="Devolvida">Devolvida</option>
+        <option value="Ag. Aprovação Gestor">Ag. Aprovação Gestor (antigo)</option>
       </select>
+      <button onclick="pcLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
     </div>
+
     <div id="prest-alerta-pendentes"></div>
     <div id="lista-prestacoes"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
@@ -3737,37 +3775,82 @@ function atualizarCCsPrest() {
 let _fornecedoresPrest = [];
 
 async function carregarFornecedoresListaPrest() {
-  const sel = document.getElementById('prest_fornecedor_sel');
-  if (!sel) return;
   const token = await getSharePointToken();
-  if (!token) { sel.innerHTML='<option value="">Login Microsoft necessário</option>'; return; }
-  try {
-    const fakeResp = { ok: true, json: async () => ({ value: await dbLer('Fornecedores') }) };
-    const r = fakeResp;
-    if (r.ok) {
-      const d = await r.json();
-      _fornecedoresPrest = d.value||[];
-      sel.innerHTML='<option value="">Selecione um fornecedor...</option>'+_fornecedoresPrest.map(f=>`<option value="${f.Title}">${f.Title}${f.CNPJ?' · '+f.CNPJ:''}</option>`).join('');
-    } else { sel.innerHTML='<option value="">Nenhum fornecedor cadastrado — clique + Novo</option>'; }
-  } catch(e) { sel.innerHTML='<option value="">Clique em "+ Novo" para cadastrar</option>'; }
+  if (!token) { _fornecedoresPrest = []; return; }
+  try { _fornecedoresPrest = await dbLer('Fornecedores'); }
+  catch(e) { _fornecedoresPrest = []; }
+}
+
+/* -- Combobox pesquisável de fornecedor (digita e filtra) -- */
+function pcFiltrarFornecedores(texto) {
+  const dd = document.getElementById('prest_fornecedor_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  let matches = t ? _fornecedoresPrest.filter(f => (f.Title||'').toLowerCase().includes(t)) : _fornecedoresPrest;
+  matches = matches.slice(0, 30);
+  let html = matches.map(f =>
+    '<div onclick="pcSelecionarFornecedor(\'' + String(f.Title).replace(/'/g,"\\'") + '\')" ' +
+    'style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+    'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>' + f.Title + '</strong>' + (f.Municipio ? ' <span style="color:var(--text-muted);font-size:.72rem">· '+f.Municipio+'</span>' : '') +
+    '</div>'
+  ).join('');
+  if (t && !_fornecedoresPrest.some(f => (f.Title||'').toLowerCase() === t)) {
+    html += '<div onclick="pcNovoFornecedorComNome(\''+t.replace(/'/g,"\\'")+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;color:var(--green-main);font-weight:700">+ Cadastrar "'+texto+'" como novo fornecedor</div>';
+  }
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum fornecedor encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+
+function pcFecharDropdownFornecedor() {
+  const dd = document.getElementById('prest_fornecedor_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+
+function pcSelecionarFornecedor(nome) {
+  const f = _fornecedoresPrest.find(x => x.Title === nome);
+  const inp = document.getElementById('prest_fornecedor_input'); if (inp) inp.value = nome;
+  const sel = document.getElementById('prest_fornecedor_sel'); if (sel) sel.value = nome;
+  const hint = document.getElementById('prest_fornecedor_municipio_hint');
+  if (hint) hint.textContent = f && f.Municipio ? '📍 Município: ' + f.Municipio : '';
+  pcFecharDropdownFornecedor();
+}
+
+function pcNovoFornecedorComNome(nomeSugerido) {
+  pcFecharDropdownFornecedor();
+  abrirCadastroFornecedorPrest();
+  const el = document.getElementById('pforn_nome');
+  if (el) el.value = nomeSugerido;
+}
+
+function pcToggleParcelas() {
+  const v = document.getElementById('prest_parcelamento').value;
+  const row = document.getElementById('prest_parcelas_row');
+  if (row) row.style.display = v === 'parcelado' ? 'flex' : 'none';
 }
 
 function abrirCadastroFornecedorPrest() { document.getElementById('modal-forn-prest').style.display='flex'; }
 function fecharModalFornPrest() {
   document.getElementById('modal-forn-prest').style.display='none';
-  ['pforn_nome','pforn_cnpj'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['pforn_nome','pforn_cnpj','pforn_municipio'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
 }
 
 async function confirmarFornecedorPrest() {
   const nome=(document.getElementById('pforn_nome').value||'').trim();
   const cnpj=(document.getElementById('pforn_cnpj').value||'').trim();
   const cat=document.getElementById('pforn_cat').value;
+  const municipio=(document.getElementById('pforn_municipio').value||'').trim();
   if(!nome){showToast('⚠️ Informe o nome.');return;}
   const jaExiste=_fornecedoresPrest.some(f=>f.Title.toLowerCase()===nome.toLowerCase()||(cnpj&&f.CNPJ===cnpj));
   if(jaExiste){showToast('⚠️ Fornecedor já cadastrado!');return;}
-  const ok=await salvarNoSharePoint('Fornecedores',{Title:nome,CNPJ:cnpj,Categoria:cat});
-  if(ok){ showToast('✅ Fornecedor cadastrado!'); fecharModalFornPrest(); await carregarFornecedoresListaPrest(); }
-  else showToast('❌ Erro ao cadastrar.');
+  const ok=await salvarNoSharePoint('Fornecedores',{Title:nome,CNPJ:cnpj,Categoria:cat,Municipio:municipio});
+  if(ok){
+    showToast('✅ Fornecedor cadastrado!');
+    fecharModalFornPrest();
+    await carregarFornecedoresListaPrest();
+    pcSelecionarFornecedor(nome);
+  } else showToast('❌ Erro ao cadastrar.');
 }
 
 async function salvarRascunhoPrestacao() {
@@ -3779,27 +3862,15 @@ async function salvarRascunhoPrestacao() {
   setTimeout(()=>carregarPrestacoes(),800);
 }
 
-function abrirModalEnvioGestorPrest() {
-  const dados=coletarDadosPrestacao(true); if(!dados)return;
-  window._prestDadosPendentes=dados;
-  document.getElementById('modal-gestor-prest').style.display='flex';
-}
-
-function fecharModalGestorPrest() {
-  document.getElementById('modal-gestor-prest').style.display='none';
-  window._prestDadosPendentes=null;
-}
-
-async function confirmarEnvioPrestacao() {
-  const gestor=document.getElementById('prest_gestor_sel').value;
-  if(!gestor){showToast('⚠️ Selecione o gestor.');return;}
-  const dados=window._prestDadosPendentes;
-  if(!dados){showToast('❌ Dados perdidos. Tente novamente.');return;}
+/* -- Envia direto ao Financeiro (sem etapa de gestor) -- */
+async function enviarPrestacaoFinanceiro() {
+  const dados = coletarDadosPrestacao(true); if(!dados) return;
 
   // Fazer upload do comprovante agora (se houver arquivo selecionado)
-  if (window._prestAnexoFile) {
+  const anexoInput = document.getElementById('prest_anexo');
+  const file = anexoInput && anexoInput.files[0];
+  if (file) {
     showSyncStatus('Enviando comprovante ao OneDrive...');
-    const file = window._prestAnexoFile;
     const data = new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
     const resp = (window._currentUser ? window._currentUser.name : 'Colaborador').replace(/\s+/g, '_').substring(0, 20);
     const ext = file.name.split('.').pop();
@@ -3817,11 +3888,9 @@ async function confirmarEnvioPrestacao() {
     }
   }
 
-  dados.Status='Ag. Aprovação Gestor';
-  dados.Gestor=gestor;
+  dados.Status = 'Ag. Financeiro';
   const novo = await dbInserir('PrestacaoContas', dados);
-  showToast(novo ? `✅ Enviado para ${gestor}!` : '❌ Erro ao salvar. Tente novamente.');
-  fecharModalGestorPrest();
+  showToast(novo ? '✅ Enviado ao Financeiro!' : '❌ Erro ao salvar. Tente novamente.');
   limparFormPrestacao();
   setTimeout(()=>carregarPrestacoes(),800);
 }
@@ -3834,16 +3903,25 @@ function coletarDadosPrestacao(validar=false) {
   const fornecedor=document.getElementById('prest_fornecedor_sel').value;
   const nf=(document.getElementById('prest_nf').value||'').trim();
   const obs=(document.getElementById('prest_obs').value||'').trim();
+  const formaPgto=(document.getElementById('prest_forma_pgto')||{}).value||'';
+  const parcelamento=(document.getElementById('prest_parcelamento')||{}).value||'avista';
+  const numParcelas=parcelamento==='parcelado'?(parseInt(document.getElementById('prest_num_parcelas').value)||0):0;
+  const tipoParcelamento=parcelamento==='parcelado'?((document.getElementById('prest_tipo_parcelamento')||{}).value||''):'';
+  const fornecedorObj=_fornecedoresPrest.find(f=>f.Title===fornecedor);
+  const municipio=fornecedorObj?(fornecedorObj.Municipio||''):'';
   if(validar){
     if(!data){showToast('⚠️ Informe a data da despesa.');return null;}
     if(!valor){showToast('⚠️ Informe o valor da despesa.');return null;}
     if(!empresa){showToast('⚠️ Selecione a empresa.');return null;}
-    if(!fornecedor){showToast('⚠️ Selecione o fornecedor/estabelecimento.');return null;}
+    if(!fornecedor){showToast('⚠️ Selecione o fornecedor/estabelecimento (digite e escolha na lista).');return null;}
+    if(!formaPgto){showToast('⚠️ Selecione a forma de pagamento.');return null;}
+    if(parcelamento==='parcelado'&&!numParcelas){showToast('⚠️ Informe em quantas vezes foi parcelado.');return null;}
   }
   return {
     Title: (fornecedor||'Despesa')+' · '+(data||new Date().toLocaleDateString('pt-BR')),
     DataDespesa: data, Valor: valor, Empresa: empresa, CentroCusto: cc,
-    Fornecedor: fornecedor, NumeroNF: nf, Observacoes: obs,
+    Fornecedor: fornecedor, Municipio: municipio, NumeroNF: nf, Observacoes: obs,
+    FormaPagamento: formaPgto, Parcelamento: parcelamento, NumParcelas: numParcelas, TipoParcelamento: tipoParcelamento,
     Responsavel: window._currentUser?window._currentUser.name:'',
     EnviadoPor: window._currentUser?window._currentUser.name:'Desconhecido',
     DataLancamento: new Date().toISOString(),
@@ -3851,34 +3929,81 @@ function coletarDadosPrestacao(validar=false) {
 }
 
 function limparFormPrestacao() {
-  ['prest_data','prest_valor','prest_nf','prest_obs'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['prest_data','prest_valor','prest_nf','prest_obs','prest_num_parcelas'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const emp=document.getElementById('prest_empresa');if(emp)emp.selectedIndex=0;
   const cc=document.getElementById('prest_cc');if(cc)cc.innerHTML='<option value="">Selecione a empresa primeiro...</option>';
-  const forn=document.getElementById('prest_fornecedor_sel');if(forn)forn.selectedIndex=0;
+  const forn=document.getElementById('prest_fornecedor_input');if(forn)forn.value='';
+  const fornSel=document.getElementById('prest_fornecedor_sel');if(fornSel)fornSel.value='';
+  const hint=document.getElementById('prest_fornecedor_municipio_hint');if(hint)hint.textContent='';
+  const formaPgto=document.getElementById('prest_forma_pgto');if(formaPgto)formaPgto.selectedIndex=0;
+  const parc=document.getElementById('prest_parcelamento');if(parc)parc.selectedIndex=0;
+  pcToggleParcelas();
   const anx=document.getElementById('prest_anexo');if(anx)anx.value='';
   window._prestAnexoFile = null;
   window._prestComprovanteUrl = null;
   window._prestComprovanteNome = null;
 }
 
+window._prestFiltradas = [];
+
 async function carregarPrestacoes() {
   const el=document.getElementById('lista-prestacoes');if(!el)return;
-  const filtroSel=document.getElementById('prest_filtro_status');
-  const filtroStatus=filtroSel?filtroSel.value:'';
+  const isGestor=currentProfile==='diretoria'||currentProfile==='coordenador';
   try {
     let items = await dbLer('PrestacaoContas');
-    if(currentProfile==='colaborador'&&window._currentUser) items=items.filter(r=>r.EnviadoPor===window._currentUser.name||r.Responsavel===window._currentUser.name);
-    if(filtroStatus) items=items.filter(r=>r.Status===filtroStatus);
+    if(!isGestor&&window._currentUser) items=items.filter(r=>r.EnviadoPor===window._currentUser.name||r.Responsavel===window._currentUser.name);
+
+    // Popular opções dos filtros dinâmicos (colaborador, município), preservando seleção atual
+    const selColab = document.getElementById('prest_filtro_colaborador');
+    if (selColab) {
+      const atual = selColab.value;
+      const nomes = [...new Set(items.map(r=>r.Responsavel||r.EnviadoPor).filter(Boolean))].sort();
+      selColab.innerHTML = '<option value="">Todos colaboradores</option>' + nomes.map(n=>`<option value="${n}">${n}</option>`).join('');
+      selColab.value = atual;
+    }
+    const selMun = document.getElementById('prest_filtro_municipio');
+    if (selMun) {
+      const atual = selMun.value;
+      const muns = [...new Set(items.map(r=>r.Municipio).filter(Boolean))].sort();
+      selMun.innerHTML = '<option value="">Todos municípios</option>' + muns.map(m=>`<option value="${m}">${m}</option>`).join('');
+      selMun.value = atual;
+    }
+
+    // KPIs — sobre o conjunto visível ao usuário, antes dos filtros de busca
+    const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
+    setKpi('pc-kpi-total', items.length);
+    setKpi('pc-kpi-pendentes', items.filter(r=>r.Status==='Ag. Financeiro'||r.Status==='Ag. Aprovação Gestor').length);
+    setKpi('pc-kpi-aprovadas', items.filter(r=>r.Status==='Aprovada').length);
+    setKpi('pc-kpi-devolvidas', items.filter(r=>r.Status==='Devolvida'||r.Status==='Suspensa').length);
+
+    // Filtros de busca
+    const fMes = (document.getElementById('prest_filtro_mes')||{}).value||'';
+    const fColab = (document.getElementById('prest_filtro_colaborador')||{}).value||'';
+    const fForn = ((document.getElementById('prest_filtro_fornecedor')||{}).value||'').trim().toLowerCase();
+    const fMun = (document.getElementById('prest_filtro_municipio')||{}).value||'';
+    const fValorMin = parseFloat((document.getElementById('prest_filtro_valor_min')||{}).value);
+    const fValorMax = parseFloat((document.getElementById('prest_filtro_valor_max')||{}).value);
+    const filtroStatus = (document.getElementById('prest_filtro_status')||{}).value||'';
+
+    if (fMes) items = items.filter(r => (r.DataDespesa||'').slice(0,7) === fMes);
+    if (fColab) items = items.filter(r => (r.Responsavel||r.EnviadoPor) === fColab);
+    if (fForn) items = items.filter(r => (r.Fornecedor||'').toLowerCase().includes(fForn));
+    if (fMun) items = items.filter(r => r.Municipio === fMun);
+    if (!isNaN(fValorMin)) items = items.filter(r => (r.Valor||0) >= fValorMin);
+    if (!isNaN(fValorMax)) items = items.filter(r => (r.Valor||0) <= fValorMax);
+    if (filtroStatus) items = items.filter(r=>r.Status===filtroStatus);
+
     items=items.sort((a,b)=>b.Id-a.Id);
+    window._prestFiltradas = items;
+
     if(!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma prestação encontrada.</div>';return;}
-    const scColor=s=>s==='Aprovada'?'green':s==='Devolvida'||s==='Reprovada'?'red':s==='Ag. Financeiro'?'blue':'amber';
-    const isGestor=currentProfile==='diretoria'||currentProfile==='coordenador';
+    const scColor=s=>s==='Aprovada'?'green':(s==='Devolvida'||s==='Suspensa'||s==='Reprovada')?'red':(s==='Ag. Financeiro'||s==='Ag. Aprovação Gestor')?'blue':'amber';
     const hoje = new Date(); hoje.setHours(0,0,0,0);
     const diasDesde = iso => iso ? Math.floor((hoje - new Date(iso)) / 86400000) : null;
 
-    // -- Lembrete: prestações aguardando aprovação há mais de 3 dias --
+    // -- Lembrete: prestações aguardando o Financeiro há mais de 3 dias --
     const atrasadas = items.filter(i => {
-      if (i.Status !== 'Ag. Aprovação Gestor') return false;
+      if (i.Status !== 'Ag. Financeiro' && i.Status !== 'Ag. Aprovação Gestor') return false;
       const dias = diasDesde(i.DataLancamento);
       return dias !== null && dias > 3;
     });
@@ -3888,8 +4013,8 @@ async function carregarPrestacoes() {
         alertaEl.innerHTML = `<div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
           <span style="font-size:1.2rem">⏰</span>
           <div>
-            <strong style="font-size:.82rem;color:#92400e">${atrasadas.length} prestação(ões) aguardando aprovação há mais de 3 dias</strong>
-            <div style="font-size:.72rem;color:#b45309;margin-top:2px">${atrasadas.map(i=>`${i.Fornecedor||'Despesa'} (${diasDesde(i.DataLancamento)}d) → ${i.Gestor||'gestor'}`).join(' · ')}</div>
+            <strong style="font-size:.82rem;color:#92400e">${atrasadas.length} prestação(ões) aguardando o Financeiro há mais de 3 dias</strong>
+            <div style="font-size:.72rem;color:#b45309;margin-top:2px">${atrasadas.map(i=>`${i.Fornecedor||'Despesa'} (${diasDesde(i.DataLancamento)}d) — ${i.Responsavel||''}`).join(' · ')}</div>
           </div>
         </div>`;
       } else {
@@ -3897,36 +4022,79 @@ async function carregarPrestacoes() {
       }
     }
 
-    el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Fornecedor</th><th>Empresa / CC</th><th>NF/Recibo</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
+    el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Fornecedor</th><th>Município</th><th>Empresa / CC</th><th>Pagamento</th><th>NF/Recibo</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
       items.map(i=>{
         const dias = diasDesde(i.DataLancamento);
-        const atrasado = i.Status === 'Ag. Aprovação Gestor' && dias !== null && dias > 3;
+        const atrasado = (i.Status === 'Ag. Financeiro' || i.Status === 'Ag. Aprovação Gestor') && dias !== null && dias > 3;
+        const podeAgirFinanceiro = i.Status==='Ag. Financeiro' && isGestor;
+        const podeAgirGestorLegado = i.Status==='Ag. Aprovação Gestor' && isGestor;
+        const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcelas||'?'}x (${i.TipoParcelamento||''})` : (i.FormaPagamento||'—');
         return `<tr${atrasado?' style="background:#fffbeb"':''}>
         <td style="font-size:.78rem">${i.DataDespesa?new Date(i.DataDespesa+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
         <td><strong>${i.Fornecedor||'—'}</strong><div style="font-size:.7rem;color:var(--text-muted)">${i.Responsavel||''}</div></td>
+        <td style="font-size:.75rem">${i.Municipio||'—'}</td>
         <td style="font-size:.75rem">${i.Empresa||'—'}<br><span style="color:var(--text-muted)">${i.CentroCusto||''}</span></td>
+        <td style="font-size:.72rem">${pgtoTxt}</td>
         <td style="font-size:.75rem">${i.NumeroNF||'—'}${i.ComprovanteUrl?`<br><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.68rem">📎 Ver comprovante</a>`:''}</td>
         <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
         <td>
           <span class="status-pill ${scColor(i.Status)}">${i.Status||'—'}</span>
-          ${i.Gestor?`<div style="font-size:.65rem;color:var(--text-muted);margin-top:2px">${i.Gestor}</div>`:''}
           ${atrasado?`<div style="font-size:.62rem;color:#b45309;font-weight:700;margin-top:2px">⏰ ${dias}d aguardando</div>`:''}
-          ${i.Status==='Devolvida'&&i.MotivoReprovacao?`<div style="font-size:.62rem;color:var(--red);margin-top:2px" title="${i.MotivoReprovacao}">↩️ ${i.MotivoReprovacao.substring(0,40)}${i.MotivoReprovacao.length>40?'...':''}</div>`:''}
+          ${(i.Status==='Devolvida'||i.Status==='Suspensa')&&i.MotivoReprovacao?`<div style="font-size:.62rem;color:var(--red);margin-top:2px" title="${i.MotivoReprovacao}">↩️ ${i.MotivoReprovacao.substring(0,40)}${i.MotivoReprovacao.length>40?'...':''}</div>`:''}
         </td>
         <td style="display:flex;gap:4px;padding:8px 6px;flex-wrap:wrap">
-          ${i.Status==='Ag. Aprovação Gestor'&&isGestor?`
-            <button class="btn-primary" style="padding:3px 8px;font-size:.68rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar</button>
+          ${podeAgirFinanceiro?`
+            <button class="btn-primary" style="padding:3px 8px;font-size:.68rem" onclick="aprovarPrestacaoFinanceiro(${i.Id})">✅ Aprovar</button>
+            <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`:''}
+          ${podeAgirGestorLegado?`
+            <button class="btn-primary" style="padding:3px 8px;font-size:.68rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar (fluxo antigo)</button>
             <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Devolver</button>`:''}
-          ${i.Status==='Ag. Financeiro'&&isGestor?`
-            <button class="btn-primary" style="padding:3px 8px;font-size:.68rem" onclick="aprovarPrestacaoFinanceiro(${i.Id})">💰 Confirmar pgto</button>
-            <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Devolver</button>`:''}
-          ${i.Status==='Devolvida'&&i.EnviadoPor===(window._currentUser?window._currentUser.name:'')?`
+          ${(i.Status==='Devolvida'||i.Status==='Suspensa')&&i.EnviadoPor===(window._currentUser?window._currentUser.name:'')?`
             <button class="btn-primary" style="padding:3px 8px;font-size:.68rem;background:var(--amber)" onclick="reenviarPrestacaoDevolvida(${i.Id})">🔄 Corrigir e Reenviar</button>`:''}
         </td>
       </tr>`;
       }).join('')+
       '</tbody></table></div>';
   } catch(e){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';}
+}
+
+function pcLimparFiltros() {
+  ['prest_filtro_mes','prest_filtro_fornecedor','prest_filtro_valor_min','prest_filtro_valor_max'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['prest_filtro_colaborador','prest_filtro_municipio','prest_filtro_status'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  carregarPrestacoes();
+}
+
+async function exportarPrestacaoExcel() {
+  const items = window._prestFiltradas || [];
+  if (!items.length) { showToast('⚠️ Nenhum registro para exportar.'); return; }
+  showToast('📊 Gerando planilha...');
+  if (typeof XLSX === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  const rows = items.map(i => ({
+    'Data': i.DataDespesa ? new Date(i.DataDespesa+'T00:00:00').toLocaleDateString('pt-BR') : '',
+    'Colaborador': i.Responsavel || '',
+    'Fornecedor': i.Fornecedor || '',
+    'Município': i.Municipio || '',
+    'Empresa': i.Empresa || '',
+    'Centro de Custo': i.CentroCusto || '',
+    'NF/Recibo': i.NumeroNF || '',
+    'Valor': i.Valor || 0,
+    'Forma de Pagamento': i.FormaPagamento || '',
+    'Parcelamento': i.Parcelamento === 'parcelado' ? ((i.NumParcelas||'')+'x — '+(i.TipoParcelamento||'')) : 'À vista',
+    'Status': i.Status || '',
+    'Motivo Devolução': i.MotivoReprovacao || '',
+    'Observações': i.Observacoes || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Prestacao de Contas');
+  XLSX.writeFile(wb, 'PrestacaoContas_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
 async function aprovarPrestacaoGestor(id) {
@@ -3943,15 +4111,11 @@ async function reprovarPrestacaoGestor(id) {
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
 }
 
-/* -- Colaborador corrige e reenvia uma prestação devolvida -- */
+/* -- Colaborador corrige e reenvia uma prestação devolvida (direto ao Financeiro) -- */
 async function reenviarPrestacaoDevolvida(id) {
   const lista = await dbLer('PrestacaoContas');
   const original = lista.find(r => r.Id === id);
   if (!original) { showToast('❌ Registro não encontrado.'); return; }
-
-  const gestorAnterior = original.Gestor || '';
-  const gestor = (prompt(`Reenviar para o gestor (deixe em branco para manter "${gestorAnterior}"):`) ?? gestorAnterior).trim() || gestorAnterior;
-  if (!gestor) { showToast('⚠️ Informe o gestor para reenviar.'); return; }
 
   const trocar = confirm('Deseja trocar o comprovante anexado?\nOK = trocar arquivo · Cancelar = manter o anterior');
   if (trocar) {
@@ -3975,31 +4139,30 @@ async function reenviarPrestacaoDevolvida(id) {
       const url = await uploadParaOneDrive(file, odPastaPrestacaoMes(), nome);
       if (url) {
         showSyncStatus('Comprovante atualizado!', 'ok', 3000);
-        await _finalizarReenvio(id, gestor, typeof url==='string'?url:'', nome);
+        await _finalizarReenvio(id, typeof url==='string'?url:'', nome);
       } else {
         showSyncStatus('Falha ao enviar comprovante', 'err', 5000);
         if (confirm('Não foi possível enviar o novo comprovante. Reenviar sem trocar?')) {
-          await _finalizarReenvio(id, gestor, original.ComprovanteUrl||'', original.ComprovanteNome||'');
+          await _finalizarReenvio(id, original.ComprovanteUrl||'', original.ComprovanteNome||'');
         }
       }
     };
     inp.click();
   } else {
-    await _finalizarReenvio(id, gestor, original.ComprovanteUrl||'', original.ComprovanteNome||'');
+    await _finalizarReenvio(id, original.ComprovanteUrl||'', original.ComprovanteNome||'');
   }
 }
 
-async function _finalizarReenvio(id, gestor, comprovanteUrl, comprovanteNome) {
+async function _finalizarReenvio(id, comprovanteUrl, comprovanteNome) {
   const ok = await dbAtualizar('PrestacaoContas', id, {
-    Status: 'Ag. Aprovação Gestor',
-    Gestor: gestor,
+    Status: 'Ag. Financeiro',
     MotivoReprovacao: '',
     DataReprovacao: '',
     DataLancamento: new Date().toISOString(), // reinicia contagem dos 3 dias
     ComprovanteUrl: comprovanteUrl,
     ComprovanteNome: comprovanteNome,
   });
-  showToast(ok ? `🔄 Reenviado para ${gestor}!` : '❌ Erro ao reenviar.');
+  showToast(ok ? '🔄 Reenviado ao Financeiro!' : '❌ Erro ao reenviar.');
   setTimeout(() => carregarPrestacoes(), 600);
 }
 
@@ -4009,10 +4172,12 @@ async function aprovarPrestacaoFinanceiro(id) {
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
 }
 
+/* -- Financeiro indefere: volta direto ao colaborador (com motivo) para corrigir e reenviar -- */
 async function devolverPrestacaoFinanceiro(id) {
-  const motivo=prompt('Motivo da devolução ao gestor:','');if(motivo===null)return;
-  const ok = await dbAtualizar('PrestacaoContas', id, { Status: 'Ag. Aprovação Gestor', MotivoReprovacao: '[Financeiro] ' + motivo });
-  showToast(ok ? '↩️ Devolvida ao gestor para revisão.' : '❌ Erro');
+  const motivo=prompt('Motivo do indeferimento (o colaborador verá isso):','');if(motivo===null)return;
+  if(!motivo.trim()){showToast('⚠️ Informe o motivo do indeferimento.');return;}
+  const ok = await dbAtualizar('PrestacaoContas', id, { Status: 'Devolvida', MotivoReprovacao: motivo, ReprovadoPor: window._currentUser?.name, DataReprovacao: new Date().toISOString().split('T')[0] });
+  showToast(ok ? '↩️ Indeferida — colaborador pode corrigir e reenviar.' : '❌ Erro');
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
 }
 
@@ -4471,7 +4636,7 @@ async function carregarAprovacoes() {
   const setPill = (id, n) => { const e = document.getElementById(id); if(e) e.textContent = n; };
   setPill('aprov-kpi-apr',   aprs.filter(r => r.Status === 'Em Aberto' && aprsDoUsuario(r)).length);
   setPill('aprov-kpi-pagar', contas.filter(r => r.Status === 'Aguardando Aprovação').length);
-  setPill('aprov-kpi-prest', prests.filter(r => r.Status === 'Em Aberto').length);
+  setPill('aprov-kpi-prest', prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor').length);
 
   // APRs em aberto (Gestor Geral vê todas; demais gestores só as endereçadas a eles)
   const elAPR = document.getElementById('aprov-lista-apr');
@@ -4494,25 +4659,32 @@ async function carregarAprovacoes() {
     }
   }
 
-  // Prestações pendentes
+  // Prestações pendentes (fluxo atual: direto ao Financeiro; "Ag. Aprovação Gestor" é resíduo do fluxo antigo)
   const elPrest = document.getElementById('aprov-lista-prest');
   if (elPrest) {
-    const pendentes = prests.filter(r => r.Status === 'Em Aberto').sort((a,b) => b.Id - a.Id);
+    const pendentes = prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor').sort((a,b) => b.Id - a.Id);
     if (!pendentes.length) {
       elPrest.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma prestação pendente. ✅</div>';
     } else {
       elPrest.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Fornecedor</th><th>Responsável</th><th>Empresa</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
-        pendentes.map(i => `<tr>
+        pendentes.map(i => {
+          const legado = i.Status === 'Ag. Aprovação Gestor';
+          return `<tr>
           <td><strong>${i.Fornecedor || i.Title || '—'}</strong></td>
           <td>${i.Responsavel || '—'}</td>
           <td style="font-size:.75rem">${i.Empresa || '—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td><span class="status-pill amber">* ${i.Status}</span></td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
-            <button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar</button>
-            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Reprovar</button>
+            ${legado
+              ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar</button>
+                 <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Reprovar</button>`
+              : `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarPrestacaoFinanceiro(${i.Id})">✅ Aprovar</button>
+                 <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`
+            }
           </td>
-        </tr>`).join('') + '</tbody></table></div>';
+        </tr>`;
+        }).join('') + '</tbody></table></div>';
     }
   }
 }
