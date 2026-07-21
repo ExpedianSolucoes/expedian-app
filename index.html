@@ -4547,14 +4547,19 @@ function pagePagar() {
       </div>
     </div>
 
-    <!-- Linha 2: Fornecedor (com lista + cadastro) -->
+    <!-- Linha 2: Fornecedor (busca digitável + cadastro) -->
     <div class="form-row">
       <div class="form-group" style="position:relative">
         <label>Fornecedor</label>
         <div style="display:flex;gap:8px">
-          <select id="pag_fornecedor_sel" style="flex:1" onchange="selecionarFornecedorExistente()">
-            <option value="">Carregando fornecedores...</option>
-          </select>
+          <div style="flex:1;position:relative">
+            <input type="text" id="pag_fornecedor_input" placeholder="Digite para buscar..." autocomplete="off"
+              oninput="pagFiltrarFornecedores(this.value)" onfocus="pagFiltrarFornecedores(this.value)"
+              onblur="setTimeout(()=>pagFecharDropdownFornecedor(),150)"
+              style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
+            <input type="hidden" id="pag_fornecedor_sel">
+            <div id="pag_fornecedor_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+          </div>
           <button onclick="abrirCadastroFornecedor()" class="btn-secondary" style="padding:6px 12px;font-size:.78rem;white-space:nowrap">+ Novo</button>
         </div>
       </div>
@@ -4564,19 +4569,55 @@ function pagePagar() {
       </div>
     </div>
 
-    <!-- Linha 3: Vencimento + Valor -->
+    <!-- Linha 3: Forma de pagamento + parcelamento -->
     <div class="form-row">
       <div class="form-group">
-        <label>Vencimento</label>
-        <input type="date" id="pag_vencimento" onchange="atualizarStatusAuto()">
+        <label>Forma de Pagamento</label>
+        <select id="pag_forma_pgto">
+          <option value="">Selecione...</option>
+          <option value="Dinheiro">Dinheiro</option>
+          <option value="PIX">PIX</option>
+          <option value="Cartão de Débito">Cartão de Débito</option>
+          <option value="Cartão de Crédito">Cartão de Crédito</option>
+          <option value="Boleto">Boleto</option>
+          <option value="Transferência">Transferência</option>
+        </select>
       </div>
       <div class="form-group">
-        <label>Valor (R$)</label>
-        <input type="number" id="pag_valor" placeholder="0,00" step="0.01">
+        <label>À vista ou parcelado?</label>
+        <select id="pag_parcelamento" onchange="pagToggleParcelas()">
+          <option value="avista">À vista</option>
+          <option value="parcelado">Parcelado</option>
+        </select>
       </div>
     </div>
 
-    <!-- Linha 4: Status (auto) + Obs -->
+    <!-- Linha 3b: Config de parcelas (só aparece se "Parcelado") -->
+    <div class="form-row" id="pag_parcelas_row" style="display:none">
+      <div class="form-group">
+        <label>Quantas vezes?</label>
+        <input type="number" id="pag_num_parcelas" min="2" step="1" placeholder="Ex: 3" oninput="pagGerarParcelas()">
+      </div>
+      <div class="form-group">
+        <label>Vencimento da 1ª parcela</label>
+        <input type="date" id="pag_venc_1parcela" onchange="pagGerarParcelas()">
+      </div>
+    </div>
+    <div id="pag_parcelas_editor" style="display:none;margin-bottom:16px"></div>
+
+    <!-- Linha 4: Vencimento + Valor -->
+    <div class="form-row">
+      <div class="form-group">
+        <label id="pag_vencimento_label">Vencimento</label>
+        <input type="date" id="pag_vencimento" onchange="atualizarStatusAuto()">
+      </div>
+      <div class="form-group">
+        <label id="pag_valor_label">Valor (R$)</label>
+        <input type="number" id="pag_valor" placeholder="0,00" step="0.01" oninput="pagGerarParcelas()">
+      </div>
+    </div>
+
+    <!-- Linha 5: Status (auto) + Obs -->
     <div class="form-row">
       <div class="form-group">
         <label>Status <span style="font-size:.7rem;color:var(--text-muted)">(calculado automaticamente)</span></label>
@@ -4646,20 +4687,41 @@ function pagePagar() {
     </div>
   </div>
 
+  <!-- KPIs (clicáveis, filtram a lista abaixo) -->
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card blue" id="pag-kpi-card-total" onclick="pagFiltrarKpi('')" style="cursor:pointer" title="Ver todos os lançamentos"><div class="kpi-label">Total de Lançamentos</div><div class="kpi-value" id="pag-kpi-total">—</div><div class="kpi-icon">📑</div></div>
+    <div class="kpi-card amber" id="pag-kpi-card-aprovacao" onclick="pagFiltrarKpi('aprovacao')" style="cursor:pointer" title="Filtrar: aguardando aprovação"><div class="kpi-label">Aguardando Aprovação</div><div class="kpi-value" id="pag-kpi-aprovacao">—</div><div class="kpi-icon">⏳</div></div>
+    <div class="kpi-card blue" id="pag-kpi-card-pagamento" onclick="pagFiltrarKpi('pagamento')" style="cursor:pointer" title="Filtrar: aguardando pagamento"><div class="kpi-label">Aguardando Pagamento</div><div class="kpi-value" id="pag-kpi-pagamento">—</div><div class="kpi-icon">💳</div></div>
+    <div class="kpi-card green" id="pag-kpi-card-pago" onclick="pagFiltrarKpi('pago')" style="cursor:pointer" title="Filtrar: pagos"><div class="kpi-label">Pagos</div><div class="kpi-value" id="pag-kpi-pago">—</div><div class="kpi-icon">✅</div></div>
+    <div class="kpi-card red" id="pag-kpi-card-atraso" onclick="pagFiltrarKpi('atraso')" style="cursor:pointer" title="Filtrar: em atraso"><div class="kpi-label">Em Atraso</div><div class="kpi-value" id="pag-kpi-atraso">—</div><div class="kpi-icon">⚠️</div></div>
+  </div>
+
+  <!-- BARRA DE FILTROS -->
+  <div id="pag-filtros" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
+    <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
+    <input type="month" id="pag_filtro_mes" onchange="carregarContasPagar()" title="Mês do vencimento" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <input type="text" id="pag_filtro_fornecedor" placeholder="Fornecedor..." oninput="carregarContasPagar()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:140px">
+    <input type="text" id="pag_filtro_cc" placeholder="Centro de custo..." oninput="carregarContasPagar()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:140px">
+    <input type="number" id="pag_filtro_valor_min" placeholder="Valor mín." oninput="carregarContasPagar()" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <input type="number" id="pag_filtro_valor_max" placeholder="Valor máx." oninput="carregarContasPagar()" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <select id="filtro-status-pagar" onchange="PAG_FILTRO_KPI='';carregarContasPagar()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
+      <option value="">Todos os status</option>
+      <option value="Pendente">Pendente</option>
+      <option value="Vence em breve">Vence em breve</option>
+      <option value="Vence hoje">Vence hoje</option>
+      <option value="Em atraso">Em atraso</option>
+      <option value="Aguardando Aprovação">Ag. Aprovação</option>
+      <option value="Aprovado — Aguardando Pagamento">Ag. Pagamento</option>
+      <option value="Pago">Pago</option>
+    </select>
+    <button onclick="pagLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
+  </div>
+
   <!-- Lista de contas -->
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div class="card-title" style="margin:0">Lançamentos — Contas a Pagar</div>
-      <div style="display:flex;gap:8px">
-        <select id="filtro-status-pagar" onchange="carregarContasPagar()" style="font-size:.78rem;padding:5px 8px;border-radius:6px;border:1px solid var(--border)">
-          <option value="">Todos</option>
-          <option value="Pendente">Pendente</option>
-          <option value="Em atraso">Em atraso</option>
-          <option value="Aguardando Aprovação">Ag. Aprovação</option>
-          <option value="Aprovado — Aguardando Pagamento">Ag. Pagamento</option>
-          <option value="Pago">Pagos</option>
-        </select>
-      </div>
+      <button class="btn-secondary" onclick="exportarContasPagarExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
     </div>
     <div id="lista-pagar"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
@@ -4733,32 +4795,54 @@ function atualizarStatusAuto() {
 
 let _fornecedoresCadastrados = [];
 
+// Apenas carrega a lista em memória — a UI é um combobox digitável (ver pagFiltrarFornecedores),
+// não mais um <select> nativo.
 async function carregarFornecedoresLista() {
-  const sel = document.getElementById('pag_fornecedor_sel');
-  if (!sel) return;
   const token = await getSharePointToken();
-  if (!token) {
-    sel.innerHTML = '<option value="">Login Microsoft necessário</option>';
-    return;
-  }
-  try {
-    const fakeResp = { ok: true, json: async () => ({ value: await dbLer('Fornecedores') }) };
-    const r = fakeResp;
-    if (r.ok) {
-      const d = await r.json();
-      _fornecedoresCadastrados = d.value || [];
-      sel.innerHTML = '<option value="">Selecione um fornecedor...</option>' +
-        _fornecedoresCadastrados.map(f=>`<option value="${f.Title}">${f.Title}${f.CNPJ?' · '+f.CNPJ:''}</option>`).join('');
-    } else {
-      sel.innerHTML = '<option value="">Nenhum fornecedor cadastrado ainda</option>';
-    }
-  } catch(e) {
-    sel.innerHTML = '<option value="">Clique em "+ Novo" para cadastrar</option>';
-  }
+  if (!token) { _fornecedoresCadastrados = []; return; }
+  try { _fornecedoresCadastrados = await dbLer('Fornecedores'); }
+  catch(e) { _fornecedoresCadastrados = []; }
 }
 
-function selecionarFornecedorExistente() {
-  // pode-se usar para preencher dados adicionais
+/* -- Combobox pesquisável de fornecedor em Contas a Pagar (digita e filtra),
+      igual ao usado em Prestação de Contas. -- */
+function pagFiltrarFornecedores(texto) {
+  const dd = document.getElementById('pag_fornecedor_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  let matches = t ? _fornecedoresCadastrados.filter(f => (f.Title||'').toLowerCase().includes(t)) : _fornecedoresCadastrados;
+  matches = matches.slice(0, 30);
+  let html = matches.map(f => {
+    const esc = String(f.Title).replace(/'/g,"\\'");
+    return '<div onclick="pagSelecionarFornecedor(\''+esc+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>'+f.Title+'</strong>'+(f.CNPJ?' <span style="color:var(--text-muted);font-size:.72rem">· '+f.CNPJ+'</span>':'') +
+    '</div>';
+  }).join('');
+  if (t && !_fornecedoresCadastrados.some(f => (f.Title||'').toLowerCase() === t)) {
+    html += '<div onclick="pagNovoFornecedorComNome(\''+t.replace(/'/g,"\\'")+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;color:var(--green-main);font-weight:700">+ Cadastrar "'+texto+'" como novo fornecedor</div>';
+  }
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum fornecedor encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+
+function pagFecharDropdownFornecedor() {
+  const dd = document.getElementById('pag_fornecedor_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+
+function pagSelecionarFornecedor(nome) {
+  const inp = document.getElementById('pag_fornecedor_input'); if (inp) inp.value = nome;
+  const hid = document.getElementById('pag_fornecedor_sel'); if (hid) hid.value = nome;
+  pagFecharDropdownFornecedor();
+}
+
+function pagNovoFornecedorComNome(nomeSugerido) {
+  pagFecharDropdownFornecedor();
+  abrirCadastroFornecedor();
+  const el = document.getElementById('forn_nome');
+  if (el) el.value = nomeSugerido;
 }
 
 function abrirCadastroFornecedor() {
@@ -4786,14 +4870,80 @@ async function confirmarCadastroFornecedor() {
     showToast('✅ Fornecedor cadastrado!');
     fecharModalFornecedor();
     await carregarFornecedoresLista();
-    // Selecionar o novo fornecedor
-    const sel = document.getElementById('pag_fornecedor_sel');
-    for (let i=0;i<sel.options.length;i++) {
-      if (sel.options[i].value === nome) { sel.selectedIndex=i; break; }
-    }
+    pagSelecionarFornecedor(nome);
   } else {
     showToast('❌ Erro ao cadastrar fornecedor.' + syncErrorDetalhe());
   }
+}
+
+/* -- Parcelamento em Contas a Pagar: gera as parcelas automaticamente
+      (vencimento mensal a partir da 1ª parcela + valor dividido igualmente),
+      mas cada parcela fica editável (vencimento e valor) antes de salvar. -- */
+function pagToggleParcelas() {
+  const v = document.getElementById('pag_parcelamento').value;
+  const row = document.getElementById('pag_parcelas_row');
+  const vencLabel = document.getElementById('pag_vencimento_label');
+  const valorLabel = document.getElementById('pag_valor_label');
+  if (row) row.style.display = v === 'parcelado' ? 'flex' : 'none';
+  if (vencLabel) vencLabel.textContent = v === 'parcelado' ? 'Vencimento (referência)' : 'Vencimento';
+  if (valorLabel) valorLabel.textContent = v === 'parcelado' ? 'Valor Total (R$)' : 'Valor (R$)';
+  if (v !== 'parcelado') {
+    const ed = document.getElementById('pag_parcelas_editor');
+    if (ed) { ed.style.display = 'none'; ed.innerHTML = ''; }
+    window._pagParcelas = null;
+  } else {
+    pagGerarParcelas();
+  }
+}
+
+function pagGerarParcelas() {
+  const parcelamento = (document.getElementById('pag_parcelamento')||{}).value;
+  if (parcelamento !== 'parcelado') return;
+  const qtd = parseInt(document.getElementById('pag_num_parcelas').value) || 0;
+  const dataBase = document.getElementById('pag_venc_1parcela').value;
+  const total = parseFloat(document.getElementById('pag_valor').value) || 0;
+  const editor = document.getElementById('pag_parcelas_editor');
+  if (!qtd || qtd < 2 || !dataBase || !total) {
+    if (editor) { editor.style.display = 'none'; editor.innerHTML = ''; }
+    window._pagParcelas = null;
+    return;
+  }
+  const valorParcela = Math.round((total / qtd) * 100) / 100;
+  const parcelas = [];
+  const base = new Date(dataBase + 'T00:00:00');
+  for (let i = 0; i < qtd; i++) {
+    const d = new Date(base);
+    d.setMonth(d.getMonth() + i);
+    parcelas.push({ numero: i + 1, vencimento: d.toISOString().split('T')[0], valor: valorParcela });
+  }
+  // Ajusta centavos de arredondamento na última parcela para bater com o total exato
+  const soma = parcelas.reduce((s, p) => s + p.valor, 0);
+  const dif = Math.round((total - soma) * 100) / 100;
+  if (dif !== 0) parcelas[parcelas.length - 1].valor = Math.round((parcelas[parcelas.length - 1].valor + dif) * 100) / 100;
+  window._pagParcelas = parcelas;
+  pagRenderizarParcelas();
+}
+
+function pagRenderizarParcelas() {
+  const editor = document.getElementById('pag_parcelas_editor');
+  if (!editor) return;
+  const parcelas = window._pagParcelas || [];
+  if (!parcelas.length) { editor.style.display = 'none'; editor.innerHTML = ''; return; }
+  editor.style.display = 'block';
+  editor.innerHTML = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Parcelas geradas automaticamente — ajuste vencimento e valor se precisar:</div>' +
+    '<div style="display:flex;flex-direction:column;gap:6px">' +
+    parcelas.map((p, i) => `
+      <div style="display:flex;gap:8px;align-items:center;background:var(--surface2);padding:6px 10px;border-radius:8px">
+        <span style="font-size:.78rem;font-weight:700;width:44px">${p.numero}/${parcelas.length}</span>
+        <input type="date" value="${p.vencimento}" onchange="pagAtualizarParcela(${i},'vencimento',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
+        <input type="number" step="0.01" value="${p.valor}" onchange="pagAtualizarParcela(${i},'valor',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px">
+      </div>`).join('') +
+    '</div>';
+}
+
+function pagAtualizarParcela(i, campo, valor) {
+  if (!window._pagParcelas || !window._pagParcelas[i]) return;
+  window._pagParcelas[i][campo] = campo === 'valor' ? (parseFloat(valor) || 0) : valor;
 }
 
 async function salvarContaPagar(enviarFinanceiro=false) {
@@ -4801,26 +4951,54 @@ async function salvarContaPagar(enviarFinanceiro=false) {
   const cc=(document.getElementById('pag_cc').value||'').trim();
   const fornecedor=document.getElementById('pag_fornecedor_sel').value;
   const desc=(document.getElementById('pag_desc').value||'').trim();
+  const formaPgto=(document.getElementById('pag_forma_pgto')||{}).value||'';
+  const parcelamento=(document.getElementById('pag_parcelamento')||{}).value||'avista';
   const vencimento=document.getElementById('pag_vencimento').value;
   const valor=parseFloat(document.getElementById('pag_valor').value)||0;
   const obs=(document.getElementById('pag_obs').value||'').trim();
   if(!fornecedor){showToast('⚠️ Selecione um fornecedor.');return;}
-  if(!vencimento){showToast('⚠️ Informe o vencimento.');return;}
   if(!valor){showToast('⚠️ Informe o valor.');return;}
   if(!empresa){showToast('⚠️ Selecione a empresa.');return;}
-  const statusAuto = calcularStatusVencimento(vencimento);
-  const statusFinal = enviarFinanceiro ? 'Aguardando Aprovação' : document.getElementById('pag_status').value || statusAuto;
-  const dados={
-    Title: fornecedor + ' · ' + (vencimento||''),
-    Fornecedor:fornecedor, Descricao:desc, Vencimento:vencimento,
-    Valor:valor, Status:statusFinal, CentroCusto:cc, Empresa:empresa,
-    Observacao:obs, EnviadoFinanceiro:enviarFinanceiro,
+
+  const base = {
+    Fornecedor:fornecedor, Descricao:desc, Empresa:empresa, CentroCusto:cc,
+    FormaPagamento:formaPgto, Observacao:obs, EnviadoFinanceiro:enviarFinanceiro,
     LancadoPor:window._currentUser?window._currentUser.name:'',
   };
-  const ok=await salvarNoSharePoint('ContasPagar',dados);
+  const statusFinal = enviarFinanceiro ? 'Aguardando Aprovação' : (document.getElementById('pag_status').value || null);
+
+  let ok = true;
+  if (parcelamento === 'parcelado') {
+    const parcelas = window._pagParcelas || [];
+    if (!parcelas.length) { showToast('⚠️ Configure a quantidade de parcelas e o vencimento da 1ª parcela.'); return; }
+    for (const p of parcelas) {
+      const statusP = statusFinal || calcularStatusVencimento(p.vencimento);
+      const dados = {
+        ...base,
+        Title: fornecedor + ' · parcela ' + p.numero + '/' + parcelas.length + ' · ' + p.vencimento,
+        Vencimento: p.vencimento, Valor: p.valor, Status: statusP,
+        Parcelamento: 'parcelado', NumParcela: p.numero, TotalParcelas: parcelas.length,
+      };
+      const okP = await salvarNoSharePoint('ContasPagar', dados);
+      ok = ok && okP;
+    }
+  } else {
+    if(!vencimento){showToast('⚠️ Informe o vencimento.');return;}
+    const statusP = statusFinal || calcularStatusVencimento(vencimento);
+    const dados = {
+      ...base,
+      Title: fornecedor + ' · ' + (vencimento||''),
+      Vencimento: vencimento, Valor: valor, Status: statusP, Parcelamento: 'avista',
+    };
+    ok = await salvarNoSharePoint('ContasPagar', dados);
+  }
+
   showToast(ok?(enviarFinanceiro?'📤 Enviado ao Financeiro!':'✅ Lançamento salvo!'):'✅ Salvo localmente!');
-  ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_vencimento','pag_valor','pag_obs'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
-  const sel=document.getElementById('pag_fornecedor_sel');if(sel)sel.selectedIndex=0;
+  ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_vencimento','pag_valor','pag_obs','pag_num_parcelas','pag_venc_1parcela'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['pag_fornecedor_input','pag_fornecedor_sel'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  const formaSel=document.getElementById('pag_forma_pgto');if(formaSel)formaSel.selectedIndex=0;
+  const parcSel=document.getElementById('pag_parcelamento');if(parcSel){parcSel.selectedIndex=0;pagToggleParcelas();}
+  window._pagParcelas = null;
   setTimeout(()=>carregarContasPagar(),900);
 }
 
@@ -4848,37 +5026,89 @@ async function registrarPagamento(id) {
   setTimeout(()=>carregarContasPagar(),600);
 }
 
+let PAG_FILTRO_KPI = '';
+
+function pagFiltrarKpi(tipo) {
+  PAG_FILTRO_KPI = (PAG_FILTRO_KPI === tipo) ? '' : tipo;
+  const statusSel = document.getElementById('filtro-status-pagar');
+  if (statusSel) statusSel.value = '';
+  carregarContasPagar();
+}
+
+function pagLimparFiltros() {
+  ['pag_filtro_mes','pag_filtro_fornecedor','pag_filtro_cc','pag_filtro_valor_min','pag_filtro_valor_max'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  const statusSel = document.getElementById('filtro-status-pagar'); if (statusSel) statusSel.value = '';
+  PAG_FILTRO_KPI = '';
+  carregarContasPagar();
+}
+
 async function carregarContasPagar() {
   const el=document.getElementById('lista-pagar');if(!el)return;
   if (currentProfile !== 'diretoria') { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria.</div>'; return; }
-  const filtroSel = document.getElementById('filtro-status-pagar');
-  const filtroStatus = filtroSel ? filtroSel.value : '';
   const token=await getSharePointToken();
   if(!token){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>';return;}
   try {
-    let query = '?$orderby=Created desc&$top=100';
-    if (filtroStatus) query += `&$filter=Status eq '${filtroStatus}'`;
-    let _pagItems = await dbLer('ContasPagar');
-    if (filtroStatus) _pagItems = _pagItems.filter(r=>r.Status===filtroStatus);
-    _pagItems = _pagItems.slice().reverse().slice(0,100);
-    const r = { ok: true, json: async () => ({ value: _pagItems }) };
-    if(r.ok){
-      const d=await r.json();const items=d.value||[];
-      // Recalcular status de vencimento automaticamente
-      items.forEach(i=>{
-        if (i.Status !== 'Pago' && i.Status !== 'Aprovado — Aguardando Pagamento' && i.Status !== 'Aguardando Aprovação') {
-          i.Status = calcularStatusVencimento(i.Vencimento);
-        }
-      });
-      if(!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado.</div>';return;}
-      const statusColor = (s) => s==='Pago'?'green':s==='Em atraso'?'red':s==='Vence hoje'||s==='Vence em breve'?'amber':s==='Aguardando Aprovação'||s==='Aprovado — Aguardando Pagamento'?'blue':'amber';
-      const isDir = currentProfile === 'diretoria';
-      el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Empresa</th><th>Fornecedor</th><th>Descrição</th><th>CC</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
-        items.map(i=>`<tr>
+    let items = await dbLer('ContasPagar');
+    // Recalcular status de vencimento automaticamente (exceto estados já definidos por aprovação/pagamento)
+    items.forEach(i=>{
+      if (i.Status !== 'Pago' && i.Status !== 'Aprovado — Aguardando Pagamento' && i.Status !== 'Aguardando Aprovação') {
+        i.Status = calcularStatusVencimento(i.Vencimento);
+      }
+    });
+
+    // KPIs — sobre todos os lançamentos, antes dos filtros de busca
+    const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
+    setKpi('pag-kpi-total', items.length);
+    setKpi('pag-kpi-aprovacao', items.filter(r=>r.Status==='Aguardando Aprovação').length);
+    setKpi('pag-kpi-pagamento', items.filter(r=>r.Status==='Aprovado — Aguardando Pagamento').length);
+    setKpi('pag-kpi-pago', items.filter(r=>r.Status==='Pago').length);
+    setKpi('pag-kpi-atraso', items.filter(r=>r.Status==='Em atraso').length);
+
+    const setActiveKpi = (cardId, ativo, cor) => {
+      const e = document.getElementById(cardId); if (!e) return;
+      e.style.boxShadow = ativo ? ('0 0 0 3px ' + cor + '55') : '';
+      e.style.borderColor = ativo ? cor : '';
+    };
+    setActiveKpi('pag-kpi-card-total', !PAG_FILTRO_KPI, '#0d6efd');
+    setActiveKpi('pag-kpi-card-aprovacao', PAG_FILTRO_KPI==='aprovacao', '#e0a800');
+    setActiveKpi('pag-kpi-card-pagamento', PAG_FILTRO_KPI==='pagamento', '#0d6efd');
+    setActiveKpi('pag-kpi-card-pago', PAG_FILTRO_KPI==='pago', '#28a745');
+    setActiveKpi('pag-kpi-card-atraso', PAG_FILTRO_KPI==='atraso', '#dc3545');
+
+    // Filtros de busca
+    const fMes = (document.getElementById('pag_filtro_mes')||{}).value||'';
+    const fForn = ((document.getElementById('pag_filtro_fornecedor')||{}).value||'').trim().toLowerCase();
+    const fCc = ((document.getElementById('pag_filtro_cc')||{}).value||'').trim().toLowerCase();
+    const fValorMin = parseFloat((document.getElementById('pag_filtro_valor_min')||{}).value);
+    const fValorMax = parseFloat((document.getElementById('pag_filtro_valor_max')||{}).value);
+    const filtroStatus = (document.getElementById('filtro-status-pagar')||{}).value||'';
+
+    if (fMes) items = items.filter(r => (r.Vencimento||'').slice(0,7) === fMes);
+    if (fForn) items = items.filter(r => (r.Fornecedor||'').toLowerCase().includes(fForn));
+    if (fCc) items = items.filter(r => (r.CentroCusto||'').toLowerCase().includes(fCc));
+    if (!isNaN(fValorMin)) items = items.filter(r => (r.Valor||0) >= fValorMin);
+    if (!isNaN(fValorMax)) items = items.filter(r => (r.Valor||0) <= fValorMax);
+    if (filtroStatus) items = items.filter(r=>r.Status===filtroStatus);
+    if (PAG_FILTRO_KPI === 'aprovacao') items = items.filter(r=>r.Status==='Aguardando Aprovação');
+    else if (PAG_FILTRO_KPI === 'pagamento') items = items.filter(r=>r.Status==='Aprovado — Aguardando Pagamento');
+    else if (PAG_FILTRO_KPI === 'pago') items = items.filter(r=>r.Status==='Pago');
+    else if (PAG_FILTRO_KPI === 'atraso') items = items.filter(r=>r.Status==='Em atraso');
+
+    items = items.slice().sort((a,b)=>(b.Id||0)-(a.Id||0)).slice(0,200);
+    window._pagFiltradas = items;
+
+    if(!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado.</div>';return;}
+    const statusColor = (s) => s==='Pago'?'green':s==='Em atraso'?'red':s==='Vence hoje'||s==='Vence em breve'?'amber':s==='Aguardando Aprovação'||s==='Aprovado — Aguardando Pagamento'?'blue':'amber';
+    const isDir = currentProfile === 'diretoria';
+    el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Empresa</th><th>Fornecedor</th><th>Descrição</th><th>CC</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
+      items.map(i=>{
+        const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}` : (i.FormaPagamento||'—');
+        return `<tr>
           <td style="font-size:.75rem">${i.Empresa||'—'}</td>
           <td><strong>${i.Fornecedor||'—'}</strong></td>
           <td style="font-size:.78rem">${i.Descricao||'—'}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}</td>
+          <td style="font-size:.72rem">${pgtoTxt}</td>
           <td style="font-size:.8rem">${i.Vencimento?new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td><span class="status-pill ${statusColor(i.Status)}">* ${i.Status||'—'}</span></td>
@@ -4887,10 +5117,41 @@ async function carregarContasPagar() {
             ${i.Status==='Aprovado — Aguardando Pagamento'?`<button class="btn-primary" style="padding:4px 8px;font-size:.7rem" onclick="registrarPagamento(${i.Id})">💳 Pagar</button>`:''}
             ${i.Status==='Pago'?`<span style="font-size:.7rem;color:var(--green-main)">✅ Pago${i.BancoPagamento?' · '+i.BancoPagamento:''}</span>`:''}
           </td>
-        </tr>`).join('')+
-        '</tbody></table></div>';
-    }
+        </tr>`;
+      }).join('')+
+      '</tbody></table></div>';
   } catch(e){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';}
+}
+
+async function exportarContasPagarExcel() {
+  const items = window._pagFiltradas || [];
+  if (!items.length) { showToast('⚠️ Nenhum registro para exportar.'); return; }
+  showToast('📊 Gerando planilha...');
+  if (typeof XLSX === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  const rows = items.map(i => ({
+    'Empresa': i.Empresa || '',
+    'Fornecedor': i.Fornecedor || '',
+    'Descrição': i.Descricao || '',
+    'Centro de Custo': i.CentroCusto || '',
+    'Forma de Pagamento': i.FormaPagamento || '',
+    'Parcelamento': i.Parcelamento === 'parcelado' ? ((i.NumParcela||'')+'/'+(i.TotalParcelas||'')) : 'À vista',
+    'Vencimento': i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '',
+    'Valor': i.Valor || 0,
+    'Status': i.Status || '',
+    'Observação': i.Observacao || '',
+    'Lançado Por': i.LancadoPor || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Contas a Pagar');
+  XLSX.writeFile(wb, 'ContasAPagar_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
 /* -- APROVAÇÕES -- */
