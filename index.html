@@ -6992,27 +6992,151 @@ function pageSolicitacoes() {
 
 /* -- MINHA ÁREA -- */
 function pageMinhaArea() {
-  const p = profiles[currentProfile];
+  // Fonte primária: o usuário REAL logado (window._currentUser, vindo do login por
+  // e-mail/senha ou da conta Microsoft). profiles[currentProfile] é usado só como
+  // último fallback genérico caso, por algum motivo, não haja sessão carregada.
+  const u = window._currentUser || {};
+  const fallback = profiles[currentProfile] || {};
+  const ov = window._perfilOverride || {};
+  const nome     = ov.Nome     || u.name     || fallback.name     || '';
+  const cargo    = ov.Cargo    || u.role     || fallback.role     || '';
+  const initials = u.initials  || fallback.initials || '??';
+  const email    = u.email     || '';
+  const telefone = ov.Telefone || '';
+  const fotoUrl  = ov.FotoUrl  || '';
+  const viaMicrosoft = u.tipo === 'microsoft';
+  const authNote = viaMicrosoft
+    ? 'Seu acesso é feito pela conta Microsoft da Expedian (login corporativo). Não há senha própria deste aplicativo para alterar — qualquer troca de senha é feita pela TI/Microsoft.'
+    : 'O acesso a este aplicativo é controlado pelo administrador do sistema. Não há campo de senha por aqui.';
+
+  setTimeout(() => carregarMeusDados(), 100);
+
   return `
   <div class="page-header"><h1>Minha Área</h1></div>
   <div class="form-card">
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px">
-      <div class="avatar" style="width:56px;height:56px;font-size:1.3rem">${p.initials}</div>
-      <div><div style="font-size:1.1rem;font-weight:700">${p.name}</div><div style="color:var(--text-muted)">${p.role}</div></div>
+      <div style="position:relative;flex-shrink:0">
+        <div class="avatar" id="md-avatar" style="width:56px;height:56px;font-size:1.3rem;overflow:hidden">${fotoUrl ? `<img src="${fotoUrl}" style="width:100%;height:100%;object-fit:cover">` : initials}</div>
+        <label for="md-foto-input" title="Alterar foto" style="position:absolute;bottom:-4px;right:-4px;background:var(--green-main);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:.72rem;box-shadow:0 1px 3px rgba(0,0,0,.35)">📷</label>
+        <input type="file" id="md-foto-input" accept="image/*" style="display:none" onchange="mdPreviewFoto(event)">
+      </div>
+      <div><div style="font-size:1.1rem;font-weight:700" id="md-nome-preview">${nome}</div><div style="color:var(--text-muted)" id="md-cargo-preview">${cargo}</div></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>Nome Completo</label><input value="${p.name}"></div>
-      <div class="form-group"><label>Cargo</label><input value="${p.role}"></div>
+      <div class="form-group"><label>Nome Completo</label><input id="md-nome" value="${nome}"></div>
+      <div class="form-group"><label>Cargo</label><input id="md-cargo" value="${cargo}"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>E-mail</label><input value="joao@expedian.com.br"></div>
-      <div class="form-group"><label>Telefone</label><input value="(66) 99900-0000"></div>
+      <div class="form-group"><label>E-mail</label><input id="md-email" value="${email}" ${email ? 'readonly style="background:#f8faf9;color:var(--text-muted)" title="Vinculado ao seu login — não pode ser alterado aqui"' : ''}></div>
+      <div class="form-group"><label>Telefone</label><input id="md-telefone" value="${telefone}" placeholder="(66) 99900-0000"></div>
     </div>
     <div class="form-actions">
-      <button class="btn-primary" onclick="showToast('Dados atualizados!')">💾 Salvar</button>
-      <button class="btn-secondary">🔑 Alterar Senha</button>
+      <button class="btn-primary" onclick="salvarMeusDados()">💾 Salvar</button>
+    </div>
+    <div style="margin-top:18px;padding:12px 14px;border-radius:8px;background:#f8faf9;color:var(--text-muted);font-size:.85rem;display:flex;gap:8px;align-items:flex-start;line-height:1.4">
+      <span>🔒</span><span>${authNote}</span>
     </div>
   </div>`;
+}
+
+/* -- Redimensiona/recorta a foto de perfil em um quadrado (avatar), retorna dataURL JPEG -- */
+function _perfilRedimensionarFoto(file) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const SIZE = 300;
+        const canvas = document.createElement('canvas');
+        canvas.width = SIZE; canvas.height = SIZE;
+        const ctx = canvas.getContext('2d');
+        const scale = Math.max(SIZE / img.width, SIZE / img.height);
+        const dw = img.width * scale, dh = img.height * scale;
+        const dx = (SIZE - dw) / 2, dy = (SIZE - dh) / 2;
+        ctx.drawImage(img, 0, 0, img.width, img.height, dx, dy, dw, dh);
+        resolve(canvas.toDataURL('image/jpeg', 0.9));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function mdPreviewFoto(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  _perfilRedimensionarFoto(file).then(dataUrl => {
+    window._mdFotoPendente = dataUrl;
+    const av = document.getElementById('md-avatar');
+    if (av) av.innerHTML = `<img src="${dataUrl}" style="width:100%;height:100%;object-fit:cover">`;
+  });
+}
+
+/* -- Busca eventuais dados de perfil (nome/cargo/telefone/foto) já corrigidos
+      pelo próprio usuário, salvos na tabela central PerfilUsuario. -- */
+async function carregarMeusDados() {
+  const email = window._currentUser && window._currentUser.email;
+  if (!email) return;
+  try {
+    const lista = await dbLer('PerfilUsuario');
+    const reg = lista.find(r => (r.Email || '').toLowerCase() === email.toLowerCase());
+    if (!reg) return;
+    window._perfilOverride   = reg;
+    window._perfilOverrideId = reg.Id;
+    const nomeI  = document.getElementById('md-nome');     if (nomeI  && reg.Nome)     nomeI.value = reg.Nome;
+    const cargoI = document.getElementById('md-cargo');    if (cargoI && reg.Cargo)    cargoI.value = reg.Cargo;
+    const telI   = document.getElementById('md-telefone'); if (telI   && reg.Telefone) telI.value = reg.Telefone;
+    const pNome  = document.getElementById('md-nome-preview');  if (pNome  && reg.Nome)  pNome.textContent = reg.Nome;
+    const pCargo = document.getElementById('md-cargo-preview'); if (pCargo && reg.Cargo) pCargo.textContent = reg.Cargo;
+    const av = document.getElementById('md-avatar');
+    if (av && reg.FotoUrl) av.innerHTML = `<img src="${reg.FotoUrl}" style="width:100%;height:100%;object-fit:cover">`;
+  } catch(e) { console.warn('[Perfil] Erro ao carregar dados de perfil', e); }
+}
+
+/* -- Salva as correções do usuário (nome/cargo/telefone/foto) na tabela central
+      PerfilUsuario e reflete imediatamente na sessão + rodapé da barra lateral,
+      sem precisar deslogar/logar de novo. E-mail nunca é alterado por aqui: é
+      a chave do login (senha local ou conta Microsoft). -- */
+async function salvarMeusDados() {
+  const nome     = (document.getElementById('md-nome')     || {}).value?.trim() || '';
+  const cargo    = (document.getElementById('md-cargo')    || {}).value?.trim() || '';
+  const telefone = (document.getElementById('md-telefone') || {}).value?.trim() || '';
+  const email    = (window._currentUser && window._currentUser.email) || '';
+  if (!nome) { showToast('⚠️ Informe o nome completo.'); return; }
+  if (!email) { showToast('⚠️ Sessão sem e-mail identificado — faça login novamente.'); return; }
+
+  showToast('💾 Salvando...');
+  let fotoUrl = (window._perfilOverride && window._perfilOverride.FotoUrl) || '';
+  if (window._mdFotoPendente) {
+    try {
+      const blob = await (await fetch(window._mdFotoPendente)).blob();
+      const nomeArquivo = email.replace(/[^a-z0-9@._-]/gi, '_') + '.jpg';
+      const url = await uploadParaOneDrive(blob, OD_FOLDERS.perfis, nomeArquivo);
+      if (url) fotoUrl = url;
+    } catch(e) { console.warn('[Perfil] Erro ao subir foto', e); }
+  }
+
+  const campos = { Email: email, Nome: nome, Cargo: cargo, Telefone: telefone, FotoUrl: fotoUrl };
+  let ok;
+  if (window._perfilOverrideId) {
+    ok = await dbAtualizar('PerfilUsuario', window._perfilOverrideId, campos);
+  } else {
+    const novo = await dbInserir('PerfilUsuario', campos);
+    ok = !!novo;
+    if (novo) window._perfilOverrideId = novo.Id;
+  }
+  window._perfilOverride = campos;
+  window._mdFotoPendente = null;
+
+  // Reflete na sessão ativa e no rodapé da barra lateral, sem precisar relogar.
+  if (window._currentUser) { window._currentUser.name = nome; window._currentUser.role = cargo; }
+  const un = document.getElementById('userName'); if (un) un.textContent = nome;
+  const ur = document.getElementById('userRole'); if (ur) ur.textContent = cargo;
+  const av = document.getElementById('avatarInitials');
+  if (av) av.innerHTML = fotoUrl ? `<img src="${fotoUrl}" style="width:100%;height:100%;object-fit:cover">` : (window._currentUser ? window._currentUser.initials : '');
+
+  showToast(ok ? '✅ Dados atualizados!' : '⚠️ Sem conexão — será sincronizado assim que possível.');
+  navigate('minha_area');
 }
 
 /* -- CONFIG -- */
@@ -7173,6 +7297,9 @@ const users = {
   'marcos@expediansolucoes.com.br': { password: '5215', profile: 'colaborador', name: 'Marcos Fernandes da Silva', initials: 'MF', role: 'Biólogo', tipo: 'email' },
   'nathaliaolivio@expediansolucoes.com.br': { password: '8252', profile: 'colaborador', name: 'Nathalia Olívio Pereira', initials: 'NO', role: 'Técnica Ambiental', tipo: 'email' },
 };
+// Garante que cada usuário "conheça" o próprio e-mail (usado em Meus Dados, uploads de perfil etc.),
+// sem precisar repetir o campo manualmente em cada entrada acima.
+Object.keys(users).forEach(email => { users[email].email = email; });
 
 function formatCPFInput(el) {
   let v = el.value.replace(/\D/g, '');
@@ -12574,7 +12701,7 @@ function initMsal() {
       ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
       : name.slice(0, 2).toUpperCase();
     const roleMap = { diretoria: 'Diretoria', coordenador: 'Coordenador', colaborador: 'Colaborador' };
-    return { name, initials, profile, role: roleMap[profile], password: null, tipo: 'microsoft' };
+    return { name, initials, profile, role: roleMap[profile], password: null, tipo: 'microsoft', email };
   }
 
   /* Expor função globalmente para o botão HTML */
@@ -12677,6 +12804,7 @@ const OD_FOLDERS = {
   aprs:       'APRs',
   prestacao:  'PrestacaoContas',
   contratos:  'Contratos',
+  perfis:     'Perfis',
 };
 
 function odPastaPrestacaoMes() {
