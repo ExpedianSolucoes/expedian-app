@@ -7549,13 +7549,26 @@ function pageMinhaArea() {
 async function carregarMeusDocumentos() {
   const el = document.getElementById('md-documentos-container');
   if (!el) return;
-  const nome = (window._currentUser && window._currentUser.name) || '';
+  // Nome canônico: prioriza o cadastro local (users{}, por e-mail) em vez do nome de
+  // exibição da conta Microsoft — evita divergência tipo "Tiago Tavares" (nome curto
+  // que às vezes vem do Azure AD) vs "Tiago Tavares Ribeiro" (nome completo cadastrado
+  // na Gestão Documental), que fazia a busca falhar mesmo com a pessoa já cadastrada.
+  const emailAtual = ((window._currentUser && window._currentUser.email) || '').toLowerCase();
+  let nome = (window._currentUser && window._currentUser.name) || '';
+  if (emailAtual && users[emailAtual] && users[emailAtual].name) nome = users[emailAtual].name;
   if (!nome) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Sessão sem nome identificado.</div>'; return; }
   try {
     const dados = await dbLer('GestaoDocumental');
     const gd = (Array.isArray(dados) && dados.length) ? dados[0] : null;
     if (!gd || !Array.isArray(gd.colaboradores)) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Nenhum documento cadastrado ainda.</div>'; return; }
-    const colab = gd.colaboradores.find(c => (c.nome || '').trim().toLowerCase() === nome.trim().toLowerCase());
+    const norm = s => (s || '').trim().toLowerCase();
+    let colab = gd.colaboradores.find(c => norm(c.nome) === norm(nome));
+    // Se não achou pelo nome canônico do cadastro local, tenta também pelo nome de
+    // exibição bruto da sessão (cobre o caso de alguém cadastrado na Gestão Documental
+    // com um nome que não bate com nenhuma entrada de users{}).
+    if (!colab && window._currentUser && window._currentUser.name) {
+      colab = gd.colaboradores.find(c => norm(c.nome) === norm(window._currentUser.name));
+    }
     if (!colab) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Você ainda não está cadastrado(a) na Gestão Documental — fale com a Diretoria para regularizar.</div>'; return; }
     const docs = (gd.docsColab && gd.docsColab[colab.id]) || [];
     if (!docs.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Nenhum documento cadastrado para você ainda.</div>'; return; }
