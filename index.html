@@ -10746,6 +10746,7 @@ function equipToggleCategoriaFields(cat) {
 }
 
 function equipToggleCadastro() {
+  if (!_equipPodeGerenciar()) { showToast('⛔ Cadastro de equipamentos restrito à Diretoria e Coordenação.'); return; }
   window._equipMostrarCadastro = !window._equipMostrarCadastro;
   if (window._equipMostrarCadastro) window._equipEdicaoAtiva = null;
   navigate('equipamentos');
@@ -10948,6 +10949,7 @@ function renderEdicaoEquipamento(eq) {
 }
 
 async function salvarEdicaoEquipamento(id) {
+  if (!_equipPodeGerenciar()) { showToast('⛔ Edição de equipamentos restrita à Diretoria e Coordenação.'); return; }
   const nome = (document.getElementById('equip_edit_nome').value || '').trim();
   if (!nome) { showToast('⚠️ Informe o nome do equipamento.'); return; }
   const categoria = document.getElementById('equip_edit_categoria').value;
@@ -11001,6 +11003,15 @@ async function salvarEdicaoEquipamento(id) {
   }
 }
 
+function _equipPodeGerenciar() { return currentProfile === 'diretoria' || currentProfile === 'coordenador'; }
+
+function _equipNomeAtual() {
+  const emailAtual = ((window._currentUser && window._currentUser.email) || '').toLowerCase();
+  let nome = (window._currentUser && window._currentUser.name) || '';
+  if (emailAtual && users[emailAtual] && users[emailAtual].name) nome = users[emailAtual].name;
+  return nome;
+}
+
 function pageEquipamentos() {
   if (window._equipCatalogo === null) carregarEquipamentos();
   const cat = window._equipCatalogo || [];
@@ -11012,6 +11023,7 @@ function pageEquipamentos() {
   const calibAtencao = cat.filter(e => e.Categoria === 'Instrumento de Medição' && ['vencida','vencendo'].includes(equipCalibracaoStatus(e.ValidadeCalibracao))).length;
   const ativo = window._equipTermoAtivo;
   const filtro = window._equipFiltroCategoria || '';
+  const podeGerenciar = _equipPodeGerenciar();
 
   const botaoCadastroHTML = `
   <div style="margin-bottom:16px">
@@ -11024,10 +11036,43 @@ function pageEquipamentos() {
       <h1>Equipamentos</h1>
       <p>Termo de recebimento e responsabilidade — controle de posse de equipamentos</p>
     </div>
-    ${botaoCadastroHTML}
+    ${podeGerenciar ? botaoCadastroHTML : ''}
     ${renderFiltroCategoriaEquipamentos()}
-    ${window._equipMostrarCadastro ? renderCadastroEquipamento(filtro) : ''}
+    ${podeGerenciar && window._equipMostrarCadastro ? renderCadastroEquipamento(filtro) : ''}
     ${pageChecklist()}
+    `;
+  }
+
+  // Colaboradores (fora de Diretoria/Coordenação) não têm acesso ao catálogo geral de
+  // equipamentos — só enxergam o que a empresa já disponibilizou especificamente a eles,
+  // e a partir daí conseguem preencher o checklist e assinar o termo (recebimento/devolução).
+  // Veículos ficam de fora dessa restrição (tratados acima, via Checklist Veicular).
+  if (!podeGerenciar) {
+    const nomeAtual = _equipNomeAtual();
+    const norm = s => (s || '').trim().toLowerCase();
+    let meus = cat.filter(e => e.Categoria !== 'Veículo' && norm(e.ColaboradorAtual) === norm(nomeAtual));
+    if (filtro && filtro !== 'Veículo') meus = meus.filter(e => e.Categoria === filtro);
+    const meusTermos = termos.filter(t => norm(t.Colaborador) === norm(nomeAtual));
+
+    return `
+    <div class="page-header">
+      <h1>Meus Equipamentos</h1>
+      <p>Equipamentos da empresa disponibilizados a você — preencha o checklist e assine o termo quando aplicável</p>
+    </div>
+
+    ${renderFiltroCategoriaEquipamentos()}
+
+    ${ativo ? renderFormularioTermoEquipamento(ativo) : ''}
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">🎒 Meus Equipamentos</div>
+      ${meus.length ? renderCatalogoEquipamentos(meus, true) : '<div style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum equipamento da empresa disponibilizado para você no momento.</div>'}
+    </div>
+
+    <div class="card">
+      <div class="card-title">📋 Meus Termos</div>
+      ${meusTermos.length ? renderHistoricoTermosEquipamento(meusTermos) : '<div style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum termo emitido para você ainda.</div>'}
+    </div>
     `;
   }
 
@@ -11124,7 +11169,7 @@ function renderFiltroCategoriaEquipamentos() {
   </div>`;
 }
 
-function renderCatalogoEquipamentos(cat) {
+function renderCatalogoEquipamentos(cat, readOnly) {
   if (!cat.length) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum equipamento cadastrado ainda.</div>';
   const ordenado = cat.slice().sort((a,b)=>(a.Title||'').localeCompare(b.Title||''));
   return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Equipamento</th><th>Categoria</th><th>Patrimônio</th><th>Status</th><th>Colaborador Atual</th><th>Ações</th></tr></thead><tbody>' +
@@ -11148,13 +11193,13 @@ function renderCatalogoEquipamentos(cat) {
         <td style="font-size:.8rem">${e.ColaboradorAtual||'—'}</td>
         <td style="white-space:nowrap;display:flex;gap:4px;flex-wrap:wrap">
           ${isFixo ? `<span style="font-size:.68rem;color:var(--text-muted);padding:3px 9px" title="Patrimônio fixo — não requer termo de responsabilidade individual">📦 Patrimônio fixo</span>` : ''}
-          ${!emPosse && !isFixo ? `<button class="btn-primary" style="padding:3px 9px;font-size:.68rem" onclick="abrirTermoEquipamento(${e.Id})">📝 Gerar Termo</button>` : ''}
+          ${!emPosse && !isFixo && !readOnly ? `<button class="btn-primary" style="padding:3px 9px;font-size:.68rem" onclick="abrirTermoEquipamento(${e.Id})">📝 Gerar Termo</button>` : ''}
           ${emPosse && !isFixo ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem;background:var(--amber);color:#fff" onclick="abrirDevolucaoEquipamento(${e.Id})">🔄 Devolver</button>` : ''}
           ${emPosse && e.TermoAtualId && !isFixo ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="verTermoEquipamento(${e.TermoAtualId})">👁️ Ver Termo</button>` : ''}
           ${isVeiculo ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="equipFiltrarCategoria('Veículo')" title="Abrir Checklist Veicular (retirada/devolução)">🚗 Checklist</button>` : ''}
           ${e.NotaFiscalUrl ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="window.open('${e.NotaFiscalUrl}','_blank')" title="Ver nota fiscal anexada">🧾 NF</button>` : ''}
-          <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="abrirEdicaoEquipamento(${e.Id})" title="Ver detalhes / Editar">✏️ Ver/Editar</button>
-          <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem;color:var(--red)" onclick="excluirEquipamento(${e.Id})">🗑️</button>
+          ${!readOnly ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="abrirEdicaoEquipamento(${e.Id})" title="Ver detalhes / Editar">✏️ Ver/Editar</button>` : ''}
+          ${!readOnly ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem;color:var(--red)" onclick="excluirEquipamento(${e.Id})">🗑️</button>` : ''}
         </td>
       </tr>`;
     }).join('') + '</tbody></table></div>';
@@ -11176,6 +11221,7 @@ function renderHistoricoTermosEquipamento(termos) {
 }
 
 async function salvarNovoEquipamento() {
+  if (!_equipPodeGerenciar()) { showToast('⛔ Cadastro de equipamentos restrito à Diretoria e Coordenação.'); return; }
   const nome = (document.getElementById('equip_novo_nome').value || '').trim();
   if (!nome) { showToast('⚠️ Informe o nome do equipamento.'); return; }
   const categoria = document.getElementById('equip_novo_categoria').value;
@@ -11257,6 +11303,7 @@ async function salvarNovoEquipamento() {
 }
 
 async function excluirEquipamento(id) {
+  if (!_equipPodeGerenciar()) { showToast('⛔ Exclusão de equipamentos restrita à Diretoria e Coordenação.'); return; }
   const eq = (window._equipCatalogo||[]).find(e => e.Id === id);
   if (!eq) return;
   if (eq.Status === 'Em Posse') { showToast('⚠️ Não é possível excluir um equipamento em posse de um colaborador. Registre a devolução primeiro.'); return; }
@@ -11269,6 +11316,7 @@ async function excluirEquipamento(id) {
 }
 
 function abrirTermoEquipamento(equipamentoId) {
+  if (!_equipPodeGerenciar()) { showToast('⛔ Emissão de termo restrita à Diretoria e Coordenação.'); return; }
   window._equipTermoAtivo = { modo: 'termo', equipamentoId };
   window._equipVistFotos = {};
   navigate('equipamentos');
@@ -11278,6 +11326,10 @@ function abrirTermoEquipamento(equipamentoId) {
 function abrirDevolucaoEquipamento(equipamentoId) {
   const eq = (window._equipCatalogo||[]).find(e => e.Id === equipamentoId);
   if (!eq || !eq.TermoAtualId) { showToast('❌ Termo ativo não encontrado para este equipamento.'); return; }
+  if (!_equipPodeGerenciar()) {
+    const norm = s => (s || '').trim().toLowerCase();
+    if (norm(eq.ColaboradorAtual) !== norm(_equipNomeAtual())) { showToast('⛔ Você só pode registrar a devolução de equipamentos em sua posse.'); return; }
+  }
   window._equipTermoAtivo = { modo: 'devolucao', equipamentoId, termoId: eq.TermoAtualId };
   navigate('equipamentos');
   setTimeout(() => { const el = document.getElementById('equip-termo-form'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 150);
