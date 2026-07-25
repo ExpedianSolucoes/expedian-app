@@ -5198,6 +5198,16 @@ function _rdServicosTodos() {
   return combinados;
 }
 
+const RD_EMPRESA_CORES = { 'Expedian':'var(--green-main)', 'TL3':'var(--blue)', 'EXP Brasil':'var(--amber)' };
+
+function rdSelecionarEmpresa(emp) {
+  if (window._rdEmpresaAtiva === emp) return;
+  window._rdEmpresaAtiva = emp;
+  // Contrato/Centro de Custo é específico de cada empresa — limpa a seleção ao trocar.
+  window._rdParcelas = null;
+  navigate('receitas_despesas');
+}
+
 function pageReceitasDespesas() {
   if (currentProfile !== 'diretoria') {
     return `<div class="page-header"><h1>Receitas e Despesas</h1></div>
@@ -5208,10 +5218,27 @@ function pageReceitasDespesas() {
     </div>`;
   }
   const tab = window._rdTab || 'despesas';
+  const empresaAtiva = window._rdEmpresaAtiva || (window._rdEmpresaAtiva = RD_EMPRESAS[0]);
   if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarDespesas(); }, 200);
 
   return `
-  <div class="page-header"><h1>Receitas e Despesas</h1><p>Lançamentos financeiros detalhados da empresa</p></div>
+  <div class="page-header"><h1>Receitas e Despesas</h1><p>Lançamentos financeiros detalhados da empresa — ${empresaAtiva}</p></div>
+
+  <!-- Submenu: escolha da empresa para a qual o lançamento será feito -->
+  <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+    ${RD_EMPRESAS.map(emp => {
+      const ativo = emp === empresaAtiva;
+      const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
+      return `<button onclick="rdSelecionarEmpresa('${emp}')"
+        style="display:flex;align-items:center;gap:7px;padding:8px 16px;border-radius:9px;
+          border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
+          background:${ativo?cor:'var(--surface2)'};
+          color:${ativo?'#fff':'var(--text)'};
+          font-family:'Mont',sans-serif;font-size:.8rem;font-weight:${ativo?'700':'500'};cursor:pointer">
+        🏢 ${emp}
+      </button>`;
+    }).join('')}
+  </div>
 
   <div style="display:flex;gap:6px;margin-bottom:22px;flex-wrap:wrap">
     <button onclick="window._rdTab='despesas';navigate('receitas_despesas')"
@@ -5382,7 +5409,7 @@ function renderDespesasTab() {
       </div>
     </div>
 
-    <!-- Linha 5: Responsável + Empresa -->
+    <!-- Linha 5: Responsável + Empresa (definida pelo submenu no topo da página) -->
     <div class="form-row">
       <div class="form-group">
         <label>Responsável pelo Lançamento</label>
@@ -5392,11 +5419,8 @@ function renderDespesasTab() {
         </select>
       </div>
       <div class="form-group">
-        <label>Empresa</label>
-        <select id="rd_empresa" onchange="const i=document.getElementById('rd_cc_input');const h=document.getElementById('rd_cc');if(i)i.value='';if(h)h.value='';rdFecharDropdownCC();">
-          <option value="">Selecione...</option>
-          ${RD_EMPRESAS.map(e => `<option>${e}</option>`).join('')}
-        </select>
+        <label>Empresa <span style="font-size:.7rem;color:var(--text-muted)">(escolhida no menu acima)</span></label>
+        <input type="text" value="🏢 ${window._rdEmpresaAtiva || RD_EMPRESAS[0]}" readonly style="background:var(--surface2);font-weight:700">
       </div>
     </div>
 
@@ -5478,10 +5502,6 @@ function renderDespesasTab() {
     <select id="rd_filtro_categoria" onchange="carregarDespesas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
       <option value="">Todas categorias</option>
       ${RD_CATEGORIAS.map(c => `<option>${c}</option>`).join('')}
-    </select>
-    <select id="rd_filtro_empresa" onchange="carregarDespesas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
-      <option value="">Todas empresas</option>
-      ${RD_EMPRESAS.map(e => `<option>${e}</option>`).join('')}
     </select>
     <input type="text" id="rd_filtro_busca" placeholder="Fornecedor / serviço / CC..." oninput="carregarDespesas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:160px">
     <select id="rd_filtro_status" onchange="RD_FILTRO_KPI='';carregarDespesas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
@@ -5596,8 +5616,7 @@ async function rdConfirmarCadastroFornecedor() {
 
 /* -- Combobox de Centro de Custo (mesmo padrão de Contas a Pagar) -- */
 function _rdCCsDisponiveis() {
-  const empresa = (document.getElementById('rd_empresa')||{}).value || '';
-  if (!empresa) return [];
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   return (centrosCustoData||[]).filter(c => {
     const emp = c.empresa || '';
     const match = (empresa === 'Expedian' && emp === 'Expedian') ||
@@ -5610,12 +5629,6 @@ function _rdCCsDisponiveis() {
 function rdFiltrarCCs(texto) {
   const dd = document.getElementById('rd_cc_dropdown');
   if (!dd) return;
-  const empresa = (document.getElementById('rd_empresa')||{}).value || '';
-  if (!empresa) {
-    dd.innerHTML = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Selecione a empresa primeiro...</div>';
-    dd.style.display = 'block';
-    return;
-  }
   const t = (texto||'').trim().toLowerCase();
   const disponiveis = _rdCCsDisponiveis();
   const matches = (t ? disponiveis.filter(c => (c.id+' '+c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0,40);
@@ -5723,7 +5736,7 @@ async function salvarDespesa() {
   const tipoPagamento = document.getElementById('rd_tipo_pagamento').value;
   const formaPgto = (document.getElementById('rd_forma_pgto')||{}).value || '';
   const responsavel = document.getElementById('rd_responsavel').value;
-  const empresa = document.getElementById('rd_empresa').value;
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   const dataPagamento = (document.getElementById('rd_data_pagamento')||{}).value || '';
   const banco = (document.getElementById('rd_banco')||{}).value || '';
   const status = document.getElementById('rd_status').value;
@@ -5810,7 +5823,7 @@ function rdFiltrarKpi(tipo) {
 }
 
 function rdLimparFiltros() {
-  ['rd_filtro_mes','rd_filtro_categoria','rd_filtro_empresa','rd_filtro_busca'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
+  ['rd_filtro_mes','rd_filtro_categoria','rd_filtro_busca'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const statusSel = document.getElementById('rd_filtro_status'); if (statusSel) statusSel.value = '';
   RD_FILTRO_KPI = '';
   carregarDespesas();
@@ -5824,6 +5837,9 @@ async function carregarDespesas() {
   if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>'; return; }
   try {
     let items = await dbLer('Despesas');
+    // Escopo pela empresa ativa no submenu — cada empresa vê só seus próprios lançamentos.
+    const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+    items = items.filter(i => i.Empresa === empresaAtiva);
     items.forEach(i => {
       if (i.Status !== 'Pago' && i.Status !== 'Cancelado' && i.Vencimento) {
         i.Status = calcularStatusVencimento(i.Vencimento);
@@ -5850,13 +5866,11 @@ async function carregarDespesas() {
 
     const fMes = (document.getElementById('rd_filtro_mes')||{}).value || '';
     const fCategoria = (document.getElementById('rd_filtro_categoria')||{}).value || '';
-    const fEmpresa = (document.getElementById('rd_filtro_empresa')||{}).value || '';
     const fBusca = ((document.getElementById('rd_filtro_busca')||{}).value || '').trim().toLowerCase();
     const fStatus = (document.getElementById('rd_filtro_status')||{}).value || '';
 
     if (fMes) items = items.filter(r => (r.DataLancamento||'').slice(0,7) === fMes);
     if (fCategoria) items = items.filter(r => r.Categoria === fCategoria);
-    if (fEmpresa) items = items.filter(r => r.Empresa === fEmpresa);
     if (fBusca) items = items.filter(r => (r.Fornecedor||'').toLowerCase().includes(fBusca) || (r.ServicoDesc||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca));
     if (fStatus) items = items.filter(r => r.Status === fStatus);
     if (RD_FILTRO_KPI === 'pendente') items = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje');
