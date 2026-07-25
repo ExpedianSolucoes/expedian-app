@@ -5285,6 +5285,7 @@ function renderDespesasTab() {
   const servicos = _rdServicosTodos();
   const responsaveis = _servicosResponsaveisDiretoria();
   const beneficiarios = _servicosTodosColaboradores();
+  const frota = _servicosFrotaVeiculos();
 
   return `
   ${renderRdSubmenuEmpresa()}
@@ -5324,9 +5325,9 @@ function renderDespesasTab() {
       </div>
       <div class="form-group" id="rd_servico_row" style="display:none">
         <label>Serviço</label>
-        <select id="rd_servico">
+        <select id="rd_servico" onchange="rdToggleVeiculo()">
           <option value="">Selecione o serviço...</option>
-          ${servicos.map(s => `<option value="${s.id}">${s.id} · ${s.desc}${s.unidade?' ('+s.unidade+')':''}</option>`).join('')}
+          ${servicos.map(s => `<option value="${s.id}" data-grupo="${s.grupo}">${s.id} · ${s.desc}${s.unidade?' ('+s.unidade+')':''}</option>`).join('')}
         </select>
       </div>
       <div class="form-group" id="rd_fornecedor_row" style="display:none;position:relative">
@@ -5345,13 +5346,20 @@ function renderDespesasTab() {
       </div>
     </div>
 
-    <!-- Linha 2b: Beneficiário (só quando modalidade = serviços) -->
+    <!-- Linha 2b: Beneficiário + Veículo (só quando modalidade = serviços) -->
     <div class="form-row" id="rd_beneficiario_row" style="display:none">
-      <div class="form-group" style="grid-column:span 2">
+      <div class="form-group" style="flex:1">
         <label>Beneficiário</label>
         <select id="rd_beneficiario">
           <option value="">Selecione...</option>
           ${beneficiarios.map(n => `<option>${n}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" id="rd_veiculo_row" style="display:none;flex:1">
+        <label>Veículo da Empresa <span style="font-size:.7rem;color:var(--text-muted)">(diária de veículo usado)</span></label>
+        <select id="rd_veiculo">
+          <option value="">Selecione...</option>
+          ${frota.map(v => `<option>${v}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -5540,9 +5548,21 @@ function rdToggleModalidade() {
   const servRow = document.getElementById('rd_servico_row');
   const fornRow = document.getElementById('rd_fornecedor_row');
   const benefRow = document.getElementById('rd_beneficiario_row');
-  if (servRow) servRow.style.display = v === 'servicos' ? 'block' : 'none';
-  if (fornRow) fornRow.style.display = v === 'fornecedor' ? 'block' : 'none';
+  // Importante: usar 'flex' (não 'block') — .form-group depende de display:flex para
+  // esticar label/select na largura da coluna do grid; 'block' fazia o <select> encolher
+  // para o tamanho do texto e vazar para fora do card.
+  if (servRow) servRow.style.display = v === 'servicos' ? 'flex' : 'none';
+  if (fornRow) fornRow.style.display = v === 'fornecedor' ? 'flex' : 'none';
   if (benefRow) benefRow.style.display = v === 'servicos' ? 'flex' : 'none';
+  if (v !== 'servicos') rdToggleVeiculo();
+}
+
+function rdToggleVeiculo() {
+  const servicoSel = document.getElementById('rd_servico');
+  const opt = servicoSel ? servicoSel.options[servicoSel.selectedIndex] : null;
+  const grupo = opt ? opt.getAttribute('data-grupo') : '';
+  const row = document.getElementById('rd_veiculo_row');
+  if (row) row.style.display = (grupo === 'veiculos') ? 'flex' : 'none';
 }
 
 /* -- Combobox de fornecedor (mesmo padrão de Contas a Pagar / Prestação de Contas) -- */
@@ -5736,8 +5756,10 @@ async function salvarDespesa() {
   const modalidade = document.getElementById('rd_modalidade').value;
   const servicoId = (document.getElementById('rd_servico')||{}).value || '';
   const servicoOpt = servicoId ? _rdServicosTodos().find(s=>s.id===servicoId) : null;
+  const ehServicoVeiculo = !!(servicoOpt && servicoOpt.grupo === 'veiculos');
   const fornecedor = (document.getElementById('rd_fornecedor_sel')||{}).value || '';
   const beneficiario = (document.getElementById('rd_beneficiario')||{}).value || '';
+  const veiculo = (document.getElementById('rd_veiculo')||{}).value || '';
   const cc = (document.getElementById('rd_cc')||{}).value || '';
   const local = (document.getElementById('rd_local')||{}).value || '';
   const valorTotal = parseFloat(document.getElementById('rd_valor').value) || 0;
@@ -5757,6 +5779,7 @@ async function salvarDespesa() {
   if (!modalidade) { showToast('⚠️ Selecione a modalidade (Serviços ou Fornecedor).'); return; }
   if (modalidade === 'servicos' && !servicoId) { showToast('⚠️ Selecione o serviço.'); return; }
   if (modalidade === 'servicos' && !beneficiario) { showToast('⚠️ Selecione o beneficiário.'); return; }
+  if (modalidade === 'servicos' && ehServicoVeiculo && !veiculo) { showToast('⚠️ Selecione o veículo da empresa usado nessa diária.'); return; }
   if (modalidade === 'fornecedor' && !fornecedor) { showToast('⚠️ Selecione o fornecedor.'); return; }
   if (!cc) { showToast('⚠️ Selecione o contrato (centro de custo).'); return; }
   if (!valorTotal) { showToast('⚠️ Informe o valor total.'); return; }
@@ -5769,6 +5792,7 @@ async function salvarDespesa() {
     DataLancamento: dataLancamento, Semana: semana, Categoria: categoria, Modalidade: modalidade,
     ServicoId: modalidade==='servicos' ? servicoId : '', ServicoDesc: modalidade==='servicos' ? (servicoOpt?servicoOpt.desc:'') : '',
     Fornecedor: modalidade==='fornecedor' ? fornecedor : '', Beneficiario: modalidade==='servicos' ? beneficiario : '',
+    Veiculo: (modalidade==='servicos' && ehServicoVeiculo) ? veiculo : '',
     CentroCusto: cc, Local: local, TipoPagamento: tipoPagamento, FormaPagamento: formaPgto,
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: dataPagamento, Banco: banco,
     NumMedicao: medicao, Comprovante: comprovante, ValorTotal: valorTotal,
@@ -5808,7 +5832,7 @@ async function salvarDespesa() {
   // Reset do formulário
   ['rd_categoria','rd_servico','rd_local','rd_valor','rd_forma_pgto',
    'rd_num_parcelas','rd_venc_1parcela','rd_vencimento','rd_responsavel','rd_empresa','rd_data_pagamento',
-   'rd_banco','rd_medicao','rd_beneficiario'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
+   'rd_banco','rd_medicao','rd_beneficiario','rd_veiculo'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   ['rd_fornecedor_input','rd_fornecedor_sel'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const modalidadeSel = document.getElementById('rd_modalidade'); if (modalidadeSel) modalidadeSel.selectedIndex = 0;
   const ccInp = document.getElementById('rd_cc_input'); if (ccInp) ccInp.value='';
@@ -5898,7 +5922,7 @@ async function carregarDespesas() {
         return `<tr>
           <td style="font-size:.78rem">${i.DataLancamento ? new Date(i.DataLancamento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td style="font-size:.76rem">${i.Categoria||'—'}</td>
-          <td style="font-size:.78rem"><strong>${desc}</strong>${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}</td>
+          <td style="font-size:.78rem"><strong>${desc}</strong>${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}${i.Veiculo?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.Veiculo}</div>`:''}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}</td>
           <td style="font-size:.75rem">${i.Empresa||'—'}</td>
           <td style="font-size:.72rem">${pgtoTxt}</td>
@@ -5930,6 +5954,7 @@ async function exportarDespesasExcel() {
     'Modalidade': i.Modalidade === 'servicos' ? 'Serviços' : 'Fornecedor',
     'Serviço/Fornecedor': i.Modalidade === 'servicos' ? (i.ServicoDesc||'') : (i.Fornecedor||''),
     'Beneficiário': i.Beneficiario || '',
+    'Veículo': i.Veiculo || '',
     'Centro de Custo': i.CentroCusto || '',
     'Local': i.Local || '',
     'Valor': i.Valor || 0,
