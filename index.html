@@ -1080,6 +1080,7 @@ const menus = {
       { id: 'receber', icon: '💰', label: 'Contas a Receber' },
       { id: 'pagar', icon: '💸', label: 'Contas a Pagar' },
       { id: 'receitas_despesas', icon: '💵', label: 'Receitas e Despesas' },
+      { id: 'conciliacao', icon: '🏦', label: 'Conciliação Bancária' },
       { id: 'prestacao', icon: '📑', label: 'Prestação de Contas' },
       { id: 'contratos', icon: '📜', label: 'Gestão de Contratos' },
     ]},
@@ -1278,6 +1279,7 @@ function renderPage(id) {
     receber: () => pageReceber(),
     pagar: () => pagePagar(),
     receitas_despesas: () => pageReceitasDespesas(),
+    conciliacao: () => pageConciliacaoBancaria(),
     aprovacoes: () => pageAprovacoes(),
     agenda: () => pageAgenda(),
     relatorios: () => pageRelatorios(),
@@ -6077,7 +6079,7 @@ async function carregarDespesas() {
           <td style="font-size:.72rem">${pgtoTxt}</td>
           <td style="font-size:.8rem">${i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
-          <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span></td>
+          <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
           <td style="font-size:.72rem">${i.Comprovante==='Sim'?'📎 Sim':'— Não'}</td>
         </tr>`;
       }).join('') + '</tbody></table></div>';
@@ -6124,6 +6126,298 @@ async function exportarDespesasExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Despesas');
   XLSX.writeFile(wb, 'ReceitasDespesas_' + new Date().toISOString().slice(0,10) + '.xlsx');
+}
+
+/* ===========================================================
+   CONCILIAÇÃO BANCÁRIA
+   Leitura automática (100% no navegador, reaproveita pdf.js já usado
+   na leitura de Nota Fiscal) de extrato bancário/fatura de cartão em
+   PDF com texto, seguida de conciliação best-effort contra os
+   lançamentos já cadastrados em Despesas (por valor + proximidade de
+   data). Sempre editável antes de conciliar, e cada linha exige
+   confirmação explícita antes de marcar a despesa como conciliada.
+   =========================================================== */
+const CONCIL_TOLERANCIA_DIAS  = 5;
+const CONCIL_TOLERANCIA_VALOR = 0.02;
+
+/* Extrai o texto de um PDF preservando as linhas (agrupando os itens de
+   texto por posição Y), o que o extrairTextoPDF() genérico não faz —
+   essencial para reconhecer linhas de lançamento em tabelas de extrato. */
+async function extrairTextoPDFPorLinhas(file) {
+  await carregarPdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+  const linhas = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const porY = {};
+    content.items.forEach(it => {
+      const y = Math.round(it.transform[5]);
+      if (!porY[y]) porY[y] = [];
+      porY[y].push({ x: it.transform[4], str: it.str });
+    });
+    const ys = Object.keys(porY).map(Number).sort((a,b) => b - a);
+    ys.forEach(y => {
+      const linha = porY[y].sort((a,b) => a.x - b.x).map(o => o.str).join(' ').replace(/\s+/g,' ').trim();
+      if (linha) linhas.push(linha);
+    });
+  }
+  return linhas;
+}
+
+/* Tenta reconhecer uma linha de lançamento: precisa ter uma data (dd/mm ou
+   dd/mm/aaaa) e pelo menos um valor monetário. Quando há 2+ valores na
+   linha (comum: valor da transação + saldo), assume que o penúltimo é o
+   valor do lançamento e o último é o saldo — heurística que cobre a
+   maioria dos extratos, mas a linha fica sempre editável na tela. */
+function concilParseLinha(linha) {
+  const mData = linha.match(/\b(\d{2}\/\d{2}(?:\/\d{2,4})?)\b/);
+  if (!mData) return null;
+  const dataStr = mData[1];
+  const partes = dataStr.split('/');
+  const dia = partes[0].padStart(2,'0'), mes = partes[1].padStart(2,'0');
+  let ano = partes[2] || String(new Date().getFullYear());
+  if (ano.length === 2) ano = (parseInt(ano,10) > 50 ? '19' : '20') + ano;
+  const dataISO = `${ano}-${mes}-${dia}`;
+
+  const valoresBrutos = [...linha.matchAll(/-?\s?R?\$?\s?\d{1,3}(?:\.\d{3})*,\d{2}/g)].map(m => m[0]);
+  if (!valoresBrutos.length) return null;
+
+  const valorEscolhidoStr = valoresBrutos.length >= 2 ? valoresBrutos[valoresBrutos.length - 2] : valoresBrutos[0];
+  const valorNum = equipNormalizarValorMonetario(valorEscolhidoStr.replace(/R\$|\s/g,''));
+  if (valorNum === null) return null;
+
+  let descricao = linha.replace(dataStr, '');
+  valoresBrutos.forEach(v => { descricao = descricao.replace(v, ''); });
+  descricao = descricao.replace(/\s+/g,' ').trim();
+  if (!descricao) descricao = '(sem descrição)';
+
+  return { data: dataISO, descricao, valor: Math.abs(valorNum), tipo: valorNum < 0 ? 'debito' : 'credito', status: null, despesaId: null, candidatos: null, confirmado: false };
+}
+
+function concilExtrairTransacoes(linhas) {
+  const transacoes = [];
+  linhas.forEach(l => { const t = concilParseLinha(l); if (t) transacoes.push(t); });
+  return transacoes;
+}
+
+async function concilProcessarArquivo(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const status = document.getElementById('concil_status');
+  if (status) status.innerHTML = '<span class="spinner"></span> Lendo arquivo...';
+  try {
+    if (file.type !== 'application/pdf') throw new Error('Envie um arquivo em PDF (extrato ou fatura com texto, não escaneado).');
+    const linhas = await extrairTextoPDFPorLinhas(file);
+    const transacoes = concilExtrairTransacoes(linhas);
+    if (!transacoes.length) throw new Error('Não encontrei lançamentos neste PDF. Ele pode estar escaneado (sem texto) ou em um layout não reconhecido — use "Adicionar linha manual" abaixo.');
+    window._concilTransacoes = (window._concilTransacoes || []).concat(transacoes);
+    if (status) status.innerHTML = `✅ ${transacoes.length} lançamento(s) lido(s) — confira e ajuste antes de conciliar.`;
+    navigate('conciliacao');
+  } catch (err) {
+    if (status) status.innerHTML = `⚠️ ${err.message}`;
+  }
+}
+
+function concilSelecionarEmpresa(emp) {
+  if (window._concilEmpresaAtiva === emp) return;
+  window._concilEmpresaAtiva = emp;
+  window._concilDespesasCache = null;
+  (window._concilTransacoes||[]).forEach(t => { t.status = null; t.despesaId = null; t.candidatos = null; });
+  navigate('conciliacao');
+}
+
+function concilAtualizarLinha(i, campo, valor) {
+  const t = (window._concilTransacoes||[])[i];
+  if (!t) return;
+  t[campo] = campo === 'valor' ? (parseFloat(valor)||0) : valor;
+  t.status = null; t.despesaId = null; t.candidatos = null; t.confirmado = false;
+}
+
+function concilRemoverLinha(i) {
+  if (!window._concilTransacoes) return;
+  window._concilTransacoes.splice(i, 1);
+  navigate('conciliacao');
+}
+
+function concilAdicionarLinhaManual() {
+  window._concilTransacoes = window._concilTransacoes || [];
+  window._concilTransacoes.push({ data: new Date().toISOString().split('T')[0], descricao: '', valor: 0, tipo: 'debito', status: null, despesaId: null, candidatos: null, confirmado: false });
+  navigate('conciliacao');
+}
+
+async function concilConciliar() {
+  const empresa = window._concilEmpresaAtiva || RD_EMPRESAS[0];
+  showSyncStatus('Carregando despesas para conciliar...');
+  let despesas = [];
+  try { despesas = await dbLer('Despesas'); } catch(e) { despesas = []; }
+  despesas = (despesas||[]).filter(d => d.Empresa === empresa);
+  window._concilDespesasCache = despesas;
+
+  const transacoes = window._concilTransacoes || [];
+  transacoes.forEach(t => {
+    if (t.confirmado) return;
+    const valorAlvo = Math.abs(parseFloat(t.valor) || 0);
+    const dataAlvo = t.data ? new Date(t.data + 'T00:00:00') : null;
+    const candidatos = despesas.filter(d => {
+      if (d.Conciliado === 'Sim') return false;
+      const valorDespesa = parseFloat(d.Valor != null ? d.Valor : d.ValorTotal) || 0;
+      if (Math.abs(valorDespesa - valorAlvo) > CONCIL_TOLERANCIA_VALOR) return false;
+      if (!dataAlvo) return true;
+      const dataDespesaStr = d.DataPagamento || d.Vencimento || d.DataLancamento;
+      if (!dataDespesaStr) return true;
+      const diffDias = Math.abs((new Date(dataDespesaStr + 'T00:00:00') - dataAlvo) / 86400000);
+      return diffDias <= CONCIL_TOLERANCIA_DIAS;
+    });
+    if (candidatos.length === 1) { t.status = 'conciliado'; t.despesaId = candidatos[0].Id; t.candidatos = null; }
+    else if (candidatos.length > 1) { t.status = 'multiplo'; t.despesaId = null; t.candidatos = candidatos.map(c => c.Id); }
+    else { t.status = 'nao_encontrado'; t.despesaId = null; t.candidatos = null; }
+  });
+
+  showSyncStatus('Conciliação concluída!', 'ok', 2000);
+  navigate('conciliacao');
+}
+
+async function _concilExecutarConfirmacao(i, despesaId) {
+  const idNum = typeof despesaId === 'string' ? parseInt(despesaId, 10) : despesaId;
+  const t = (window._concilTransacoes||[])[i];
+  if (!t || !idNum) return false;
+  const ok = await dbAtualizar('Despesas', idNum, {
+    Conciliado: 'Sim',
+    DataConciliacao: new Date().toISOString().split('T')[0],
+    ExtratoDescricao: t.descricao,
+  });
+  if (ok) { t.confirmado = true; t.despesaId = idNum; }
+  return ok;
+}
+
+async function concilConfirmarLinha(i, despesaId) {
+  if (!despesaId) return;
+  showSyncStatus('Conciliando lançamento...');
+  const ok = await _concilExecutarConfirmacao(i, despesaId);
+  showToast(ok ? '✅ Lançamento conciliado!' : ('❌ Erro ao conciliar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  navigate('conciliacao');
+}
+
+async function concilConfirmarTodosAutomaticos() {
+  const transacoes = window._concilTransacoes || [];
+  const alvo = transacoes.map((t,i) => i).filter(i => transacoes[i].status === 'conciliado' && !transacoes[i].confirmado && transacoes[i].despesaId);
+  if (!alvo.length) { showToast('⚠️ Nada para confirmar — clique em "Conciliar Automaticamente" primeiro.'); return; }
+  showSyncStatus('Confirmando ' + alvo.length + ' lançamento(s)...');
+  let sucesso = 0;
+  for (const i of alvo) { if (await _concilExecutarConfirmacao(i, transacoes[i].despesaId)) sucesso++; }
+  showToast(`✅ ${sucesso}/${alvo.length} lançamento(s) conciliado(s)!`);
+  navigate('conciliacao');
+}
+
+function concilRenderTabela() {
+  const transacoes = window._concilTransacoes || [];
+  if (!transacoes.length) return '<div style="padding:20px;color:var(--text-muted);font-size:.85rem">Nenhum lançamento lido ainda. Envie um arquivo acima ou adicione uma linha manual.</div>';
+  const despesasCache = window._concilDespesasCache || [];
+  const descDespesa = d => d ? (d.ServicoDesc || d.Fornecedor || d.CentroCusto || ('Lançamento #'+d.Id)) : '';
+
+  return `
+  <table class="data-table">
+    <thead><tr><th>Data</th><th>Descrição</th><th>Valor (R$)</th><th>Status</th><th>Ação</th></tr></thead>
+    <tbody>
+    ${transacoes.map((t,i) => {
+      let statusHtml, acaoHtml;
+      if (t.confirmado) {
+        statusHtml = '<span style="color:var(--green-main);font-weight:700">✅ Conciliado</span>';
+        acaoHtml = '<span style="font-size:.72rem;color:var(--text-muted)">—</span>';
+      } else if (t.status === 'conciliado') {
+        const d = despesasCache.find(x => x.Id === t.despesaId);
+        statusHtml = '<span style="color:var(--green-main);font-weight:700">✅ Encontrado</span>' + (d ? `<div style="font-size:.68rem;color:var(--text-muted)">${descDespesa(d)}</div>` : '');
+        acaoHtml = `<button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="concilConfirmarLinha(${i}, ${t.despesaId})">Confirmar</button>`;
+      } else if (t.status === 'multiplo') {
+        statusHtml = '<span style="color:var(--amber);font-weight:700">⚠️ Várias opções</span>';
+        acaoHtml = `<select onchange="concilConfirmarLinha(${i}, this.value)" style="font-size:.72rem;padding:4px">
+          <option value="">Escolher...</option>
+          ${(t.candidatos||[]).map(id => { const d = despesasCache.find(x=>x.Id===id); return `<option value="${id}">${descDespesa(d)} · R$ ${d?(d.Valor||0).toFixed(2):''}</option>`; }).join('')}
+        </select>`;
+      } else if (t.status === 'nao_encontrado') {
+        statusHtml = '<span style="color:#c0392b;font-weight:700">❌ Não encontrado</span>';
+        acaoHtml = '<span style="font-size:.7rem;color:var(--text-muted)">Confira se já foi lançado em Despesas</span>';
+      } else {
+        statusHtml = '<span style="color:var(--text-muted)">Aguardando conciliar</span>';
+        acaoHtml = '';
+      }
+      return `<tr>
+        <td><input type="date" value="${t.data||''}" oninput="concilAtualizarLinha(${i},'data',this.value)" style="font-size:.78rem;padding:4px;width:130px"></td>
+        <td><input type="text" value="${(t.descricao||'').replace(/"/g,'&quot;')}" oninput="concilAtualizarLinha(${i},'descricao',this.value)" style="font-size:.78rem;padding:4px;width:220px;box-sizing:border-box"></td>
+        <td><input type="number" step="0.01" value="${t.valor||''}" oninput="concilAtualizarLinha(${i},'valor',this.value)" style="font-size:.78rem;padding:4px;width:100px"></td>
+        <td>${statusHtml}</td>
+        <td style="white-space:nowrap">${acaoHtml} <button onclick="concilRemoverLinha(${i})" style="background:none;border:none;cursor:pointer;color:#c0392b;font-size:.85rem" title="Remover linha">🗑️</button></td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>`;
+}
+
+function pageConciliacaoBancaria() {
+  if (currentProfile !== 'diretoria') {
+    return `<div class="page-header"><h1>Conciliação Bancária</h1></div>
+    <div class="card" style="text-align:center;padding:48px 24px;color:var(--text-muted)">
+      <div style="font-size:2rem;margin-bottom:10px">🔒</div>
+      <div style="font-weight:700;color:var(--text)">Acesso restrito à Diretoria</div>
+      <div style="font-size:.85rem;margin-top:6px">Dados financeiros da empresa visíveis apenas para o perfil Diretoria.</div>
+    </div>`;
+  }
+  window._concilEmpresaAtiva = window._concilEmpresaAtiva || RD_EMPRESAS[0];
+  window._concilTransacoes = window._concilTransacoes || [];
+
+  const transacoes = window._concilTransacoes;
+  const total = transacoes.length;
+  const conciliados = transacoes.filter(t => t.confirmado).length;
+  const aRevisar = transacoes.filter(t => !t.confirmado && t.status === 'multiplo').length;
+  const naoEncontrados = transacoes.filter(t => !t.confirmado && t.status === 'nao_encontrado').length;
+
+  return `
+  <div class="page-header"><h1>Conciliação Bancária</h1><p>Envie o extrato bancário ou a fatura do cartão (PDF) e concilie automaticamente com as Despesas lançadas</p></div>
+
+  <div style="margin-bottom:18px">
+    <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">🏢 Empresa</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      ${RD_EMPRESAS.map(emp => {
+        const ativo = emp === window._concilEmpresaAtiva;
+        const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
+        return `<button onclick="concilSelecionarEmpresa('${emp}')"
+          style="display:flex;align-items:center;gap:7px;padding:8px 16px;border-radius:9px;
+            border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
+            background:${ativo?cor:'var(--surface2)'};
+            color:${ativo?'#fff':'var(--text)'};
+            font-family:'Mont',sans-serif;font-size:.8rem;font-weight:${ativo?'700':'500'};cursor:pointer">
+          🏢 ${emp}
+        </button>`;
+      }).join('')}
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px;padding:16px 18px">
+    <div style="font-weight:700;color:var(--green-main);margin-bottom:10px;font-size:.85rem;text-transform:uppercase;letter-spacing:.06em">📤 Enviar Extrato Bancário ou Fatura de Cartão</div>
+    <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:10px">Envie o PDF com texto (não escaneado) do extrato ou fatura. O sistema lê as linhas automaticamente — confira e ajuste antes de conciliar.</div>
+    <input type="file" id="concil_arquivo" accept=".pdf" onchange="concilProcessarArquivo(event)">
+    <div id="concil_status" style="font-size:.8rem;margin-top:8px;color:var(--text-muted)"></div>
+  </div>
+
+  ${total > 0 ? `
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card blue"><div class="kpi-label">Lançamentos no arquivo</div><div class="kpi-value">${total}</div><div class="kpi-icon">📑</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Conciliados</div><div class="kpi-value">${conciliados}</div><div class="kpi-icon">✅</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">A revisar</div><div class="kpi-value">${aRevisar}</div><div class="kpi-icon">⚠️</div></div>
+    <div class="kpi-card red"><div class="kpi-label">Não encontrados</div><div class="kpi-value">${naoEncontrados}</div><div class="kpi-icon">❌</div></div>
+  </div>
+  <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+    <button class="btn-primary" onclick="concilConciliar()">🔎 Conciliar Automaticamente</button>
+    <button class="btn-secondary" onclick="concilConfirmarTodosAutomaticos()">✅ Confirmar todos os conciliados</button>
+    <button class="btn-secondary" onclick="concilAdicionarLinhaManual()">➕ Adicionar linha manual</button>
+  </div>
+  <div class="card" style="overflow-x:auto;padding:0">
+    ${concilRenderTabela()}
+  </div>
+  ` : ''}
+  `;
 }
 
 /* -- APROVAÇÕES -- */
