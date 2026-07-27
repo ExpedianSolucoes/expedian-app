@@ -1080,7 +1080,6 @@ const menus = {
       { id: 'receber', icon: '💰', label: 'Contas a Receber' },
       { id: 'pagar', icon: '💸', label: 'Contas a Pagar' },
       { id: 'receitas_despesas', icon: '💵', label: 'Receitas e Despesas' },
-      { id: 'conciliacao', icon: '🏦', label: 'Conciliação Bancária' },
       { id: 'prestacao', icon: '📑', label: 'Prestação de Contas' },
       { id: 'contratos', icon: '📜', label: 'Gestão de Contratos' },
     ]},
@@ -1279,7 +1278,6 @@ function renderPage(id) {
     receber: () => pageReceber(),
     pagar: () => pagePagar(),
     receitas_despesas: () => pageReceitasDespesas(),
-    conciliacao: () => pageConciliacaoBancaria(),
     aprovacoes: () => pageAprovacoes(),
     agenda: () => pageAgenda(),
     relatorios: () => pageRelatorios(),
@@ -5224,6 +5222,9 @@ function rdSelecionarEmpresa(emp) {
   window._rdEmpresaAtiva = emp;
   // Contrato/Centro de Custo é específico de cada empresa — limpa a seleção ao trocar.
   window._rdParcelas = null;
+  // A conciliação bancária também é por empresa — invalida os matches já calculados.
+  window._concilDespesasCache = null;
+  (window._concilTransacoes||[]).forEach(t => { t.status = null; t.despesaId = null; t.candidatos = null; });
   navigate('receitas_despesas');
 }
 
@@ -5260,9 +5261,17 @@ function pageReceitasDespesas() {
         font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${tab==='receitas'?'700':'500'};cursor:pointer">
       💰 Receitas
     </button>
+    <button onclick="window._rdTab='conciliacao';navigate('receitas_despesas')"
+      style="display:flex;align-items:center;gap:7px;padding:9px 18px;border-radius:10px;
+        border:${tab==='conciliacao'?'2px solid var(--green-main)':'1px solid var(--border)'};
+        background:${tab==='conciliacao'?'var(--green-pale)':'var(--surface2)'};
+        color:${tab==='conciliacao'?'var(--green-main)':'var(--text)'};
+        font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${tab==='conciliacao'?'700':'500'};cursor:pointer">
+      🏦 Conciliação Bancária
+    </button>
   </div>
 
-  ${tab === 'despesas' ? renderDespesasTab() : renderReceitasPlaceholder()}
+  ${tab === 'despesas' ? renderDespesasTab() : tab === 'receitas' ? renderReceitasPlaceholder() : renderConciliacaoTab()}
   `;
 }
 
@@ -6135,13 +6144,14 @@ async function exportarDespesasExcel() {
 }
 
 /* ===========================================================
-   CONCILIAÇÃO BANCÁRIA
-   Leitura automática (100% no navegador, reaproveita pdf.js já usado
-   na leitura de Nota Fiscal) de extrato bancário/fatura de cartão em
-   PDF com texto, seguida de conciliação best-effort contra os
-   lançamentos já cadastrados em Despesas (por valor + proximidade de
-   data). Sempre editável antes de conciliar, e cada linha exige
-   confirmação explícita antes de marcar a despesa como conciliada.
+   CONCILIAÇÃO BANCÁRIA (aba dentro de Receitas e Despesas)
+   Leitura automática (100% no navegador) de extrato bancário/fatura de
+   cartão em PDF com texto OU planilha Excel/CSV, seguida de conciliação
+   best-effort contra os lançamentos já cadastrados em Despesas (por
+   valor + proximidade de data). Sempre editável antes de conciliar, e
+   cada linha exige confirmação explícita antes de marcar a despesa como
+   conciliada. Lançamentos sem correspondência ficam destacados em
+   vermelho na tabela para chamar atenção imediatamente.
    =========================================================== */
 const CONCIL_TOLERANCIA_DIAS  = 5;
 const CONCIL_TOLERANCIA_VALOR = 0.02;
@@ -6208,30 +6218,123 @@ function concilExtrairTransacoes(linhas) {
   return transacoes;
 }
 
+function concilNormalizarCabecalho(s) {
+  return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim();
+}
+
+function _concilCelulaParaDataISO(v) {
+  if (v instanceof Date && !isNaN(v)) return v.toISOString().split('T')[0];
+  if (typeof v === 'number' && typeof XLSX !== 'undefined' && XLSX.SSF && XLSX.SSF.parse_date_code) {
+    const d = XLSX.SSF.parse_date_code(v);
+    if (d) return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+  }
+  const s = String(v||'').trim();
+  const m = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (m) {
+    let [,d,mo,y] = m;
+    if (y.length === 2) y = (parseInt(y,10) > 50 ? '19' : '20') + y;
+    return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+  return '';
+}
+
+function _concilCelulaParaValor(v) {
+  if (typeof v === 'number') return v;
+  const s = String(v||'').replace(/R\$|\s/g,'');
+  if (!s) return null;
+  return equipNormalizarValorMonetario(s);
+}
+
+/* Lê extrato/fatura a partir de uma planilha Excel/CSV já carregada como
+   array de arrays (XLSX.utils.sheet_to_json(sheet, {header:1})). Primeiro
+   tenta reconhecer uma linha de cabeçalho (Data/Histórico/Valor); se não
+   achar, cai para um modo posicional (1ª coluna com data, 1ª coluna
+   numérica seguinte como valor, o resto vira descrição). */
+function concilExtrairTransacoesDeExcel(linhasArray) {
+  const transacoes = [];
+  if (!linhasArray || !linhasArray.length) return transacoes;
+
+  let headerIdx = -1, colData = -1, colValor = -1, colDesc = -1;
+  for (let i = 0; i < Math.min(linhasArray.length, 15); i++) {
+    const linha = (linhasArray[i]||[]).map(concilNormalizarCabecalho);
+    const iData = linha.findIndex(c => /data|dt lanc|dt mov/.test(c));
+    const iValor = linha.findIndex(c => /valor|montante|vl lanc/.test(c));
+    if (iData >= 0 && iValor >= 0) {
+      headerIdx = i; colData = iData; colValor = iValor;
+      colDesc = linha.findIndex(c => /histor|descri|lancamento|memo/.test(c));
+      break;
+    }
+  }
+
+  if (headerIdx >= 0) {
+    for (let i = headerIdx + 1; i < linhasArray.length; i++) {
+      const linha = linhasArray[i];
+      if (!linha || !linha.length) continue;
+      const dataISO = _concilCelulaParaDataISO(linha[colData]);
+      const valorNum = _concilCelulaParaValor(linha[colValor]);
+      if (!dataISO || valorNum === null || valorNum === 0) continue;
+      const descricao = colDesc >= 0
+        ? String(linha[colDesc]||'').trim()
+        : linha.filter((_,idx) => idx!==colData && idx!==colValor).map(c=>String(c||'')).join(' ').trim();
+      transacoes.push({ data: dataISO, descricao: descricao || '(sem descrição)', valor: Math.abs(valorNum), tipo: valorNum<0?'debito':'credito', status:null, despesaId:null, candidatos:null, confirmado:false });
+    }
+  } else {
+    linhasArray.forEach(linha => {
+      if (!linha || linha.length < 2) return;
+      const dataISO = _concilCelulaParaDataISO(linha[0]);
+      if (!dataISO) return;
+      let valorIdx = -1, valorNum = null;
+      for (let c = 1; c < linha.length; c++) {
+        const v = _concilCelulaParaValor(linha[c]);
+        if (v !== null && v !== 0) { valorIdx = c; valorNum = v; break; }
+      }
+      if (valorIdx < 0) return;
+      const descricao = linha.filter((_,idx) => idx!==0 && idx!==valorIdx).map(c=>String(c||'')).join(' ').trim();
+      transacoes.push({ data: dataISO, descricao: descricao || '(sem descrição)', valor: Math.abs(valorNum), tipo: valorNum<0?'debito':'credito', status:null, despesaId:null, candidatos:null, confirmado:false });
+    });
+  }
+  return transacoes;
+}
+
+async function _concilCarregarXLSX() {
+  if (typeof XLSX !== 'undefined') return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload = resolve; s.onerror = () => reject(new Error('Falha ao carregar leitor de planilha'));
+    document.head.appendChild(s);
+  });
+}
+
 async function concilProcessarArquivo(event) {
   const file = event.target.files[0];
   if (!file) return;
   const status = document.getElementById('concil_status');
   if (status) status.innerHTML = '<span class="spinner"></span> Lendo arquivo...';
   try {
-    if (file.type !== 'application/pdf') throw new Error('Envie um arquivo em PDF (extrato ou fatura com texto, não escaneado).');
-    const linhas = await extrairTextoPDFPorLinhas(file);
-    const transacoes = concilExtrairTransacoes(linhas);
-    if (!transacoes.length) throw new Error('Não encontrei lançamentos neste PDF. Ele pode estar escaneado (sem texto) ou em um layout não reconhecido — use "Adicionar linha manual" abaixo.');
+    const nome = (file.name||'').toLowerCase();
+    let transacoes = [];
+    if (file.type === 'application/pdf' || nome.endsWith('.pdf')) {
+      const linhas = await extrairTextoPDFPorLinhas(file);
+      transacoes = concilExtrairTransacoes(linhas);
+      if (!transacoes.length) throw new Error('Não encontrei lançamentos neste PDF. Ele pode estar escaneado (sem texto) ou em um layout não reconhecido — use "Adicionar linha manual" abaixo.');
+    } else if (nome.endsWith('.xlsx') || nome.endsWith('.xls') || nome.endsWith('.csv')) {
+      await _concilCarregarXLSX();
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const linhasArray = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true });
+      transacoes = concilExtrairTransacoesDeExcel(linhasArray);
+      if (!transacoes.length) throw new Error('Não encontrei lançamentos nesta planilha. Confira se há colunas de Data e Valor — use "Adicionar linha manual" abaixo se precisar.');
+    } else {
+      throw new Error('Formato não reconhecido. Envie um PDF (com texto), Excel (.xlsx/.xls) ou CSV.');
+    }
     window._concilTransacoes = (window._concilTransacoes || []).concat(transacoes);
     if (status) status.innerHTML = `✅ ${transacoes.length} lançamento(s) lido(s) — confira e ajuste antes de conciliar.`;
-    navigate('conciliacao');
+    navigate('receitas_despesas');
   } catch (err) {
     if (status) status.innerHTML = `⚠️ ${err.message}`;
   }
-}
-
-function concilSelecionarEmpresa(emp) {
-  if (window._concilEmpresaAtiva === emp) return;
-  window._concilEmpresaAtiva = emp;
-  window._concilDespesasCache = null;
-  (window._concilTransacoes||[]).forEach(t => { t.status = null; t.despesaId = null; t.candidatos = null; });
-  navigate('conciliacao');
 }
 
 function concilAtualizarLinha(i, campo, valor) {
@@ -6244,17 +6347,17 @@ function concilAtualizarLinha(i, campo, valor) {
 function concilRemoverLinha(i) {
   if (!window._concilTransacoes) return;
   window._concilTransacoes.splice(i, 1);
-  navigate('conciliacao');
+  navigate('receitas_despesas');
 }
 
 function concilAdicionarLinhaManual() {
   window._concilTransacoes = window._concilTransacoes || [];
   window._concilTransacoes.push({ data: new Date().toISOString().split('T')[0], descricao: '', valor: 0, tipo: 'debito', status: null, despesaId: null, candidatos: null, confirmado: false });
-  navigate('conciliacao');
+  navigate('receitas_despesas');
 }
 
 async function concilConciliar() {
-  const empresa = window._concilEmpresaAtiva || RD_EMPRESAS[0];
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   showSyncStatus('Carregando despesas para conciliar...');
   let despesas = [];
   try { despesas = await dbLer('Despesas'); } catch(e) { despesas = []; }
@@ -6282,7 +6385,7 @@ async function concilConciliar() {
   });
 
   showSyncStatus('Conciliação concluída!', 'ok', 2000);
-  navigate('conciliacao');
+  navigate('receitas_despesas');
 }
 
 async function _concilExecutarConfirmacao(i, despesaId) {
@@ -6303,7 +6406,7 @@ async function concilConfirmarLinha(i, despesaId) {
   showSyncStatus('Conciliando lançamento...');
   const ok = await _concilExecutarConfirmacao(i, despesaId);
   showToast(ok ? '✅ Lançamento conciliado!' : ('❌ Erro ao conciliar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
-  navigate('conciliacao');
+  navigate('receitas_despesas');
 }
 
 async function concilConfirmarTodosAutomaticos() {
@@ -6314,7 +6417,7 @@ async function concilConfirmarTodosAutomaticos() {
   let sucesso = 0;
   for (const i of alvo) { if (await _concilExecutarConfirmacao(i, transacoes[i].despesaId)) sucesso++; }
   showToast(`✅ ${sucesso}/${alvo.length} lançamento(s) conciliado(s)!`);
-  navigate('conciliacao');
+  navigate('receitas_despesas');
 }
 
 function concilRenderTabela() {
@@ -6328,7 +6431,7 @@ function concilRenderTabela() {
     <thead><tr><th>Data</th><th>Descrição</th><th>Valor (R$)</th><th>Status</th><th>Ação</th></tr></thead>
     <tbody>
     ${transacoes.map((t,i) => {
-      let statusHtml, acaoHtml;
+      let statusHtml, acaoHtml, rowBg = '', valorCor = '';
       if (t.confirmado) {
         statusHtml = '<span style="color:var(--green-main);font-weight:700">✅ Conciliado</span>';
         acaoHtml = '<span style="font-size:.72rem;color:var(--text-muted)">—</span>';
@@ -6342,17 +6445,20 @@ function concilRenderTabela() {
           <option value="">Escolher...</option>
           ${(t.candidatos||[]).map(id => { const d = despesasCache.find(x=>x.Id===id); return `<option value="${id}">${descDespesa(d)} · R$ ${d?(d.Valor||0).toFixed(2):''}</option>`; }).join('')}
         </select>`;
+        rowBg = 'background:#fff8e1';
       } else if (t.status === 'nao_encontrado') {
         statusHtml = '<span style="color:#c0392b;font-weight:700">❌ Não encontrado</span>';
-        acaoHtml = '<span style="font-size:.7rem;color:var(--text-muted)">Confira se já foi lançado em Despesas</span>';
+        acaoHtml = '<span style="font-size:.7rem;color:var(--text-muted)">Não bate com nenhuma Despesa lançada</span>';
+        rowBg = 'background:#fdecea';
+        valorCor = 'color:#c0392b;font-weight:700';
       } else {
         statusHtml = '<span style="color:var(--text-muted)">Aguardando conciliar</span>';
         acaoHtml = '';
       }
-      return `<tr>
+      return `<tr style="${rowBg}">
         <td><input type="date" value="${t.data||''}" oninput="concilAtualizarLinha(${i},'data',this.value)" style="font-size:.78rem;padding:4px;width:130px"></td>
         <td><input type="text" value="${(t.descricao||'').replace(/"/g,'&quot;')}" oninput="concilAtualizarLinha(${i},'descricao',this.value)" style="font-size:.78rem;padding:4px;width:220px;box-sizing:border-box"></td>
-        <td><input type="number" step="0.01" value="${t.valor||''}" oninput="concilAtualizarLinha(${i},'valor',this.value)" style="font-size:.78rem;padding:4px;width:100px"></td>
+        <td><input type="number" step="0.01" value="${t.valor||''}" oninput="concilAtualizarLinha(${i},'valor',this.value)" style="font-size:.78rem;padding:4px;width:100px;${valorCor}"></td>
         <td>${statusHtml}</td>
         <td style="white-space:nowrap">${acaoHtml} <button onclick="concilRemoverLinha(${i})" style="background:none;border:none;cursor:pointer;color:#c0392b;font-size:.85rem" title="Remover linha">🗑️</button></td>
       </tr>`;
@@ -6361,16 +6467,11 @@ function concilRenderTabela() {
   </table>`;
 }
 
-function pageConciliacaoBancaria() {
-  if (currentProfile !== 'diretoria') {
-    return `<div class="page-header"><h1>Conciliação Bancária</h1></div>
-    <div class="card" style="text-align:center;padding:48px 24px;color:var(--text-muted)">
-      <div style="font-size:2rem;margin-bottom:10px">🔒</div>
-      <div style="font-weight:700;color:var(--text)">Acesso restrito à Diretoria</div>
-      <div style="font-size:.85rem;margin-top:6px">Dados financeiros da empresa visíveis apenas para o perfil Diretoria.</div>
-    </div>`;
-  }
-  window._concilEmpresaAtiva = window._concilEmpresaAtiva || RD_EMPRESAS[0];
+/* Aba "Conciliação Bancária" dentro de Receitas e Despesas — reaproveita
+   o mesmo submenu de empresa (renderRdSubmenuEmpresa/window._rdEmpresaAtiva)
+   usado pelas abas Despesas e Receitas, então trocar de empresa em
+   qualquer aba já reflete aqui. */
+function renderConciliacaoTab() {
   window._concilTransacoes = window._concilTransacoes || [];
 
   const transacoes = window._concilTransacoes;
@@ -6380,30 +6481,12 @@ function pageConciliacaoBancaria() {
   const naoEncontrados = transacoes.filter(t => !t.confirmado && t.status === 'nao_encontrado').length;
 
   return `
-  <div class="page-header"><h1>Conciliação Bancária</h1><p>Envie o extrato bancário ou a fatura do cartão (PDF) e concilie automaticamente com as Despesas lançadas</p></div>
-
-  <div style="margin-bottom:18px">
-    <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">🏢 Empresa</div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap">
-      ${RD_EMPRESAS.map(emp => {
-        const ativo = emp === window._concilEmpresaAtiva;
-        const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
-        return `<button onclick="concilSelecionarEmpresa('${emp}')"
-          style="display:flex;align-items:center;gap:7px;padding:8px 16px;border-radius:9px;
-            border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
-            background:${ativo?cor:'var(--surface2)'};
-            color:${ativo?'#fff':'var(--text)'};
-            font-family:'Mont',sans-serif;font-size:.8rem;font-weight:${ativo?'700':'500'};cursor:pointer">
-          🏢 ${emp}
-        </button>`;
-      }).join('')}
-    </div>
-  </div>
+  ${renderRdSubmenuEmpresa()}
 
   <div class="card" style="margin-bottom:20px;padding:16px 18px">
     <div style="font-weight:700;color:var(--green-main);margin-bottom:10px;font-size:.85rem;text-transform:uppercase;letter-spacing:.06em">📤 Enviar Extrato Bancário ou Fatura de Cartão</div>
-    <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:10px">Envie o PDF com texto (não escaneado) do extrato ou fatura. O sistema lê as linhas automaticamente — confira e ajuste antes de conciliar.</div>
-    <input type="file" id="concil_arquivo" accept=".pdf" onchange="concilProcessarArquivo(event)">
+    <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:10px">Envie o PDF com texto (não escaneado), ou uma planilha Excel (.xlsx) / CSV do extrato ou fatura. O sistema lê os lançamentos automaticamente — confira e ajuste antes de conciliar.</div>
+    <input type="file" id="concil_arquivo" accept=".pdf,.xlsx,.xls,.csv" onchange="concilProcessarArquivo(event)">
     <div id="concil_status" style="font-size:.8rem;margin-top:8px;color:var(--text-muted)"></div>
   </div>
 
