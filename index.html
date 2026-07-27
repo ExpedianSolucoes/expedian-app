@@ -5186,6 +5186,11 @@ const RD_BANCOS_POR_EMPRESA = {
 };
 const RD_STATUS = ['Pendente','Vence em breve','Vence hoje','Em atraso','Pago','Cancelado'];
 
+/* ===== Receitas ===== */
+const RC_CATEGORIAS = ['Prestação de Serviços','Consultoria','Locação','Reembolso','Juros/Rendimentos','Outros'];
+const RC_STATUS = ['Pendente','Vence em breve','Vence hoje','Em atraso','Recebido','Cancelado'];
+const RC_FORMAS = ['PIX','Boleto','Transferência','Cartão de Crédito','Cartão de Débito','Débito em Conta'];
+
 let _rdFornecedores = [];
 let RD_FILTRO_KPI = '';
 
@@ -5224,7 +5229,8 @@ function rdSelecionarEmpresa(emp) {
   window._rdParcelas = null;
   // A conciliação bancária também é por empresa — invalida os matches já calculados.
   window._concilDespesasCache = null;
-  (window._concilTransacoes||[]).forEach(t => { t.status = null; t.despesaId = null; t.candidatos = null; });
+  window._concilReceitasCache = null;
+  (window._concilTransacoes||[]).forEach(t => { t.status = null; t.despesaId = null; t.receitaId = null; t.candidatos = null; });
   navigate('receitas_despesas');
 }
 
@@ -5240,6 +5246,7 @@ function pageReceitasDespesas() {
   const tab = window._rdTab || 'despesas';
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarDespesas(); }, 200);
+  if (tab === 'receitas') setTimeout(() => { carregarReceitas(); }, 200);
 
   return `
   <div class="page-header"><h1>Receitas e Despesas</h1><p>Lançamentos financeiros detalhados da empresa</p></div>
@@ -5271,7 +5278,7 @@ function pageReceitasDespesas() {
     </button>
   </div>
 
-  ${tab === 'despesas' ? renderDespesasTab() : tab === 'receitas' ? renderReceitasPlaceholder() : renderConciliacaoTab()}
+  ${tab === 'despesas' ? renderDespesasTab() : tab === 'receitas' ? renderReceitasTab() : renderConciliacaoTab()}
   `;
 }
 
@@ -5299,14 +5306,494 @@ function renderRdSubmenuEmpresa() {
   </div>`;
 }
 
-function renderReceitasPlaceholder() {
+function renderReceitasTab() {
+  const responsaveis = _servicosResponsaveisDiretoria();
   return `
   ${renderRdSubmenuEmpresa()}
-  <div class="card" style="text-align:center;padding:48px 24px;color:var(--text-muted)">
-    <div style="font-size:2rem;margin-bottom:10px">🚧</div>
-    <div style="font-weight:700;color:var(--text)">Em construção</div>
-    <div style="font-size:.85rem;margin-top:6px">O formulário de Receitas será detalhado em uma próxima etapa.</div>
+
+  <!-- Formulário de lançamento (recolhido por padrão — clique para abrir) -->
+  <div class="form-card" style="margin-bottom:24px">
+    <div onclick="rcToggleFormNovaReceita()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-family:'Mont',sans-serif;font-size:.85rem;font-weight:700;color:var(--green-main);${window._rcFormAberto?'margin-bottom:14px;':''}text-transform:uppercase;letter-spacing:.07em">
+      <span>➕ Nova Receita</span>
+      <span id="rc-form-chevron" style="font-size:.9rem;transition:transform .2s;transform:rotate(${window._rcFormAberto?'180':'0'}deg)">▾</span>
+    </div>
+
+    <div id="rc-form-campos" style="display:${window._rcFormAberto ? 'block' : 'none'}">
+    <div class="form-row">
+      <div class="form-group">
+        <label>Data de Emissão</label>
+        <input type="date" id="rc_data_emissao" value="${new Date().toISOString().split('T')[0]}">
+      </div>
+      <div class="form-group">
+        <label>Categoria</label>
+        <select id="rc_categoria">
+          <option value="">Selecione...</option>
+          ${RC_CATEGORIAS.map(c => `<option>${c}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Cliente</label>
+        <input type="text" id="rc_cliente" placeholder="Nome do cliente">
+      </div>
+      <div class="form-group">
+        <label>Descrição</label>
+        <input type="text" id="rc_descricao" placeholder="Serviço/produto prestado">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group" style="position:relative">
+        <label>Contrato (Centro de Custo)</label>
+        <input type="text" id="rc_cc_input" placeholder="Selecione a empresa e digite para buscar..." autocomplete="off"
+          oninput="rcFiltrarCCs(this.value)" onfocus="rcFiltrarCCs(this.value)"
+          onblur="setTimeout(()=>rcFecharDropdownCC(),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
+        <input type="hidden" id="rc_cc">
+        <div id="rc_cc_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+      </div>
+      <div class="form-group">
+        <label>Valor (R$)</label>
+        <input type="number" id="rc_valor" placeholder="0,00" step="0.01">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Previsão de Recebimento</label>
+        <input type="date" id="rc_data_prevista">
+      </div>
+      <div class="form-group">
+        <label>Forma de Recebimento</label>
+        <select id="rc_forma">
+          <option value="">Selecione...</option>
+          ${RC_FORMAS.map(f => `<option>${f}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Responsável pelo Lançamento</label>
+        <select id="rc_responsavel">
+          <option value="">Selecione...</option>
+          ${responsaveis.map(r => `<option>${r}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Data de Recebimento</label>
+        <input type="date" id="rc_data_recebimento">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Banco</label>
+        <input type="text" id="rc_banco" list="dl_rc_bancos" placeholder="Selecione ou digite...">
+        <datalist id="dl_rc_bancos">${(RD_BANCOS_POR_EMPRESA[window._rdEmpresaAtiva || RD_EMPRESAS[0]] || []).map(b => `<option value="${b}">`).join('')}</datalist>
+      </div>
+      <div class="form-group">
+        <label>Status de Recebimento</label>
+        <select id="rc_status">
+          ${RC_STATUS.map(s => `<option>${s}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Comprovante</label>
+        <select id="rc_comprovante">
+          <option value="Não">Não</option>
+          <option value="Sim">Sim</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-actions" style="gap:10px">
+      <button class="btn-primary" onclick="salvarReceita()">💾 Salvar Receita</button>
+    </div>
+    </div><!-- /rc-form-campos -->
+  </div>
+
+  <!-- Dashboard: KPIs (valores) + calendário mensal lado a lado -->
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:stretch;margin-bottom:16px">
+    <div class="kpi-grid" style="margin-bottom:0;flex:1.3;min-width:300px;align-content:start">
+      <div class="kpi-card blue" id="rc-kpi-card-total" onclick="rcFiltrarKpi('')" style="cursor:pointer" title="Ver todos os lançamentos"><div class="kpi-label">Total de Lançamentos</div><div class="kpi-value" id="rc-kpi-total">—</div><div class="kpi-icon">📑</div></div>
+      <div class="kpi-card green" id="rc-kpi-card-valor" style="cursor:default" title="Soma dos valores filtrados"><div class="kpi-label">Valor Total</div><div class="kpi-value" id="rc-kpi-valor" style="font-size:1.05rem">—</div><div class="kpi-icon">💰</div></div>
+      <div class="kpi-card green" id="rc-kpi-card-recebido" onclick="rcFiltrarKpi('recebido')" style="cursor:pointer" title="Filtrar: recebidos"><div class="kpi-label">Recebido</div><div class="kpi-value" id="rc-kpi-recebido" style="font-size:1.05rem">—</div><div class="kpi-icon">✅</div></div>
+      <div class="kpi-card red" id="rc-kpi-card-vencido" onclick="rcFiltrarKpi('vencido')" style="cursor:pointer" title="Filtrar: vencido"><div class="kpi-label">Vencido</div><div class="kpi-value" id="rc-kpi-vencido" style="font-size:1.05rem">—</div><div class="kpi-icon">⚠️</div></div>
+      <div class="kpi-card amber" id="rc-kpi-card-avencer" onclick="rcFiltrarKpi('avencer')" style="cursor:pointer" title="Filtrar: a receber"><div class="kpi-label">A Receber</div><div class="kpi-value" id="rc-kpi-avencer" style="font-size:1.05rem">—</div><div class="kpi-icon">⏳</div></div>
+    </div>
+    <div id="rc-resumo-mensal" style="flex:1;min-width:320px"></div>
+  </div>
+
+  <!-- BARRA DE FILTROS -->
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
+    <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
+    <input type="month" id="rc_filtro_mes" onchange="carregarReceitas()" title="Mês de emissão" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <select id="rc_filtro_categoria" onchange="carregarReceitas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
+      <option value="">Todas categorias</option>
+      ${RC_CATEGORIAS.map(c => `<option>${c}</option>`).join('')}
+    </select>
+    <input type="text" id="rc_filtro_busca" placeholder="Cliente / descrição / CC..." oninput="carregarReceitas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:160px">
+    <select id="rc_filtro_status" onchange="RC_FILTRO_KPI='';carregarReceitas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
+      <option value="">Todos os status</option>
+      ${RC_STATUS.map(s => `<option>${s}</option>`).join('')}
+    </select>
+    <button onclick="rcLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
+  </div>
+
+  <!-- Lista -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div class="card-title" style="margin:0">Lançamentos — Receitas</div>
+      <button class="btn-secondary" onclick="exportarReceitasExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
+    </div>
+    <div id="lista-receitas"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
+}
+
+function rcToggleFormNovaReceita() {
+  window._rcFormAberto = !window._rcFormAberto;
+  const campos = document.getElementById('rc-form-campos');
+  const chevron = document.getElementById('rc-form-chevron');
+  const header = campos ? campos.previousElementSibling : null;
+  if (campos) campos.style.display = window._rcFormAberto ? 'block' : 'none';
+  if (chevron) chevron.style.transform = 'rotate(' + (window._rcFormAberto ? '180' : '0') + 'deg)';
+  if (header) header.style.marginBottom = window._rcFormAberto ? '14px' : '0';
+}
+
+function rcFiltrarCCs(texto) {
+  const dd = document.getElementById('rc_cc_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  const disponiveis = _rdCCsDisponiveis();
+  const matches = (t ? disponiveis.filter(c => (c.id+' '+c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0,40);
+  let html = matches.map(c => {
+    const label = (c.id + ' · ' + c.contrato).replace(/'/g,"\\'");
+    return '<div onclick="rcSelecionarCC(\''+label+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>'+c.id+'</strong> <span style="color:var(--text-muted)">· '+c.contrato+'</span>' +
+    '</div>';
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum centro de custo cadastrado encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+
+function rcFecharDropdownCC() {
+  const dd = document.getElementById('rc_cc_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+
+function rcSelecionarCC(valor) {
+  const inp = document.getElementById('rc_cc_input'); if (inp) inp.value = valor;
+  const hid = document.getElementById('rc_cc'); if (hid) hid.value = valor;
+  rcFecharDropdownCC();
+}
+
+let RC_FILTRO_KPI = '';
+function rcFiltrarKpi(tipo) {
+  RC_FILTRO_KPI = (RC_FILTRO_KPI === tipo) ? '' : tipo;
+  carregarReceitas();
+}
+
+function rcLimparFiltros() {
+  ['rc_filtro_mes','rc_filtro_categoria','rc_filtro_busca','rc_filtro_status'].forEach(id => { const e=document.getElementById(id); if(e) e.value=''; });
+  RC_FILTRO_KPI = '';
+  carregarReceitas();
+}
+
+async function salvarReceita() {
+  const dataEmissao = document.getElementById('rc_data_emissao').value;
+  const categoria = document.getElementById('rc_categoria').value;
+  const cliente = document.getElementById('rc_cliente').value.trim();
+  const descricao = document.getElementById('rc_descricao').value.trim();
+  const cc = (document.getElementById('rc_cc')||{}).value || '';
+  const valor = parseFloat(document.getElementById('rc_valor').value) || 0;
+  const dataPrevista = document.getElementById('rc_data_prevista').value;
+  const forma = document.getElementById('rc_forma').value;
+  const responsavel = document.getElementById('rc_responsavel').value;
+  const dataRecebimento = document.getElementById('rc_data_recebimento').value;
+  const banco = document.getElementById('rc_banco').value;
+  const status = document.getElementById('rc_status').value;
+  const comprovante = document.getElementById('rc_comprovante').value;
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+
+  if (!dataEmissao) { showToast('⚠️ Informe a data de emissão.'); return; }
+  if (!categoria) { showToast('⚠️ Selecione a categoria.'); return; }
+  if (!cliente) { showToast('⚠️ Informe o cliente.'); return; }
+  if (!cc) { showToast('⚠️ Selecione o contrato (centro de custo).'); return; }
+  if (!valor) { showToast('⚠️ Informe o valor.'); return; }
+  if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
+
+  const dados = {
+    DataEmissao: dataEmissao, Categoria: categoria, Cliente: cliente, Descricao: descricao,
+    CentroCusto: cc, Valor: valor, DataPrevista: dataPrevista, FormaRecebimento: forma,
+    ResponsavelLancamento: responsavel, DataRecebimento: dataRecebimento, Banco: banco,
+    Status: status, Comprovante: comprovante, Empresa: empresa,
+    Title: cliente + ' · ' + (dataPrevista || dataEmissao),
+    LancadoPor: window._currentUser ? window._currentUser.name : '',
+  };
+
+  showSyncStatus('Salvando receita...');
+  const ok = await dbInserir('Receitas', dados);
+  showToast(ok ? '✅ Receita salva!' : ('❌ Erro ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  showSyncStatus(ok ? 'Receita salva!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
+
+  ['rc_cliente','rc_descricao','rc_valor','rc_data_prevista','rc_data_recebimento','rc_banco'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
+  const catSel = document.getElementById('rc_categoria'); if (catSel) catSel.selectedIndex = 0;
+  const formaSel = document.getElementById('rc_forma'); if (formaSel) formaSel.selectedIndex = 0;
+  const respSel = document.getElementById('rc_responsavel'); if (respSel) respSel.selectedIndex = 0;
+  const statusSel = document.getElementById('rc_status'); if (statusSel) statusSel.selectedIndex = 0;
+  const ccInp = document.getElementById('rc_cc_input'); if (ccInp) ccInp.value = '';
+  const ccHid = document.getElementById('rc_cc'); if (ccHid) ccHid.value = '';
+
+  carregarReceitas();
+}
+
+async function carregarReceitas() {
+  const el = document.getElementById('lista-receitas');
+  if (!el) return;
+  if (currentProfile !== 'diretoria') { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria.</div>'; return; }
+  const token = await getSharePointToken();
+  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>'; return; }
+  try {
+    let items = await dbLer('Receitas');
+    const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+    items = items.filter(i => i.Empresa === empresaAtiva);
+    items.forEach(i => {
+      if (i.Status !== 'Recebido' && i.Status !== 'Cancelado' && i.DataPrevista) {
+        i.Status = calcularStatusVencimento(i.DataPrevista);
+      }
+    });
+
+    const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
+    const fmtR = (v) => 'R$ ' + v.toLocaleString('pt-BR',{minimumFractionDigits:2});
+    setKpi('rc-kpi-total', items.length);
+    const somaValor = items.reduce((s,i)=>s+(i.Valor||0),0);
+    setKpi('rc-kpi-valor', fmtR(somaValor));
+    const somaRecebido = items.filter(r=>r.Status==='Recebido').reduce((s,i)=>s+(i.Valor||0),0);
+    const somaVencido = items.filter(r=>r.Status==='Em atraso').reduce((s,i)=>s+(i.Valor||0),0);
+    const somaAVencer = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje').reduce((s,i)=>s+(i.Valor||0),0);
+    setKpi('rc-kpi-recebido', fmtR(somaRecebido));
+    setKpi('rc-kpi-vencido', fmtR(somaVencido));
+    setKpi('rc-kpi-avencer', fmtR(somaAVencer));
+
+    const setActiveKpi = (cardId, ativo, cor) => {
+      const e = document.getElementById(cardId); if (!e) return;
+      e.style.boxShadow = ativo ? ('0 0 0 3px ' + cor + '55') : '';
+      e.style.borderColor = ativo ? cor : '';
+    };
+    setActiveKpi('rc-kpi-card-total', !RC_FILTRO_KPI, '#0d6efd');
+    setActiveKpi('rc-kpi-card-recebido', RC_FILTRO_KPI==='recebido', '#28a745');
+    setActiveKpi('rc-kpi-card-vencido', RC_FILTRO_KPI==='vencido', '#dc3545');
+    setActiveKpi('rc-kpi-card-avencer', RC_FILTRO_KPI==='avencer', '#e0a800');
+
+    window._rcReceitasPorId = {}; items.forEach(i => { window._rcReceitasPorId[i.Id] = i; });
+    rcRenderResumoMensal(items);
+
+    const fMes = (document.getElementById('rc_filtro_mes')||{}).value || '';
+    const fCategoria = (document.getElementById('rc_filtro_categoria')||{}).value || '';
+    const fBusca = ((document.getElementById('rc_filtro_busca')||{}).value || '').trim().toLowerCase();
+    const fStatus = (document.getElementById('rc_filtro_status')||{}).value || '';
+
+    if (fMes) items = items.filter(r => (r.DataEmissao||'').slice(0,7) === fMes);
+    if (fCategoria) items = items.filter(r => r.Categoria === fCategoria);
+    if (fBusca) items = items.filter(r => (r.Cliente||'').toLowerCase().includes(fBusca) || (r.Descricao||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca));
+    if (fStatus) items = items.filter(r => r.Status === fStatus);
+    if (RC_FILTRO_KPI === 'avencer') items = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje');
+    else if (RC_FILTRO_KPI === 'recebido') items = items.filter(r=>r.Status==='Recebido');
+    else if (RC_FILTRO_KPI === 'vencido') items = items.filter(r=>r.Status==='Em atraso');
+
+    items = items.slice().sort((a,b)=>(b.Id||0)-(a.Id||0)).slice(0,300);
+    window._rcFiltradas = items;
+
+    if (!items.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma receita encontrada.</div>'; return; }
+
+    const statusColor = (s) => s==='Recebido'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
+    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Emissão</th><th>Categoria</th><th>Cliente</th><th>CC</th><th>Previsão</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
+      items.map(i => `<tr>
+          <td style="font-size:.78rem">${i.DataEmissao ? new Date(i.DataEmissao+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
+          <td style="font-size:.76rem">${i.Categoria||'—'}</td>
+          <td style="font-size:.78rem"><strong>${i.Cliente||'—'}</strong>${i.Descricao?`<div style="font-size:.68rem;color:var(--text-muted)">${i.Descricao}</div>`:''}</td>
+          <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}</td>
+          <td style="font-size:.8rem">${i.DataPrevista ? new Date(i.DataPrevista+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
+          <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
+          <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
+          <td style="font-size:.72rem">${i.Comprovante==='Sim'?'📎 Sim':'— Não'}</td>
+          <td><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;white-space:nowrap" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button></td>
+        </tr>`).join('') + '</tbody></table></div>';
+  } catch(e) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>'; }
+}
+
+function rcRenderResumoMensal(items) {
+  const el = document.getElementById('rc-resumo-mensal');
+  if (!el) return;
+  if (!window._rcAnoResumo) {
+    const anos = items.map(i => (i.DataPrevista || i.DataEmissao || '').slice(0,4)).filter(Boolean);
+    window._rcAnoResumo = anos.length ? Math.max(...anos.map(Number)) : new Date().getFullYear();
+  }
+  const ano = window._rcAnoResumo;
+  const porMes = {};
+  for (let m = 1; m <= 12; m++) porMes[m] = { total: 0, recebido: 0, vencido: 0, qtd: 0 };
+  items.forEach(i => {
+    const chave = i.DataPrevista || i.DataEmissao || '';
+    if (chave.slice(0,4) !== String(ano)) return;
+    const m = parseInt(chave.slice(5,7), 10);
+    if (!m || !porMes[m]) return;
+    porMes[m].qtd++;
+    porMes[m].total += (i.Valor || 0);
+    if (i.Status === 'Recebido') porMes[m].recebido += (i.Valor || 0);
+    else if (i.Status === 'Em atraso') porMes[m].vencido += (i.Valor || 0);
+  });
+  const fMesAtivo = (document.getElementById('rc_filtro_mes')||{}).value || '';
+  const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const fmt0 = (v) => v.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0});
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:0;height:100%">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="card-title" style="margin:0">📆 Calendário Mensal</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button onclick="rcMudarAnoResumo(-1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">‹</button>
+          <span style="font-weight:800;font-size:.9rem;min-width:38px;text-align:center">${ano}</span>
+          <button onclick="rcMudarAnoResumo(1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">›</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:7px">
+        ${nomesMes.map((nome, idx) => {
+          const m = idx + 1;
+          const d = porMes[m];
+          const chaveMes = ano + '-' + String(m).padStart(2,'0');
+          const ativo = fMesAtivo === chaveMes;
+          const vazio = d.qtd === 0;
+          return `<div onclick="document.getElementById('rc_filtro_mes').value='${vazio?'':chaveMes}';carregarReceitas()" style="cursor:pointer;padding:8px 6px;border-radius:9px;text-align:center;border:${ativo?'2px solid var(--green-main)':'1px solid var(--border)'};background:${ativo?'var(--green-pale)':(vazio?'var(--bg)':'var(--surface2)')};opacity:${vazio?'.55':'1'}">
+            <div style="font-size:.7rem;font-weight:800;color:var(--text-muted)">${nome}</div>
+            <div style="font-size:.74rem;font-weight:800;margin:3px 0">${vazio?'—':'R$ '+fmt0(d.total)}</div>
+            ${!vazio ? `<div style="font-size:.6rem;color:var(--text-muted)">✅${fmt0(d.recebido)}${d.vencido>0?(' · ⚠️'+fmt0(d.vencido)):''}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+      ${fMesAtivo ? `<button onclick="document.getElementById('rc_filtro_mes').value='';carregarReceitas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
+    </div>`;
+}
+
+function rcMudarAnoResumo(delta) {
+  window._rcAnoResumo = (window._rcAnoResumo || new Date().getFullYear()) + delta;
+  carregarReceitas();
+}
+
+function rcAbrirEdicaoReceita(id) {
+  const i = (window._rcReceitasPorId || {})[id];
+  if (!i) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+  const existente = document.getElementById('rc-edit-modal');
+  if (existente) existente.remove();
+
+  const bancosEmpresa = RD_BANCOS_POR_EMPRESA[i.Empresa] || [];
+  const opt = (v,l) => `<option value="${v}" ${i.Status===v?'selected':''}>${l}</option>`;
+
+  const modal = document.createElement('div');
+  modal.id = 'rc-edit-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-weight:800;font-size:1rem">✏️ Editar Lançamento</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('rc-edit-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:14px">${i.Cliente||'—'} · R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">STATUS DE RECEBIMENTO</label>
+      <select id="rce_status" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+        ${opt('Pendente','Pendente')}${opt('Vence em breve','Vence em breve')}${opt('Vence hoje','Vence hoje')}${opt('Em atraso','Em atraso')}${opt('Recebido','Recebido')}${opt('Cancelado','Cancelado')}
+      </select>
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">DATA DE RECEBIMENTO</label>
+      <input id="rce_data_recebimento" type="date" value="${i.DataRecebimento||''}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">BANCO</label>
+      <input id="rce_banco" list="rce_bancos_dl" value="${(i.Banco||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+      <datalist id="rce_bancos_dl">${bancosEmpresa.map(b=>`<option value="${b}">`).join('')}</datalist>
+
+      <div style="display:flex;gap:10px;margin-bottom:12px">
+        <div style="flex:1">
+          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR (R$)</label>
+          <input id="rce_valor" type="number" step="0.01" value="${i.Valor||0}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+        </div>
+        <div style="flex:1">
+          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">PREVISÃO</label>
+          <input id="rce_data_prevista" type="date" value="${i.DataPrevista||''}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+        </div>
+      </div>
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">COMPROVANTE ANEXADO?</label>
+      <select id="rce_comprovante" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:16px">
+        <option value="Não" ${i.Comprovante!=='Sim'?'selected':''}>Não</option>
+        <option value="Sim" ${i.Comprovante==='Sim'?'selected':''}>Sim</option>
+      </select>
+
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" style="flex:1" onclick="rcSalvarEdicaoReceita(${id})">💾 Salvar</button>
+        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('rc-edit-modal').remove()">Cancelar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function rcSalvarEdicaoReceita(id) {
+  const status = document.getElementById('rce_status').value;
+  const dataRecebimento = document.getElementById('rce_data_recebimento').value;
+  const banco = document.getElementById('rce_banco').value.trim();
+  const valor = parseFloat(document.getElementById('rce_valor').value) || 0;
+  const dataPrevista = document.getElementById('rce_data_prevista').value;
+  const comprovante = document.getElementById('rce_comprovante').value;
+
+  const campos = {
+    Status: status,
+    DataRecebimento: status === 'Recebido' ? (dataRecebimento || new Date().toISOString().slice(0,10)) : dataRecebimento,
+    Banco: banco,
+    Valor: valor,
+    DataPrevista: dataPrevista,
+    Comprovante: comprovante,
+  };
+
+  showToast('💾 Salvando...');
+  const ok = await dbAtualizar('Receitas', id, campos);
+  showToast(ok ? '✅ Lançamento atualizado!' : '❌ Erro ao salvar.');
+  if (ok) {
+    const modal = document.getElementById('rc-edit-modal'); if (modal) modal.remove();
+    carregarReceitas();
+  }
+}
+
+async function exportarReceitasExcel() {
+  const items = window._rcFiltradas || [];
+  if (!items.length) { showToast('⚠️ Nenhum registro para exportar.'); return; }
+  showToast('📊 Gerando planilha...');
+  if (typeof XLSX === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  const rows = items.map(i => ({
+    'Data Emissão': i.DataEmissao ? new Date(i.DataEmissao+'T00:00:00').toLocaleDateString('pt-BR') : '',
+    'Categoria': i.Categoria || '', 'Cliente': i.Cliente || '', 'Descrição': i.Descricao || '',
+    'Centro de Custo': i.CentroCusto || '', 'Valor': i.Valor || 0,
+    'Previsão de Recebimento': i.DataPrevista ? new Date(i.DataPrevista+'T00:00:00').toLocaleDateString('pt-BR') : '',
+    'Data de Recebimento': i.DataRecebimento ? new Date(i.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR') : '',
+    'Forma de Recebimento': i.FormaRecebimento || '', 'Banco': i.Banco || '', 'Status': i.Status || '',
+    'Responsável': i.ResponsavelLancamento || '', 'Empresa': i.Empresa || '', 'Comprovante': i.Comprovante || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Receitas');
+  XLSX.writeFile(wb, 'Receitas_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
 function renderDespesasTab() {
@@ -6625,11 +7112,19 @@ async function concilProcessarArquivo(event) {
   }
 }
 
+function concilToggleTipo(i) {
+  const t = (window._concilTransacoes||[])[i];
+  if (!t || t.confirmado) return;
+  t.tipo = t.tipo === 'credito' ? 'debito' : 'credito';
+  t.status = null; t.despesaId = null; t.receitaId = null; t.candidatos = null;
+  navigate('receitas_despesas');
+}
+
 function concilAtualizarLinha(i, campo, valor) {
   const t = (window._concilTransacoes||[])[i];
   if (!t) return;
   t[campo] = campo === 'valor' ? (parseFloat(valor)||0) : valor;
-  t.status = null; t.despesaId = null; t.candidatos = null; t.confirmado = false;
+  t.status = null; t.despesaId = null; t.receitaId = null; t.candidatos = null; t.confirmado = false;
 }
 
 function concilRemoverLinha(i) {
@@ -6640,110 +7135,230 @@ function concilRemoverLinha(i) {
 
 function concilAdicionarLinhaManual() {
   window._concilTransacoes = window._concilTransacoes || [];
-  window._concilTransacoes.push({ data: new Date().toISOString().split('T')[0], descricao: '', valor: 0, tipo: 'debito', status: null, despesaId: null, candidatos: null, confirmado: false });
+  window._concilTransacoes.push({ data: new Date().toISOString().split('T')[0], descricao: '', valor: 0, tipo: 'debito', status: null, despesaId: null, receitaId: null, candidatos: null, confirmado: false });
   navigate('receitas_despesas');
 }
 
+/* Conciliação lê Despesas E Receitas: transação de débito no extrato (saída
+   de dinheiro) casa contra Despesas; transação de crédito (entrada) casa
+   contra Receitas. Antes disso, todo crédito aparecia sempre como "não
+   encontrado" porque só Despesas era consultada. */
 async function concilConciliar() {
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  showSyncStatus('Carregando despesas para conciliar...');
-  let despesas = [];
+  showSyncStatus('Carregando lançamentos para conciliar...');
+  let despesas = [], receitas = [];
   try { despesas = await dbLer('Despesas'); } catch(e) { despesas = []; }
+  try { receitas = await dbLer('Receitas'); } catch(e) { receitas = []; }
   despesas = (despesas||[]).filter(d => d.Empresa === empresa);
+  receitas = (receitas||[]).filter(r => r.Empresa === empresa);
   window._concilDespesasCache = despesas;
+  window._concilReceitasCache = receitas;
 
   const transacoes = window._concilTransacoes || [];
   transacoes.forEach(t => {
     if (t.confirmado) return;
+    const ehCredito = t.tipo === 'credito';
+    const base = ehCredito ? receitas : despesas;
     const valorAlvo = Math.abs(parseFloat(t.valor) || 0);
     const dataAlvo = t.data ? new Date(t.data + 'T00:00:00') : null;
-    const candidatos = despesas.filter(d => {
+    const candidatos = base.filter(d => {
       if (d.Conciliado === 'Sim') return false;
-      const valorDespesa = parseFloat(d.Valor != null ? d.Valor : d.ValorTotal) || 0;
-      if (Math.abs(valorDespesa - valorAlvo) > CONCIL_TOLERANCIA_VALOR) return false;
+      const valorReg = parseFloat(d.Valor != null ? d.Valor : (ehCredito ? 0 : d.ValorTotal)) || 0;
+      if (Math.abs(valorReg - valorAlvo) > CONCIL_TOLERANCIA_VALOR) return false;
       if (!dataAlvo) return true;
-      const dataDespesaStr = d.DataPagamento || d.Vencimento || d.DataLancamento;
-      if (!dataDespesaStr) return true;
-      const diffDias = Math.abs((new Date(dataDespesaStr + 'T00:00:00') - dataAlvo) / 86400000);
+      const dataRegStr = ehCredito ? (d.DataRecebimento || d.DataPrevista || d.DataEmissao) : (d.DataPagamento || d.Vencimento || d.DataLancamento);
+      if (!dataRegStr) return true;
+      const diffDias = Math.abs((new Date(dataRegStr + 'T00:00:00') - dataAlvo) / 86400000);
       return diffDias <= CONCIL_TOLERANCIA_DIAS;
     });
-    if (candidatos.length === 1) { t.status = 'conciliado'; t.despesaId = candidatos[0].Id; t.candidatos = null; }
-    else if (candidatos.length > 1) { t.status = 'multiplo'; t.despesaId = null; t.candidatos = candidatos.map(c => c.Id); }
-    else { t.status = 'nao_encontrado'; t.despesaId = null; t.candidatos = null; }
+    t.despesaId = null; t.receitaId = null;
+    if (candidatos.length === 1) {
+      t.status = 'conciliado';
+      if (ehCredito) t.receitaId = candidatos[0].Id; else t.despesaId = candidatos[0].Id;
+      t.candidatos = null;
+    } else if (candidatos.length > 1) {
+      t.status = 'multiplo'; t.candidatos = candidatos.map(c => c.Id);
+    } else {
+      t.status = 'nao_encontrado'; t.candidatos = null;
+    }
   });
 
   showSyncStatus('Conciliação concluída!', 'ok', 2000);
   navigate('receitas_despesas');
 }
 
-async function _concilExecutarConfirmacao(i, despesaId) {
-  const idNum = typeof despesaId === 'string' ? parseInt(despesaId, 10) : despesaId;
+async function _concilExecutarConfirmacao(i, vinculoId) {
+  const idNum = typeof vinculoId === 'string' ? parseInt(vinculoId, 10) : vinculoId;
   const t = (window._concilTransacoes||[])[i];
   if (!t || !idNum) return false;
-  const ok = await dbAtualizar('Despesas', idNum, {
+  const ehCredito = t.tipo === 'credito';
+  const tabela = ehCredito ? 'Receitas' : 'Despesas';
+  const ok = await dbAtualizar(tabela, idNum, {
     Conciliado: 'Sim',
     DataConciliacao: new Date().toISOString().split('T')[0],
     ExtratoDescricao: t.descricao,
   });
-  if (ok) { t.confirmado = true; t.despesaId = idNum; }
+  if (ok) { t.confirmado = true; if (ehCredito) t.receitaId = idNum; else t.despesaId = idNum; }
   return ok;
 }
 
-async function concilConfirmarLinha(i, despesaId) {
-  if (!despesaId) return;
+async function concilConfirmarLinha(i, vinculoId) {
+  if (!vinculoId) return;
   showSyncStatus('Conciliando lançamento...');
-  const ok = await _concilExecutarConfirmacao(i, despesaId);
+  const ok = await _concilExecutarConfirmacao(i, vinculoId);
   showToast(ok ? '✅ Lançamento conciliado!' : ('❌ Erro ao conciliar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
   navigate('receitas_despesas');
 }
 
 async function concilConfirmarTodosAutomaticos() {
   const transacoes = window._concilTransacoes || [];
-  const alvo = transacoes.map((t,i) => i).filter(i => transacoes[i].status === 'conciliado' && !transacoes[i].confirmado && transacoes[i].despesaId);
+  const alvo = transacoes.map((t,i) => i).filter(i => transacoes[i].status === 'conciliado' && !transacoes[i].confirmado && (transacoes[i].despesaId || transacoes[i].receitaId));
   if (!alvo.length) { showToast('⚠️ Nada para confirmar — clique em "Conciliar Automaticamente" primeiro.'); return; }
   showSyncStatus('Confirmando ' + alvo.length + ' lançamento(s)...');
   let sucesso = 0;
-  for (const i of alvo) { if (await _concilExecutarConfirmacao(i, transacoes[i].despesaId)) sucesso++; }
+  for (const i of alvo) { const id = transacoes[i].despesaId || transacoes[i].receitaId; if (await _concilExecutarConfirmacao(i, id)) sucesso++; }
   showToast(`✅ ${sucesso}/${alvo.length} lançamento(s) conciliado(s)!`);
   navigate('receitas_despesas');
+}
+
+/* Descrição amigável de um registro (Despesa ou Receita) já lançado, para
+   mostrar nas opções de vínculo da conciliação. */
+function _concilDescRegistro(d, ehCredito) {
+  if (!d) return '';
+  return ehCredito
+    ? (d.Cliente || d.Descricao || d.CentroCusto || ('Recebimento #'+d.Id))
+    : (d.ServicoDesc || d.Fornecedor || d.CentroCusto || ('Lançamento #'+d.Id));
+}
+
+/* Busca manual: abre um modal com TODOS os lançamentos ainda não
+   conciliados da tabela certa (Despesas p/ débito, Receitas p/ crédito),
+   sem a limitação de tolerância de valor/data usada na conciliação
+   automática — útil quando o match automático não achou nada (data ou
+   valor um pouco diferentes) mas o lançamento existe. */
+async function concilAbrirBuscaManual(i) {
+  const t = (window._concilTransacoes||[])[i];
+  if (!t) return;
+  const ehCredito = t.tipo === 'credito';
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  let cache = ehCredito ? window._concilReceitasCache : window._concilDespesasCache;
+  if (!cache) {
+    showToast('🔎 Carregando lançamentos...');
+    try { cache = await dbLer(ehCredito ? 'Receitas' : 'Despesas'); } catch(e) { cache = []; }
+    cache = (cache||[]).filter(d => d.Empresa === empresa);
+    if (ehCredito) window._concilReceitasCache = cache; else window._concilDespesasCache = cache;
+  }
+  const disponiveis = cache.filter(d => d.Conciliado !== 'Sim');
+
+  const existente = document.getElementById('concil-busca-modal');
+  if (existente) existente.remove();
+
+  const renderLista = (filtro) => {
+    const f = (filtro||'').toLowerCase();
+    const valorAlvo = Math.abs(parseFloat(t.valor)||0);
+    let lista = disponiveis.filter(d => !f || _concilDescRegistro(d, ehCredito).toLowerCase().includes(f) || (d.CentroCusto||'').toLowerCase().includes(f));
+    lista = lista.slice().sort((a,b) => Math.abs((a.Valor||0)-valorAlvo) - Math.abs((b.Valor||0)-valorAlvo)).slice(0,60);
+    if (!lista.length) return '<div style="padding:14px;color:var(--text-muted);font-size:.8rem">Nenhum lançamento encontrado.</div>';
+    return lista.map(d => {
+      const dataStr = ehCredito ? (d.DataRecebimento||d.DataPrevista||d.DataEmissao) : (d.DataPagamento||d.Vencimento||d.DataLancamento);
+      return `<div onclick="concilConfirmarLinha(${i}, ${d.Id});document.getElementById('concil-busca-modal').remove()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:var(--surface2);margin-bottom:5px">
+        <div style="min-width:0">
+          <div style="font-size:.8rem;font-weight:700">${_concilDescRegistro(d, ehCredito)}</div>
+          <div style="font-size:.68rem;color:var(--text-muted)">${d.CentroCusto||'—'} · ${dataStr ? new Date(dataStr+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</div>
+        </div>
+        <div style="font-weight:800;font-size:.85rem;flex-shrink:0;margin-left:10px">R$ ${(d.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+      </div>`;
+    }).join('');
+  };
+
+  const modal = document.createElement('div');
+  modal.id = 'concil-busca-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:520px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="font-weight:800;font-size:1rem">🔎 Vincular manualmente (${ehCredito?'Receitas':'Despesas'})</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('concil-busca-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:10px">Extrato: "${(t.descricao||'').replace(/"/g,'&quot;')}" · R$ ${(t.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+      <input type="text" id="concil-busca-input" placeholder="Buscar por descrição/cliente/fornecedor/CC..." oninput="document.getElementById('concil-busca-lista').innerHTML = concilRenderBuscaLista(${i}, this.value)" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;box-sizing:border-box">
+      <div id="concil-busca-lista">${renderLista('')}</div>
+    </div>`;
+  document.body.appendChild(modal);
+  window._concilBuscaRenderFn = renderLista;
+}
+
+function concilRenderBuscaLista(i, filtro) {
+  return window._concilBuscaRenderFn ? window._concilBuscaRenderFn(filtro) : '';
+}
+
+/* "Cadastrar" a partir de uma linha não encontrada: leva o usuário direto
+   pro formulário certo (Despesa ou Receita) já com data e valor
+   preenchidos — depois de salvar, é só rodar a conciliação de novo que o
+   novo lançamento entra no match automaticamente. */
+function concilCadastrarNovo(i) {
+  const t = (window._concilTransacoes||[])[i];
+  if (!t) return;
+  const ehCredito = t.tipo === 'credito';
+  window._rdTab = ehCredito ? 'receitas' : 'despesas';
+  if (ehCredito) window._rcFormAberto = true; else window._rdFormAberto = true;
+  navigate('receitas_despesas');
+  setTimeout(() => {
+    if (ehCredito) {
+      const de = document.getElementById('rc_data_emissao'); if (de) de.value = t.data || '';
+      const dp = document.getElementById('rc_data_prevista'); if (dp) dp.value = t.data || '';
+      const v = document.getElementById('rc_valor'); if (v) v.value = t.valor || '';
+      const desc = document.getElementById('rc_descricao'); if (desc) desc.value = t.descricao || '';
+    } else {
+      const dl = document.getElementById('rd_data_lancamento'); if (dl) dl.value = t.data || '';
+      const v = document.getElementById('rd_valor'); if (v) v.value = t.valor || '';
+      if (typeof rdAtualizarSemana === 'function') rdAtualizarSemana();
+    }
+    showToast('✏️ Complete os dados que faltam e salve — depois rode a conciliação de novo.');
+  }, 250);
 }
 
 function concilRenderTabela() {
   const transacoes = window._concilTransacoes || [];
   if (!transacoes.length) return '<div style="padding:20px;color:var(--text-muted);font-size:.85rem">Nenhum lançamento lido ainda. Envie um arquivo acima ou adicione uma linha manual.</div>';
   const despesasCache = window._concilDespesasCache || [];
-  const descDespesa = d => d ? (d.ServicoDesc || d.Fornecedor || d.CentroCusto || ('Lançamento #'+d.Id)) : '';
+  const receitasCache = window._concilReceitasCache || [];
 
   return `
   <table class="data-table">
-    <thead><tr><th>Data</th><th>Descrição</th><th>Valor (R$)</th><th>Status</th><th>Ação</th></tr></thead>
+    <thead><tr><th>Tipo</th><th>Data</th><th>Descrição</th><th>Valor (R$)</th><th>Status</th><th>Ação</th></tr></thead>
     <tbody>
     ${transacoes.map((t,i) => {
+      const ehCredito = t.tipo === 'credito';
+      const cache = ehCredito ? receitasCache : despesasCache;
+      const vinculoId = ehCredito ? t.receitaId : t.despesaId;
+      const tipoBadge = `<span onclick="concilToggleTipo(${i})" style="cursor:pointer;font-weight:700;font-size:.72rem;color:${ehCredito?'var(--green-main)':'var(--red)'}" title="Clique para trocar débito/crédito">${ehCredito?'💰 Crédito':'💸 Débito'}</span>`;
+      const btnVincular = `<button onclick="concilAbrirBuscaManual(${i})" class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Buscar e vincular manualmente">🔎 Vincular</button>`;
       let statusHtml, acaoHtml, rowBg = '', valorCor = '';
       if (t.confirmado) {
         statusHtml = '<span style="color:var(--green-main);font-weight:700">✅ Conciliado</span>';
         acaoHtml = '<span style="font-size:.72rem;color:var(--text-muted)">—</span>';
       } else if (t.status === 'conciliado') {
-        const d = despesasCache.find(x => x.Id === t.despesaId);
-        statusHtml = '<span style="color:var(--green-main);font-weight:700">✅ Encontrado</span>' + (d ? `<div style="font-size:.68rem;color:var(--text-muted)">${descDespesa(d)}</div>` : '');
-        acaoHtml = `<button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="concilConfirmarLinha(${i}, ${t.despesaId})">Confirmar</button>`;
+        const d = cache.find(x => x.Id === vinculoId);
+        statusHtml = '<span style="color:var(--green-main);font-weight:700">✅ Encontrado</span>' + (d ? `<div style="font-size:.68rem;color:var(--text-muted)">${_concilDescRegistro(d, ehCredito)}</div>` : '');
+        acaoHtml = `<button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="concilConfirmarLinha(${i}, ${vinculoId})">Confirmar</button> ${btnVincular}`;
       } else if (t.status === 'multiplo') {
         statusHtml = '<span style="color:var(--amber);font-weight:700">⚠️ Várias opções</span>';
         acaoHtml = `<select onchange="concilConfirmarLinha(${i}, this.value)" style="font-size:.72rem;padding:4px">
           <option value="">Escolher...</option>
-          ${(t.candidatos||[]).map(id => { const d = despesasCache.find(x=>x.Id===id); return `<option value="${id}">${descDespesa(d)} · R$ ${d?(d.Valor||0).toFixed(2):''}</option>`; }).join('')}
-        </select>`;
+          ${(t.candidatos||[]).map(id => { const d = cache.find(x=>x.Id===id); return `<option value="${id}">${_concilDescRegistro(d, ehCredito)} · R$ ${d?(d.Valor||0).toFixed(2):''}</option>`; }).join('')}
+        </select> ${btnVincular}`;
         rowBg = 'background:#fff8e1';
       } else if (t.status === 'nao_encontrado') {
-        statusHtml = '<span style="color:#c0392b;font-weight:700">❌ Não encontrado</span>';
-        acaoHtml = '<span style="font-size:.7rem;color:var(--text-muted)">Não bate com nenhuma Despesa lançada</span>';
+        statusHtml = `<span style="color:#c0392b;font-weight:700">❌ Não encontrado</span><div style="font-size:.68rem;color:var(--text-muted)">Não bate com nenhuma ${ehCredito?'Receita':'Despesa'} lançada</div>`;
+        acaoHtml = `${btnVincular} <button onclick="concilCadastrarNovo(${i})" class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Cadastrar novo lançamento a partir desta linha">➕ Cadastrar</button>`;
         rowBg = 'background:#fdecea';
         valorCor = 'color:#c0392b;font-weight:700';
       } else {
         statusHtml = '<span style="color:var(--text-muted)">Aguardando conciliar</span>';
-        acaoHtml = '';
+        acaoHtml = btnVincular;
       }
       return `<tr style="${rowBg}">
+        <td>${tipoBadge}</td>
         <td><input type="date" value="${t.data||''}" oninput="concilAtualizarLinha(${i},'data',this.value)" style="font-size:.78rem;padding:4px;width:130px"></td>
         <td><input type="text" value="${(t.descricao||'').replace(/"/g,'&quot;')}" oninput="concilAtualizarLinha(${i},'descricao',this.value)" style="font-size:.78rem;padding:4px;width:220px;box-sizing:border-box"></td>
         <td><input type="number" step="0.01" value="${t.valor||''}" oninput="concilAtualizarLinha(${i},'valor',this.value)" style="font-size:.78rem;padding:4px;width:100px;${valorCor}"></td>
