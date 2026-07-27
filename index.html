@@ -6081,7 +6081,8 @@ async function carregarDespesas() {
     if (!items.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma despesa encontrada.</div>'; return; }
 
     const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
-    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Comprovante</th></tr></thead><tbody>' +
+    window._rdDespesasPorId = {}; items.forEach(i => { window._rdDespesasPorId[i.Id] = i; });
+    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
         const desc = i.Modalidade === 'servicos' ? ('🛠️ ' + (i.ServicoDesc||'—')) : ('🏭 ' + (i.Fornecedor||'—'));
         const pgtoTxt = i.TotalParcelas > 1 ? `${i.FormaPagamento||''} · ${i.NumParcela}/${i.TotalParcelas}` : (i.FormaPagamento || i.TipoPagamento || '—');
@@ -6096,9 +6097,97 @@ async function carregarDespesas() {
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
           <td style="font-size:.72rem">${i.Comprovante==='Sim'?'📎 Sim':'— Não'}</td>
+          <td><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;white-space:nowrap" onclick="rdAbrirEdicaoDespesa(${i.Id})">✏️ Editar</button></td>
         </tr>`;
       }).join('') + '</tbody></table></div>';
   } catch(e) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>'; }
+}
+
+/* Edição rápida de uma Despesa já lançada — pensada sobretudo para marcar
+   como Paga (com data/banco do pagamento), mas permite ajustar qualquer
+   campo relevante do lançamento sem precisar apagar e recriar. */
+function rdAbrirEdicaoDespesa(id) {
+  const i = (window._rdDespesasPorId || {})[id];
+  if (!i) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+  const existente = document.getElementById('rd-edit-modal');
+  if (existente) existente.remove();
+
+  const bancosEmpresa = RD_BANCOS_POR_EMPRESA[i.Empresa] || [];
+  const opt = (v,l) => `<option value="${v}" ${i.Status===v?'selected':''}>${l}</option>`;
+
+  const modal = document.createElement('div');
+  modal.id = 'rd-edit-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-weight:800;font-size:1rem">✏️ Editar Lançamento</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('rd-edit-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:14px">${i.Modalidade==='servicos' ? ('🛠️ '+(i.ServicoDesc||'—')) : ('🏭 '+(i.Fornecedor||'—'))} · R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">STATUS DE PAGAMENTO</label>
+      <select id="rde_status" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+        ${opt('Pendente','Pendente')}${opt('Vence em breve','Vence em breve')}${opt('Vence hoje','Vence hoje')}${opt('Em atraso','Em atraso')}${opt('Pago','Pago')}${opt('Cancelado','Cancelado')}
+      </select>
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">DATA DE PAGAMENTO</label>
+      <input id="rde_data_pagamento" type="date" value="${i.DataPagamento||''}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">BANCO</label>
+      <input id="rde_banco" list="rde_bancos_dl" value="${(i.Banco||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+      <datalist id="rde_bancos_dl">${bancosEmpresa.map(b=>`<option value="${b}">`).join('')}</datalist>
+
+      <div style="display:flex;gap:10px;margin-bottom:12px">
+        <div style="flex:1">
+          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR (R$)</label>
+          <input id="rde_valor" type="number" step="0.01" value="${i.Valor||0}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+        </div>
+        <div style="flex:1">
+          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VENCIMENTO</label>
+          <input id="rde_vencimento" type="date" value="${i.Vencimento||''}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+        </div>
+      </div>
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">COMPROVANTE ANEXADO?</label>
+      <select id="rde_comprovante" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:16px">
+        <option value="Não" ${i.Comprovante!=='Sim'?'selected':''}>Não</option>
+        <option value="Sim" ${i.Comprovante==='Sim'?'selected':''}>Sim</option>
+      </select>
+
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" style="flex:1" onclick="rdSalvarEdicaoDespesa(${id})">💾 Salvar</button>
+        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('rd-edit-modal').remove()">Cancelar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function rdSalvarEdicaoDespesa(id) {
+  const status = document.getElementById('rde_status').value;
+  const dataPagamento = document.getElementById('rde_data_pagamento').value;
+  const banco = document.getElementById('rde_banco').value.trim();
+  const valor = parseFloat(document.getElementById('rde_valor').value) || 0;
+  const vencimento = document.getElementById('rde_vencimento').value;
+  const comprovante = document.getElementById('rde_comprovante').value;
+
+  const campos = {
+    Status: status,
+    DataPagamento: status === 'Pago' ? (dataPagamento || new Date().toISOString().slice(0,10)) : dataPagamento,
+    Banco: banco,
+    Valor: valor,
+    ValorTotal: valor,
+    Vencimento: vencimento,
+    Comprovante: comprovante,
+  };
+
+  showToast('💾 Salvando...');
+  const ok = await dbAtualizar('Despesas', id, campos);
+  showToast(ok ? '✅ Lançamento atualizado!' : '❌ Erro ao salvar.');
+  if (ok) {
+    const modal = document.getElementById('rd-edit-modal'); if (modal) modal.remove();
+    carregarDespesas();
+  }
 }
 
 async function exportarDespesasExcel() {
