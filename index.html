@@ -5561,6 +5561,10 @@ function renderDespesasTab() {
     <div class="kpi-card red" id="rd-kpi-card-atraso" onclick="rdFiltrarKpi('atraso')" style="cursor:pointer" title="Filtrar: em atraso"><div class="kpi-label">Em Atraso</div><div class="kpi-value" id="rd-kpi-atraso">—</div><div class="kpi-icon">⚠️</div></div>
   </div>
 
+  <!-- Painéis: Resumo Mensal + A Vencer -->
+  <div id="rd-resumo-mensal"></div>
+  <div id="rd-a-vencer"></div>
+
   <!-- BARRA DE FILTROS -->
   <div id="rd-filtros" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
     <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
@@ -5968,12 +5972,14 @@ async function salvarDespesa() {
   if (tipoPagamento === 'parcelado') {
     const parcelas = window._rdParcelas || [];
     if (!parcelas.length) { showToast('⚠️ Configure a quantidade de parcelas e o vencimento da 1ª parcela.'); return; }
+    const grupoCompraId = 'GC-' + Date.now(); // liga todas as parcelas desta compra para o "Histórico da Compra"
     for (const p of parcelas) {
       const dados = {
         ...base,
         Title: descricao + ' · parcela ' + p.numero + '/' + parcelas.length + ' · ' + p.vencimento,
         Vencimento: p.vencimento, Valor: p.valor, Status: status,
         NumParcela: p.numero, TotalParcelas: parcelas.length,
+        GrupoCompraId: grupoCompraId,
       };
       const okP = await dbInserir('Despesas', dados);
       ok = ok && !!okP;
@@ -6062,6 +6068,12 @@ async function carregarDespesas() {
     setActiveKpi('rd-kpi-card-pago', RD_FILTRO_KPI==='pago', '#28a745');
     setActiveKpi('rd-kpi-card-atraso', RD_FILTRO_KPI==='atraso', '#dc3545');
 
+    // Guarda a base já escopada pela empresa (antes dos filtros de texto/mês/categoria da tabela)
+    // para os painéis de Resumo Mensal e A Vencer, que devem refletir o todo, não a busca pontual.
+    window._rdDespesasPorId = {}; items.forEach(i => { window._rdDespesasPorId[i.Id] = i; });
+    rdRenderResumoMensal(items);
+    rdRenderAVencer(items);
+
     const fMes = (document.getElementById('rd_filtro_mes')||{}).value || '';
     const fCategoria = (document.getElementById('rd_filtro_categoria')||{}).value || '';
     const fBusca = ((document.getElementById('rd_filtro_busca')||{}).value || '').trim().toLowerCase();
@@ -6081,18 +6093,21 @@ async function carregarDespesas() {
     if (!items.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma despesa encontrada.</div>'; return; }
 
     const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
-    window._rdDespesasPorId = {}; items.forEach(i => { window._rdDespesasPorId[i.Id] = i; });
     el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
         const desc = i.Modalidade === 'servicos' ? ('🛠️ ' + (i.ServicoDesc||'—')) : ('🏭 ' + (i.Fornecedor||'—'));
-        const pgtoTxt = i.TotalParcelas > 1 ? `${i.FormaPagamento||''} · ${i.NumParcela}/${i.TotalParcelas}` : (i.FormaPagamento || i.TipoPagamento || '—');
+        const ehParcelado = i.TotalParcelas > 1;
+        const pgtoTxt = ehParcelado ? `${i.FormaPagamento||''} · ${i.NumParcela}/${i.TotalParcelas}` : (i.FormaPagamento || i.TipoPagamento || '—');
+        const pgtoCel = ehParcelado
+          ? `<span onclick="rdVerHistoricoCompra(${i.Id})" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted" title="Ver todas as parcelas desta compra">${pgtoTxt}</span>`
+          : pgtoTxt;
         return `<tr>
           <td style="font-size:.78rem">${i.DataLancamento ? new Date(i.DataLancamento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td style="font-size:.76rem">${i.Categoria||'—'}</td>
           <td style="font-size:.78rem"><strong>${desc}</strong>${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}${i.Veiculo?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.Veiculo}</div>`:''}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}</td>
           <td style="font-size:.75rem">${i.Empresa||'—'}</td>
-          <td style="font-size:.72rem">${pgtoTxt}</td>
+          <td style="font-size:.72rem">${pgtoCel}</td>
           <td style="font-size:.8rem">${i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
@@ -6101,6 +6116,156 @@ async function carregarDespesas() {
         </tr>`;
       }).join('') + '</tbody></table></div>';
   } catch(e) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>'; }
+}
+
+/* ===== Painel: Resumo Mensal =====
+   Agrupa os lançamentos (já escopados pela empresa ativa) por mês de
+   vencimento (ou de lançamento, quando não há vencimento definido — caso
+   de pagamentos à vista já realizados), somando total/pago/pendente+atraso.
+   Clicar num mês aplica o filtro de mês da tabela abaixo. */
+function rdRenderResumoMensal(items) {
+  const el = document.getElementById('rd-resumo-mensal');
+  if (!el) return;
+  const porMes = {};
+  items.forEach(i => {
+    const mes = (i.Vencimento || i.DataLancamento || '').slice(0,7);
+    if (!mes) return;
+    if (!porMes[mes]) porMes[mes] = { total: 0, pago: 0, pendente: 0, qtd: 0 };
+    porMes[mes].qtd++;
+    porMes[mes].total += (i.Valor || 0);
+    if (i.Status === 'Pago') porMes[mes].pago += (i.Valor || 0);
+    else if (i.Status !== 'Cancelado') porMes[mes].pendente += (i.Valor || 0);
+  });
+  const meses = Object.keys(porMes).sort();
+  if (!meses.length) { el.innerHTML = ''; return; }
+  const fMesAtivo = (document.getElementById('rd_filtro_mes')||{}).value || '';
+  const nomeMes = (m) => { const [a,mm] = m.split('-'); return new Date(a, mm-1, 1).toLocaleDateString('pt-BR',{month:'short',year:'2-digit'}).replace('.',''); };
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title" style="margin-bottom:10px">📆 Resumo Mensal</div>
+      <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
+        ${meses.map(m => {
+          const d = porMes[m];
+          const ativo = fMesAtivo === m;
+          return `<div onclick="document.getElementById('rd_filtro_mes').value='${m}';carregarDespesas()" style="cursor:pointer;min-width:120px;flex-shrink:0;padding:10px 12px;border-radius:10px;border:${ativo?'2px solid var(--red)':'1px solid var(--border)'};background:${ativo?'#fce8e8':'var(--surface2)'}">
+            <div style="font-size:.72rem;font-weight:700;text-transform:capitalize;color:var(--text-muted)">${nomeMes(m)}</div>
+            <div style="font-size:.85rem;font-weight:800;margin:2px 0">R$ ${d.total.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+            <div style="font-size:.66rem;color:var(--text-muted)">✅ R$ ${d.pago.toLocaleString('pt-BR',{minimumFractionDigits:0})} · ⏳ R$ ${d.pendente.toLocaleString('pt-BR',{minimumFractionDigits:0})}</div>
+          </div>`;
+        }).join('')}
+      </div>
+      ${fMesAtivo ? `<button onclick="document.getElementById('rd_filtro_mes').value='';carregarDespesas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
+    </div>`;
+}
+
+/* ===== Painel: A Vencer =====
+   Lista os lançamentos não pagos/cancelados com vencimento nos próximos
+   30 dias (incluindo os já em atraso, sempre no topo), ordenados pela
+   data de vencimento — clicar abre direto a edição para marcar como pago. */
+function rdRenderAVencer(items) {
+  const el = document.getElementById('rd-a-vencer');
+  if (!el) return;
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const limite = new Date(hoje); limite.setDate(limite.getDate() + 30);
+  const pendentes = items.filter(i => i.Status !== 'Pago' && i.Status !== 'Cancelado' && i.Vencimento);
+  const lista = pendentes.filter(i => {
+    const v = new Date(i.Vencimento + 'T00:00:00');
+    return i.Status === 'Em atraso' || v <= limite;
+  }).sort((a,b) => (a.Vencimento||'').localeCompare(b.Vencimento||'')).slice(0, 40);
+
+  if (!lista.length) { el.innerHTML = '<div class="card" style="margin-bottom:16px"><div class="card-title" style="margin-bottom:6px">⏰ A Vencer (30 dias)</div><div style="font-size:.8rem;color:var(--text-muted)">Nada a vencer nos próximos 30 dias. 🎉</div></div>'; return; }
+
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title" style="margin-bottom:10px">⏰ A Vencer (30 dias) — ${lista.length}</div>
+      <div style="max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
+        ${lista.map(i => {
+          const v = new Date(i.Vencimento + 'T00:00:00');
+          const dias = Math.round((v - hoje) / 86400000);
+          const atrasado = i.Status === 'Em atraso';
+          const diasTxt = atrasado ? `${Math.abs(dias)}d atrasado` : (dias===0 ? 'vence hoje' : `em ${dias}d`);
+          const cor = atrasado ? 'var(--red)' : (dias<=2 ? '#e0a800' : 'var(--text-muted)');
+          const desc = i.Modalidade === 'servicos' ? (i.ServicoDesc||'—') : (i.Fornecedor||'—');
+          return `<div onclick="rdAbrirEdicaoDespesa(${i.Id})" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:8px;background:var(--surface2);border-left:3px solid ${cor}">
+            <div style="min-width:0">
+              <div style="font-size:.78rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px">${desc}</div>
+              <div style="font-size:.68rem;color:var(--text-muted)">${i.CentroCusto||'—'}</div>
+            </div>
+            <div style="text-align:right;flex-shrink:0;margin-left:10px">
+              <div style="font-size:.8rem;font-weight:800">R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+              <div style="font-size:.68rem;font-weight:700;color:${cor}">${diasTxt}</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+}
+
+/* ===== Histórico da Compra (parcelas) =====
+   Ao clicar numa parcela (X/Y), busca todas as parcelas irmãs — mesma
+   GrupoCompraId — e mostra um modal com o andamento completo do
+   parcelamento: quanto já foi pago, quanto falta, e o status de cada
+   parcela individualmente. */
+async function rdVerHistoricoCompra(id) {
+  const i = (window._rdDespesasPorId || {})[id];
+  if (!i) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+  if (!i.GrupoCompraId) { showToast('⚠️ Este lançamento não tem histórico de parcelamento vinculado.'); return; }
+
+  showToast('🔎 Buscando parcelas...');
+  const todas = await dbLer('Despesas');
+  const parcelas = todas.filter(x => x.GrupoCompraId === i.GrupoCompraId).sort((a,b) => (a.NumParcela||0)-(b.NumParcela||0));
+  if (!parcelas.length) { showToast('⚠️ Nenhuma parcela encontrada.'); return; }
+
+  const existente = document.getElementById('rd-hist-modal');
+  if (existente) existente.remove();
+
+  const totalCompra = parcelas.reduce((s,p)=>s+(p.Valor||0),0);
+  const totalPago = parcelas.filter(p=>p.Status==='Pago').reduce((s,p)=>s+(p.Valor||0),0);
+  const desc = i.Modalidade === 'servicos' ? (i.ServicoDesc||'—') : (i.Fornecedor||'—');
+  const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Cancelado')?'red':'amber';
+
+  const modal = document.createElement('div');
+  modal.id = 'rd-hist-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="font-weight:800;font-size:1rem">🧾 Histórico da Compra</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('rd-hist-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.85rem;font-weight:700;margin-bottom:2px">${desc}</div>
+      <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:14px">${i.CentroCusto||'—'} · ${parcelas.length} parcelas</div>
+
+      <div style="display:flex;gap:10px;margin-bottom:14px">
+        <div style="flex:1;padding:10px;border-radius:10px;background:var(--surface2);text-align:center">
+          <div style="font-size:.68rem;color:var(--text-muted)">TOTAL DA COMPRA</div>
+          <div style="font-size:1rem;font-weight:800">R$ ${totalCompra.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+        </div>
+        <div style="flex:1;padding:10px;border-radius:10px;background:#e8f5e9;text-align:center">
+          <div style="font-size:.68rem;color:#2e7d32">JÁ PAGO</div>
+          <div style="font-size:1rem;font-weight:800;color:#2e7d32">R$ ${totalPago.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+        </div>
+        <div style="flex:1;padding:10px;border-radius:10px;background:#fce8e8;text-align:center">
+          <div style="font-size:.68rem;color:var(--red)">FALTA PAGAR</div>
+          <div style="font-size:1rem;font-weight:800;color:var(--red)">R$ ${(totalCompra-totalPago).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${parcelas.map(p => `
+          <div onclick="document.getElementById('rd-hist-modal').remove();rdAbrirEdicaoDespesa(${p.Id})" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:var(--surface2);border-left:3px solid ${p.Status==='Pago'?'#2e7d32':(p.Status==='Em atraso'?'var(--red)':'#e0a800')}">
+            <div>
+              <div style="font-size:.8rem;font-weight:700">Parcela ${p.NumParcela}/${p.TotalParcelas}</div>
+              <div style="font-size:.7rem;color:var(--text-muted)">Vence ${p.Vencimento ? new Date(p.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}${p.DataPagamento?(' · Pago em '+new Date(p.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR')):''}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:.85rem;font-weight:800">R$ ${(p.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+              <span class="status-pill ${statusColor(p.Status)}" style="font-size:.65rem">${p.Status||'—'}</span>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
 }
 
 /* Edição rápida de uma Despesa já lançada — pensada sobretudo para marcar
