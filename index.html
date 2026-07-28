@@ -5509,6 +5509,16 @@ function rcFecharDropdownCC() {
   if (dd) dd.style.display = 'none';
 }
 
+/* O seletor de Contrato/Centro de Custo (aqui e em Despesas) grava no
+   lançamento o rótulo completo "CC-002 · ERO - Gestão de Obras" — é assim
+   que os 1.588 lançamentos de Despesas já existentes estão gravados, então
+   não dá pra mudar isso sem migrar dado real. Já a tabela Medicoes grava só
+   o ID puro ("CC-002"). Esta função extrai o ID puro de qualquer um dos dois
+   formatos, pra poder comparar os dois lados sem mismatch. */
+function _ccIdPuro(str) {
+  return (str || '').split(' · ')[0].trim();
+}
+
 function rcSelecionarCC(valor) {
   const inp = document.getElementById('rc_cc_input'); if (inp) inp.value = valor;
   const hid = document.getElementById('rc_cc'); if (hid) hid.value = valor;
@@ -5529,9 +5539,10 @@ async function rcAtualizarMedicaoPorCC(cc) {
   // Mesma lógica de rdAtualizarMedicaoPorCC: prioriza as medições já
   // cadastradas em Centro de Custo → Medições, para que a receita lançada
   // aqui bata certinho com o número real da medição.
+  const ccId = _ccIdPuro(cc);
   let medicoes = [];
   try { medicoes = await dbLer('Medicoes'); } catch(e) { medicoes = []; }
-  const doCC = medicoes.filter(m => m.CentroCusto === cc)
+  const doCC = medicoes.filter(m => _ccIdPuro(m.CentroCusto) === ccId)
     .sort((a,b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, {numeric:true}));
   if (doCC.length) {
     if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao||''} (${m.Status||''})</option>`).join('');
@@ -5547,8 +5558,8 @@ async function rcAtualizarMedicaoPorCC(cc) {
   let receitas = [], despesas = [];
   try { receitas = await dbLer('Receitas'); } catch(e) { receitas = []; }
   try { despesas = await dbLer('Despesas'); } catch(e) { despesas = []; }
-  const doContratoR = receitas.filter(r => r.Empresa === empresa && r.CentroCusto === cc && r.NumMedicao);
-  const doContratoD = despesas.filter(d => d.Empresa === empresa && d.CentroCusto === cc && d.NumMedicao);
+  const doContratoR = receitas.filter(r => r.Empresa === empresa && _ccIdPuro(r.CentroCusto) === ccId && r.NumMedicao);
+  const doContratoD = despesas.filter(d => d.Empresa === empresa && _ccIdPuro(d.CentroCusto) === ccId && d.NumMedicao);
   const todos = [...doContratoR, ...doContratoD];
   const numeros = todos.map(d => parseInt(d.NumMedicao, 10)).filter(n => !isNaN(n));
   const usados = [...new Set(todos.map(d => d.NumMedicao))];
@@ -6617,9 +6628,10 @@ async function rdAtualizarMedicaoPorCC(cc) {
   // É essa lista que garante que a despesa lançada aqui bate certinho com a
   // medição correta (mesmo Nº), em vez de depender do que já foi digitado
   // livremente em despesas anteriores.
+  const ccId = _ccIdPuro(cc);
   let medicoes = [];
   try { medicoes = await dbLer('Medicoes'); } catch(e) { medicoes = []; }
-  const doCC = medicoes.filter(m => m.CentroCusto === cc)
+  const doCC = medicoes.filter(m => _ccIdPuro(m.CentroCusto) === ccId)
     .sort((a,b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, {numeric:true}));
   if (doCC.length) {
     if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao||''} (${m.Status||''})</option>`).join('');
@@ -6634,7 +6646,7 @@ async function rdAtualizarMedicaoPorCC(cc) {
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   let despesas = [];
   try { despesas = await dbLer('Despesas'); } catch(e) { despesas = []; }
-  const doContrato = despesas.filter(d => d.Empresa === empresa && d.CentroCusto === cc && d.NumMedicao);
+  const doContrato = despesas.filter(d => d.Empresa === empresa && _ccIdPuro(d.CentroCusto) === ccId && d.NumMedicao);
   const numeros = doContrato.map(d => parseInt(d.NumMedicao, 10)).filter(n => !isNaN(n));
   const usados = [...new Set(doContrato.map(d => d.NumMedicao))];
   if (dl) dl.innerHTML = usados.sort().map(n => `<option value="${n}">`).join('');
@@ -11748,8 +11760,8 @@ async function carregarMedicoesCC(ccId) {
       '<th>Nº</th><th>Descrição</th><th>Valor</th><th>Status</th><th>Receita</th><th>Despesa</th><th>Saldo</th><th>%D/R</th><th></th>' +
       '</tr></thead><tbody>' +
       minhas.map(m => {
-        const receitaVal = receitas.filter(r => r.CentroCusto === ccId && String(r.NumMedicao||'') === String(m.NumMedicao)).reduce((s,r)=>s+(r.Valor||0),0);
-        const despesaVal = despesas.filter(d => d.CentroCusto === ccId && String(d.NumMedicao||'') === String(m.NumMedicao)).reduce((s,d)=>s+(d.Valor||0),0);
+        const receitaVal = receitas.filter(r => _ccIdPuro(r.CentroCusto) === ccId && String(r.NumMedicao||'') === String(m.NumMedicao)).reduce((s,r)=>s+(r.Valor||0),0);
+        const despesaVal = despesas.filter(d => _ccIdPuro(d.CentroCusto) === ccId && String(d.NumMedicao||'') === String(m.NumMedicao)).reduce((s,d)=>s+(d.Valor||0),0);
         const saldo = receitaVal - despesaVal;
         const pct = receitaVal > 0 ? (despesaVal / receitaVal * 100) : null;
         return `<tr>
