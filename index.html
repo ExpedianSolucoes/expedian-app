@@ -5511,8 +5511,25 @@ async function rcAtualizarMedicaoPorCC(cc) {
   const hint = document.getElementById('rc_medicao_hint');
   const campo = document.getElementById('rc_medicao');
   if (!cc) { if (dl) dl.innerHTML=''; if (hint) hint.textContent=''; return; }
-  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  // Mesma lógica de rdAtualizarMedicaoPorCC: prioriza as medições já
+  // cadastradas em Centro de Custo → Medições, para que a receita lançada
+  // aqui bata certinho com o número real da medição.
+  let medicoes = [];
+  try { medicoes = await dbLer('Medicoes'); } catch(e) { medicoes = []; }
+  const doCC = medicoes.filter(m => m.CentroCusto === cc)
+    .sort((a,b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, {numeric:true}));
+  if (doCC.length) {
+    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao||''} (${m.Status||''})</option>`).join('');
+    const abertas = doCC.filter(m => !['Concluída','Cancelada','Faturada'].includes(m.Status));
+    if (hint) hint.textContent = abertas.length
+      ? `Medições em aberto: ${abertas.map(m=>m.NumMedicao).join(', ')} · selecione o número correspondente.`
+      : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+    return;
+  }
+  // Fallback: contrato ainda sem medições formais cadastradas — usa o
+  // histórico livre de receitas/despesas, como antes.
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   let receitas = [], despesas = [];
   try { receitas = await dbLer('Receitas'); } catch(e) { receitas = []; }
   try { despesas = await dbLer('Despesas'); } catch(e) { despesas = []; }
@@ -5527,7 +5544,7 @@ async function rcAtualizarMedicaoPorCC(cc) {
     if (campo && !campo.value) campo.value = String(proximo);
     if (hint) hint.textContent = `Última medição deste contrato: Nº ${Math.max(...numeros)} · sugerido: Nº ${proximo}`;
   } else {
-    if (hint) hint.textContent = 'Nenhuma medição anterior encontrada para este contrato.';
+    if (hint) hint.textContent = 'Nenhuma medição cadastrada para este contrato ainda. Cadastre em Centro de Custo → Medições.';
   }
 }
 
@@ -6454,8 +6471,26 @@ async function rdAtualizarMedicaoPorCC(cc) {
   const hint = document.getElementById('rd_medicao_hint');
   const campo = document.getElementById('rd_medicao');
   if (!cc) { if (dl) dl.innerHTML=''; if (hint) hint.textContent=''; return; }
-  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  // Prioridade 1: medições formalmente cadastradas em Centro de Custo → Medições.
+  // É essa lista que garante que a despesa lançada aqui bate certinho com a
+  // medição correta (mesmo Nº), em vez de depender do que já foi digitado
+  // livremente em despesas anteriores.
+  let medicoes = [];
+  try { medicoes = await dbLer('Medicoes'); } catch(e) { medicoes = []; }
+  const doCC = medicoes.filter(m => m.CentroCusto === cc)
+    .sort((a,b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, {numeric:true}));
+  if (doCC.length) {
+    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao||''} (${m.Status||''})</option>`).join('');
+    const abertas = doCC.filter(m => !['Concluída','Cancelada','Faturada'].includes(m.Status));
+    if (hint) hint.textContent = abertas.length
+      ? `Medições em aberto: ${abertas.map(m=>m.NumMedicao).join(', ')} · selecione o número correspondente.`
+      : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+    return;
+  }
+  // Fallback: contrato ainda sem medições formais cadastradas — usa o
+  // histórico livre de despesas, como antes.
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   let despesas = [];
   try { despesas = await dbLer('Despesas'); } catch(e) { despesas = []; }
   const doContrato = despesas.filter(d => d.Empresa === empresa && d.CentroCusto === cc && d.NumMedicao);
@@ -6467,7 +6502,7 @@ async function rdAtualizarMedicaoPorCC(cc) {
     if (campo && !campo.value) campo.value = String(proximo);
     if (hint) hint.textContent = `Última medição deste contrato: Nº ${Math.max(...numeros)} · sugerido: Nº ${proximo}`;
   } else {
-    if (hint) hint.textContent = 'Nenhuma medição anterior encontrada para este contrato.';
+    if (hint) hint.textContent = 'Nenhuma medição cadastrada para este contrato ainda. Cadastre em Centro de Custo → Medições.';
   }
 }
 
@@ -11440,7 +11475,7 @@ function abrirDetalheCC(id) {
   modal.className = 'modal-overlay';
   modal.id = 'ccModal';
   modal.innerHTML = `
-    <div class="modal-box" style="max-width:520px">
+    <div class="modal-box" style="max-width:960px;width:95vw">
       <div class="modal-header" style="border-top:3px solid ${cor}">
         <div>
           <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em">${cc.id}</div>
@@ -11580,7 +11615,9 @@ async function carregarMedicoesCC(ccId) {
           <td style="font-weight:700;white-space:nowrap">${m.NumMedicao}</td>
           <td>${m.Descricao || '—'}</td>
           <td style="white-space:nowrap">${fmt(m.Valor)}</td>
-          <td><span class="status-pill ${statusCor(m.Status)}" style="font-size:.62rem">${m.Status||'—'}</span></td>
+          <td><select onchange="atualizarStatusMedicaoCC(${m.Id},this.value)" class="status-pill ${statusCor(m.Status)}" style="font-size:.62rem;border:none;cursor:pointer;font-family:inherit">
+            ${CC_MEDICAO_STATUS.map(s => `<option value="${s}" ${s===m.Status?'selected':''}>${s}</option>`).join('')}
+          </select></td>
           <td style="white-space:nowrap;color:var(--green-main)">${fmt(receitaVal)}</td>
           <td style="white-space:nowrap;color:var(--red)">${fmt(despesaVal)}</td>
           <td style="white-space:nowrap;font-weight:700;color:${saldo>=0?'var(--green-main)':'var(--red)'}">${fmt(saldo)}</td>
@@ -11624,6 +11661,13 @@ async function excluirMedicaoCC(id) {
   medicoes = medicoes.filter(x => x.Id !== id);
   const ok = await dbSalvar('Medicoes', medicoes);
   showToast(ok ? '🗑️ Medição excluída.' : '❌ Erro ao excluir.');
+  if (ok && m) carregarMedicoesCC(m.CentroCusto);
+}
+
+async function atualizarStatusMedicaoCC(id, novoStatus) {
+  const m = (window._ccMedicoesPorId || {})[id];
+  const ok = await dbAtualizar('Medicoes', id, { Status: novoStatus });
+  showToast(ok ? '✅ Status atualizado.' : '❌ Erro ao atualizar status.');
   if (ok && m) carregarMedicoesCC(m.CentroCusto);
 }
 
