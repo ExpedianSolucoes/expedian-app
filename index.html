@@ -5359,6 +5359,15 @@ function renderReceitasTab() {
 
     <div class="form-row">
       <div class="form-group">
+        <label>Nº Medição</label>
+        <input type="text" id="rc_medicao" list="rc_medicao_dl" placeholder="Selecione o contrato...">
+        <datalist id="rc_medicao_dl"></datalist>
+        <div id="rc_medicao_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
         <label>Previsão de Recebimento</label>
         <input type="date" id="rc_data_prevista">
       </div>
@@ -5490,6 +5499,36 @@ function rcSelecionarCC(valor) {
   const inp = document.getElementById('rc_cc_input'); if (inp) inp.value = valor;
   const hid = document.getElementById('rc_cc'); if (hid) hid.value = valor;
   rcFecharDropdownCC();
+  rcAtualizarMedicaoPorCC(valor);
+}
+
+/* Nº Medição vinculado ao Centro de Custo escolhido (mesmo padrão usado em
+   Despesas — rdAtualizarMedicaoPorCC): sugere o próximo número sequencial
+   olhando as medições já usadas por este contrato tanto em Receitas quanto
+   em Despesas, já que os dois lados compartilham a mesma numeração. */
+async function rcAtualizarMedicaoPorCC(cc) {
+  const dl = document.getElementById('rc_medicao_dl');
+  const hint = document.getElementById('rc_medicao_hint');
+  const campo = document.getElementById('rc_medicao');
+  if (!cc) { if (dl) dl.innerHTML=''; if (hint) hint.textContent=''; return; }
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  let receitas = [], despesas = [];
+  try { receitas = await dbLer('Receitas'); } catch(e) { receitas = []; }
+  try { despesas = await dbLer('Despesas'); } catch(e) { despesas = []; }
+  const doContratoR = receitas.filter(r => r.Empresa === empresa && r.CentroCusto === cc && r.NumMedicao);
+  const doContratoD = despesas.filter(d => d.Empresa === empresa && d.CentroCusto === cc && d.NumMedicao);
+  const todos = [...doContratoR, ...doContratoD];
+  const numeros = todos.map(d => parseInt(d.NumMedicao, 10)).filter(n => !isNaN(n));
+  const usados = [...new Set(todos.map(d => d.NumMedicao))];
+  if (dl) dl.innerHTML = usados.sort().map(n => `<option value="${n}">`).join('');
+  if (numeros.length) {
+    const proximo = Math.max(...numeros) + 1;
+    if (campo && !campo.value) campo.value = String(proximo);
+    if (hint) hint.textContent = `Última medição deste contrato: Nº ${Math.max(...numeros)} · sugerido: Nº ${proximo}`;
+  } else {
+    if (hint) hint.textContent = 'Nenhuma medição anterior encontrada para este contrato.';
+  }
 }
 
 let RC_FILTRO_KPI = '';
@@ -5537,6 +5576,7 @@ async function salvarReceita() {
   const dataRecebimento = document.getElementById('rc_data_recebimento').value;
   const banco = document.getElementById('rc_banco').value;
   const status = document.getElementById('rc_status').value;
+  const medicao = (document.getElementById('rc_medicao')||{}).value || '';
   const comprovanteUrl = window._rcComprovanteUrl || '';
   const comprovanteNome = window._rcComprovanteNome || '';
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
@@ -5552,7 +5592,7 @@ async function salvarReceita() {
     DataEmissao: dataEmissao, Categoria: categoria, Cliente: cliente, Descricao: descricao,
     CentroCusto: cc, Valor: valor, DataPrevista: dataPrevista, FormaRecebimento: forma,
     ResponsavelLancamento: responsavel, DataRecebimento: dataRecebimento, Banco: banco,
-    Status: status, Comprovante: comprovanteUrl ? 'Sim' : 'Não',
+    Status: status, NumMedicao: medicao, Comprovante: comprovanteUrl ? 'Sim' : 'Não',
     ComprovanteUrl: comprovanteUrl, ComprovanteNome: comprovanteNome, Empresa: empresa,
     Title: cliente + ' · ' + (dataPrevista || dataEmissao),
     LancadoPor: window._currentUser ? window._currentUser.name : '',
@@ -5570,6 +5610,9 @@ async function salvarReceita() {
   const statusSel = document.getElementById('rc_status'); if (statusSel) statusSel.selectedIndex = 0;
   const ccInp = document.getElementById('rc_cc_input'); if (ccInp) ccInp.value = '';
   const ccHid = document.getElementById('rc_cc'); if (ccHid) ccHid.value = '';
+  const medEl = document.getElementById('rc_medicao'); if (medEl) medEl.value = '';
+  const medHint = document.getElementById('rc_medicao_hint'); if (medHint) medHint.textContent = '';
+  const medDl = document.getElementById('rc_medicao_dl'); if (medDl) medDl.innerHTML = '';
   window._rcComprovanteUrl = null; window._rcComprovanteNome = null;
   const comprovFile = document.getElementById('rc_comprovante_file'); if (comprovFile) comprovFile.value = '';
   const comprovStatus = document.getElementById('rc_comprovante_status'); if (comprovStatus) comprovStatus.textContent = '';
@@ -11430,6 +11473,29 @@ function abrirDetalheCC(id) {
               : '<span class="status-pill red" style="font-size:.78rem">* Finalizado — Encerrado</span>'}
           </div>
         </div>
+        <div style="border-top:1px solid var(--border);padding-top:14px;margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;cursor:pointer" onclick="ccToggleMedicoes('${cc.id}')">
+            <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)">📐 Medições do Contrato</div>
+            <span id="cc-medicoes-chevron" style="font-size:.85rem;transition:transform .2s">▾</span>
+          </div>
+          <div id="cc-medicoes-painel" style="display:none">
+            <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+              <button onclick="ccToggleFormMedicao()" class="btn-secondary" style="font-size:.68rem;padding:4px 10px">+ Nova Medição</button>
+            </div>
+            <div id="cc-medicao-form" style="display:none;background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:10px">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                <input id="ccm_numero" type="text" placeholder="Nº da medição" style="padding:7px 9px;border-radius:7px;border:1px solid var(--border);font-size:.8rem">
+                <input id="ccm_valor" type="number" step="0.01" placeholder="Valor (R$)" style="padding:7px 9px;border-radius:7px;border:1px solid var(--border);font-size:.8rem">
+              </div>
+              <input id="ccm_descricao" type="text" placeholder="Descrição" style="width:100%;box-sizing:border-box;padding:7px 9px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;margin-bottom:8px">
+              <select id="ccm_status" style="width:100%;box-sizing:border-box;padding:7px 9px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;margin-bottom:8px">
+                ${CC_MEDICAO_STATUS.map(s => `<option>${s}</option>`).join('')}
+              </select>
+              <button class="btn-primary" style="font-size:.75rem;padding:6px 12px" onclick="salvarMedicaoCC('${cc.id}')">💾 Salvar Medição</button>
+            </div>
+            <div id="cc-medicoes-lista" style="font-size:.78rem;color:var(--text-muted)">Carregando medições…</div>
+          </div>
+        </div>
         <div style="border-top:1px solid var(--border);padding-top:14px">
           <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:10px">Anotações / Observações</div>
           <textarea style="width:100%;min-height:80px;border:1px solid var(--border);border-radius:8px;padding:10px;font-size:.82rem;font-family:'Mont',sans-serif;outline:none;resize:vertical"
@@ -11450,6 +11516,115 @@ function abrirDetalheCC(id) {
     </div>`;
   document.body.appendChild(modal);
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+const CC_MEDICAO_STATUS = ['Em andamento','Aguardando Aprovação','Aprovada','Faturada','Concluída','Cancelada'];
+
+/* Abre/fecha o painel de Medições dentro do modal de Detalhes do CC.
+   Só busca os dados (Medicoes + Receitas + Despesas) na primeira vez que
+   é aberto, para não gastar chamadas à API à toa. */
+function ccToggleMedicoes(ccId) {
+  const painel = document.getElementById('cc-medicoes-painel');
+  const chevron = document.getElementById('cc-medicoes-chevron');
+  if (!painel) return;
+  const abrindo = painel.style.display === 'none';
+  painel.style.display = abrindo ? 'block' : 'none';
+  if (chevron) chevron.style.transform = 'rotate(' + (abrindo ? '180' : '0') + 'deg)';
+  if (abrindo && !painel._carregado) {
+    painel._carregado = true;
+    carregarMedicoesCC(ccId);
+  }
+}
+
+function ccToggleFormMedicao() {
+  const f = document.getElementById('cc-medicao-form');
+  if (f) f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+
+/* Carrega e renderiza a tabela de medições de um Centro de Custo. Cada
+   medição é um registro próprio (número/valor/descrição/status, tabela
+   'Medicoes'); a Receita e a Despesa vinculadas são calculadas ao vivo
+   somando os lançamentos de Receitas/Despesas que têm o mesmo CentroCusto
+   + NumMedicao — não são copiadas, então qualquer novo lançamento/edição
+   nesses módulos já reflete aqui na próxima vez que o painel é aberto. */
+async function carregarMedicoesCC(ccId) {
+  const el = document.getElementById('cc-medicoes-lista');
+  if (!el) return;
+  el.innerHTML = 'Carregando medições…';
+  try {
+    const [medicoes, despesas, receitas] = await Promise.all([
+      dbLer('Medicoes').catch(()=>[]), dbLer('Despesas').catch(()=>[]), dbLer('Receitas').catch(()=>[])
+    ]);
+    const minhas = medicoes.filter(m => m.CentroCusto === ccId)
+      .sort((a,b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, {numeric:true}));
+    window._ccMedicoesPorId = window._ccMedicoesPorId || {};
+    minhas.forEach(m => { window._ccMedicoesPorId[m.Id] = m; });
+
+    if (!minhas.length) {
+      el.innerHTML = '<div style="padding:6px 0">Nenhuma medição registrada para este contrato ainda.</div>';
+      return;
+    }
+
+    const fmt = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2});
+    const statusCor = (s) => (s==='Concluída'||s==='Faturada') ? 'green' : (s==='Cancelada' ? 'red' : 'amber');
+
+    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table" style="font-size:.72rem;min-width:640px"><thead><tr>' +
+      '<th>Nº</th><th>Descrição</th><th>Valor</th><th>Status</th><th>Receita</th><th>Despesa</th><th>Saldo</th><th>%D/R</th><th></th>' +
+      '</tr></thead><tbody>' +
+      minhas.map(m => {
+        const receitaVal = receitas.filter(r => r.CentroCusto === ccId && String(r.NumMedicao||'') === String(m.NumMedicao)).reduce((s,r)=>s+(r.Valor||0),0);
+        const despesaVal = despesas.filter(d => d.CentroCusto === ccId && String(d.NumMedicao||'') === String(m.NumMedicao)).reduce((s,d)=>s+(d.Valor||0),0);
+        const saldo = receitaVal - despesaVal;
+        const pct = receitaVal > 0 ? (despesaVal / receitaVal * 100) : null;
+        return `<tr>
+          <td style="font-weight:700;white-space:nowrap">${m.NumMedicao}</td>
+          <td>${m.Descricao || '—'}</td>
+          <td style="white-space:nowrap">${fmt(m.Valor)}</td>
+          <td><span class="status-pill ${statusCor(m.Status)}" style="font-size:.62rem">${m.Status||'—'}</span></td>
+          <td style="white-space:nowrap;color:var(--green-main)">${fmt(receitaVal)}</td>
+          <td style="white-space:nowrap;color:var(--red)">${fmt(despesaVal)}</td>
+          <td style="white-space:nowrap;font-weight:700;color:${saldo>=0?'var(--green-main)':'var(--red)'}">${fmt(saldo)}</td>
+          <td style="white-space:nowrap">${pct===null ? '—' : pct.toFixed(1)+'%'}</td>
+          <td><button onclick="excluirMedicaoCC(${m.Id})" title="Excluir medição" style="font-size:.64rem;padding:2px 7px;border:1px solid var(--border);border-radius:5px;background:var(--surface);cursor:pointer">🗑️</button></td>
+        </tr>`;
+      }).join('') +
+      '</tbody></table></div>';
+  } catch (e) {
+    el.innerHTML = '<div style="padding:6px 0">Erro ao carregar medições.</div>';
+  }
+}
+
+async function salvarMedicaoCC(ccId) {
+  const numero = (document.getElementById('ccm_numero').value || '').trim();
+  const valor = parseFloat(document.getElementById('ccm_valor').value) || 0;
+  const descricao = (document.getElementById('ccm_descricao').value || '').trim();
+  const status = document.getElementById('ccm_status').value;
+  if (!numero) { showToast('⚠️ Informe o número da medição.'); return; }
+  const cc = centrosCustoData.find(c => c.id === ccId);
+  const dados = {
+    CentroCusto: ccId, NumMedicao: numero, Valor: valor, Descricao: descricao, Status: status,
+    Empresa: cc ? cc.empresa : '', Title: ccId + ' · Medição ' + numero,
+    LancadoPor: window._currentUser ? window._currentUser.name : '',
+  };
+  showToast('💾 Salvando medição...');
+  const ok = await dbInserir('Medicoes', dados);
+  showToast(ok ? '✅ Medição registrada!' : '❌ Erro ao salvar a medição.');
+  if (ok) {
+    ['ccm_numero','ccm_valor','ccm_descricao'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+    const st = document.getElementById('ccm_status'); if (st) st.selectedIndex = 0;
+    ccToggleFormMedicao();
+    carregarMedicoesCC(ccId);
+  }
+}
+
+async function excluirMedicaoCC(id) {
+  if (!confirm('Excluir esta medição? As Receitas e Despesas já lançadas com este número não são afetadas.')) return;
+  const m = (window._ccMedicoesPorId || {})[id];
+  let medicoes = await dbLer('Medicoes');
+  medicoes = medicoes.filter(x => x.Id !== id);
+  const ok = await dbSalvar('Medicoes', medicoes);
+  showToast(ok ? '🗑️ Medição excluída.' : '❌ Erro ao excluir.');
+  if (ok && m) carregarMedicoesCC(m.CentroCusto);
 }
 
 /* -- Funções Modal Novo Centro de Custo -- */
