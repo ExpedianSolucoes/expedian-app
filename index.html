@@ -8150,8 +8150,10 @@ function laRenderizarLista() {
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">' +
         '<div>' +
           '<div style="font-family:Mont,sans-serif;font-weight:800;font-size:.95rem;color:var(--brand-brown)">'+l.cliente+'</div>' +
-          '<div style="font-size:.78rem;color:var(--text-muted);margin-top:2px">CNPJ: '+l.cnpj+' &nbsp;·&nbsp; '+l.municipio+(l.uf?' / '+l.uf:'')+'</div>' +
-          (l.atividade?'<div style="font-size:.78rem;color:var(--text-muted)">'+l.atividade+'</div>':'') +
+          '<div style="font-size:.78rem;color:var(--text-muted);margin-top:2px">'+
+            [l.cnpj?('CNPJ: '+l.cnpj):'', l.endereco||'', l.municipio?(l.municipio+(l.uf?'/'+l.uf:'')):''].filter(Boolean).join(' &nbsp;·&nbsp; ')+
+          '</div>' +
+          (l.atividade?'<div style="font-size:.78rem;color:var(--text-muted);margin-top:2px">'+l.atividade+'</div>':'') +
         '</div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
           '<button class="btn-secondary" style="font-size:.75rem;padding:5px 10px" onclick="laAbrirRma(\''+l.id+'\')">'+(l.tipo==='OUTORGA'?'📊 Laudos':'📊 RMAs')+'</button>' +
@@ -8441,6 +8443,7 @@ function pageRelatorios() {
           <div class="form-group" style="flex:2"><label>Razão Social / Cliente</label><input type="text" id="la-cliente" placeholder="Nome do empreendedor"></div>
           <div class="form-group"><label>CNPJ / CPF</label><input type="text" id="la-cnpj" placeholder="00.000.000/0001-00"></div>
         </div>
+        <div class="form-group"><label>Endereço</label><input type="text" id="la-endereco" placeholder="Endereço do empreendimento"></div>
         <div class="form-row">
           <div class="form-group"><label>Município</label><input type="text" id="la-municipio" placeholder="Cidade"></div>
           <div class="form-group" style="flex:0 0 80px"><label>UF</label><input type="text" id="la-uf" placeholder="RO" maxlength="2" style="text-transform:uppercase"></div>
@@ -9220,11 +9223,29 @@ function laExtrairCNPJouCPF(t) {
   return m ? m[0] : '';
 }
 
+/* Rótulos de outros campos da licença — usados como "fronteira" pra saber
+   onde um campo termina e o próximo começa. Sem isso, quando o PDF extrai o
+   texto tudo numa linha só (sem quebras), um campo "vaza" pro texto do
+   próximo rótulo (ex: nome do cliente engolindo "ENDEREÇO: ...", ou
+   município engolindo "CEP: ..."). */
+var LA_ROTULOS_STOP = ['endere[çc]o','localiza[çc][ãa]o','cnpj','cpf','cep','munic[íi]pio','atividade',
+  'raz[ãa]o\\s+social','empreendedor','requerente','interessado','licen[çc]a','processo','n[úu]mero',
+  '\\buf\\b','emiss[ãa]o','validade','vencimento','[óo]rg[ãa]o'];
+
 function laExtrairCampoPorRotulo(t, rotulos, maxLen) {
+  var limite = maxLen || 80;
+  var stopRe = new RegExp('\\s+(?:' + LA_ROTULOS_STOP.join('|') + ')\\s*[:\\-]', 'i');
   for (var i = 0; i < rotulos.length; i++) {
-    var re = new RegExp(rotulos[i] + '\\s*[:\\-]?\\s*([^\\n\\r]{2,' + (maxLen||80) + '})', 'i');
+    // Aceita ":" / "-" OU uma preposição ("de"/"do"/"da") como separador entre
+    // o rótulo e o valor — cobre tanto "Município: X" quanto "no município de X".
+    var re = new RegExp(rotulos[i] + '\\s*(?:de\\s+|do\\s+|da\\s+|[:\\-])?\\s*([^\\n\\r]{2,' + limite + '})', 'i');
     var m = t.match(re);
-    if (m && m[1]) return m[1].replace(/\s{2,}/g, ' ').trim().replace(/[.,;]+$/, '');
+    if (m && m[1]) {
+      var valor = m[1];
+      var corte = valor.search(stopRe);
+      if (corte > 0) valor = valor.slice(0, corte);
+      return valor.replace(/\s{2,}/g, ' ').trim().replace(/[.,;]+$/, '');
+    }
   }
   return '';
 }
@@ -9329,6 +9350,7 @@ function laAnalisarTextoLicenca(texto) {
   return {
     cliente: laExtrairCampoPorRotulo(texto, ['raz[ãa]o\\s+social', 'empreendedor', 'requerente', 'interessado']),
     cnpj: laExtrairCNPJouCPF(texto),
+    endereco: laExtrairCampoPorRotulo(texto, ['endere[çc]o', 'localizad[ao]\\s+(?:na|no)', 'situad[ao]\\s+(?:na|no)'], 100),
     municipio: laExtrairCampoPorRotulo(texto, ['munic[íi]pio'], 40),
     uf: laExtrairUF(texto),
     atividade: laExtrairCampoPorRotulo(texto, ['atividade(?:\\s+desenvolvida)?', 'atividade\\s+licenciada', 'objeto\\s+d[ao]\\s+licen[çc]a'], 100),
@@ -9358,6 +9380,7 @@ async function laImportarPDF(file) {
     var set = function(id, val) { if (val) { var e = document.getElementById(id); if (e) { e.value = val; encontrados++; } } };
     set('la-cliente', d.cliente);
     set('la-cnpj', d.cnpj);
+    set('la-endereco', d.endereco);
     set('la-municipio', d.municipio);
     set('la-uf', d.uf);
     set('la-atividade', d.atividade);
@@ -9382,7 +9405,7 @@ async function laImportarPDF(file) {
 }
 
 function laAbrirModal() {
-  ['la-id','la-cliente','la-cnpj','la-municipio','la-uf','la-atividade','la-numero','la-orgao','la-processo','la-emissao','la-vencimento','la-obs'].forEach(function(id) {
+  ['la-id','la-cliente','la-cnpj','la-endereco','la-municipio','la-uf','la-atividade','la-numero','la-orgao','la-processo','la-emissao','la-vencimento','la-obs'].forEach(function(id) {
     var e = document.getElementById(id); if(e) e.value='';
   });
   document.getElementById('la-tipo').value = 'LO';
@@ -9399,6 +9422,7 @@ function laEditar(id) {
   document.getElementById('la-id').value        = l.id;
   document.getElementById('la-cliente').value   = l.cliente||'';
   document.getElementById('la-cnpj').value      = l.cnpj||'';
+  document.getElementById('la-endereco').value  = l.endereco||'';
   document.getElementById('la-municipio').value = l.municipio||'';
   document.getElementById('la-uf').value        = l.uf||'';
   document.getElementById('la-atividade').value = l.atividade||'';
@@ -9429,6 +9453,7 @@ function laSalvarRegistro() {
     id:        id || laUid(),
     cliente:   cliente,
     cnpj:      document.getElementById('la-cnpj').value.trim(),
+    endereco:  document.getElementById('la-endereco').value.trim(),
     municipio: document.getElementById('la-municipio').value.trim(),
     uf:        document.getElementById('la-uf').value.trim().toUpperCase(),
     atividade: document.getElementById('la-atividade').value.trim(),
