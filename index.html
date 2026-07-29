@@ -8025,22 +8025,83 @@ function laUid() {
   return 'la-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 }
 
-/* ---- Gerar cronograma semestral a partir da emissão ---- */
-function laGerarCronogramaRmas(emissaoISO, vencimentoISO) {
+/* Periodicidades possíveis do relatório de monitoramento exigido pela
+   licença. 'meses' é o intervalo usado por laGerarCronogramaRmas; 'unico'
+   é tratado à parte (não é uma recorrência, é um relatório só). */
+var LA_PERIODICIDADES = [
+  { valor: 'trimestral',    label: 'Trimestral (a cada 3 meses)',  meses: 3,  substantivo: 'Trimestre' },
+  { valor: 'quadrimestral', label: 'Quadrimestral (a cada 4 meses)', meses: 4, substantivo: 'Quadrimestre' },
+  { valor: 'semestral',     label: 'Semestral (a cada 6 meses)',   meses: 6,  substantivo: 'Semestre' },
+  { valor: 'anual',         label: 'Anual (a cada 12 meses)',      meses: 12, substantivo: 'Ano' },
+  { valor: 'bienal',        label: 'Bienal (a cada 24 meses)',     meses: 24, substantivo: 'Biênio' },
+  { valor: 'unico',         label: 'Relatório único (sem recorrência)', meses: 0, substantivo: 'Relatório' },
+];
+function laPeriodicidadeInfo(valor) {
+  return LA_PERIODICIDADES.find(function(p){return p.valor===valor;}) || LA_PERIODICIDADES[2]; // default: semestral
+}
+
+/* Tenta identificar, no texto da licença, qual a periodicidade do relatório
+   de monitoramento exigido nas condicionantes — em vez de assumir sempre
+   semestral. Procura uma palavra de periodicidade (trimestral/anual/etc.)
+   perto de uma menção a relatório/RMA/monitoramento, pra não confundir com
+   outras coisas "anuais" do documento (taxa anual, vistoria anual etc.)
+   que não tenham nada a ver com a entrega de relatório. */
+function laDetectarPeriodicidadeRelatorio(texto) {
+  var ancoras = [];
+  var reAncora = /relat[óo]rio(?:s)?\s+(?:de\s+)?monitoramento|\bRMA\b|monitoramento\s+ambiental/gi, ma;
+  while ((ma = reAncora.exec(texto))) ancoras.push(ma.index);
+  if (!ancoras.length) return '';
+
+  var candidatos = [
+    { valor: 'unico',         re: /relat[óo]rio\s+(?:de\s+monitoramento\s+)?[úu]nico|em\s+[úu]nica\s+vez|em\s+car[áa]ter\s+[úu]nico|relat[óo]rio\s+final(?:\s+de\s+monitoramento)?/gi },
+    { valor: 'trimestral',    re: /trimestral(?:mente)?/gi },
+    { valor: 'quadrimestral', re: /quadrimestral(?:mente)?/gi },
+    { valor: 'semestral',     re: /semestral(?:mente)?/gi },
+    { valor: 'bienal',        re: /bienal(?:mente)?/gi },
+    { valor: 'anual',         re: /anual(?:mente)?/gi },
+  ];
+  var melhor = null, melhorDist = Infinity;
+  candidatos.forEach(function(c) {
+    var mc;
+    while ((mc = c.re.exec(texto))) {
+      ancoras.forEach(function(a) {
+        var dist = Math.abs(mc.index - a);
+        if (dist < 150 && dist < melhorDist) { melhorDist = dist; melhor = c.valor; }
+      });
+    }
+  });
+  return melhor || '';
+}
+
+/* ---- Gerar cronograma de relatórios a partir da emissão, na periodicidade
+   informada (padrão: semestral, igual ao comportamento antigo) ---- */
+function laGerarCronogramaRmas(emissaoISO, vencimentoISO, periodicidade) {
   if (!emissaoISO) return [];
-  var rmas = [];
+  var info = laPeriodicidadeInfo(periodicidade);
   var emissao = new Date(emissaoISO + 'T00:00:00');
   var vencimento = vencimentoISO ? new Date(vencimentoISO + 'T00:00:00') : null;
+
+  if (info.valor === 'unico') {
+    /* Não é recorrente — um só item. Sem extrair o prazo específico da
+       condicionante (isso não faz parte deste recurso), usa o vencimento
+       da licença como prazo padrão; ajuste manualmente se for diferente. */
+    return [{
+      id: laUid(), periodo: 'Relatório Único',
+      prazo: vencimentoISO || '', status: 'pendente', dataEnvio: '', protocolo: '', obs: '',
+    }];
+  }
+
+  var rmas = [];
   for (var n = 1; n <= 30; n++) {
-    var fim = new Date(emissao); fim.setMonth(fim.getMonth() + n * 6);
+    var fim = new Date(emissao); fim.setMonth(fim.getMonth() + n * info.meses);
     if (vencimento && fim > vencimento) break;
-    var ini = new Date(emissao); ini.setMonth(ini.getMonth() + (n-1) * 6);
+    var ini = new Date(emissao); ini.setMonth(ini.getMonth() + (n-1) * info.meses);
     /* Prazo = fim do período + 30 dias */
     var prazoDate = new Date(fim); prazoDate.setDate(prazoDate.getDate() + 30);
     var fmtMes = function(d) { return String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear(); };
     rmas.push({
       id:        laUid(),
-      periodo:   n + 'º Semestre — ' + fmtMes(ini) + ' a ' + fmtMes(fim),
+      periodo:   n + 'º ' + info.substantivo + ' — ' + fmtMes(ini) + ' a ' + fmtMes(fim),
       prazo:     prazoDate.toISOString().slice(0,10),
       status:    'pendente',
       dataEnvio: '',
@@ -8058,9 +8119,10 @@ function laGerarCronogramaClick() {
   if (l.rmas && l.rmas.length > 0) {
     if (!confirm('Isso substituirá o cronograma atual. Continuar?')) return;
   }
-  l.rmas = laGerarCronogramaRmas(l.emissao, l.vencimento);
+  l.rmas = laGerarCronogramaRmas(l.emissao, l.vencimento, l.periodicidade);
   laSalvar(); laRenderizarRmaLista(licId);
-  showToast('✅ Cronograma gerado: ' + l.rmas.length + ' RMAs semestrais!');
+  var info = laPeriodicidadeInfo(l.periodicidade);
+  showToast('✅ Cronograma gerado: ' + l.rmas.length + (info.valor==='unico' ? ' relatório único!' : ' relatórios (' + info.label.toLowerCase() + ')!'));
 }
 
 /* ---- KPIs ---- */
@@ -8172,6 +8234,7 @@ function laRenderizarLista() {
       '</div>' +
       '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
         '<span style="font-size:.78rem;background:var(--green-pale);color:var(--brand-green);border-radius:6px;padding:2px 8px;font-weight:700">'+laNomeTipoLicenca(l.tipo)+'</span>' +
+        '<span style="font-size:.72rem;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:2px 8px" title="Periodicidade usada pra gerar o cronograma de relatórios">📅 '+laPeriodicidadeInfo(l.periodicidade).label.split(' (')[0]+'</span>' +
         '<span style="font-size:.8rem;color:var(--text-muted);font-weight:600">'+(l.tipo==='OUTORGA'?'Laudos':'RMAs')+':</span>' +
         (rmaVencido >0?'<span onclick="laTogglePeriodos(\''+l.id+'\',\'vencido\')" style="cursor:pointer;font-size:.78rem;background:#fff5f5;color:#dc3545;border-radius:6px;padding:2px 8px;border:1px solid #dc354533" title="Clique para ver quais">'+rmaVencido +' vencido'  +(rmaVencido >1?'s':'')+' 🔽</span>':'') +
         (rmaVigente>0?'<span onclick="laTogglePeriodos(\''+l.id+'\',\'vigente\')" style="cursor:pointer;font-size:.78rem;background:#f0fff4;color:#28a745;border-radius:6px;padding:2px 8px;border:1px solid #28a74533" title="Clique para ver quais">'+rmaVigente+' vigente' +(rmaVigente>1?'s':'')+' 🔽</span>':'') +
@@ -8471,6 +8534,11 @@ function pageRelatorios() {
           <div class="form-group"><label>Nº do Processo</label><input type="text" id="la-processo" placeholder="Ex: 1801/02292/2018"></div>
           <div class="form-group"><label>Data de Emissão</label><input type="date" id="la-emissao"></div>
           <div class="form-group"><label>Vencimento</label><input type="date" id="la-vencimento"></div>
+        </div>
+        <div class="form-group"><label>Periodicidade do Relatório <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">(usada pra gerar o cronograma de RMAs/laudos)</span></label>
+          <select id="la-periodicidade">
+            ${LA_PERIODICIDADES.map(function(p){ return '<option value="'+p.valor+'"'+(p.valor==='semestral'?' selected':'')+'>'+p.label+'</option>'; }).join('')}
+          </select>
         </div>
         <div class="form-group"><label>Observações / Condicionantes</label>
           <textarea id="la-obs" rows="3" placeholder="RMA semestral, renovar X dias antes do vencimento..."></textarea>
@@ -9360,6 +9428,7 @@ function laAnalisarTextoLicenca(texto) {
     processo: laExtrairProcesso(texto),
     emissao: emissao,
     vencimento: vencimento,
+    periodicidade: laDetectarPeriodicidadeRelatorio(texto),
   };
 }
 
@@ -9390,6 +9459,7 @@ async function laImportarPDF(file) {
     set('la-processo', d.processo);
     set('la-emissao', d.emissao);
     set('la-vencimento', d.vencimento);
+    if (d.periodicidade) { document.getElementById('la-periodicidade').value = d.periodicidade; encontrados++; }
 
     if (encontrados > 0) {
       laLog('✓ ' + encontrados + ' campo(s) preenchido(s) automaticamente. Confira tudo antes de salvar!', 'ok');
@@ -9409,6 +9479,7 @@ function laAbrirModal() {
     var e = document.getElementById(id); if(e) e.value='';
   });
   document.getElementById('la-tipo').value = 'LO';
+  document.getElementById('la-periodicidade').value = 'semestral';
   var logEl = document.getElementById('la-import-log');
   if (logEl) { logEl.style.display = 'none'; logEl.innerHTML = ''; }
   var fileEl = document.getElementById('la-import-file');
@@ -9432,6 +9503,7 @@ function laEditar(id) {
   document.getElementById('la-processo').value  = l.processo||'';
   document.getElementById('la-emissao').value   = l.emissao||'';
   document.getElementById('la-vencimento').value= l.vencimento||'';
+  document.getElementById('la-periodicidade').value = l.periodicidade||'semestral';
   document.getElementById('la-obs').value       = l.obs||'';
   var logEl2 = document.getElementById('la-import-log');
   if (logEl2) { logEl2.style.display = 'none'; logEl2.innerHTML = ''; }
@@ -9463,13 +9535,14 @@ function laSalvarRegistro() {
     processo:  document.getElementById('la-processo').value.trim(),
     emissao:   document.getElementById('la-emissao').value,
     vencimento: venc,
+    periodicidade: document.getElementById('la-periodicidade').value,
     obs:       document.getElementById('la-obs').value.trim(),
   };
   if (id) {
     var idx = LA_DADOS.findIndex(function(l){return l.id===id;});
     if (idx!==-1) { reg.rmas = LA_DADOS[idx].rmas||[]; LA_DADOS[idx]=reg; }
   } else {
-    reg.rmas = (reg.emissao && reg.vencimento) ? laGerarCronogramaRmas(reg.emissao, reg.vencimento) : [];
+    reg.rmas = (reg.emissao && reg.vencimento) ? laGerarCronogramaRmas(reg.emissao, reg.vencimento, reg.periodicidade) : [];
     LA_DADOS.push(reg);
   }
   laSalvar(); laFecharModal(); laRenderizarLista();
