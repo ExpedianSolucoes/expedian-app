@@ -9264,30 +9264,67 @@ function laExtrairProcesso(t) {
   return m ? m[1].replace(/[.,;]+$/, '') : '';
 }
 
-/* Acha, entre todas as datas do texto, a que está mais perto de uma das palavras-chave dadas */
+/* Acha, entre todas as datas do texto, a que está mais perto de uma das
+   palavras-chave dadas. Prioriza a data que vem DEPOIS do rótulo (padrão
+   "Emissão: 15/03/2026", o mais comum em documentos) — só usa uma data que
+   vem antes do rótulo se não achar nenhuma depois, evitando pegar por
+   engano a data de uma linha anterior só por estar mais perto em caracteres. */
 function laExtrairDataProxima(t, todasDatas, keywords) {
-  var melhor = null, melhorDist = Infinity;
+  var melhorDepois = null, melhorDistDepois = Infinity;
+  var melhorAntes = null, melhorDistAntes = Infinity;
   keywords.forEach(function(kw) {
     var re = new RegExp(kw, 'gi'), m;
     while ((m = re.exec(t))) {
+      var fimRotulo = m.index + m[0].length;
       todasDatas.forEach(function(d) {
-        var dist = Math.abs(d.index - m.index);
-        if (dist < 80 && dist < melhorDist) { melhorDist = dist; melhor = d; }
+        if (d.index >= fimRotulo) {
+          var dist = d.index - fimRotulo;
+          if (dist < 80 && dist < melhorDistDepois) { melhorDistDepois = dist; melhorDepois = d; }
+        } else {
+          var dist2 = m.index - d.index;
+          if (dist2 < 80 && dist2 < melhorDistAntes) { melhorDistAntes = dist2; melhorAntes = d; }
+        }
       });
     }
   });
-  return melhor ? melhor.iso : '';
+  var escolhida = melhorDepois || melhorAntes;
+  return escolhida ? escolhida.iso : '';
+}
+
+/* Datas citadas em referências legais dentro da licença ("Lei nº 9.985, de
+   18 de julho de 2000", "Resolução CONAMA nº 237/1997", "conforme o Decreto
+   nº 8.437, de 22/04/2015" etc.) não são a data de emissão nem de vencimento
+   do documento — são só a data da norma sendo citada, e costumam ser as
+   datas mais antigas do texto (por isso o fallback "data mais antiga =
+   emissão" pegava elas por engano). Uma palavra de citação legal aparece
+   sempre logo ANTES dessas datas. */
+var LA_PALAVRAS_CITACAO_LEGAL = /\b(lei|leis|decreto|decretos|resolu[çc][ãa]o|resolu[çc][õo]es|portaria|portarias|instru[çc][ãa]o\s+normativa|delibera[çc][ãa]o|conama|artigo|art\.|§|constitui[çc][ãa]o)\b/i;
+
+function laEhDataDeCitacaoLegal(texto, dataObj) {
+  var ini = Math.max(0, dataObj.index - 45);
+  var contexto = texto.slice(ini, dataObj.index);
+  return LA_PALAVRAS_CITACAO_LEGAL.test(contexto);
 }
 
 function laAnalisarTextoLicenca(texto) {
-  var todasDatas = extrairDatas(texto);
-  var emissao    = laExtrairDataProxima(texto, todasDatas, ['emiss[ãa]o', 'emitid[ao]', 'data\\s+de\\s+expedi']);
+  var todasDatasBruto = extrairDatas(texto);
+  var todasDatas = todasDatasBruto.filter(function(d) { return !laEhDataDeCitacaoLegal(texto, d); });
+  var emissao    = laExtrairDataProxima(texto, todasDatas, ['emiss[ãa]o', 'emitid[ao]', 'data\\s+de\\s+expedi', 'expedida\\s+em', 'assinad[ao]\\s+em', 'firmad[ao]\\s+em']);
   var vencimento = laExtrairDataProxima(texto, todasDatas, ['vencimento', 'validade', 'vence\\s+em', 'v[áa]lid[ao]\\s+at[ée]']);
-  // fallback: se não achou por palavra-chave, usa a data mais antiga como emissão e a mais futura como vencimento
+  // Fallback: se não achou por palavra-chave, considera que a data de
+  // emissão normalmente aparece perto do fim da licença (despacho/assinatura),
+  // então usa a última data que aparece no texto (por posição, não por valor)
+  // como emissão, e a data de maior valor (mais no futuro) como vencimento.
   if ((!emissao || !vencimento) && todasDatas.length >= 2) {
-    var ordenadas = todasDatas.slice().sort(function(a,b){ return a.iso.localeCompare(b.iso); });
-    if (!emissao) emissao = ordenadas[0].iso;
-    if (!vencimento) vencimento = ordenadas[ordenadas.length-1].iso;
+    var porValor = todasDatas.slice().sort(function(a,b){ return a.iso.localeCompare(b.iso); });
+    var porPosicao = todasDatas.slice().sort(function(a,b){ return a.index - b.index; });
+    if (!vencimento) vencimento = porValor[porValor.length-1].iso;
+    if (!emissao) {
+      var candidata = porPosicao[porPosicao.length-1];
+      emissao = (candidata && candidata.iso !== vencimento) ? candidata.iso : porValor[0].iso;
+    }
+  } else if (!emissao && todasDatas.length === 1) {
+    emissao = todasDatas[0].iso;
   }
   return {
     cliente: laExtrairCampoPorRotulo(texto, ['raz[ãa]o\\s+social', 'empreendedor', 'requerente', 'interessado']),
