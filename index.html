@@ -17643,6 +17643,41 @@ async function gdExcluirDocEmpresa(idx) {
 
 // ─── Gerador de ASO ───────────────────────────────────────────
 
+// Funções cadastradas no PGR (Programa de Gerenciamento de Riscos) REV04/2026,
+// com GHE e categorias de risco extraídas do documento oficial.
+// Usado para, ao selecionar "Mudança de Função" no ASO, popular automaticamente
+// os riscos e exames da função de destino em vez de depender só do cargo em texto livre.
+// Observação: os exames por GHE 03 (Motorista / Op. Máquinas Pesadas) ainda usam o
+// mesmo conjunto do GHE 02, pois o PCMSO REV04 não pôde ser lido para confirmar um
+// conjunto próprio — confirmar com o SESMT/PCMSO se houver diferença.
+const PGR_FUNCOES = [
+  { nome:'Auxiliar Administrativo',            ghe:'ghe01', cbo:'',        riscos:['Ergonômicos'] },
+  { nome:'Auxiliar de Campo I',                ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Auxiliar de Campo II',               ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Auxiliar Técnico Ambiental',         ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Biólogo',                            ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Engenheiro Agrônomo',                ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Engenheiro Florestal',               ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Geólogo',                            ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Gestor Ambiental',                   ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Gestor em Segurança do Trabalho',    ghe:'ghe02', cbo:'214915',  riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Identificador Botânico',             ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Motorista',                          ghe:'ghe03', cbo:'',        riscos:['Acidentes/Mecânicos','Biológicos','Ergonômicos','Físicos'] },
+  { nome:'Op. Máquinas Pesadas',               ghe:'ghe03', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Técnico em Meio Ambiente',           ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+  { nome:'Técnico em Segurança do Trabalho',   ghe:'ghe02', cbo:'351605',  riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'] },
+];
+function pgrFuncaoPorNome(nome) {
+  const n = (nome || '').toLowerCase().trim();
+  if (!n) return null;
+  return PGR_FUNCOES.find(f => f.nome.toLowerCase() === n)
+    || PGR_FUNCOES.find(f => n.includes(f.nome.toLowerCase()) || f.nome.toLowerCase().includes(n))
+    || null;
+}
+// Exames por GHE 03 ainda não têm conjunto próprio confirmado no PCMSO — usa o do GHE 02.
+function pgrGheChaveExame(ghe) { return ghe === 'ghe03' ? 'ghe02' : ghe; }
+function pgrGheLabel(ghe) { return (ghe || 'ghe01').toUpperCase().replace('GHE', 'GHE '); }
+
 // Lista completa de exames com marcação padrão por tipo/GHE
 const ASO_EXAMES_TODOS = [
   { id:'clinico',     nome:'ASO — Exame Clínico',                    esocial:'0295', ghe01:true,  ghe02:true,  adm:true,  per:true,  dem:true,  mud:true,  ret:true  },
@@ -17701,8 +17736,9 @@ function gerarASO(cIdx) {
   _asoColabIdx = cIdx;
 
   const cargo = (colab.cargo || '').toLowerCase();
+  const funcaoAtual = pgrFuncaoPorNome(colab.cargo);
   const isGHE02 = /campo|motorista|técnico|tecnico|biólogo|biologo|operacional|auxiliar|inspetor/.test(cargo);
-  const ghe = isGHE02 ? 'ghe02' : 'ghe01';
+  const ghe = funcaoAtual ? funcaoAtual.ghe : (isGHE02 ? 'ghe02' : 'ghe01');
 
   // Montar modal
   const tipoOpts = ['Periódico','Admissional','Demissional','Mudança de Função','Retorno ao Trabalho','Outros']
@@ -17714,7 +17750,7 @@ function gerarASO(cIdx) {
 
   const mkChk = (e, tipo) => {
     const chave = tipo || 'per';
-    const checked = e[ghe] && e[chave];
+    const checked = e[pgrGheChaveExame(ghe)] && e[chave];
     return '<label style="display:flex;align-items:flex-start;gap:6px;margin-bottom:5px;cursor:pointer;font-size:.8rem">'
       + '<input type="checkbox" id="asoex_' + e.id + '" ' + (checked ? 'checked' : '') + ' style="margin-top:2px;accent-color:#2d5a27">'
       + '<span>' + e.nome + (e.esocial ? ' <span style="color:#999;font-size:.72rem">(' + e.esocial + ')</span>' : '') + '</span>'
@@ -17737,7 +17773,7 @@ function gerarASO(cIdx) {
   el.innerHTML = '<div style="background:#fff;border-radius:16px;width:100%;max-width:820px;max-height:92vh;overflow-y:auto;box-shadow:0 24px 80px rgba(0,0,0,.3)">'
     + '<div style="padding:18px 22px 0;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #eee;padding-bottom:14px">'
     + '<div><div style="font-weight:800;font-size:1rem">📋 Gerar ASO — ' + colab.nome + '</div>'
-    + '<div style="font-size:.75rem;color:#666;margin-top:2px">' + (colab.cargo||'') + ' · CPF: ' + (cpf||'não cadastrado') + ' · GHE 0' + (isGHE02?'2':'1') + '</div></div>'
+    + '<div style="font-size:.75rem;color:#666;margin-top:2px"><span id="aso-cargo-label">' + (colab.cargo||'') + '</span> · CPF: ' + (cpf||'não cadastrado') + ' · <span id="aso-ghe-badge">' + pgrGheLabel(ghe) + '</span></div></div>'
     + '<button onclick="document.getElementById(\'modal-aso\').remove()" style="border:none;background:#f0f0f0;border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>'
     + '</div>'
     + '<div style="padding:18px 22px">'
@@ -17747,6 +17783,19 @@ function gerarASO(cIdx) {
     + '<label style="display:block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#666;margin-bottom:6px">Tipo de Exame</label>'
     + '<select id="aso-tipo" onchange="asoAtualizarExames()" style="height:38px;border:1.5px solid #ddd;border-radius:8px;padding:0 12px;font-size:.9rem;width:100%;max-width:280px">'
     + tipoOpts + '</select></div>'
+
+    // Nova Função (visível apenas para Mudança de Função)
+    + '<div id="aso-funcao-nova-wrap" style="display:none;margin-bottom:16px;background:#fff8e6;border:1px solid #f0d894;border-radius:8px;padding:12px">'
+    + '<label style="display:block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#8a6d1a;margin-bottom:6px">Nova Função (conforme PGR REV04)</label>'
+    + '<select id="aso-funcao-nova" onchange="asoAtualizarExames()" style="height:38px;border:1.5px solid #ddd;border-radius:8px;padding:0 12px;font-size:.85rem;width:100%">'
+    + '<option value="">Selecione a função de destino...</option>'
+    + PGR_FUNCOES.map(f => '<option value="' + f.nome + '">' + f.nome + ' (' + pgrGheLabel(f.ghe) + ')</option>').join('')
+    + '</select>'
+    + '<div id="aso-riscos-funcao" style="margin-top:8px;font-size:.75rem;color:#8a6d1a">Selecione a função de destino para carregar os riscos e exames do PGR.</div>'
+    + '<label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:.78rem;color:#666;cursor:pointer">'
+    + '<input type="checkbox" id="aso-atualizar-cargo" checked style="accent-color:#2d5a27"> Atualizar o cargo do colaborador para a nova função ao gerar o ASO'
+    + '</label>'
+    + '</div>'
 
     // Clínica
     + '<div style="margin-bottom:16px">'
@@ -17781,21 +17830,55 @@ function gerarASO(cIdx) {
   document.body.appendChild(el);
 }
 
+// Calcula GHE, função reconhecida e função de destino (mudança de função) a partir do estado atual do modal.
+function asoContexto(colab) {
+  const tipoSel = document.getElementById('aso-tipo');
+  const tipo = tipoSel ? tipoSel.value : 'periodico';
+  const isMudanca = tipo === 'mudanca_de_funcao';
+  const cargo = (colab.cargo || '').toLowerCase();
+  const isGHE02Legado = /campo|motorista|técnico|tecnico|biólogo|biologo|operacional|auxiliar|inspetor/.test(cargo);
+  const funcaoAtual = pgrFuncaoPorNome(colab.cargo);
+  let funcaoNova = null;
+  if (isMudanca) {
+    const sel = document.getElementById('aso-funcao-nova');
+    const nome = sel ? sel.value : '';
+    funcaoNova = nome ? (PGR_FUNCOES.find(f => f.nome === nome) || null) : null;
+  }
+  const funcaoRef = funcaoNova || funcaoAtual;
+  const ghe = funcaoRef ? funcaoRef.ghe : (isGHE02Legado ? 'ghe02' : 'ghe01');
+  return { tipo, isMudanca, funcaoAtual, funcaoNova, ghe };
+}
+
 function asoAtualizarExames() {
-  const tipo = document.getElementById('aso-tipo').value;
   const colab = window._gdDados && window._gdDados.colaboradores[_asoColabIdx];
   if (!colab) return;
-  const cargo = (colab.cargo || '').toLowerCase();
-  const isGHE02 = /campo|motorista|técnico|tecnico|biólogo|biologo|operacional|auxiliar|inspetor/.test(cargo);
-  const ghe = isGHE02 ? 'ghe02' : 'ghe01';
+  const ctx = asoContexto(colab);
+
+  const wrap = document.getElementById('aso-funcao-nova-wrap');
+  if (wrap) wrap.style.display = ctx.isMudanca ? 'block' : 'none';
+
+  const riscosBox = document.getElementById('aso-riscos-funcao');
+  if (riscosBox) {
+    if (ctx.isMudanca && ctx.funcaoNova) {
+      riscosBox.innerHTML = '⚠️ Riscos da função (PGR REV04): ' + ctx.funcaoNova.riscos.join(', ') + (ctx.funcaoNova.cbo ? ' · CBO ' + ctx.funcaoNova.cbo : '');
+    } else if (ctx.isMudanca) {
+      riscosBox.textContent = 'Selecione a função de destino para carregar os riscos e exames do PGR.';
+    }
+  }
+
+  const badge = document.getElementById('aso-ghe-badge');
+  if (badge) badge.textContent = pgrGheLabel(ctx.ghe);
+  const cargoLabel = document.getElementById('aso-cargo-label');
+  if (cargoLabel) cargoLabel.textContent = (ctx.isMudanca && ctx.funcaoNova) ? ((colab.cargo||'') + ' → ' + ctx.funcaoNova.nome) : (colab.cargo||'');
 
   const tipoMap = { 'periodico':'per','admissional':'adm','demissional':'dem',
     'mudanca_de_funcao':'mud','retorno_ao_trabalho':'ret','outros':'per' };
-  const chave = tipoMap[tipo] || 'per';
+  const chave = tipoMap[ctx.tipo] || 'per';
+  const chaveExame = pgrGheChaveExame(ctx.ghe);
 
   ASO_EXAMES_TODOS.forEach(e => {
     const cb = document.getElementById('asoex_' + e.id);
-    if (cb) cb.checked = !!(e[ghe] && e[chave]);
+    if (cb) cb.checked = !!(e[chaveExame] && e[chave]);
   });
 }
 
@@ -17805,10 +17888,19 @@ function asoGerarPDF() {
 
   const seed = GD_SEED_COLABORADORES.find(s => s.nome.toLowerCase() === colab.nome.toLowerCase());
   const cpf = (seed && seed.cpf) || colab.cpf || '';
-  const cargo = (colab.cargo || '').toLowerCase();
-  const isGHE02 = /campo|motorista|técnico|tecnico|biólogo|biologo|operacional|auxiliar|inspetor/.test(cargo);
-  const ghe = isGHE02 ? '02' : '01';
-  const setor = isGHE02 ? 'Operacional' : 'Administrativo';
+  const ctx = asoContexto(colab);
+  const ghe = ctx.ghe.slice(-2); // '01' | '02' | '03'
+  const setor = ghe === '01' ? 'Administrativo' : (ghe === '03' ? 'Operacional (Condução de Veículos/Máquinas)' : 'Operacional');
+  const funcaoExibida = (ctx.isMudanca && ctx.funcaoNova) ? ((colab.cargo||'') + ' → ' + ctx.funcaoNova.nome) : (colab.cargo || '');
+
+  // Mudança de função: atualiza o cargo do colaborador se a caixa estiver marcada
+  if (ctx.isMudanca && ctx.funcaoNova) {
+    const chkAtualizar = document.getElementById('aso-atualizar-cargo');
+    if (!chkAtualizar || chkAtualizar.checked) {
+      colab.cargo = ctx.funcaoNova.nome;
+      gdSalvar().then(() => showToast('💾 Cargo atualizado para: ' + ctx.funcaoNova.nome));
+    }
+  }
 
   const tipoSel = document.getElementById('aso-tipo');
   const tipoLabel = tipoSel.options[tipoSel.selectedIndex].text;
@@ -17839,7 +17931,16 @@ function asoGerarPDF() {
     { cat:'', risco:'Esforço visual', perigo:'Uso contínuo de tela de computador', dano:'Cefaleia, fadiga visual', nivel:'Trivial' },
     { cat:'Psicossocial', risco:'Fatores psicossociais', perigo:'Pressão por resultados, prazos e demandas variáveis', dano:'Estresse, ansiedade, fadiga mental', nivel:'Moderado' },
   ];
-  const riscos = isGHE02 ? riscosGHE02 : riscosGHE01;
+  // GHE 03 — Motorista / Op. Máquinas Pesadas (conforme PGR REV04)
+  const riscosGHE03 = [
+    { cat:'X Acidente Mecânicos', risco:'Animais Peçonhentos', perigo:'Deslocamento em vias e áreas de coleta', dano:'Hemorragias; Alergias; Obstrução de traqueia.', nivel:'Tolerável' },
+    { cat:'', risco:'Condução de veículos em vias públicas e privadas', perigo:'Condução de veículo/máquina para atividades de campo', dano:'Lesões, fraturas, escoriações.', nivel:'Tolerável' },
+    { cat:'X Biológico', risco:'Vírus, Fungos e Bactérias', perigo:'Contato com resíduos e ambiente externo', dano:'Doenças endêmicas', nivel:'Trivial' },
+    { cat:'X Ergonômico', risco:'Postura inadequada', perigo:'Longos períodos ao volante ou operando máquina', dano:'Desconforto muscular, LER/DORT', nivel:'Tolerável' },
+    { cat:'X Físicos', risco:'Radiação não ionizante', perigo:'Exposição solar em rota/área externa', dano:'Insolação', nivel:'Trivial' },
+    { cat:'', risco:'Ruído contínuo ou intermitente', perigo:'Veículo/máquina em funcionamento', dano:'Irritação, Stress.', nivel:'Tolerável' },
+  ];
+  const riscos = ghe === '03' ? riscosGHE03 : (ghe === '02' ? riscosGHE02 : riscosGHE01);
 
   let riscosHtml = '';
   riscos.forEach(r => {
@@ -17927,12 +18028,12 @@ function asoGerarPDF() {
     + '<div class="section"><div class="sec-title">Identificação do Colaborador</div>'
     + '<div class="sec-body"><div class="grid3" style="margin-bottom:5px">'
     + '<div class="field"><label>Nome</label><span>' + colab.nome + '</span></div>'
-    + '<div class="field"><label>Função</label><span>' + (colab.cargo||'') + '</span></div>'
+    + '<div class="field"><label>Função</label><span>' + funcaoExibida + '</span></div>'
     + '<div class="field"><label>CPF</label><span>' + cpf + '</span></div>'
     + '</div><div class="grid3">'
     + '<div class="field"><label>Setor</label><span>' + setor + '</span></div>'
     + '<div class="field"><label>Data de Admissão</label><span>' + (colab.admissao ? new Date(colab.admissao+'T00:00:00').toLocaleDateString('pt-BR') : '') + '</span></div>'
-    + '<div class="field"><label>GHE</label><span>GHE 0' + ghe + '</span></div>'
+    + '<div class="field"><label>GHE</label><span>GHE ' + ghe + '</span></div>'
     + '</div></div></div>'
 
     + '<div class="section"><div class="sec-title">Tipos de Exames</div>'
@@ -17942,7 +18043,7 @@ function asoGerarPDF() {
       ).join('')
     + '</div></div>'
 
-    + '<div class="section"><div class="sec-title">Riscos Ocupacionais (Conforme PGR REV04 — GHE 0' + ghe + ')</div>'
+    + '<div class="section"><div class="sec-title">Riscos Ocupacionais (Conforme PGR REV04 — GHE ' + ghe + ')</div>'
     + '<table><thead><tr>'
     + '<th style="width:100px">Agentes</th><th>Risco</th><th>Perigos</th><th>Possíveis Danos</th><th style="width:76px;text-align:center">Nível do Risco</th>'
     + '</tr></thead><tbody>' + riscosHtml + '</tbody></table></div>'
