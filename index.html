@@ -10295,7 +10295,11 @@ async function carregarMeusDocumentos() {
       gd = (Array.isArray(dados) && dados.length) ? dados[0] : null;
     }
     if (!gd || !Array.isArray(gd.colaboradores)) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Não foi possível carregar seus documentos agora (sem conexão ou sessão ainda carregando). Tente novamente em instantes.</div>'; return; }
-    const norm = s => (s || '').trim().toLowerCase();
+    // norm() ignora acentuação/maiúsculas/espaços extras — nomes vindos do login Microsoft
+    // (Azure AD) podem estar em uma forma de acentuação Unicode diferente da digitada
+    // manualmente na Gestão Documental (ex.: "á" composto vs decomposto), o que fazia
+    // nomes visualmente idênticos falharem na comparação exata anterior.
+    const norm = s => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
     let colab = gd.colaboradores.find(c => norm(c.nome) === norm(nome));
     // Se não achou pelo nome canônico do cadastro local, tenta também pelo nome de
     // exibição bruto da sessão (cobre o caso de alguém cadastrado na Gestão Documental
@@ -10303,7 +10307,21 @@ async function carregarMeusDocumentos() {
     if (!colab && window._currentUser && window._currentUser.name) {
       colab = gd.colaboradores.find(c => norm(c.nome) === norm(window._currentUser.name));
     }
-    if (!colab) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Você ainda não está cadastrado(a) na Gestão Documental — fale com a Diretoria para regularizar.</div>'; return; }
+    // Último recurso: nome bate parcialmente (todas as palavras do nome da sessão aparecem
+    // no nome cadastrado, ou vice-versa) — cobre nome do meio faltando/sobrando.
+    if (!colab) {
+      const alvo = norm(nome);
+      const alvoPalavras = alvo.split(' ').filter(Boolean);
+      colab = gd.colaboradores.find(c => {
+        const cn = norm(c.nome);
+        return alvoPalavras.length > 1 && alvoPalavras.every(p => cn.includes(p));
+      });
+    }
+    if (!colab) {
+      el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Você ainda não está cadastrado(a) na Gestão Documental — fale com a Diretoria para regularizar.'
+        + '<br><span style="font-size:.72rem">(nome pesquisado: "' + nome + '")</span></div>';
+      return;
+    }
     const docs = (gd.docsColab && gd.docsColab[colab.id]) || [];
     if (!docs.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Nenhum documento cadastrado para você ainda.</div>'; return; }
     el.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px">' +
