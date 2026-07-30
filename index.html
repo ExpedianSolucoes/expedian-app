@@ -5183,6 +5183,30 @@ const RD_BANCOS_POR_EMPRESA = {
 };
 const RD_STATUS = ['Pendente','Vence em breve','Vence hoje','Em atraso','Pago','Cancelado'];
 
+// Máscara de moeda BR — formata o campo como "R$ 1.234,56" enquanto o usuário digita
+// (usado nos campos de valor de Receitas e Despesas). rdMoedaParaNumero() converte de
+// volta pra número puro na hora de salvar; rdNumeroParaMoeda() formata um número já
+// existente ao abrir um formulário de edição.
+function rdFormatarMoedaInput(el) {
+  let digits = (el.value || '').replace(/\D/g, '');
+  if (!digits) { el.value = ''; return; }
+  digits = digits.replace(/^0+(?=\d)/, '');
+  while (digits.length < 3) digits = '0' + digits;
+  const centavos = digits.slice(-2);
+  const inteiro = digits.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  el.value = 'R$ ' + inteiro + ',' + centavos;
+}
+function rdMoedaParaNumero(valorStr) {
+  if (valorStr === undefined || valorStr === null || valorStr === '') return 0;
+  if (typeof valorStr === 'number') return valorStr;
+  const limpo = String(valorStr).replace(/[^\d,]/g, '').replace(',', '.');
+  return parseFloat(limpo) || 0;
+}
+function rdNumeroParaMoeda(num) {
+  const n = Number(num) || 0;
+  return 'R$ ' + n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 /* ===== Receitas ===== */
 const RC_CATEGORIAS = ['Prestação de Serviços','Consultoria','Locação','Reembolso','Juros/Rendimentos','Outros'];
 const RC_STATUS = ['Pendente','Vence em breve','Vence hoje','Em atraso','Recebido','Cancelado'];
@@ -5362,7 +5386,7 @@ function renderReceitasTab() {
       </div>
       <div class="form-group">
         <label>Valor (R$)</label>
-        <input type="number" id="rc_valor" placeholder="0,00" step="0.01">
+        <input type="text" inputmode="decimal" id="rc_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)">
       </div>
     </div>
 
@@ -5611,7 +5635,7 @@ async function salvarReceita() {
   const cliente = document.getElementById('rc_cliente').value.trim();
   const descricao = document.getElementById('rc_descricao').value.trim();
   const cc = (document.getElementById('rc_cc')||{}).value || '';
-  const valor = parseFloat(document.getElementById('rc_valor').value) || 0;
+  const valor = rdMoedaParaNumero(document.getElementById('rc_valor').value);
   const dataPrevista = document.getElementById('rc_data_prevista').value;
   const forma = document.getElementById('rc_forma').value;
   const responsavel = document.getElementById('rc_responsavel').value;
@@ -5838,7 +5862,7 @@ function rcAbrirEdicaoReceita(id) {
       <div style="display:flex;gap:10px;margin-bottom:12px">
         <div style="flex:1">
           <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR (R$)</label>
-          <input id="rce_valor" type="number" step="0.01" value="${i.Valor||0}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+          <input id="rce_valor" type="text" inputmode="decimal" value="${rdNumeroParaMoeda(i.Valor||0)}" oninput="rdFormatarMoedaInput(this)" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
         </div>
         <div style="flex:1">
           <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">PREVISÃO</label>
@@ -5880,7 +5904,7 @@ async function rcSalvarEdicaoReceita(id) {
   const status = document.getElementById('rce_status').value;
   const dataRecebimento = document.getElementById('rce_data_recebimento').value;
   const banco = document.getElementById('rce_banco').value.trim();
-  const valor = parseFloat(document.getElementById('rce_valor').value) || 0;
+  const valor = rdMoedaParaNumero(document.getElementById('rce_valor').value);
   const dataPrevista = document.getElementById('rce_data_prevista').value;
   const numeroNF = (document.getElementById('rce_numero_nf')||{}).value.trim() || '';
   const comprovanteUrl = window._rceComprovanteUrl || '';
@@ -6184,7 +6208,7 @@ function renderDespesasTab() {
     <div class="form-row">
       <div class="form-group">
         <label id="rd_valor_label">Valor Total (R$)</label>
-        <input type="number" id="rd_valor" placeholder="0,00" step="0.01" oninput="rdGerarParcelas()">
+        <input type="text" inputmode="decimal" id="rd_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rdGerarParcelas()">
       </div>
       <div class="form-group">
         <label>Tipo de Pagamento</label>
@@ -6682,7 +6706,7 @@ function rdGerarParcelas() {
   if (tipo !== 'parcelado') return;
   const qtd = parseInt(document.getElementById('rd_num_parcelas').value) || 0;
   const dataBase = document.getElementById('rd_venc_1parcela').value;
-  const total = parseFloat(document.getElementById('rd_valor').value) || 0;
+  const total = rdMoedaParaNumero(document.getElementById('rd_valor').value);
   const editor = document.getElementById('rd_parcelas_editor');
   if (!qtd || qtd < 2 || !dataBase || !total) {
     if (editor) { editor.style.display='none'; editor.innerHTML=''; }
@@ -6716,14 +6740,14 @@ function rdRenderizarParcelas() {
       <div style="display:flex;gap:8px;align-items:center;background:var(--surface2);padding:6px 10px;border-radius:8px">
         <span style="font-size:.78rem;font-weight:700;width:44px">${p.numero}/${parcelas.length}</span>
         <input type="date" value="${p.vencimento}" onchange="rdAtualizarParcela(${i},'vencimento',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
-        <input type="number" step="0.01" value="${p.valor}" onchange="rdAtualizarParcela(${i},'valor',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px">
+        <input type="text" inputmode="decimal" value="${rdNumeroParaMoeda(p.valor)}" oninput="rdFormatarMoedaInput(this)" onchange="rdAtualizarParcela(${i},'valor',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:120px">
       </div>`).join('') +
     '</div>';
 }
 
 function rdAtualizarParcela(i, campo, valor) {
   if (!window._rdParcelas || !window._rdParcelas[i]) return;
-  window._rdParcelas[i][campo] = campo==='valor' ? (parseFloat(valor)||0) : valor;
+  window._rdParcelas[i][campo] = campo==='valor' ? rdMoedaParaNumero(valor) : valor;
 }
 
 /* -- Upload de comprovante (foto/scan ou arquivo) direto no formulário de
@@ -6761,7 +6785,7 @@ async function salvarDespesa() {
   const veiculo = (document.getElementById('rd_veiculo')||{}).value || '';
   const cc = (document.getElementById('rd_cc')||{}).value || '';
   const local = (document.getElementById('rd_local')||{}).value || '';
-  const valorTotal = parseFloat(document.getElementById('rd_valor').value) || 0;
+  const valorTotal = rdMoedaParaNumero(document.getElementById('rd_valor').value);
   const tipoPagamento = document.getElementById('rd_tipo_pagamento').value;
   const formaPgto = (document.getElementById('rd_forma_pgto')||{}).value || '';
   const responsavel = document.getElementById('rd_responsavel').value;
@@ -7105,6 +7129,9 @@ function rdAbrirEdicaoDespesa(id) {
   // Preserva o comprovante já vinculado (se houver) até o usuário anexar um novo
   window._rdeComprovanteUrl = i.ComprovanteUrl || '';
   window._rdeComprovanteNome = i.ComprovanteNome || '';
+  // Empresa do lançamento sendo editado — usada pra filtrar a lista de Contratos/CC
+  // disponíveis pro reatribuir contrato/medição desta parcela específica.
+  window._rdeEmpresaAtual = i.Empresa || (RD_EMPRESAS && RD_EMPRESAS[0]) || '';
 
   const bancosEmpresa = RD_BANCOS_POR_EMPRESA[i.Empresa] || [];
   const opt = (v,l) => `<option value="${v}" ${i.Status===v?'selected':''}>${l}</option>`;
@@ -7132,14 +7159,29 @@ function rdAbrirEdicaoDespesa(id) {
       <input id="rde_banco" list="rde_bancos_dl" value="${(i.Banco||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
       <datalist id="rde_bancos_dl">${bancosEmpresa.map(b=>`<option value="${b}">`).join('')}</datalist>
 
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">CONTRATO (CENTRO DE CUSTO) DESTA PARCELA</label>
+      <div style="position:relative;margin-bottom:4px">
+        <input type="text" id="rde_cc_input" value="${(i.CentroCusto||'').replace(/"/g,'&quot;')}" placeholder="Digite para buscar..." autocomplete="off"
+          oninput="rdeFiltrarCCs(this.value)" onfocus="rdeFiltrarCCs(this.value)" onblur="setTimeout(()=>rdeFecharDropdownCC(),150)"
+          style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);box-sizing:border-box">
+        <input type="hidden" id="rde_cc" value="${(i.CentroCusto||'').replace(/"/g,'&quot;')}">
+        <div id="rde_cc_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+      </div>
+      <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:12px">Parcelas de uma mesma compra podem ser custeadas por contratos ou medições diferentes — mude aqui se for o caso desta parcela.</div>
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">Nº MEDIÇÃO DESTA PARCELA</label>
+      <input id="rde_medicao" list="rde_medicao_dl" type="text" value="${(i.NumMedicao||'').toString().replace(/"/g,'&quot;')}" placeholder="Selecione o contrato acima..." style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+      <datalist id="rde_medicao_dl"></datalist>
+      <div id="rde_medicao_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px;margin-bottom:12px"></div>
+
       <div style="display:flex;gap:10px;margin-bottom:12px">
         <div style="flex:1">
           <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR (R$)</label>
-          <input id="rde_valor" type="number" step="0.01" value="${i.Valor||0}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+          <input id="rde_valor" type="text" inputmode="decimal" value="${rdNumeroParaMoeda(i.Valor||0)}" oninput="rdFormatarMoedaInput(this)" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);box-sizing:border-box">
         </div>
         <div style="flex:1">
           <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VENCIMENTO</label>
-          <input id="rde_vencimento" type="date" value="${i.Vencimento||''}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+          <input id="rde_vencimento" type="date" value="${i.Vencimento||''}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);box-sizing:border-box">
         </div>
       </div>
 
@@ -7154,6 +7196,72 @@ function rdAbrirEdicaoDespesa(id) {
       </div>
     </div>`;
   document.body.appendChild(modal);
+  setTimeout(() => rdeAtualizarMedicaoPorCC(i.CentroCusto || ''), 50);
+}
+
+/* -- Busca de Contrato (Centro de Custo) dentro do modal de edição de uma parcela/
+   lançamento de Despesa já existente — mesmo padrão do formulário de Nova Despesa,
+   mas escopado aos ids rde_* e à empresa do lançamento sendo editado (window._rdeEmpresaAtual),
+   não à empresa ativa no submenu, pra funcionar corretamente mesmo editando algo de outra
+   empresa. Permite reatribuir uma parcela pra outro contrato quando ela foi custeada por
+   um centro de custo diferente do lançamento original. -- */
+function rdeCCsDisponiveis() {
+  const empresa = window._rdeEmpresaAtual || (RD_EMPRESAS && RD_EMPRESAS[0]) || '';
+  return (centrosCustoData||[]).filter(c => {
+    const emp = c.empresa || '';
+    const match = (empresa === 'Expedian' && emp === 'Expedian') ||
+                  (empresa === 'TL3' && emp === 'TL3 Engenharia') ||
+                  (empresa === 'EXP Brasil' && emp === 'EXP_Brasil');
+    return match && c.status === 'ativo';
+  });
+}
+function rdeFiltrarCCs(texto) {
+  const dd = document.getElementById('rde_cc_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  const disponiveis = rdeCCsDisponiveis();
+  const matches = (t ? disponiveis.filter(c => (c.id+' '+c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0,40);
+  let html = matches.map(c => {
+    const label = (c.id + ' · ' + c.contrato).replace(/'/g,"\\'");
+    return '<div onclick="rdeSelecionarCC(\''+label+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>'+c.id+'</strong> <span style="color:var(--text-muted)">· '+c.contrato+'</span>' +
+    '</div>';
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum centro de custo encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function rdeFecharDropdownCC() {
+  const dd = document.getElementById('rde_cc_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+function rdeSelecionarCC(valor) {
+  const inp = document.getElementById('rde_cc_input'); if (inp) inp.value = valor;
+  const hid = document.getElementById('rde_cc'); if (hid) hid.value = valor;
+  rdeFecharDropdownCC();
+  rdeAtualizarMedicaoPorCC(valor);
+}
+async function rdeAtualizarMedicaoPorCC(cc) {
+  const dl = document.getElementById('rde_medicao_dl');
+  const hint = document.getElementById('rde_medicao_hint');
+  if (!cc) { if (dl) dl.innerHTML=''; if (hint) hint.textContent=''; return; }
+  if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  const ccId = _ccIdPuro(cc);
+  let medicoes = [];
+  try { medicoes = await dbLer('Medicoes'); } catch(e) { medicoes = []; }
+  const doCC = medicoes.filter(m => _ccIdPuro(m.CentroCusto) === ccId)
+    .sort((a,b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, {numeric:true}));
+  if (doCC.length) {
+    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao||''} (${m.Status||''})</option>`).join('');
+    const abertas = doCC.filter(m => !['Concluída','Cancelada','Faturada'].includes(m.Status));
+    if (hint) hint.textContent = abertas.length
+      ? `Medições em aberto: ${abertas.map(m=>m.NumMedicao).join(', ')} · selecione o número correspondente.`
+      : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+    return;
+  }
+  if (dl) dl.innerHTML = '';
+  if (hint) hint.textContent = 'Nenhuma medição formal cadastrada para este contrato ainda — pode digitar o número livremente.';
 }
 
 async function rdeAnexarComprovante(inputEl) {
@@ -7177,8 +7285,10 @@ async function rdSalvarEdicaoDespesa(id) {
   const status = document.getElementById('rde_status').value;
   const dataPagamento = document.getElementById('rde_data_pagamento').value;
   const banco = document.getElementById('rde_banco').value.trim();
-  const valor = parseFloat(document.getElementById('rde_valor').value) || 0;
+  const valor = rdMoedaParaNumero(document.getElementById('rde_valor').value);
   const vencimento = document.getElementById('rde_vencimento').value;
+  const centroCusto = (document.getElementById('rde_cc')||{}).value || '';
+  const numMedicao = (document.getElementById('rde_medicao')||{}).value.trim() || '';
   const comprovanteUrl = window._rdeComprovanteUrl || '';
   const comprovanteNome = window._rdeComprovanteNome || '';
 
@@ -7189,6 +7299,8 @@ async function rdSalvarEdicaoDespesa(id) {
     Valor: valor,
     ValorTotal: valor,
     Vencimento: vencimento,
+    CentroCusto: centroCusto,
+    NumMedicao: numMedicao,
     Comprovante: comprovanteUrl ? 'Sim' : 'Não',
     ComprovanteUrl: comprovanteUrl,
     ComprovanteNome: comprovanteNome,
