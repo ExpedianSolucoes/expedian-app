@@ -10282,9 +10282,19 @@ async function carregarMeusDocumentos() {
   if (emailAtual && users[emailAtual] && users[emailAtual].name) nome = users[emailAtual].name;
   if (!nome) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Sessão sem nome identificado.</div>'; return; }
   try {
-    const dados = await dbLer('GestaoDocumental');
-    const gd = (Array.isArray(dados) && dados.length) ? dados[0] : null;
-    if (!gd || !Array.isArray(gd.colaboradores)) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Nenhum documento cadastrado ainda.</div>'; return; }
+    // Mesma resiliência do gdCarregarDados(): usa o que já está em memória, senão o cache
+    // local, senão busca no OneDrive. Sem isso, um colaborador que abre "Meus Documentos"
+    // antes do login Microsoft terminar (ou com a conexão instável) via a mensagem enganosa
+    // de "nenhum documento cadastrado" mesmo já tendo documentos reais cadastrados.
+    let gd = (window._gdDados && Array.isArray(window._gdDados.colaboradores)) ? window._gdDados : null;
+    if (!gd) {
+      try { const c = localStorage.getItem('gd_dados_cache'); if (c) { const parsed = JSON.parse(c); if (parsed && Array.isArray(parsed.colaboradores)) gd = parsed; } } catch(e) {}
+    }
+    if (!gd) {
+      const dados = await dbLer('GestaoDocumental');
+      gd = (Array.isArray(dados) && dados.length) ? dados[0] : null;
+    }
+    if (!gd || !Array.isArray(gd.colaboradores)) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem">Não foi possível carregar seus documentos agora (sem conexão ou sessão ainda carregando). Tente novamente em instantes.</div>'; return; }
     const norm = s => (s || '').trim().toLowerCase();
     let colab = gd.colaboradores.find(c => norm(c.nome) === norm(nome));
     // Se não achou pelo nome canônico do cadastro local, tenta também pelo nome de
