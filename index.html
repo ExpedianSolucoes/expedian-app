@@ -5231,13 +5231,8 @@ let RD_FILTRO_KPI = '';
 function _rdSemanaDoAno(dataStr) {
   if (!dataStr) return '';
   const d = new Date(dataStr + 'T00:00:00');
-  const target = new Date(d.valueOf());
-  const dayNr = (d.getDay() + 6) % 7; // 0 = segunda
-  target.setDate(target.getDate() - dayNr + 3);
-  const firstThursday = new Date(target.getFullYear(), 0, 4);
-  const diff = target - firstThursday;
-  const week = 1 + Math.round(diff / (7 * 24 * 3600 * 1000));
-  return 'Semana ' + String(week).padStart(2, '0') + '/' + target.getFullYear();
+  const dias = ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+  return dias[d.getDay()];
 }
 
 function _rdServicosTodos() {
@@ -6125,7 +6120,7 @@ function renderDespesasTab() {
         <input type="date" id="rd_data_lancamento" value="${new Date().toISOString().split('T')[0]}" onchange="rdAtualizarSemana()">
       </div>
       <div class="form-group">
-        <label>Semana <span style="font-size:.7rem;color:var(--text-muted)">(automático)</span></label>
+        <label>Dia da Semana <span style="font-size:.7rem;color:var(--text-muted)">(automático)</span></label>
         <input type="text" id="rd_semana" readonly style="background:var(--surface2)">
       </div>
       <div class="form-group">
@@ -6153,7 +6148,20 @@ function renderDespesasTab() {
           <option value="fornecedor">Fornecedor</option>
         </select>
       </div>
-      <div class="form-group" id="rd_servico_row" style="display:none">
+      <div class="form-group" style="position:relative">
+        <label>Contrato (Centro de Custo)</label>
+        <input type="text" id="rd_cc_input" placeholder="Selecione a empresa e digite para buscar..." autocomplete="off"
+          oninput="rdFiltrarCCs(this.value)" onfocus="rdFiltrarCCs(this.value)"
+          onblur="setTimeout(()=>rdFecharDropdownCC(),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
+        <input type="hidden" id="rd_cc">
+        <div id="rd_cc_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+      </div>
+    </div>
+
+    <!-- Linha 2b: Serviço OU Fornecedor — mutuamente exclusivos, cada um ocupando a linha inteira -->
+    <div class="form-row">
+      <div class="form-group" id="rd_servico_row" style="display:none;grid-column:span 2">
         <label>Categoria do Serviço</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
           ${RD_GRUPOS_SERVICO.map(g => {
@@ -6178,7 +6186,7 @@ function renderDespesasTab() {
           <div id="rd_servico_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
         </div>
       </div>
-      <div class="form-group" id="rd_fornecedor_row" style="display:none;position:relative">
+      <div class="form-group" id="rd_fornecedor_row" style="display:none;position:relative;grid-column:span 2">
         <label>Fornecedor</label>
         <div style="display:flex;gap:8px">
           <div style="flex:1;position:relative">
@@ -6194,7 +6202,7 @@ function renderDespesasTab() {
       </div>
     </div>
 
-    <!-- Linha 2b: Beneficiário (diárias/projetos) OU Veículo (locação de veículos) — mutuamente exclusivos, conforme categoria de serviço escolhida -->
+    <!-- Linha 2c: Beneficiário (diárias/projetos) OU Veículo (locação de veículos) — mutuamente exclusivos, conforme categoria de serviço escolhida -->
     <div class="form-row" id="rd_beneficiario_row" style="display:none">
       <div class="form-group" id="rd_beneficiario_field" style="flex:1;position:relative">
         <label>Beneficiário</label>
@@ -6216,17 +6224,8 @@ function renderDespesasTab() {
       </div>
     </div>
 
-    <!-- Linha 3: Contrato/CC + Local -->
+    <!-- Linha 3: Local -->
     <div class="form-row">
-      <div class="form-group" style="position:relative">
-        <label>Contrato (Centro de Custo)</label>
-        <input type="text" id="rd_cc_input" placeholder="Selecione a empresa e digite para buscar..." autocomplete="off"
-          oninput="rdFiltrarCCs(this.value)" onfocus="rdFiltrarCCs(this.value)"
-          onblur="setTimeout(()=>rdFecharDropdownCC(),150)"
-          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
-        <input type="hidden" id="rd_cc">
-        <div id="rd_cc_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
-      </div>
       <div class="form-group">
         <label>Local <span style="font-size:.7rem;color:var(--text-muted)">(do fornecedor, editável)</span></label>
         <input type="text" id="rd_local" placeholder="Cidade/UF">
@@ -6756,12 +6755,18 @@ function rdGerarParcelas() {
     return;
   }
   const valorParcela = Math.round((total/qtd)*100)/100;
+  const medicaoBase = (document.getElementById('rd_medicao')||{}).value || '';
+  // Preserva a medição já digitada em cada parcela (se o usuário já tiver ajustado
+  // alguma manualmente antes de mudar qtd/valor/data) — só usa a medição geral
+  // do contrato como valor inicial para parcelas novas.
+  const parcelasAntigas = window._rdParcelas || [];
   const parcelas = [];
   const base = new Date(dataBase + 'T00:00:00');
   for (let i=0;i<qtd;i++) {
     const d = new Date(base);
     d.setMonth(d.getMonth()+i);
-    parcelas.push({ numero:i+1, vencimento: d.toISOString().split('T')[0], valor: valorParcela });
+    const medicaoAnterior = parcelasAntigas[i] ? parcelasAntigas[i].medicao : '';
+    parcelas.push({ numero:i+1, vencimento: d.toISOString().split('T')[0], valor: valorParcela, medicao: medicaoAnterior || medicaoBase });
   }
   const soma = parcelas.reduce((s,p)=>s+p.valor,0);
   const dif = Math.round((total-soma)*100)/100;
@@ -6776,13 +6781,14 @@ function rdRenderizarParcelas() {
   const parcelas = window._rdParcelas || [];
   if (!parcelas.length) { editor.style.display='none'; editor.innerHTML=''; return; }
   editor.style.display = 'block';
-  editor.innerHTML = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Parcelas geradas automaticamente — ajuste vencimento e valor se precisar:</div>' +
+  editor.innerHTML = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Parcelas geradas automaticamente — ajuste vencimento, valor e nº da medição se precisar:</div>' +
     '<div style="display:flex;flex-direction:column;gap:6px">' +
     parcelas.map((p,i) => `
-      <div style="display:flex;gap:8px;align-items:center;background:var(--surface2);padding:6px 10px;border-radius:8px">
+      <div style="display:flex;gap:8px;align-items:center;background:var(--surface2);padding:6px 10px;border-radius:8px;flex-wrap:wrap">
         <span style="font-size:.78rem;font-weight:700;width:44px">${p.numero}/${parcelas.length}</span>
         <input type="date" value="${p.vencimento}" onchange="rdAtualizarParcela(${i},'vencimento',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
         <input type="text" inputmode="decimal" value="${rdNumeroParaMoeda(p.valor)}" oninput="rdFormatarMoedaInput(this)" onchange="rdAtualizarParcela(${i},'valor',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:120px">
+        <input type="text" list="rd_medicao_dl" value="${(p.medicao||'').toString().replace(/"/g,'&quot;')}" placeholder="Nº medição" onchange="rdAtualizarParcela(${i},'medicao',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px" title="Medição que custeia esta parcela específica">
       </div>`).join('') +
     '</div>';
 }
@@ -6880,6 +6886,7 @@ async function salvarDespesa() {
         Vencimento: p.vencimento, Valor: p.valor, Status: status,
         NumParcela: p.numero, TotalParcelas: parcelas.length,
         GrupoCompraId: grupoCompraId,
+        NumMedicao: p.medicao || medicao,
       };
       const okP = await dbInserir('Despesas', dados);
       ok = ok && !!okP;
