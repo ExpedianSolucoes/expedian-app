@@ -1046,7 +1046,8 @@ const menus = {
       { id: 'apr', icon: '📋', label: 'APRs' },
     ]},
     { group: 'checklist', icon: '✔️', label: 'Checklist', children: [
-      { id: 'checklist_ero', icon: '🌿', label: 'Inspeção ERO' },
+      { id: 'checklist_ero', icon: '🌿', label: 'Inspeção de Subestação' },
+      { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
@@ -1083,7 +1084,8 @@ const menus = {
       { id: 'apr', icon: '📋', label: 'APRs' },
     ]},
     { group: 'checklist', icon: '✔️', label: 'Checklist', children: [
-      { id: 'checklist_ero', icon: '🌿', label: 'Inspeção ERO' },
+      { id: 'checklist_ero', icon: '🌿', label: 'Inspeção de Subestação' },
+      { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
@@ -1114,7 +1116,8 @@ const menus = {
       { id: 'apr', icon: '📋', label: 'Emitir APR' },
     ]},
     { group: 'checklist', icon: '✔️', label: 'Checklist', children: [
-      { id: 'checklist_ero', icon: '🌿', label: 'Inspeção ERO' },
+      { id: 'checklist_ero', icon: '🌿', label: 'Inspeção de Subestação' },
+      { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
@@ -1260,6 +1263,7 @@ function renderPage(id) {
     servicos: () => pageServicos(),
     custos: () => pageCustos(),
     checklist_ero: () => pageChecklistERO(),
+    checklist_linha: () => pageChecklistLinha(),
     checklist_bombeamento: () => pageChecklistBombeamento(),
     equipamentos: () => pageEquipamentos(),
     docs: () => pageGestaoDocumental(),
@@ -13429,6 +13433,504 @@ function removeEROPhoto(itemId, fn) {
 }
 
 /* ===============================
+   CHECKLIST — LINHA DE DISTRIBUIÇÃO
+   Inspeção ambiental por ocorrência ao longo do trecho (postes/torres),
+   não é uma checklist fixa de perguntas — a equipe registra quantas
+   ocorrências encontrar em campo (erosão, supressão vegetal, resíduos,
+   fauna, etc.), cada uma com campos específicos por categoria.
+=============================== */
+if (!window._linhaData) window._linhaData = { ocorrencias: [] };
+if (typeof window._linhaHistorico === 'undefined') window._linhaHistorico = null;
+if (typeof window._linhaOcorrenciaSeq === 'undefined') window._linhaOcorrenciaSeq = 1;
+
+const LINHA_CATEGORIAS = [
+  'Erosão',
+  'Supressão vegetal',
+  'Resíduos sólidos',
+  'Resíduos oleosos',
+  'Fauna silvestre',
+  'Queimada / risco de incêndio',
+  'Patrimônio arqueológico',
+  'Ocupação irregular',
+  'Outro',
+];
+
+const LINHA_SUBCAMPOS = {
+  'Erosão': [
+    { chave:'tipoErosao', label:'Tipo de erosão', opcoes:['Laminar','Sulco','Voçoroca'] },
+    { chave:'riscoEstrutura', label:'Risco à estabilidade da estrutura', opcoes:['Sim','Não'] },
+  ],
+  'Supressão vegetal': [
+    { chave:'tipoVegetacao', label:'Tipo de vegetação', opcoes:['Arbórea','Arbustiva','Rasteira'] },
+    { chave:'distanciaCondutor', label:'Distância estimada ao condutor (m)', opcoes:[] },
+    { chave:'urgencia', label:'Urgência', opcoes:['Baixa','Média','Alta'] },
+  ],
+  'Resíduos sólidos': [
+    { chave:'tipoResiduo', label:'Tipo de resíduo', opcoes:['Doméstico','Construção civil','Entulho','Outro'] },
+    { chave:'volumeEstimado', label:'Volume estimado', opcoes:[] },
+  ],
+  'Resíduos oleosos': [
+    { chave:'origemOleo', label:'Origem', opcoes:['Transformador','Equipamento','Desconhecida'] },
+    { chave:'vazamentoAtivo', label:'Vazamento ativo', opcoes:['Sim','Não'] },
+  ],
+  'Fauna silvestre': [
+    { chave:'grupoFauna', label:'Grupo', opcoes:['Avifauna','Mastofauna','Herpetofauna'] },
+    { chave:'situacaoFauna', label:'Situação', opcoes:['Vivo','Ninho','Óbito','Vestígio'] },
+    { chave:'especie', label:'Espécie (se identificada)', opcoes:[] },
+  ],
+  'Queimada / risco de incêndio': [
+    { chave:'situacaoQueimada', label:'Situação', opcoes:['Queimada ativa','Vestígio de queimada','Material combustível acumulado'] },
+    { chave:'areaAfetada', label:'Área afetada (m²)', opcoes:[] },
+  ],
+  'Patrimônio arqueológico': [
+    { chave:'tipoVestigio', label:'Tipo de vestígio', opcoes:['Cerâmico','Lítico','Construção','Outro'] },
+    { chave:'comunicarOrgao', label:'Comunicar órgão competente', opcoes:['Sim','Não'] },
+  ],
+  'Ocupação irregular': [
+    { chave:'tipoOcupacao', label:'Tipo', opcoes:['Residencial','Agrícola','Comercial','Outro'] },
+    { chave:'situacaoOcupacao', label:'Situação', opcoes:['Consolidada','Recente'] },
+  ],
+  'Outro': [
+    { chave:'descricaoOutro', label:'Descrição', opcoes:[] },
+  ],
+};
+
+/* Distâncias de referência NR-10 Anexo I (raio de zona de risco/controlada) por classe de tensão */
+const LINHA_TENSOES = {
+  '13,8 kV': { rr:'0,38 m', rc:'1,38 m' },
+  '34,5 kV': { rr:'0,58 m', rc:'1,58 m' },
+  '69 kV':   { rr:'0,90 m', rc:'1,90 m' },
+  '138 kV':  { rr:'1,20 m', rc:'3,20 m' },
+};
+
+function linhaEncontrarOcorrencia(id) {
+  return (window._linhaData.ocorrencias || []).find(o => o.id === id);
+}
+
+function linhaCampo(campo, valor) {
+  if (!window._linhaData) window._linhaData = { ocorrencias: [] };
+  window._linhaData[campo] = valor;
+}
+
+function linhaAtualizarResponsaveis() {
+  window._linhaData.tecnico1 = document.getElementById('linha_tecnico1').value;
+  window._linhaData.tecnico2 = document.getElementById('linha_tecnico2').value;
+}
+
+function linhaAddOcorrencia() {
+  if (!window._linhaData.ocorrencias) window._linhaData.ocorrencias = [];
+  window._linhaData.ocorrencias.push({
+    id: window._linhaOcorrenciaSeq++,
+    estrutura: '', tipoEstrutura: '', categoria: '', sub: {},
+    latitude: '', longitude: '', conformidade: '',
+  });
+  navigate('checklist_linha');
+}
+
+function linhaRemoverOcorrencia(id) {
+  if (!confirm('Remover esta ocorrência do checklist?')) return;
+  window._linhaData.ocorrencias = (window._linhaData.ocorrencias || []).filter(o => o.id !== id);
+  navigate('checklist_linha');
+}
+
+function linhaOcorrenciaCampo(id, campo, valor) {
+  const oc = linhaEncontrarOcorrencia(id);
+  if (oc) oc[campo] = valor;
+}
+
+function renderLinhaSubcampos(oc) {
+  const campos = LINHA_SUBCAMPOS[oc.categoria];
+  if (!campos) return '';
+  return campos.map(c => `
+    <div class="form-group">
+      <label>${c.label}</label>
+      ${c.opcoes.length
+        ? `<select onchange="linhaOcorrenciaSub(${oc.id},'${c.chave}',this.value)">
+             <option value="">Selecione...</option>
+             ${c.opcoes.map(o => `<option value="${o}" ${(oc.sub||{})[c.chave]===o?'selected':''}>${o}</option>`).join('')}
+           </select>`
+        : `<input value="${(oc.sub||{})[c.chave]||''}" oninput="linhaOcorrenciaSub(${oc.id},'${c.chave}',this.value)" placeholder="${c.label}">`}
+    </div>`).join('');
+}
+
+/* -- Muda a categoria da ocorrência e re-renderiza só o bloco de subcampos (sem navigate,
+      pra não perder o foco do próprio campo de categoria enquanto o usuário digita) -- */
+function linhaOcorrenciaCategoria(id, valor) {
+  const oc = linhaEncontrarOcorrencia(id);
+  if (!oc) return;
+  if (oc.categoria !== valor) { oc.categoria = valor; oc.sub = {}; }
+  const el = document.getElementById('linha-sub-' + id);
+  if (el) el.innerHTML = renderLinhaSubcampos(oc);
+}
+
+function linhaOcorrenciaSub(id, chave, valor) {
+  const oc = linhaEncontrarOcorrencia(id);
+  if (!oc) return;
+  if (!oc.sub) oc.sub = {};
+  oc.sub[chave] = valor;
+}
+
+function linhaCapturarCoordenadas(id) {
+  if (!navigator.geolocation) { showToast('⚠️ Geolocalização não suportada neste dispositivo.'); return; }
+  const btn = document.getElementById('linha-coord-btn-' + id);
+  if (btn) btn.textContent = '⏳ Capturando...';
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      const oc = linhaEncontrarOcorrencia(id);
+      if (!oc) return;
+      oc.latitude = pos.coords.latitude.toFixed(6);
+      oc.longitude = pos.coords.longitude.toFixed(6);
+      const input = document.getElementById('linha-coord-' + id);
+      if (input) input.value = oc.latitude + ', ' + oc.longitude;
+      if (btn) btn.textContent = '✅ Capturado';
+    },
+    err => {
+      showToast('⚠️ Não foi possível obter a localização: ' + (err.message || 'permissão negada.'));
+      if (btn) btn.textContent = '📍 Capturar';
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
+/* -- Fotos por ocorrência: mesmo padrão de 4 slots do checklist de subestação -- */
+function loadLinhaPhoto(event, ocId, fn) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  const oc = linhaEncontrarOcorrencia(ocId);
+  if (!oc) return;
+  const ordered = [fn, ...[1,2,3,4].filter(n => n !== fn && !oc['foto' + n])];
+  if (files.length > ordered.length) {
+    showToast('⚠️ Só cabem ' + ordered.length + ' foto(s) aqui — as demais foram ignoradas (máximo 4 por ocorrência).');
+  }
+  Promise.all(files.slice(0, ordered.length).map((file, idx) =>
+    _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => {
+      const slotFn = ordered[idx];
+      oc['foto' + slotFn] = dataUrl;
+      oc['foto' + slotFn + '_h'] = horizontal;
+    })
+  )).then(() => navigate('checklist_linha'));
+}
+
+function removeLinhaPhoto(ocId, fn) {
+  const oc = linhaEncontrarOcorrencia(ocId);
+  if (!oc) return;
+  delete oc['foto' + fn];
+  delete oc['foto' + fn + '_h'];
+  navigate('checklist_linha');
+}
+
+/* -- Histórico (mini dashboard) -- */
+async function carregarLinhaHistorico(forcar) {
+  if (window._linhaHistorico !== null && !forcar) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('linha_historico_cache') || '[]'); } catch(e) { cacheLocal = []; }
+  if (window._linhaHistorico === null) window._linhaHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('ChecklistLinha');
+    if (Array.isArray(lista)) {
+      window._linhaHistorico = lista;
+      try { localStorage.setItem('linha_historico_cache', JSON.stringify(lista)); } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('[Linha] Falha ao carregar histórico, usando cache local.', e);
+  }
+  navigate('checklist_linha');
+}
+
+function renderLinhaMiniDashboard() {
+  const historico = Array.isArray(window._linhaHistorico) ? window._linhaHistorico : [];
+  const trechosUnicos = new Set(historico.map(r => (r.empreendimento || 'Sem nome').trim()).filter(Boolean));
+  const ordenado = [...historico].sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  return `
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📊 Mini Dashboard — Checklists de Linha</div>
+      <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="carregarLinhaHistorico(true)">🔄 Atualizar</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px">
+      <div class="kpi-card green" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Checklists Registrados</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${historico.length}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Trechos Distintos</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${trechosUnicos.size}</div>
+      </div>
+    </div>
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
+      Histórico de Trechos Inspecionados
+    </div>
+    <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
+      ${window._linhaHistorico === null
+        ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Carregando histórico...</div>`
+        : ordenado.length === 0
+          ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Nenhum checklist encontrado ainda.</div>`
+          : ordenado.map((r, idx) => `
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;${idx%2===0?'background:var(--surface)':'background:var(--surface2)'};${idx<ordenado.length-1?'border-bottom:1px solid var(--border)':''}">
+              <div style="flex:1;min-width:140px">
+                <div style="font-size:.82rem;font-weight:700">${r.empreendimento || 'Sem nome'}</div>
+                <div style="font-size:.68rem;color:var(--text-muted)">${r.responsavel || '—'} · ${r.tensao || '—'}</div>
+              </div>
+              <div style="font-size:.75rem;color:var(--text-muted);min-width:80px;text-align:center">
+                ${r.data ? new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}
+              </div>
+              <div style="font-size:.78rem;font-weight:700;min-width:80px;text-align:right;color:var(--green-main)">
+                ${r.QtdOcorrencias || 0} ocorr.
+              </div>
+              <div style="display:flex;gap:4px;flex-shrink:0">
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="linhaEditarChecklist(${r.Id})">✏️ Editar</button>
+              </div>
+            </div>`).join('')
+      }
+    </div>
+  </div>
+  `;
+}
+
+/* -- Salva/atualiza no OneDrive: resumo na tabela do dashboard + snapshot completo à parte -- */
+async function salvarLinhaChecklist() {
+  const d = window._linhaData || {};
+  const nomeEmp = (d.empreendimento || '').trim();
+  const dataInsp = d.data || '';
+  const editando = !!window._linhaRegistroAtualId;
+
+  if (nomeEmp && dataInsp && !editando) {
+    showToast('🔎 Verificando duplicidade...');
+    const listaAtual = await dbLer('ChecklistLinha');
+    const listaArr = Array.isArray(listaAtual) ? listaAtual : [];
+    const duplicado = listaArr.find(r =>
+      (r.empreendimento || '').trim().toLowerCase() === nomeEmp.toLowerCase() &&
+      r.data === dataInsp
+    );
+    if (duplicado) {
+      const dataFmt = new Date(dataInsp + 'T00:00:00').toLocaleDateString('pt-BR');
+      const continuar = confirm(
+        `⚠️ Já existe um checklist salvo para "${nomeEmp}" na data ${dataFmt}.\n\n` +
+        `Deseja salvar mesmo assim? Isso vai registrar uma nova inspeção duplicada no histórico.`
+      );
+      if (!continuar) { showToast('Salvamento cancelado.'); return; }
+    }
+    window._linhaHistorico = listaArr;
+    try { localStorage.setItem('linha_historico_cache', JSON.stringify(listaArr)); } catch(e) {}
+  }
+
+  const meuId = editando ? window._linhaRegistroAtualId : Date.now();
+
+  const registro = {
+    Id: meuId,
+    Title: 'Linha - ' + (d.empreendimento || 'Sem trecho') + ' - ' + (d.data || new Date().toLocaleDateString('pt-BR')),
+    empreendimento: d.empreendimento || '',
+    responsavel: d.responsavel || (window._currentUser ? window._currentUser.name : ''),
+    data: d.data || '',
+    tensao: d.tensao || '',
+    QtdOcorrencias: (d.ocorrencias || []).length,
+    Status: 'Salvo',
+    arquivoDados: 'Checklists/Linha/dados/' + meuId + '.json',
+  };
+
+  showSyncStatus('Enviando para OneDrive...');
+
+  const novo = editando
+    ? (await dbAtualizar('ChecklistLinha', meuId, registro)) ? registro : null
+    : await dbInserir('ChecklistLinha', registro);
+
+  const blobDados = new Blob([JSON.stringify(d)], { type: 'application/json' });
+  await uploadParaOneDrive(blobDados, 'Checklists/Linha/dados', meuId + '.json');
+
+  window._linhaRegistroAtualId = meuId;
+
+  if (!Array.isArray(window._linhaHistorico)) window._linhaHistorico = [];
+  const idxExistente = window._linhaHistorico.findIndex(r => r.Id === meuId);
+  const registroSalvo = novo || { ...registro, Created: new Date().toISOString() };
+  if (idxExistente >= 0) window._linhaHistorico[idxExistente] = registroSalvo;
+  else window._linhaHistorico.unshift(registroSalvo);
+  try { localStorage.setItem('linha_historico_cache', JSON.stringify(window._linhaHistorico)); } catch(e) {}
+
+  if (novo) {
+    showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
+    showToast(editando ? '☁️ Checklist atualizado no OneDrive!' : '☁️ Checklist salvo e sincronizado com o OneDrive de atendimento@expediansolucoes.com.br!');
+  } else {
+    showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
+    showToast('⚠️ Salvo apenas neste dispositivo. Verifique o login com Microsoft e tente sincronizar de novo.');
+  }
+  navigate('checklist_linha');
+}
+
+/* -- Carrega de volta um checklist de linha já salvo, pra continuar editando -- */
+async function linhaEditarChecklist(id) {
+  showSyncStatus('Carregando checklist para edição...');
+  const texto = await baixarArquivoCentral('Checklists/Linha/dados/' + id + '.json');
+  if (!texto) {
+    showSyncStatus('Não foi possível carregar', 'err', 4000);
+    showToast('⚠️ Não encontrei os dados completos desse checklist (pode ter sido salvo antes desse recurso existir).');
+    return;
+  }
+  try {
+    window._linhaData = JSON.parse(texto);
+    if (!window._linhaData.ocorrencias) window._linhaData.ocorrencias = [];
+    const maxId = window._linhaData.ocorrencias.reduce((m, o) => Math.max(m, o.id || 0), 0);
+    window._linhaOcorrenciaSeq = maxId + 1;
+    window._linhaRegistroAtualId = id;
+    showSyncStatus('Checklist carregado!', 'ok', 3000);
+    showToast('✏️ Checklist carregado para edição. Altere o que precisar e clique em Salvar.');
+    navigate('checklist_linha');
+  } catch(e) {
+    showToast('⚠️ Erro ao interpretar os dados salvos desse checklist.');
+  }
+}
+
+function limparLinhaChecklist() {
+  if (confirm('Deseja limpar todo o formulário? Os dados serão perdidos.')) {
+    window._linhaData = { ocorrencias: [] };
+    window._linhaRegistroAtualId = null;
+    navigate('checklist_linha');
+  }
+}
+
+function pageChecklistLinha() {
+  if (!window._linhaData) window._linhaData = { ocorrencias: [] };
+  if (!window._linhaData.ocorrencias) window._linhaData.ocorrencias = [];
+  const d = window._linhaData;
+  if (window._linhaHistorico === null) carregarLinhaHistorico();
+
+  return `
+  <div class="page-header">
+    <h1>Checklist de Inspeção Ambiental</h1>
+    <p>Linha de Distribuição · Registro por ocorrência ao longo do trecho</p>
+  </div>
+
+  ${renderLinhaMiniDashboard()}
+
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div class="card-title" style="font-size:.88rem;margin-bottom:14px">1. Identificação da Inspeção</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Empreendimento / Trecho</label>
+        <input id="linha_empreendimento" value="${d.empreendimento||''}" oninput="linhaCampo('empreendimento',this.value)" placeholder="Ex: LD 34,5 kV Trecho Norte">
+      </div>
+      <div class="form-group">
+        <label>Data da Inspeção</label>
+        <input type="date" id="linha_data" value="${d.data||''}" oninput="linhaCampo('data',this.value)">
+      </div>
+      <div class="form-group">
+        <label>Responsável pela Inspeção</label>
+        <select id="linha_responsavel" onchange="linhaCampo('responsavel',this.value)">
+          <option value="">Selecione...</option>
+          ${ERO_TECNICOS.map(n => `<option value="${n}" ${d.responsavel===n?'selected':''}>${n}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Técnico 1</label>
+        <select id="linha_tecnico1" onchange="linhaAtualizarResponsaveis()">
+          <option value="">Selecione...</option>
+          ${ERO_TECNICOS.map(n => `<option value="${n}" ${d.tecnico1===n?'selected':''}>${n}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Técnico 2</label>
+        <select id="linha_tecnico2" onchange="linhaAtualizarResponsaveis()">
+          <option value="">Selecione...</option>
+          ${ERO_TECNICOS.map(n => `<option value="${n}" ${d.tecnico2===n?'selected':''}>${n}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Tensão da Rede</label>
+        <select id="linha_tensao" onchange="linhaCampo('tensao',this.value);navigate('checklist_linha')">
+          <option value="">Selecione...</option>
+          ${Object.keys(LINHA_TENSOES).map(t => `<option value="${t}" ${d.tensao===t?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    ${d.tensao && LINHA_TENSOES[d.tensao] ? `
+    <div style="margin-top:14px;padding:10px 12px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);font-size:.72rem;color:var(--text-muted)">
+      📏 Referência NR-10 (Anexo I) para ${d.tensao}: zona de risco a <strong>${LINHA_TENSOES[d.tensao].rr}</strong>, zona controlada a <strong>${LINHA_TENSOES[d.tensao].rc}</strong> — use como referência ao avaliar a distância da vegetação em relação à rede.
+    </div>` : ''}
+  </div>
+
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="font-size:.88rem;margin-bottom:0">2. Registro Ambiental</div>
+      <button class="btn-primary" onclick="linhaAddOcorrencia()">➕ Nova Ocorrência</button>
+    </div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Registre uma ocorrência para cada estrutura/ponto encontrado ao longo do trecho. Adicione quantas forem necessárias.</div>
+
+    ${d.ocorrencias.length === 0
+      ? `<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:.82rem;border:1px dashed var(--border);border-radius:10px">Nenhuma ocorrência registrada ainda. Clique em "➕ Nova Ocorrência" para começar.</div>`
+      : d.ocorrencias.map((oc, idx) => `
+      <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;background:${idx%2===0?'var(--surface)':'var(--surface2)'}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-family:'Mont',sans-serif;font-size:.8rem;font-weight:800;color:var(--green-main)">Ocorrência ${idx+1}</span>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="linhaRemoverOcorrencia(${oc.id})">🗑️ Remover</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+          <div class="form-group">
+            <label>Identificação da Estrutura</label>
+            <input value="${oc.estrutura||''}" oninput="linhaOcorrenciaCampo(${oc.id},'estrutura',this.value)" placeholder="Ex: P-014">
+          </div>
+          <div class="form-group">
+            <label>Tipo de Estrutura</label>
+            <input list="linha_dl_estrutura_${oc.id}" value="${oc.tipoEstrutura||''}" oninput="linhaOcorrenciaCampo(${oc.id},'tipoEstrutura',this.value)" placeholder="Selecione ou digite">
+            <datalist id="linha_dl_estrutura_${oc.id}"><option value="Torre"><option value="Poste"></datalist>
+          </div>
+          <div class="form-group">
+            <label>Tipo de Ocorrência</label>
+            <input list="linha_dl_cat_${oc.id}" value="${oc.categoria||''}" oninput="linhaOcorrenciaCategoria(${oc.id},this.value)" placeholder="Selecione ou digite">
+            <datalist id="linha_dl_cat_${oc.id}">${LINHA_CATEGORIAS.map(c => `<option value="${c}">`).join('')}</datalist>
+          </div>
+        </div>
+
+        <div id="linha-sub-${oc.id}" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">${renderLinhaSubcampos(oc)}</div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+          <div class="form-group">
+            <label>Coordenadas</label>
+            <div style="display:flex;gap:6px">
+              <input id="linha-coord-${oc.id}" value="${oc.latitude?oc.latitude+', '+oc.longitude:''}" readonly placeholder="—" style="flex:1">
+              <button id="linha-coord-btn-${oc.id}" class="btn-secondary" style="padding:6px 10px;font-size:.75rem;white-space:nowrap" onclick="linhaCapturarCoordenadas(${oc.id})">📍 Capturar</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Situação de Conformidade</label>
+            <select onchange="linhaOcorrenciaCampo(${oc.id},'conformidade',this.value)">
+              <option value="">Selecione...</option>
+              <option value="conforme" ${oc.conformidade==='conforme'?'selected':''}>✅ Conforme</option>
+              <option value="nao_conforme" ${oc.conformidade==='nao_conforme'?'selected':''}>❌ Não conforme</option>
+              <option value="na" ${oc.conformidade==='na'?'selected':''}>➖ Não aplicável</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:5px">📷 Fotos</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            ${[1,2,3,4].map(fn => `
+            <div style="position:relative;flex-shrink:0">
+              <label style="cursor:pointer;display:block" title="Foto ${fn}">
+                <div style="width:44px;height:44px;border-radius:8px;border:2px dashed ${oc['foto'+fn]?'var(--green-main)':'var(--border)'};background:${oc['foto'+fn]?'transparent':'var(--surface2)'};display:flex;align-items:center;justify-content:center;overflow:hidden">
+                  ${oc['foto'+fn] ? `<img src="${oc['foto'+fn]}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">` : `<span style="font-size:1.1rem;opacity:.5">📷</span>`}
+                </div>
+                <input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="loadLinhaPhoto(event,${oc.id},${fn})">
+              </label>
+              ${oc['foto'+fn] ? `<button onclick="removeLinhaPhoto(${oc.id},${fn})" style="position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:var(--red);border:none;color:#fff;font-size:.55rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>` : ''}
+            </div>`).join('')}
+          </div>
+        </div>
+      </div>`).join('')}
+  </div>
+
+  <div style="margin-bottom:40px">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+      <button class="btn-primary" onclick="salvarLinhaChecklist()">💾 Salvar Progresso e Sincronizar</button>
+      <button class="btn-secondary" onclick="limparLinhaChecklist()">🗑️ Limpar Formulário</button>
+    </div>
+    <div style="font-size:.7rem;color:var(--text-muted);display:flex;align-items:center;gap:5px">
+      ☁️ Ao salvar, o checklist é enviado automaticamente para o OneDrive de <strong>atendimento@expediansolucoes.com.br</strong>. Pode ser salvo incompleto e retomado depois — não precisa terminar o trecho todo de uma vez.
+    </div>
+  </div>
+  `;
+}
+
+/* ===============================
    CHECKLIST — TESTE DE BOMBEAMENTO E RECUPERAÇÃO
    Relatório de campo para teste de bombeamento de poços artesianos/tubulares.
 =============================== */
@@ -19459,7 +19961,7 @@ window.migrarDadosOperacionais = async function() {
 
   const dbCentralId = await garantirPastaOneDrive(token, driveId, centralId, 'db');
   console.log('Movendo tabelas não-restritas de db/ para Dados Operacionais/db/...');
-  const TABELAS_CONHECIDAS = ['APRs','ChecklistERO','ChecklistVeicular','ChecklistBombeamento','PrestacaoContas',
+  const TABELAS_CONHECIDAS = ['APRs','ChecklistERO','ChecklistLinha','ChecklistVeicular','ChecklistBombeamento','PrestacaoContas',
     'Fornecedores','Equipamentos','TermosEquipamento','PerfilUsuario','Contadores','AtividadeApp','CentrosCusto',
     'GestaoDocumental','Prazos','Inspecoes'];
   for (const tabela of TABELAS_CONHECIDAS) {
