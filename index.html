@@ -1059,6 +1059,7 @@ const menus = {
       { id: 'receitas_despesas', icon: '💵', label: 'Receitas e Despesas' },
       { id: 'prestacao', icon: '📑', label: 'Prestação de Contas' },
       { id: 'contratos', icon: '📜', label: 'Gestão de Contratos' },
+      { id: 'adiantamento', icon: '💵', label: 'Solicitação de Adiantamento' },
     ]},
     // { group: 'gestao', icon: '🏢', label: 'Gestão', children: [
       // { id: 'rh', icon: '👥', label: 'RH' },             // DESABILITADO TEMPORARIAMENTE
@@ -1092,6 +1093,7 @@ const menus = {
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
       { id: 'servicos', icon: '💼', label: 'Catálogo de Serviços' },
       { id: 'prestacao', icon: '📑', label: 'Prestação de Contas' },
+      { id: 'adiantamento', icon: '💵', label: 'Solicitação de Adiantamento' },
     ]},
     { group: 'equipe', icon: '👥', label: 'Equipe', children: [
       // { id: 'rh', icon: '👥', label: 'Minha Equipe' },  // DESABILITADO TEMPORARIAMENTE
@@ -1275,6 +1277,7 @@ function renderPage(id) {
     inspecoes: () => pageInspecoes(),
     bpo: () => pageBPO(),
     contratos: () => pageContratos(),
+    adiantamento: () => pageAdiantamento(),
   };
   const fn = pages[id] || (() => `<div style="padding:40px;text-align:center;color:var(--text-muted)">Página em construção 🚧</div>`);
   container.innerHTML = fn();
@@ -3593,8 +3596,8 @@ function pagePrestacao() {
         <label>Empresa</label>
         <select id="prest_empresa" onchange="atualizarCCsPrest()">
           <option value="">Selecione a empresa...</option>
-          <option>EXPEDIAN Soluções Ambientais</option>
-          <option>TL3 Ambiental</option>
+          <option>Expedian</option>
+          <option>TL3</option>
           <option>EXP Brasil</option>
         </select>
       </div>
@@ -3755,14 +3758,12 @@ function atualizarCCsPrest() {
   const empresa = document.getElementById('prest_empresa').value;
   const sel = document.getElementById('prest_cc');
   if (!empresa) { sel.innerHTML='<option value="">Selecione a empresa primeiro...</option>'; return; }
-  // Filtrar centros de custo pelo nome da empresa (adaptar chave)
-  const chave = empresa.includes('EXPEDIAN')?'EXPEDIAN Soluções Ambientais': empresa.includes('TL3')?'TL3 Ambiental':'EXP Brasil';
+  // Filtrar centros de custo pelo nome da empresa (padronizado — ver normalizarEmpresa)
+  const chave = normalizarEmpresa(empresa);
   const ccs = EMPRESAS_CC[chave]||[];
   // Adicionar também os que não têm cliente nomeado do array centrosCustoData
   const semCliente = (centrosCustoData||[]).filter(c=> {
-    const emp = c.empresa||'';
-    const match = (empresa.includes('EXPEDIAN')&&emp==='Expedian')||(empresa.includes('TL3')&&emp==='TL3 Engenharia')||(empresa.includes('EXP')&&emp==='EXP_Brasil');
-    return match && c.status==='ativo';
+    return normalizarEmpresa(c.empresa) === chave && c.status==='ativo';
   }).map(c=>c.id+' · '+c.contrato);
   const todos = [...new Set([...ccs,...semCliente])];
   sel.innerHTML='<option value="">Selecione o centro de custo...</option>'+todos.map(c=>`<option>${c}</option>`).join('');
@@ -4136,7 +4137,7 @@ async function carregarPrestacoes() {
         <td style="font-size:.78rem">${i.DataDespesa?new Date(i.DataDespesa+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
         <td><strong>${i.Fornecedor||'—'}</strong><div style="font-size:.7rem;color:var(--text-muted)">${i.Responsavel||''}</div></td>
         <td style="font-size:.75rem">${i.Municipio||'—'}</td>
-        <td style="font-size:.75rem">${i.Empresa||'—'}<br><span style="color:var(--text-muted)">${i.CentroCusto||''}</span></td>
+        <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}<br><span style="color:var(--text-muted)">${i.CentroCusto||''}</span></td>
         <td style="font-size:.72rem">${pgtoTxt}</td>
         <td style="font-size:.75rem">${i.NumeroNF||'—'}${i.ComprovanteUrl?`<br><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.68rem">📎 Ver comprovante</a>`:''}</td>
         <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
@@ -4252,7 +4253,7 @@ async function exportarPrestacaoExcel() {
     'Colaborador': i.Responsavel || '',
     'Fornecedor': i.Fornecedor || '',
     'Município': i.Municipio || '',
-    'Empresa': i.Empresa || '',
+    'Empresa': normalizarEmpresa(i.Empresa) || '',
     'Centro de Custo': i.CentroCusto || '',
     'NF/Recibo': i.NumeroNF || '',
     'Valor': i.Valor || 0,
@@ -4459,9 +4460,26 @@ async function carregarContasReceber() {
 
 /* -- C. PAGAR -- */
 
+// Nome da empresa padronizado em UM único formato em toda a aba Financeiro
+// (Contas a Pagar, Prestação de Contas, Centros de Custo, Despesas/Receitas):
+// "Expedian" / "TL3" / "EXP Brasil". Antes disso cada tela usava uma grafia
+// diferente ("EXPEDIAN Soluções Ambientais", "TL3 Ambiental", "TL3 Engenharia",
+// "EXP_Brasil"...), o que causava filtros e cruzamentos que não batiam.
+// normalizarEmpresa() também aceita as grafias antigas, pra não quebrar
+// lançamentos já salvos no OneDrive antes desta padronização.
+function normalizarEmpresa(valor) {
+  const v = (valor || '').trim();
+  if (!v) return '';
+  if (v === 'Expedian' || v === 'TL3' || v === 'EXP Brasil') return v; // já no padrão novo
+  if (v.toUpperCase().includes('EXPEDIAN')) return 'Expedian';
+  if (v.includes('TL3')) return 'TL3';
+  if (v.includes('EXP')) return 'EXP Brasil';
+  return v;
+}
+
 // Empresas e centros de custo vinculados
 const EMPRESAS_CC = {
-  'EXPEDIAN Soluções Ambientais': [
+  'Expedian': [
     'CC-EXP-001 · Operações Campo',
     'CC-EXP-002 · Administrativo',
     'CC-EXP-003 · Veículos e Logística',
@@ -4469,7 +4487,7 @@ const EMPRESAS_CC = {
     'CC-EXP-005 · Treinamentos e NRs',
     'CC-EXP-006 · Geral',
   ],
-  'TL3 Ambiental': [
+  'TL3': [
     'CC-TL3-001 · Operações',
     'CC-TL3-002 · Administrativo',
     'CC-TL3-003 · Geral',
@@ -4518,8 +4536,8 @@ function pagePagar() {
         <label>Empresa</label>
         <select id="pag_empresa" onchange="atualizarCCsEmpresa()">
           <option value="">Selecione a empresa...</option>
-          <option>EXPEDIAN Soluções Ambientais</option>
-          <option>TL3 Ambiental</option>
+          <option>Expedian</option>
+          <option>TL3</option>
           <option>EXP Brasil</option>
         </select>
       </div>
@@ -4700,6 +4718,7 @@ function pagePagar() {
       <option value="Aguardando Aprovação">Ag. Aprovação</option>
       <option value="Aprovado — Aguardando Pagamento">Ag. Pagamento</option>
       <option value="Pago">Pago</option>
+      <option value="Rejeitada">Rejeitada</option>
     </select>
     <button onclick="pagLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
   </div>
@@ -4724,14 +4743,10 @@ function atualizarCCsEmpresa() {
 }
 
 function _pagCCsDisponiveis() {
-  const empresa = (document.getElementById('pag_empresa') || {}).value || '';
+  const empresa = normalizarEmpresa((document.getElementById('pag_empresa') || {}).value || '');
   if (!empresa) return [];
   return (centrosCustoData || []).filter(c => {
-    const emp = c.empresa || '';
-    const match = (empresa.includes('EXPEDIAN') && emp === 'Expedian') ||
-                  (empresa.includes('TL3') && emp === 'TL3 Engenharia') ||
-                  (empresa.includes('EXP') && emp === 'EXP_Brasil');
-    return match && c.status === 'ativo';
+    return normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo';
   });
 }
 
@@ -4995,26 +5010,378 @@ async function salvarContaPagar(enviarFinanceiro=false) {
 
 async function salvarEnviarFinanceiro() { await salvarContaPagar(true); }
 
-async function aprovarContaPagar(id) {
-  if (currentProfile !== 'diretoria') { showToast('⛔ Acesso restrito à Diretoria.'); return; }
-  const banco = prompt('Banco para pagamento (ex: Bradesco, Itaú, Sicoob):','');
-  if (banco===null) return;
-  _limparSyncError();
-  const ok = await dbAtualizar('ContasPagar', parseInt(id), { Status:'Aprovado — Aguardando Pagamento', BancoAprovado:banco, DataAprovacao:new Date().toISOString().split('T')[0] });
-  showToast(ok?'✅ Aprovado! Aguardando pagamento.':('❌ Erro ao aprovar' + syncErrorDetalhe()));
-  setTimeout(()=>carregarContasPagar(),600);
+/* ===============================
+   VISUALIZAR CONTA A PAGAR — modal único com todos os dados da conta
+   (empresa, fornecedor, CC, valor, quem lançou) e, dependendo do status,
+   as ações: Confirmar e Agendar / Rejeitar (quando Aguardando Aprovação)
+   ou Registrar Pagamento com Data + Banco em lista suspensa (quando
+   Aprovado — Aguardando Pagamento). Ao confirmar o pagamento, sincroniza
+   automaticamente um lançamento em Despesas para bater com o extrato.
+=============================== */
+
+// Banco (lista suspensa) usa o mesmo nome de empresa padronizado — ver
+// normalizarEmpresa(), que também cobre lançamentos antigos salvos com a
+// grafia anterior ("EXPEDIAN Soluções Ambientais" etc.).
+function pagBancosDaEmpresa(empresaPag) {
+  return RD_BANCOS_POR_EMPRESA[normalizarEmpresa(empresaPag)] || [];
 }
 
-async function registrarPagamento(id) {
+async function pagAbrirVisualizar(id) {
+  const existente = document.getElementById('pag-view-modal'); if (existente) existente.remove();
+  let i = (window._pagFiltradas || []).find(r => r.Id === id);
+  if (!i) { const todos = await dbLer('ContasPagar'); i = todos.find(r => r.Id === id); }
+  if (!i) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+
+  const isDir = currentProfile === 'diretoria';
+  const bancos = pagBancosDaEmpresa(i.Empresa);
+  const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const linha = (label, valor) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
+    <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>`;
+
+  let acoesHtml = '';
+  if (i.Status === 'Aguardando Aprovação' && isDir) {
+    acoesHtml = `
+      <div style="margin-top:16px;padding:14px;background:var(--surface2);border-radius:10px">
+        <div style="font-weight:700;font-size:.82rem;margin-bottom:10px">✅ Confirmar e Agendar Pagamento</div>
+        <div class="form-group" style="margin-bottom:10px"><label>Data Agendada de Pagamento</label><input type="date" id="pagv_data_agendada" value="${i.Vencimento||''}"></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-primary" style="flex:1" onclick="pagConfirmarAgendamento(${id})">✅ Confirmar e Agendar</button>
+          <button class="btn-secondary" style="flex:1" onclick="pagRejeitarConta(${id})">↩️ Rejeitar</button>
+        </div>
+      </div>`;
+  } else if (i.Status === 'Aprovado — Aguardando Pagamento' && isDir) {
+    acoesHtml = `
+      <div style="margin-top:16px;padding:14px;background:var(--surface2);border-radius:10px">
+        <div style="font-weight:700;font-size:.82rem;margin-bottom:10px">💳 Registrar Pagamento</div>
+        <div class="form-row">
+          <div class="form-group"><label>Data do Pagamento</label><input type="date" id="pagv_data_pagamento" value="${new Date().toISOString().split('T')[0]}"></div>
+          <div class="form-group"><label>Banco</label>
+            <select id="pagv_banco">
+              <option value="">Selecione...</option>
+              ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <button class="btn-primary" style="width:100%" onclick="pagConfirmarPagamento(${id})">💾 Confirmar Pagamento</button>
+      </div>`;
+  } else if (i.Status === 'Pago') {
+    acoesHtml = `<div style="margin-top:16px;padding:12px 14px;background:#e6f5ed;border-radius:10px;font-size:.82rem">
+      ✅ Pago em ${fmtData(i.DataPagamento)} · ${i.BancoPagamento||'—'}
+      ${i.DespesaId ? '<br>🔗 Sincronizado em Despesas' : ''}
+    </div>`;
+  } else if (i.Status === 'Rejeitada') {
+    acoesHtml = `<div style="margin-top:16px;padding:12px 14px;background:#fce8e8;border-radius:10px;font-size:.82rem">
+      ↩️ Rejeitada por ${i.RejeitadoPor||'—'}${i.MotivoRejeicao?(': '+i.MotivoRejeicao):''}
+    </div>`;
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'pag-view-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-weight:800;font-size:1rem">👁️ ${i.Fornecedor||'Conta a Pagar'}</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('pag-view-modal').remove()">✕</div>
+      </div>
+      ${linha('Empresa', normalizarEmpresa(i.Empresa)||'—')}
+      ${linha('Fornecedor', i.Fornecedor||'—')}
+      ${linha('Descrição', i.Descricao||'—')}
+      ${linha('Centro de Custo', i.CentroCusto||'—')}
+      ${linha('Valor', 'R$ '+(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2}))}
+      ${linha('Vencimento', fmtData(i.Vencimento))}
+      ${linha('Forma de Pagamento', i.FormaPagamento||'—')}
+      ${linha('Lançado por', i.LancadoPor||'—')}
+      ${i.DataAgendada ? linha('Data Agendada', fmtData(i.DataAgendada)) : ''}
+      ${linha('Status', i.Status||'—')}
+      ${i.Observacao ? linha('Observação', i.Observacao) : ''}
+      ${i.ComprovanteUrl ? `<div style="margin-top:8px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.8rem">📎 Ver comprovante</a></div>` : ''}
+      ${acoesHtml}
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function pagConfirmarAgendamento(id) {
+  const dataAgendada = (document.getElementById('pagv_data_agendada')||{}).value;
+  if (!dataAgendada) { showToast('⚠️ Informe a data agendada de pagamento.'); return; }
+  _limparSyncError();
+  const ok = await dbAtualizar('ContasPagar', parseInt(id), {
+    Status: 'Aprovado — Aguardando Pagamento', DataAgendada: dataAgendada,
+    AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
+  });
+  showToast(ok ? '✅ Confirmado e agendado!' : ('❌ Erro ao confirmar' + syncErrorDetalhe()));
+  const m = document.getElementById('pag-view-modal'); if (m) m.remove();
+  setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); }, 600);
+}
+
+async function pagRejeitarConta(id) {
+  const motivo = prompt('Motivo da rejeição (opcional):', '') || '';
+  _limparSyncError();
+  const ok = await dbAtualizar('ContasPagar', parseInt(id), {
+    Status: 'Rejeitada', MotivoRejeicao: motivo, RejeitadoPor: window._currentUser ? window._currentUser.name : '',
+  });
+  showToast(ok ? '↩️ Conta rejeitada.' : ('❌ Erro' + syncErrorDetalhe()));
+  const m = document.getElementById('pag-view-modal'); if (m) m.remove();
+  setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); }, 600);
+}
+
+async function pagConfirmarPagamento(id) {
+  const dataPag = (document.getElementById('pagv_data_pagamento')||{}).value;
+  const banco = (document.getElementById('pagv_banco')||{}).value;
+  if (!dataPag) { showToast('⚠️ Informe a data do pagamento.'); return; }
+  if (!banco) { showToast('⚠️ Selecione o banco.'); return; }
+  _limparSyncError();
+  const ok = await dbAtualizar('ContasPagar', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco });
+  if (ok) await pagSincronizarDespesa(id, dataPag, banco);
+  showToast(ok ? '✅ Pagamento registrado!' : ('❌ Erro' + syncErrorDetalhe()));
+  const m = document.getElementById('pag-view-modal'); if (m) m.remove();
+  setTimeout(() => carregarContasPagar(), 600);
+}
+
+// Ao marcar uma Conta a Pagar como Paga, gera automaticamente o lançamento
+// correspondente em Despesas — mesma Empresa/CC/Valor/Banco/Data — para o
+// extrato bancário bater certinho com as despesas pagas, sem lançar 2x.
+async function pagSincronizarDespesa(id, dataPag, banco) {
+  try {
+    const todos = await dbLer('ContasPagar');
+    const i = todos.find(r => r.Id === id);
+    if (!i || i.DespesaId) return; // já sincronizado antes — não duplica
+    const empresaRd = normalizarEmpresa(i.Empresa);
+    const subcategoriaPadrao = 'Outros (Despesas com Terceiros/Prestadores)';
+    const despesa = await dbInserir('Despesas', {
+      DataLancamento: i.Vencimento || dataPag,
+      Semana: (typeof _rdSemanaDoAno === 'function' ? _rdSemanaDoAno(i.Vencimento || dataPag) : ''),
+      Categoria: 'Despesas com Terceiros/Prestadores', Subcategoria: subcategoriaPadrao,
+      Modalidade: 'fornecedor',
+      NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(subcategoriaPadrao) : ''),
+      Fornecedor: i.Fornecedor || '', Beneficiario: '', Veiculo: '',
+      CentroCusto: i.CentroCusto || '', Local: '', TipoPagamento: 'faturado',
+      FormaPagamento: i.FormaPagamento || '', ResponsavelLancamento: i.LancadoPor || '', Empresa: empresaRd,
+      DataPagamento: dataPag, Banco: banco, Vencimento: i.Vencimento || '', Valor: i.Valor || 0,
+      Status: 'Pago', Title: (i.Fornecedor || 'Conta a Pagar') + ' · ' + (i.Vencimento || dataPag),
+      NumParcela: 1, TotalParcelas: 1, Comprovante: i.ComprovanteUrl ? 'Sim' : 'Não',
+      ComprovanteUrl: i.ComprovanteUrl || '', ComprovanteNome: i.ComprovanteNome || '',
+      LancadoPor: window._currentUser ? window._currentUser.name : '',
+      ContaPagarId: i.Id, OrigemContaPagar: true, Distribuicoes: [],
+    });
+    if (despesa && despesa.Id) await dbAtualizar('ContasPagar', id, { DespesaId: despesa.Id });
+  } catch (e) { console.warn('[ContasPagar] Falha ao sincronizar com Despesas', e); }
+}
+
+/* ===============================
+   SOLICITAÇÃO DE ADIANTAMENTO
+   Gestor (Diretoria/Coordenador) solicita adiantamento salarial/de
+   despesas para um ou mais colaboradores, vinculado a contrato(s).
+   Fluxo: Aguardando Aprovação (gestor envia) -> Diretoria aprova/reprova
+   -> Aprovado — Aguardando Pagamento -> Pago. Controle de pagamento
+   próprio (não gera lançamento em Contas a Pagar).
+=============================== */
+let ADT_LINHAS = [{ nome: '', valor: '' }];
+let ADT_FILTRO_KPI = '';
+
+function adtColaboradoresDisponiveis() {
+  const norm = s => (s || '').trim();
+  const mapa = {};
+  (GD_SEED_COLABORADORES || []).forEach(s => { if (s.nome) mapa[norm(s.nome)] = { nome: norm(s.nome), cargo: s.cargo || '' }; });
+  ((window._gdDados && window._gdDados.colaboradores) || []).forEach(c => {
+    if (!c.nome) return;
+    if (c.situacao === 'inativo') { delete mapa[norm(c.nome)]; return; }
+    mapa[norm(c.nome)] = { nome: norm(c.nome), cargo: c.cargo || (mapa[norm(c.nome)] || {}).cargo || '' };
+  });
+  return Object.values(mapa).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+}
+
+function pageAdiantamento() {
+  ADT_LINHAS = [{ nome: '', valor: '' }];
+  ADT_FILTRO_KPI = '';
+  setTimeout(() => {
+    if (typeof gdCarregarDados === 'function') gdCarregarDados().then(() => carregarAdiantamentos());
+    else carregarAdiantamentos();
+  }, 150);
+  return `
+  <div class="page-header"><h1>💵 Solicitação de Adiantamento</h1><p>Solicitação de adiantamento pelo gestor — contrato(s) e colaborador(es) envolvidos, valor e período</p></div>
+
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card amber" id="adt-kpi-card-aprovacao" onclick="adtFiltrarKpi('aprovacao')" style="cursor:pointer" title="Filtrar: aguardando aprovação"><div class="kpi-label">Aguardando Aprovação</div><div class="kpi-value" id="adt-kpi-aprovacao">—</div><div class="kpi-icon">⏳</div></div>
+    <div class="kpi-card blue" id="adt-kpi-card-pagamento" onclick="adtFiltrarKpi('pagamento')" style="cursor:pointer" title="Filtrar: aguardando pagamento"><div class="kpi-label">Aguardando Pagamento</div><div class="kpi-value" id="adt-kpi-pagamento">—</div><div class="kpi-icon">💳</div></div>
+    <div class="kpi-card green" id="adt-kpi-card-pago" onclick="adtFiltrarKpi('pago')" style="cursor:pointer" title="Filtrar: pagos"><div class="kpi-label">Pagos (mês)</div><div class="kpi-value" id="adt-kpi-pago">—</div><div class="kpi-icon">✅</div></div>
+    <div class="kpi-card red" id="adt-kpi-card-total" onclick="adtFiltrarKpi('')" style="cursor:pointer" title="Ver todas"><div class="kpi-label">Valor Total Solicitado</div><div class="kpi-value" id="adt-kpi-valor" style="font-size:1.1rem">—</div><div class="kpi-icon">💰</div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-title">Nova Solicitação</div>
+    <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em">Contrato(s) Envolvido(s)</div>
+    <div id="adt-contratos-lista" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">Carregando contratos...</div>
+
+    <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Colaboradores e Valores</div>
+    <datalist id="dl_adt_colaboradores">
+      ${adtColaboradoresDisponiveis().map(c => `<option value="${c.nome}">`).join('')}
+    </datalist>
+    <div id="adt-linhas-colaboradores"></div>
+    <button class="btn-secondary" onclick="adtAdicionarLinha()" style="margin:6px 0 16px;font-size:.78rem;padding:6px 12px">+ Adicionar colaborador</button>
+
+    <div class="form-row">
+      <div class="form-group"><label>Período de Referência</label><input type="month" id="adt-periodo"></div>
+      <div class="form-group" style="flex:2"><label>Justificativa</label><input type="text" id="adt-justificativa" placeholder="Motivo do adiantamento..."></div>
+    </div>
+
+    <div class="form-actions" style="gap:10px">
+      <button class="btn-primary" onclick="adtEnviarSolicitacao()">📤 Enviar Solicitação</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Solicitações de Adiantamento</div>
+    <div id="adt-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>`;
+}
+
+async function adtCarregarContratos() {
+  const el = document.getElementById('adt-contratos-lista');
+  if (!el) return;
+  const contratos = (await dbLer('contratos')).filter(c => c.status === 'ativo');
+  if (!contratos.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem">Nenhum contrato ativo cadastrado.</div>'; return; }
+  el.innerHTML = contratos.map(c => {
+    const label = c.cliente + ' — ' + c.numero;
+    return `<label style="display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:.78rem;cursor:pointer;background:var(--surface2)">
+      <input type="checkbox" class="adt-contrato-chk" value="${c.Id}" data-label="${label.replace(/"/g, '&quot;')}">
+      ${c.cliente} <span style="color:var(--text-muted)">— ${c.numero}</span>
+    </label>`;
+  }).join('');
+}
+
+function adtRenderizarLinhasColaboradores() {
+  const el = document.getElementById('adt-linhas-colaboradores');
+  if (!el) return;
+  el.innerHTML = ADT_LINHAS.map((l, i) => `
+    <div class="form-row" style="align-items:flex-end;margin-bottom:8px">
+      <div class="form-group" style="flex:2"><label>${i === 0 ? 'Colaborador' : ''}</label>
+        <input list="dl_adt_colaboradores" value="${(l.nome || '').replace(/"/g, '&quot;')}" placeholder="Digite ou selecione o nome..." oninput="adtAtualizarLinha(${i},'nome',this.value)">
+      </div>
+      <div class="form-group"><label>${i === 0 ? 'Valor (R$)' : ''}</label>
+        <input type="number" step="0.01" value="${l.valor || ''}" placeholder="0,00" oninput="adtAtualizarLinha(${i},'valor',this.value)">
+      </div>
+      ${ADT_LINHAS.length > 1 ? `<button class="btn-secondary" onclick="adtRemoverLinha(${i})" style="padding:8px 12px;font-size:.78rem">✕</button>` : ''}
+    </div>`).join('');
+}
+
+function adtAtualizarLinha(i, campo, valor) { if (ADT_LINHAS[i]) ADT_LINHAS[i][campo] = valor; }
+function adtAdicionarLinha() { ADT_LINHAS.push({ nome: '', valor: '' }); adtRenderizarLinhasColaboradores(); }
+function adtRemoverLinha(i) { ADT_LINHAS.splice(i, 1); adtRenderizarLinhasColaboradores(); }
+
+async function adtEnviarSolicitacao() {
+  const contratosEls = Array.from(document.querySelectorAll('.adt-contrato-chk:checked'));
+  if (!contratosEls.length) { showToast('⚠️ Selecione ao menos um contrato envolvido.'); return; }
+  const contratos = contratosEls.map(e => ({ id: e.value, label: e.dataset.label }));
+
+  const colaboradores = ADT_LINHAS
+    .filter(l => (l.nome || '').trim() && parseFloat(l.valor) > 0)
+    .map(l => ({ nome: l.nome.trim(), valor: parseFloat(l.valor) }));
+  if (!colaboradores.length) { showToast('⚠️ Informe ao menos um colaborador com valor.'); return; }
+
+  const periodoEl = document.getElementById('adt-periodo');
+  const periodo = periodoEl ? periodoEl.value : '';
+  if (!periodo) { showToast('⚠️ Informe o período de referência.'); return; }
+  const justificativa = (document.getElementById('adt-justificativa') || {}).value || '';
+
+  const valorTotal = colaboradores.reduce((s, c) => s + c.valor, 0);
+  _limparSyncError();
+  const novo = await dbInserir('Adiantamentos', {
+    Solicitante: window._currentUser ? window._currentUser.name : '',
+    Contratos: contratos,
+    Colaboradores: colaboradores,
+    ValorTotal: valorTotal,
+    Periodo: periodo,
+    Justificativa: justificativa,
+    Status: 'Aguardando Aprovação',
+  });
+  showToast(novo ? '✅ Solicitação enviada para aprovação!' : ('❌ Erro ao enviar' + syncErrorDetalhe()));
+  if (novo) {
+    ADT_LINHAS = [{ nome: '', valor: '' }];
+    if (periodoEl) periodoEl.value = '';
+    const justEl = document.getElementById('adt-justificativa'); if (justEl) justEl.value = '';
+    adtRenderizarLinhasColaboradores();
+    document.querySelectorAll('.adt-contrato-chk').forEach(e => e.checked = false);
+    atualizarBadgeNotificacoes();
+    carregarAdiantamentos();
+  }
+}
+
+function adtFiltrarKpi(tipo) { ADT_FILTRO_KPI = (ADT_FILTRO_KPI === tipo) ? '' : tipo; carregarAdiantamentos(); }
+
+async function aprovarAdiantamento(id) {
   if (currentProfile !== 'diretoria') { showToast('⛔ Acesso restrito à Diretoria.'); return; }
-  const banco = prompt('Banco utilizado no pagamento:','');
-  if (banco===null) return;
+  const banco = prompt('Banco para pagamento (ex: Bradesco, Itaú, Sicoob):', '');
+  if (banco === null) return;
+  _limparSyncError();
+  const ok = await dbAtualizar('Adiantamentos', parseInt(id), { Status: 'Aprovado — Aguardando Pagamento', BancoAprovado: banco, DataAprovacao: new Date().toISOString().split('T')[0], AprovadoPor: window._currentUser ? window._currentUser.name : '' });
+  showToast(ok ? '✅ Aprovado! Aguardando pagamento.' : ('❌ Erro ao aprovar' + syncErrorDetalhe()));
+  setTimeout(() => { carregarAdiantamentos(); atualizarBadgeNotificacoes(); if (typeof carregarAprovacoes === 'function') carregarAprovacoes(); }, 600);
+}
+
+async function reprovarAdiantamento(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Acesso restrito à Diretoria.'); return; }
+  const motivo = prompt('Motivo da reprovação (opcional):', '') || '';
+  _limparSyncError();
+  const ok = await dbAtualizar('Adiantamentos', parseInt(id), { Status: 'Reprovado', MotivoReprovacao: motivo, ReprovadoPor: window._currentUser ? window._currentUser.name : '' });
+  showToast(ok ? '↩️ Solicitação reprovada.' : ('❌ Erro' + syncErrorDetalhe()));
+  setTimeout(() => { carregarAdiantamentos(); atualizarBadgeNotificacoes(); if (typeof carregarAprovacoes === 'function') carregarAprovacoes(); }, 600);
+}
+
+async function registrarPagamentoAdiantamento(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Acesso restrito à Diretoria.'); return; }
+  const banco = prompt('Banco utilizado no pagamento:', '');
+  if (banco === null) return;
   const dataPag = prompt('Data do pagamento (AAAA-MM-DD):', new Date().toISOString().split('T')[0]);
   if (!dataPag) return;
   _limparSyncError();
-  const ok = await dbAtualizar('ContasPagar', parseInt(id), { Status:'Pago', BancoPagamento:banco, DataPagamento:dataPag });
-  showToast(ok?'✅ Pagamento registrado!':('❌ Erro' + syncErrorDetalhe()));
-  setTimeout(()=>carregarContasPagar(),600);
+  const ok = await dbAtualizar('Adiantamentos', parseInt(id), { Status: 'Pago', BancoPagamento: banco, DataPagamento: dataPag });
+  showToast(ok ? '✅ Pagamento registrado!' : ('❌ Erro' + syncErrorDetalhe()));
+  setTimeout(() => { carregarAdiantamentos(); atualizarBadgeNotificacoes(); }, 600);
+}
+
+async function carregarAdiantamentos() {
+  await adtCarregarContratos();
+  adtRenderizarLinhasColaboradores();
+  const el = document.getElementById('adt-lista');
+  if (!el) return;
+  try {
+    let items = await dbLer('Adiantamentos');
+    if (currentProfile === 'coordenador' && window._currentUser) {
+      items = items.filter(r => r.Solicitante === window._currentUser.name);
+    }
+    const setKpi = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    const mesAtual = new Date().toISOString().slice(0, 7);
+    setKpi('adt-kpi-aprovacao', items.filter(r => r.Status === 'Aguardando Aprovação').length);
+    setKpi('adt-kpi-pagamento', items.filter(r => r.Status === 'Aprovado — Aguardando Pagamento').length);
+    setKpi('adt-kpi-pago', items.filter(r => r.Status === 'Pago' && (r.DataPagamento || '').slice(0, 7) === mesAtual).length);
+    const valorTotal = items.reduce((s, r) => s + (r.ValorTotal || 0), 0);
+    setKpi('adt-kpi-valor', valorTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 }));
+
+    let lista = items.slice().sort((a, b) => b.Id - a.Id);
+    if (ADT_FILTRO_KPI === 'aprovacao') lista = lista.filter(r => r.Status === 'Aguardando Aprovação');
+    else if (ADT_FILTRO_KPI === 'pagamento') lista = lista.filter(r => r.Status === 'Aprovado — Aguardando Pagamento');
+    else if (ADT_FILTRO_KPI === 'pago') lista = lista.filter(r => r.Status === 'Pago');
+
+    if (!lista.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma solicitação encontrada.</div>'; return; }
+
+    const podeAprovar = currentProfile === 'diretoria';
+    const statusCor = s => s === 'Pago' ? 'green' : s === 'Reprovado' ? 'red' : s === 'Aprovado — Aguardando Pagamento' ? 'blue' : 'amber';
+
+    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Solicitante</th><th>Contrato(s)</th><th>Colaborador(es)</th><th>Período</th><th>Valor Total</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
+      lista.map(r => `<tr>
+        <td>${r.Solicitante || '—'}</td>
+        <td style="font-size:.75rem">${(r.Contratos || []).map(c => c.label).join('<br>') || '—'}</td>
+        <td style="font-size:.75rem">${(r.Colaboradores || []).map(c => c.nome + ' — R$ ' + Number(c.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })).join('<br>') || '—'}</td>
+        <td style="font-size:.75rem">${r.Periodo || '—'}</td>
+        <td><strong>R$ ${(r.ValorTotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong></td>
+        <td><span class="status-pill ${statusCor(r.Status)}">${r.Status}</span>${r.Status === 'Reprovado' && r.MotivoReprovacao ? `<div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${r.MotivoReprovacao}</div>` : ''}</td>
+        <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
+          ${r.Status === 'Aguardando Aprovação' && podeAprovar ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarAdiantamento(${r.Id})">✅ Aprovar</button><button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarAdiantamento(${r.Id})">↩️ Reprovar</button>` : ''}
+          ${r.Status === 'Aprovado — Aguardando Pagamento' && podeAprovar ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="registrarPagamentoAdiantamento(${r.Id})">💳 Pagar</button>` : ''}
+        </td>
+      </tr>`).join('') + '</tbody></table></div>';
+  } catch (e) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar solicitações.</div>'; }
 }
 
 let PAG_FILTRO_KPI = '';
@@ -5089,13 +5456,13 @@ async function carregarContasPagar() {
     window._pagFiltradas = items;
 
     if(!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado.</div>';return;}
-    const statusColor = (s) => s==='Pago'?'green':s==='Em atraso'?'red':s==='Vence hoje'||s==='Vence em breve'?'amber':s==='Aguardando Aprovação'||s==='Aprovado — Aguardando Pagamento'?'blue':'amber';
+    const statusColor = (s) => s==='Pago'?'green':s==='Em atraso'||s==='Rejeitada'?'red':s==='Vence hoje'||s==='Vence em breve'?'amber':s==='Aguardando Aprovação'||s==='Aprovado — Aguardando Pagamento'?'blue':'amber';
     const isDir = currentProfile === 'diretoria';
     el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Empresa</th><th>Fornecedor</th><th>Descrição</th><th>CC</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
       items.map(i=>{
         const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}` : (i.FormaPagamento||'—');
         return `<tr>
-          <td style="font-size:.75rem">${i.Empresa||'—'}</td>
+          <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
           <td><strong>${i.Fornecedor||'—'}</strong></td>
           <td style="font-size:.78rem">${i.Descricao||'—'}${i.ComprovanteUrl?`<br><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.68rem">📎 Ver comprovante</a>`:''}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}</td>
@@ -5103,10 +5470,10 @@ async function carregarContasPagar() {
           <td style="font-size:.8rem">${i.Vencimento?new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td><span class="status-pill ${statusColor(i.Status)}">* ${i.Status||'—'}</span></td>
-          <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
-            ${i.Status==='Aguardando Aprovação'&&isDir?`<button class="btn-primary" style="padding:4px 8px;font-size:.7rem" onclick="aprovarContaPagar(${i.Id})">✅ Aprovar</button>`:''}
-            ${i.Status==='Aprovado — Aguardando Pagamento'?`<button class="btn-primary" style="padding:4px 8px;font-size:.7rem" onclick="registrarPagamento(${i.Id})">💳 Pagar</button>`:''}
+          <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap;align-items:center">
+            <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="pagAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
             ${i.Status==='Pago'?`<span style="font-size:.7rem;color:var(--green-main)">✅ Pago${i.BancoPagamento?' · '+i.BancoPagamento:''}</span>`:''}
+            ${i.Status==='Rejeitada'?`<span style="font-size:.7rem;color:var(--red)">↩️ Rejeitada</span>`:''}
           </td>
         </tr>`;
       }).join('')+
@@ -5127,7 +5494,7 @@ async function exportarContasPagarExcel() {
     });
   }
   const rows = items.map(i => ({
-    'Empresa': i.Empresa || '',
+    'Empresa': normalizarEmpresa(i.Empresa) || '',
     'Fornecedor': i.Fornecedor || '',
     'Descrição': i.Descricao || '',
     'Centro de Custo': i.CentroCusto || '',
@@ -6228,7 +6595,7 @@ async function exportarReceitasExcel() {
     'Previsão de Recebimento': i.DataPrevista ? new Date(i.DataPrevista+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Data de Recebimento': i.DataRecebimento ? new Date(i.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Forma de Recebimento': i.FormaRecebimento || '', 'Banco': i.Banco || '', 'Status': i.Status || '',
-    'Responsável': i.ResponsavelLancamento || '', 'Empresa': i.Empresa || '', 'Comprovante': i.Comprovante || '',
+    'Responsável': i.ResponsavelLancamento || '', 'Empresa': normalizarEmpresa(i.Empresa) || '', 'Comprovante': i.Comprovante || '',
     'Link do Comprovante': i.ComprovanteUrl || '',
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -6346,7 +6713,7 @@ async function exportarNotasFiscaisExcel() {
     'Nº NF': i.NumeroNF || '', 'Cliente': i.Cliente || '', 'Centro de Custo': i.CentroCusto || '',
     'Data Emissão': i.DataEmissao ? new Date(i.DataEmissao+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Data de Recebimento': i.DataRecebimento ? new Date(i.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR') : '',
-    'Valor': i.Valor || 0, 'Status': i.Status || '', 'Empresa': i.Empresa || '',
+    'Valor': i.Valor || 0, 'Status': i.Status || '', 'Empresa': normalizarEmpresa(i.Empresa) || '',
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
@@ -6939,13 +7306,9 @@ async function rdConfirmarCadastroFornecedor() {
 
 /* -- Combobox de Centro de Custo (mesmo padrão de Contas a Pagar) -- */
 function _rdCCsDisponiveis() {
-  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  const empresa = normalizarEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]);
   return (centrosCustoData||[]).filter(c => {
-    const emp = c.empresa || '';
-    const match = (empresa === 'Expedian' && emp === 'Expedian') ||
-                  (empresa === 'TL3' && emp === 'TL3 Engenharia') ||
-                  (empresa === 'EXP Brasil' && emp === 'EXP_Brasil');
-    return match && c.status === 'ativo';
+    return normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo';
   });
 }
 
@@ -7473,7 +7836,7 @@ async function carregarDespesas() {
           <td style="font-size:.76rem">${i.Categoria||'—'}${i.Subcategoria?`<div style="font-size:.66rem;color:var(--text-muted)">${i.Subcategoria}</div>`:''}</td>
           <td style="font-size:.78rem"><strong>${desc}</strong>${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}${i.Veiculo?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.Veiculo}</div>`:''}${(i.TotalParcelas||1)<=1 ? ((i.Distribuicoes&&i.Distribuicoes.length) ? `<div style="font-size:.68rem;color:var(--blue);cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="rdVerDistribuicao(${i.Id})">👥 Distribuído (${i.Distribuicoes.length})</div>` : `<div style="font-size:.68rem;color:var(--text-muted);cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="rdVerDistribuicao(${i.Id})">+ Distribuir</div>`) : ''}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}</td>
-          <td style="font-size:.75rem">${i.Empresa||'—'}</td>
+          <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
           <td style="font-size:.72rem">${pgtoCel}</td>
           <td style="font-size:.8rem">${i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
@@ -7825,13 +8188,9 @@ function rdAbrirEdicaoDespesa(id) {
    empresa. Permite reatribuir uma parcela pra outro contrato quando ela foi custeada por
    um centro de custo diferente do lançamento original. -- */
 function rdeCCsDisponiveis() {
-  const empresa = window._rdeEmpresaAtual || (RD_EMPRESAS && RD_EMPRESAS[0]) || '';
+  const empresa = normalizarEmpresa(window._rdeEmpresaAtual || (RD_EMPRESAS && RD_EMPRESAS[0]) || '');
   return (centrosCustoData||[]).filter(c => {
-    const emp = c.empresa || '';
-    const match = (empresa === 'Expedian' && emp === 'Expedian') ||
-                  (empresa === 'TL3' && emp === 'TL3 Engenharia') ||
-                  (empresa === 'EXP Brasil' && emp === 'EXP_Brasil');
-    return match && c.status === 'ativo';
+    return normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo';
   });
 }
 function rdeFiltrarCCs(texto) {
@@ -7963,7 +8322,7 @@ async function exportarDespesasExcel() {
     'Parcela': i.TotalParcelas > 1 ? (i.NumParcela+'/'+i.TotalParcelas) : '',
     'Forma de Pagamento': i.FormaPagamento || '',
     'Responsável': i.ResponsavelLancamento || '',
-    'Empresa': i.Empresa || '',
+    'Empresa': normalizarEmpresa(i.Empresa) || '',
     'Vencimento': i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Data de Pagamento': i.DataPagamento ? new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Banco': i.Banco || '',
@@ -8497,6 +8856,7 @@ function pageAprovacoes() {
     <div class="kpi-card amber"><div class="kpi-label">APRs Em Aberto</div><div class="kpi-value" id="aprov-kpi-apr">—</div><div class="kpi-icon">📋</div></div>
     <div class="kpi-card amber"><div class="kpi-label">Prestações Pendentes</div><div class="kpi-value" id="aprov-kpi-prest">—</div><div class="kpi-icon">📑</div></div>
     <div class="kpi-card amber"><div class="kpi-label">C. a Pagar Pendentes</div><div class="kpi-value" id="aprov-kpi-pagar">—</div><div class="kpi-icon">💸</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Adiantamentos Pendentes</div><div class="kpi-value" id="aprov-kpi-adiantamento">—</div><div class="kpi-icon">💵</div></div>
   </div>
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">APRs Aguardando Aprovação</div>
@@ -8505,6 +8865,10 @@ function pageAprovacoes() {
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">Prestações de Contas Aguardando Aprovação</div>
     <div id="aprov-lista-prest"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Solicitações de Adiantamento Aguardando Aprovação</div>
+    <div id="aprov-lista-adiantamento"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
 }
 
@@ -8513,8 +8877,8 @@ async function carregarAprovacoes() {
   const ehGestorGeral = usuario.role === 'Gestor Geral';
 
   // Carregar KPIs
-  const [aprs, prests, contas] = await Promise.all([
-    dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar')
+  const [aprs, prests, contas, adiantamentos] = await Promise.all([
+    dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Adiantamentos')
   ]);
   const aprsDoUsuario = r => ehGestorGeral || r.Gestor === usuario.name;
 
@@ -8522,6 +8886,7 @@ async function carregarAprovacoes() {
   setPill('aprov-kpi-apr',   aprs.filter(r => r.Status === 'Em Aberto' && aprsDoUsuario(r)).length);
   setPill('aprov-kpi-pagar', contas.filter(r => r.Status === 'Aguardando Aprovação').length);
   setPill('aprov-kpi-prest', prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor').length);
+  setPill('aprov-kpi-adiantamento', adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').length);
 
   // APRs em aberto (Gestor Geral vê todas; demais gestores só as endereçadas a eles)
   const elAPR = document.getElementById('aprov-lista-apr');
@@ -8570,6 +8935,27 @@ async function carregarAprovacoes() {
           </td>
         </tr>`;
         }).join('') + '</tbody></table></div>';
+    }
+  }
+
+  // Adiantamentos aguardando aprovação da Diretoria
+  const elAdt = document.getElementById('aprov-lista-adiantamento');
+  if (elAdt) {
+    const pendentes = adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').sort((a,b) => b.Id - a.Id);
+    if (!pendentes.length) {
+      elAdt.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum adiantamento pendente. ✅</div>';
+    } else {
+      elAdt.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Solicitante</th><th>Colaborador(es)</th><th>Período</th><th>Valor Total</th><th>Ações</th></tr></thead><tbody>' +
+        pendentes.map(i => `<tr>
+          <td>${i.Solicitante || '—'}</td>
+          <td style="font-size:.75rem">${(i.Colaboradores||[]).map(c=>c.nome).join(', ') || '—'}</td>
+          <td style="font-size:.75rem">${i.Periodo || '—'}</td>
+          <td><strong>R$ ${(i.ValorTotal||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
+          <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
+            <button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarAdiantamento(${i.Id})">✅ Aprovar</button>
+            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarAdiantamento(${i.Id})">↩️ Reprovar</button>
+          </td>
+        </tr>`).join('') + '</tbody></table></div>';
     }
   }
 }
@@ -12248,19 +12634,19 @@ const centrosCustoData = [
   { id:'CC-038', contrato:'ERO - Gestão Ambiental - CONT. 2024.0054.01',    cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Energisa' },
   { id:'CC-039', contrato:'ERO - Estudos Ambientais - 2024.0081.01',       cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Energisa' },
   { id:'CC-040', contrato:'COOP RO Jirau',                                 cliente:'Jirau',                empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros' },
-  // -- TL3 ENGENHARIA --
-  { id:'CC-026', contrato:'Neomax - Inventário Jirau',                    cliente:'Neomax',               empresa:'TL3 Engenharia', status:'finalizado', gestor:'Marcelo',            categoria:'Inventário' },
-  { id:'CC-027', contrato:'Consolidado - TL3',                            cliente:'—',                    empresa:'TL3 Engenharia', status:'ativo',      gestor:'—',                  categoria:'Consolidado' },
-  { id:'CC-028', contrato:'Santo Antônio Energia - Eletrônicos',          cliente:'Santo Antônio Energia',empresa:'TL3 Engenharia', status:'ativo',      gestor:'Marcelo',            categoria:'Energia' },
-  { id:'CC-029', contrato:'C. Bravin - Outorga',                          cliente:'C. Bravin',            empresa:'TL3 Engenharia', status:'ativo',      gestor:'Luiz / Tiago',       categoria:'Outorga' },
-  // -- EXP_BRASIL --
-  { id:'CC-030', contrato:'Consolidado EXP_Brasil',                       cliente:'—',                    empresa:'EXP_Brasil',     status:'ativo',      gestor:'—',                  categoria:'Consolidado' },
-  { id:'CC-031', contrato:'Hebert - Silo Celeiro do Norte',               cliente:'Hebert',               empresa:'EXP_Brasil',     status:'ativo',      gestor:'Tiago',              categoria:'Outros' },
-  { id:'CC-032', contrato:'Fogo & Alma - Outorga',                        cliente:'Fogo e Alma',          empresa:'EXP_Brasil',     status:'ativo',      gestor:'Luiz / Tiago',       categoria:'Outorga' },
-  { id:'CC-033', contrato:'Frinoma - Outorga',                            cliente:'Frinoma',              empresa:'EXP_Brasil',     status:'ativo',      gestor:'Marcelo / Luiz',     categoria:'Outorga' },
-  { id:'CC-034', contrato:'Minerva - ASV',                                cliente:'Keile Alves Fonseca',  empresa:'EXP_Brasil',     status:'ativo',      gestor:'Marcelo',            categoria:'Outros' },
-  { id:'CC-035', contrato:'Roberto Gouveia - Posto Combustível',          cliente:'Roberto Gouveia',      empresa:'EXP_Brasil',     status:'ativo',      gestor:'Tiago',              categoria:'Outros' },
-  { id:'CC-036', contrato:'Ruído Ambiental CSS',                          cliente:'C.S da Silva Serviços',empresa:'EXP_Brasil',     status:'finalizado', gestor:'Tiago',              categoria:'Ruídos' },
+  // -- TL3 --
+  { id:'CC-026', contrato:'Neomax - Inventário Jirau',                    cliente:'Neomax',               empresa:'TL3', status:'finalizado', gestor:'Marcelo',            categoria:'Inventário' },
+  { id:'CC-027', contrato:'Consolidado - TL3',                            cliente:'—',                    empresa:'TL3', status:'ativo',      gestor:'—',                  categoria:'Consolidado' },
+  { id:'CC-028', contrato:'Santo Antônio Energia - Eletrônicos',          cliente:'Santo Antônio Energia',empresa:'TL3', status:'ativo',      gestor:'Marcelo',            categoria:'Energia' },
+  { id:'CC-029', contrato:'C. Bravin - Outorga',                          cliente:'C. Bravin',            empresa:'TL3', status:'ativo',      gestor:'Luiz / Tiago',       categoria:'Outorga' },
+  // -- EXP BRASIL --
+  { id:'CC-030', contrato:'Consolidado EXP_Brasil',                       cliente:'—',                    empresa:'EXP Brasil',     status:'ativo',      gestor:'—',                  categoria:'Consolidado' },
+  { id:'CC-031', contrato:'Hebert - Silo Celeiro do Norte',               cliente:'Hebert',               empresa:'EXP Brasil',     status:'ativo',      gestor:'Tiago',              categoria:'Outros' },
+  { id:'CC-032', contrato:'Fogo & Alma - Outorga',                        cliente:'Fogo e Alma',          empresa:'EXP Brasil',     status:'ativo',      gestor:'Luiz / Tiago',       categoria:'Outorga' },
+  { id:'CC-033', contrato:'Frinoma - Outorga',                            cliente:'Frinoma',              empresa:'EXP Brasil',     status:'ativo',      gestor:'Marcelo / Luiz',     categoria:'Outorga' },
+  { id:'CC-034', contrato:'Minerva - ASV',                                cliente:'Keile Alves Fonseca',  empresa:'EXP Brasil',     status:'ativo',      gestor:'Marcelo',            categoria:'Outros' },
+  { id:'CC-035', contrato:'Roberto Gouveia - Posto Combustível',          cliente:'Roberto Gouveia',      empresa:'EXP Brasil',     status:'ativo',      gestor:'Tiago',              categoria:'Outros' },
+  { id:'CC-036', contrato:'Ruído Ambiental CSS',                          cliente:'C.S da Silva Serviços',empresa:'EXP Brasil',     status:'finalizado', gestor:'Tiago',              categoria:'Ruídos' },
 ];
 
 function pageCustos() {
@@ -12291,7 +12677,7 @@ function pageCustos() {
     : `<span class="status-pill red">* Finalizado</span>`;
 
   const empresaPill = e => {
-    const colors = { 'Expedian':'green', 'TL3 Engenharia':'blue', 'EXP_Brasil':'amber' };
+    const colors = { 'Expedian':'green', 'TL3':'blue', 'EXP Brasil':'amber' };
     return `<span class="status-pill ${colors[e]||'blue'}" style="font-size:.65rem">${e}</span>`;
   };
 
@@ -12325,8 +12711,8 @@ function pageCustos() {
           <select id="novocc_empresa">
             <option value="">Selecione...</option>
             <option>Expedian</option>
-            <option>TL3 Engenharia</option>
-            <option>EXP_Brasil</option>
+            <option>TL3</option>
+            <option>EXP Brasil</option>
           </select>
         </div>
         <div class="form-group">
@@ -12452,10 +12838,10 @@ function pageCustos() {
   </div>
 
   <!-- GRUPOS POR EMPRESA -->
-  ${['Expedian','TL3 Engenharia','EXP_Brasil'].map(emp => {
+  ${['Expedian','TL3','EXP Brasil'].map(emp => {
     const items = dados.filter(c => c.empresa === emp);
     if (!items.length) return '';
-    const empColors = { 'Expedian':'var(--green-main)', 'TL3 Engenharia':'var(--blue)', 'EXP_Brasil':'var(--amber)' };
+    const empColors = { 'Expedian':'var(--green-main)', 'TL3':'var(--blue)', 'EXP Brasil':'var(--amber)' };
     return `
     <div class="card" style="margin-bottom:16px;border-top:3px solid ${empColors[emp]}">
       <div class="card-title" style="font-size:.9rem;margin-bottom:14px">
@@ -12499,7 +12885,7 @@ function pageCustos() {
 function abrirDetalheCC(id) {
   const cc = centrosCustoData.find(c => c.id === id);
   if (!cc) return;
-  const empColors = { 'Expedian':'var(--green-main)', 'TL3 Engenharia':'var(--blue)', 'EXP_Brasil':'var(--amber)' };
+  const empColors = { 'Expedian':'var(--green-main)', 'TL3':'var(--blue)', 'EXP Brasil':'var(--amber)' };
   const cor = empColors[cc.empresa] || 'var(--green-main)';
 
   const modal = document.createElement('div');
@@ -16018,8 +16404,8 @@ async function atualizarBadgeNotificacoes() {
   }
   const ehGestorGeral = usuario.role === 'Gestor Geral';
   try {
-    const [aprs, prests, contasPagar, despesas] = await Promise.all([
-      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas')
+    const [aprs, prests, contasPagar, despesas, adiantamentos] = await Promise.all([
+      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos')
     ]);
     const aprsPendentes = aprs.filter(r =>
       r.Status === 'Em Aberto' && (ehGestorGeral || r.Gestor === usuario.name)
@@ -16029,6 +16415,7 @@ async function atualizarBadgeNotificacoes() {
       aprsPendentes.length +
       prests.filter(r => r.Status === 'Em Aberto').length +
       contasPagar.filter(r => r.Status === 'Aguardando Aprovação').length +
+      adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').length +
       despesasVencendo.length;
 
     // Detectar NOVAS despesas entrando na janela de vencimento -> mensagem específica
@@ -20540,6 +20927,7 @@ const DB_TABELA_LABEL = {
   contratos:             'Gestão de Contratos',
   PrestacaoContas:       'Prestação de Contas',
   ContasPagar:           'Contas a Pagar',
+  Adiantamentos:         'Solicitação de Adiantamento',
   ChecklistBombeamento:  'Teste de Bombeamento',
   Equipamentos:          'Equipamentos',
   TermosEquipamento:     'Termo de Equipamento',
@@ -20663,7 +21051,7 @@ window.migrarDadosOperacionais = async function() {
   console.log('Movendo tabelas não-restritas de db/ para Dados Operacionais/db/...');
   const TABELAS_CONHECIDAS = ['APRs','ChecklistERO','ChecklistLinha','ChecklistVeicular','ChecklistBombeamento','PrestacaoContas','AsoRegistros',
     'Fornecedores','Equipamentos','TermosEquipamento','PerfilUsuario','Contadores','AtividadeApp','CentrosCusto',
-    'GestaoDocumental','Prazos','Inspecoes'];
+    'GestaoDocumental','Prazos','Inspecoes','Adiantamentos'];
   for (const tabela of TABELAS_CONHECIDAS) {
     if (_ehTabelaRestrita(tabela)) { console.log('  (mantido na pasta restrita):', tabela); continue; }
     await _moverItemPorNome(token, driveId, dbCentralId, opDbId, tabela + '.json');
