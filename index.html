@@ -14129,6 +14129,17 @@ function linhaMigrarOcorrencia(oc) {
     }];
     oc.quantidade = oc.itens.length;
   }
+  /* Fotos eram salvas no nível do ponto; migra para o primeiro item (registros antigos) */
+  if (oc.itens[0]) {
+    [1,2,3,4].forEach(fn => {
+      if (oc['foto'+fn] && !oc.itens[0]['foto'+fn]) {
+        oc.itens[0]['foto'+fn] = oc['foto'+fn];
+        oc.itens[0]['foto'+fn+'_h'] = oc['foto'+fn+'_h'];
+      }
+      delete oc['foto'+fn];
+      delete oc['foto'+fn+'_h'];
+    });
+  }
   return oc;
 }
 
@@ -14160,7 +14171,22 @@ function renderLinhaItens(oc) {
         <input list="linha_dl_cat_${oc.id}_${item.id}" value="${item.categoria||''}" oninput="linhaItemCategoria(${oc.id},${item.id},this.value)" placeholder="Selecione ou digite">
         <datalist id="linha_dl_cat_${oc.id}_${item.id}">${LINHA_CATEGORIAS.map(c => `<option value="${c}">`).join('')}</datalist>
       </div>
-      <div id="linha-sub-${oc.id}-${item.id}" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">${renderLinhaSubcampos(item, oc.id)}</div>
+      <div id="linha-sub-${oc.id}-${item.id}" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:10px">${renderLinhaSubcampos(item, oc.id)}</div>
+      <div>
+        <div style="font-size:.6rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:5px">📷 Fotos desta ocorrência</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          ${[1,2,3,4].map(fn => `
+          <div style="position:relative;flex-shrink:0">
+            <label style="cursor:pointer;display:block" title="Foto ${fn}">
+              <div style="width:44px;height:44px;border-radius:8px;border:2px dashed ${item['foto'+fn]?'var(--green-main)':'var(--border)'};background:${item['foto'+fn]?'transparent':'var(--surface2)'};display:flex;align-items:center;justify-content:center;overflow:hidden">
+                ${item['foto'+fn] ? `<img src="${item['foto'+fn]}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">` : `<span style="font-size:1.1rem;opacity:.5">📷</span>`}
+              </div>
+              <input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="loadLinhaPhoto(event,${oc.id},${item.id},${fn})">
+            </label>
+            ${item['foto'+fn] ? `<button onclick="removeLinhaPhoto(${oc.id},${item.id},${fn})" style="position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:var(--red);border:none;color:#fff;font-size:.55rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>` : ''}
+          </div>`).join('')}
+        </div>
+      </div>
     </div>`).join('');
 }
 
@@ -14229,29 +14255,29 @@ function linhaCapturarCoordenadas(id) {
 }
 
 /* -- Fotos por ocorrência: mesmo padrão de 4 slots do checklist de subestação -- */
-function loadLinhaPhoto(event, ocId, fn) {
+function loadLinhaPhoto(event, ocId, itemId, fn) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
-  const oc = linhaEncontrarOcorrencia(ocId);
-  if (!oc) return;
-  const ordered = [fn, ...[1,2,3,4].filter(n => n !== fn && !oc['foto' + n])];
+  const item = linhaEncontrarItem(ocId, itemId);
+  if (!item) return;
+  const ordered = [fn, ...[1,2,3,4].filter(n => n !== fn && !item['foto' + n])];
   if (files.length > ordered.length) {
     showToast('⚠️ Só cabem ' + ordered.length + ' foto(s) aqui — as demais foram ignoradas (máximo 4 por ocorrência).');
   }
   Promise.all(files.slice(0, ordered.length).map((file, idx) =>
     _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => {
       const slotFn = ordered[idx];
-      oc['foto' + slotFn] = dataUrl;
-      oc['foto' + slotFn + '_h'] = horizontal;
+      item['foto' + slotFn] = dataUrl;
+      item['foto' + slotFn + '_h'] = horizontal;
     })
   )).then(() => navigate('checklist_linha'));
 }
 
-function removeLinhaPhoto(ocId, fn) {
-  const oc = linhaEncontrarOcorrencia(ocId);
-  if (!oc) return;
-  delete oc['foto' + fn];
-  delete oc['foto' + fn + '_h'];
+function removeLinhaPhoto(ocId, itemId, fn) {
+  const item = linhaEncontrarItem(ocId, itemId);
+  if (!item) return;
+  delete item['foto' + fn];
+  delete item['foto' + fn + '_h'];
   navigate('checklist_linha');
 }
 
@@ -14524,22 +14550,6 @@ function pageChecklistLinha() {
               <option value="nao_conforme" ${oc.conformidade==='nao_conforme'?'selected':''}>❌ Não conforme</option>
               <option value="na" ${oc.conformidade==='na'?'selected':''}>➖ Não aplicável</option>
             </select>
-          </div>
-        </div>
-
-        <div>
-          <div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:5px">📷 Fotos</div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            ${[1,2,3,4].map(fn => `
-            <div style="position:relative;flex-shrink:0">
-              <label style="cursor:pointer;display:block" title="Foto ${fn}">
-                <div style="width:44px;height:44px;border-radius:8px;border:2px dashed ${oc['foto'+fn]?'var(--green-main)':'var(--border)'};background:${oc['foto'+fn]?'transparent':'var(--surface2)'};display:flex;align-items:center;justify-content:center;overflow:hidden">
-                  ${oc['foto'+fn] ? `<img src="${oc['foto'+fn]}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">` : `<span style="font-size:1.1rem;opacity:.5">📷</span>`}
-                </div>
-                <input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="loadLinhaPhoto(event,${oc.id},${fn})">
-              </label>
-              ${oc['foto'+fn] ? `<button onclick="removeLinhaPhoto(${oc.id},${fn})" style="position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:var(--red);border:none;color:#fff;font-size:.55rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>` : ''}
-            </div>`).join('')}
           </div>
         </div>
       </div>`; }).join('')}
