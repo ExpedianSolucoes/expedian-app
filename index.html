@@ -14017,6 +14017,7 @@ function removeEROPhoto(itemId, fn) {
 if (!window._linhaData) window._linhaData = { ocorrencias: [] };
 if (typeof window._linhaHistorico === 'undefined') window._linhaHistorico = null;
 if (typeof window._linhaOcorrenciaSeq === 'undefined') window._linhaOcorrenciaSeq = 1;
+if (typeof window._linhaItemSeq === 'undefined') window._linhaItemSeq = 1;
 
 const LINHA_CATEGORIAS = [
   'Erosão',
@@ -14096,8 +14097,10 @@ function linhaAddOcorrencia() {
   if (!window._linhaData.ocorrencias) window._linhaData.ocorrencias = [];
   window._linhaData.ocorrencias.push({
     id: window._linhaOcorrenciaSeq++,
-    estrutura: '', tipoEstrutura: '', categoria: '', sub: {},
-    latitude: '', longitude: '', conformidade: '', quantidade: 1, descricaoManual: '',
+    estrutura: '', tipoEstrutura: '',
+    latitude: '', longitude: '', conformidade: '',
+    quantidade: 1,
+    itens: [{ id: window._linhaItemSeq++, categoria: '', sub: {}, descricaoManual: '' }],
   });
   navigate('checklist_linha');
 }
@@ -14113,41 +14116,94 @@ function linhaOcorrenciaCampo(id, campo, valor) {
   if (oc) oc[campo] = valor;
 }
 
-function renderLinhaSubcampos(oc) {
-  const campos = LINHA_SUBCAMPOS[oc.categoria] || [];
+/* -- Cada "ocorrência" (ponto/estrutura) pode conter vários itens (tipos de ocorrência),
+      controlados pelo campo Quantitativo. Cada item tem seu próprio Tipo de Ocorrência
+      e campos específicos daquele tipo, além de descrição manual. -- */
+function linhaMigrarOcorrencia(oc) {
+  if (!oc.itens) {
+    oc.itens = [{
+      id: window._linhaItemSeq++,
+      categoria: oc.categoria || '',
+      sub: oc.sub || {},
+      descricaoManual: oc.descricaoManual || '',
+    }];
+    oc.quantidade = oc.itens.length;
+  }
+  return oc;
+}
+
+function linhaEncontrarItem(ocId, itemId) {
+  const oc = linhaEncontrarOcorrencia(ocId);
+  if (!oc) return null;
+  return (oc.itens || []).find(it => it.id === itemId) || null;
+}
+
+function linhaOcorrenciaQuantidade(id, valor) {
+  const oc = linhaEncontrarOcorrencia(id);
+  if (!oc) return;
+  let n = parseInt(valor, 10);
+  if (!n || n < 1) n = 1;
+  oc.quantidade = n;
+  if (!oc.itens) oc.itens = [];
+  while (oc.itens.length < n) oc.itens.push({ id: window._linhaItemSeq++, categoria: '', sub: {}, descricaoManual: '' });
+  if (oc.itens.length > n) oc.itens = oc.itens.slice(0, n);
+  const el = document.getElementById('linha-itens-' + id);
+  if (el) el.innerHTML = renderLinhaItens(oc);
+}
+
+function renderLinhaItens(oc) {
+  return (oc.itens || []).map((item, i) => `
+    <div style="border:1px dashed var(--border);border-radius:8px;padding:10px;margin-bottom:8px">
+      <div style="font-size:.66rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">Tipo ${i+1} de ${oc.itens.length}</div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label>Tipo de Ocorrência</label>
+        <input list="linha_dl_cat_${oc.id}_${item.id}" value="${item.categoria||''}" oninput="linhaItemCategoria(${oc.id},${item.id},this.value)" placeholder="Selecione ou digite">
+        <datalist id="linha_dl_cat_${oc.id}_${item.id}">${LINHA_CATEGORIAS.map(c => `<option value="${c}">`).join('')}</datalist>
+      </div>
+      <div id="linha-sub-${oc.id}-${item.id}" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">${renderLinhaSubcampos(item, oc.id)}</div>
+    </div>`).join('');
+}
+
+function renderLinhaSubcampos(item, ocId) {
+  const campos = LINHA_SUBCAMPOS[item.categoria] || [];
   const subHtml = campos.map(c => `
     <div class="form-group">
       <label>${c.label}</label>
       ${c.opcoes.length
-        ? `<select onchange="linhaOcorrenciaSub(${oc.id},'${c.chave}',this.value)">
+        ? `<select onchange="linhaItemSub(${ocId},${item.id},'${c.chave}',this.value)">
              <option value="">Selecione...</option>
-             ${c.opcoes.map(o => `<option value="${o}" ${(oc.sub||{})[c.chave]===o?'selected':''}>${o}</option>`).join('')}
+             ${c.opcoes.map(o => `<option value="${o}" ${(item.sub||{})[c.chave]===o?'selected':''}>${o}</option>`).join('')}
            </select>`
-        : `<input value="${(oc.sub||{})[c.chave]||''}" oninput="linhaOcorrenciaSub(${oc.id},'${c.chave}',this.value)" placeholder="${c.label}">`}
+        : `<input value="${(item.sub||{})[c.chave]||''}" oninput="linhaItemSub(${ocId},${item.id},'${c.chave}',this.value)" placeholder="${c.label}">`}
     </div>`).join('');
   const descHtml = `
     <div class="form-group" style="grid-column:1/-1">
       <label>Descrição manual (detalhes adicionais)</label>
-      <textarea rows="2" oninput="linhaOcorrenciaCampo(${oc.id},'descricaoManual',this.value)" placeholder="Descreva detalhes da ocorrência, se necessário">${oc.descricaoManual||''}</textarea>
+      <textarea rows="2" oninput="linhaItemCampo(${ocId},${item.id},'descricaoManual',this.value)" placeholder="Descreva detalhes da ocorrência, se necessário">${item.descricaoManual||''}</textarea>
     </div>`;
   return subHtml + descHtml;
 }
 
-/* -- Muda a categoria da ocorrência e re-renderiza só o bloco de subcampos (sem navigate,
+/* -- Muda a categoria de um item e re-renderiza só o bloco de subcampos daquele item (sem navigate,
       pra não perder o foco do próprio campo de categoria enquanto o usuário digita) -- */
-function linhaOcorrenciaCategoria(id, valor) {
-  const oc = linhaEncontrarOcorrencia(id);
-  if (!oc) return;
-  if (oc.categoria !== valor) { oc.categoria = valor; oc.sub = {}; }
-  const el = document.getElementById('linha-sub-' + id);
-  if (el) el.innerHTML = renderLinhaSubcampos(oc);
+function linhaItemCategoria(ocId, itemId, valor) {
+  const item = linhaEncontrarItem(ocId, itemId);
+  if (!item) return;
+  if (item.categoria !== valor) { item.categoria = valor; item.sub = {}; }
+  const el = document.getElementById('linha-sub-' + ocId + '-' + itemId);
+  if (el) el.innerHTML = renderLinhaSubcampos(item, ocId);
 }
 
-function linhaOcorrenciaSub(id, chave, valor) {
-  const oc = linhaEncontrarOcorrencia(id);
-  if (!oc) return;
-  if (!oc.sub) oc.sub = {};
-  oc.sub[chave] = valor;
+function linhaItemSub(ocId, itemId, chave, valor) {
+  const item = linhaEncontrarItem(ocId, itemId);
+  if (!item) return;
+  if (!item.sub) item.sub = {};
+  item.sub[chave] = valor;
+}
+
+function linhaItemCampo(ocId, itemId, campo, valor) {
+  const item = linhaEncontrarItem(ocId, itemId);
+  if (item) item[campo] = valor;
 }
 
 function linhaCapturarCoordenadas(id) {
@@ -14350,6 +14406,9 @@ async function linhaEditarChecklist(id) {
     if (!window._linhaData.ocorrencias) window._linhaData.ocorrencias = [];
     const maxId = window._linhaData.ocorrencias.reduce((m, o) => Math.max(m, o.id || 0), 0);
     window._linhaOcorrenciaSeq = maxId + 1;
+    const maxItemId = window._linhaData.ocorrencias.reduce((m, o) => (o.itens || []).reduce((m2, it) => Math.max(m2, it.id || 0), m), 0);
+    window._linhaItemSeq = maxItemId + 1;
+    window._linhaData.ocorrencias = window._linhaData.ocorrencias.map(linhaMigrarOcorrencia);
     window._linhaRegistroAtualId = id;
     showSyncStatus('Checklist carregado!', 'ok', 3000);
     showToast('✏️ Checklist carregado para edição. Altere o que precisar e clique em Salvar.');
@@ -14425,13 +14484,13 @@ function pageChecklistLinha() {
 
     ${d.ocorrencias.length === 0
       ? `<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:.82rem;border:1px dashed var(--border);border-radius:10px">Nenhuma ocorrência registrada ainda. Clique em "➕ Nova Ocorrência" para começar.</div>`
-      : d.ocorrencias.map((oc, idx) => `
+      : d.ocorrencias.map((oc, idx) => { linhaMigrarOcorrencia(oc); return `
       <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;background:${idx%2===0?'var(--surface)':'var(--surface2)'}">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <span style="font-family:'Mont',sans-serif;font-size:.8rem;font-weight:800;color:var(--green-main)">Ocorrência ${idx+1}</span>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="linhaRemoverOcorrencia(${oc.id})">🗑️ Remover</button>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 100px;gap:12px;margin-bottom:12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 100px;gap:12px;margin-bottom:12px">
           <div class="form-group">
             <label>Identificação da Estrutura</label>
             <input value="${oc.estrutura||''}" oninput="linhaOcorrenciaCampo(${oc.id},'estrutura',this.value)" placeholder="Ex: P-014">
@@ -14442,17 +14501,12 @@ function pageChecklistLinha() {
             <datalist id="linha_dl_estrutura_${oc.id}"><option value="Torre"><option value="Poste"></datalist>
           </div>
           <div class="form-group">
-            <label>Tipo de Ocorrência</label>
-            <input list="linha_dl_cat_${oc.id}" value="${oc.categoria||''}" oninput="linhaOcorrenciaCategoria(${oc.id},this.value)" placeholder="Selecione ou digite">
-            <datalist id="linha_dl_cat_${oc.id}">${LINHA_CATEGORIAS.map(c => `<option value="${c}">`).join('')}</datalist>
-          </div>
-          <div class="form-group">
-            <label title="Quantas ocorrências desse tipo nesse mesmo ponto">Quantitativo</label>
-            <input type="number" min="1" value="${oc.quantidade||1}" oninput="linhaOcorrenciaCampo(${oc.id},'quantidade',this.value)">
+            <label title="Quantos tipos de ocorrência diferentes nesse mesmo ponto — abre um bloco de Tipo de Ocorrência para cada um">Quantitativo</label>
+            <input type="number" min="1" value="${oc.quantidade||1}" oninput="linhaOcorrenciaQuantidade(${oc.id},this.value)">
           </div>
         </div>
 
-        <div id="linha-sub-${oc.id}" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">${renderLinhaSubcampos(oc)}</div>
+        <div id="linha-itens-${oc.id}" style="margin-bottom:12px">${renderLinhaItens(oc)}</div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
           <div class="form-group">
@@ -14488,7 +14542,7 @@ function pageChecklistLinha() {
             </div>`).join('')}
           </div>
         </div>
-      </div>`).join('')}
+      </div>`; }).join('')}
   </div>
 
   <div style="margin-bottom:40px">
