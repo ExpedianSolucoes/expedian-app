@@ -12177,6 +12177,24 @@ function _servicosPodeLancar() {
   return currentProfile === 'diretoria' || currentProfile === 'coordenador';
 }
 
+// Descobre a empresa do lançamento a partir do Centro de Custo escolhido
+// (formato "CC-XXX · Nome do contrato") — usada para saber qual lista de
+// bancos mostrar ao registrar o pagamento e qual Empresa gravar na Despesa
+// sincronizada. Se não achar (CC digitado fora do padrão), assume Expedian.
+function servEmpresaDoCC(cc) {
+  const id = (cc || '').split('·')[0].trim();
+  const achado = (centrosCustoData || []).find(c => c.id === id);
+  return achado ? achado.empresa : 'Expedian';
+}
+
+// Mapeia o tipo de lançamento (diárias/veículos/projetos) para a
+// Categoria/Subcategoria de Despesas usada ao sincronizar um lançamento pago.
+const SERV_TIPO_PARA_CATEGORIA = {
+  diarias:  { categoria: 'Despesas com Pessoal', subcategoria: 'Mão de obra' },
+  veiculos: { categoria: 'Transporte/Logística', subcategoria: 'Locação de veículos' },
+  projetos: { categoria: 'Despesas com Terceiros/Prestadores', subcategoria: 'Serviços Técnicos Especializados' },
+};
+
 function fmtBRL(v) {
   if (v === null) return 'A consultar';
   return 'R$ ' + v.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
@@ -12361,13 +12379,20 @@ let SERV_FILTRO_RESP = '';
 let SERV_FILTRO_BENEF = '';
 let SERV_FILTRO_CC = '';
 let SERV_FILTRO_BUSCA = '';
+let SERV_FILTRO_STATUS = '';
 
 function servLimparFiltros() {
   ['serv_filtro_mes','serv_filtro_resp','serv_filtro_benef','serv_filtro_cc','serv_filtro_busca'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const tipoSel = document.getElementById('serv_filtro_tipo'); if (tipoSel) tipoSel.value = '';
-  SERV_FILTRO_MES=''; SERV_FILTRO_TIPO=''; SERV_FILTRO_RESP=''; SERV_FILTRO_BENEF=''; SERV_FILTRO_CC=''; SERV_FILTRO_BUSCA='';
+  const statusSel = document.getElementById('serv_filtro_status'); if (statusSel) statusSel.value = '';
+  SERV_FILTRO_MES=''; SERV_FILTRO_TIPO=''; SERV_FILTRO_RESP=''; SERV_FILTRO_BENEF=''; SERV_FILTRO_CC=''; SERV_FILTRO_BUSCA=''; SERV_FILTRO_STATUS='';
   carregarLancamentosServicos();
 }
+
+// Lançamentos antigos (antes desta função existir) não têm Status gravado —
+// tratamos como já "A Pagar" pra não sumir da lista nem exigir aprovação
+// retroativa de algo que já era considerado válido.
+function servStatusDe(l) { return l.Status || 'A Pagar'; }
 
 async function carregarLancamentosServicos() {
   const el = document.getElementById('servicos-lancamentos-container');
@@ -12380,6 +12405,12 @@ async function carregarLancamentosServicos() {
   const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
   const total = items.reduce((s,l) => s + (Number(l.total)||0), 0);
   const porTipo = t => items.filter(l=>l.tipo===t).reduce((s,l)=>s+(Number(l.total)||0),0);
+  const mesAtual = new Date().toISOString().slice(0,7);
+  const porStatus = st => items.filter(l => servStatusDe(l) === st);
+  const aguardando = porStatus('Aguardando Aprovação');
+  const aPagar = porStatus('A Pagar');
+  const pagos = porStatus('Pago');
+  const pagosMes = pagos.filter(l => (l.DataPagamento||'').slice(0,7) === mesAtual);
 
   // Filtros lidos do DOM (se já renderizado antes) para preservar seleção
   SERV_FILTRO_MES = (document.getElementById('serv_filtro_mes')||{}).value || SERV_FILTRO_MES;
@@ -12388,6 +12419,7 @@ async function carregarLancamentosServicos() {
   SERV_FILTRO_BENEF = ((document.getElementById('serv_filtro_benef')||{}).value || SERV_FILTRO_BENEF);
   SERV_FILTRO_CC = ((document.getElementById('serv_filtro_cc')||{}).value || SERV_FILTRO_CC);
   SERV_FILTRO_BUSCA = ((document.getElementById('serv_filtro_busca')||{}).value || SERV_FILTRO_BUSCA);
+  SERV_FILTRO_STATUS = ((document.getElementById('serv_filtro_status')||{}).value || SERV_FILTRO_STATUS);
 
   let filtrados = items.slice();
   if (SERV_FILTRO_MES) filtrados = filtrados.filter(l => (l.dataISO||'').slice(0,7) === SERV_FILTRO_MES);
@@ -12395,6 +12427,7 @@ async function carregarLancamentosServicos() {
   if (SERV_FILTRO_RESP) filtrados = filtrados.filter(l => (l.resp||'').toLowerCase().includes(SERV_FILTRO_RESP.toLowerCase()));
   if (SERV_FILTRO_BENEF) filtrados = filtrados.filter(l => (l.benef||'').toLowerCase().includes(SERV_FILTRO_BENEF.toLowerCase()));
   if (SERV_FILTRO_CC) filtrados = filtrados.filter(l => (l.cc||'').toLowerCase().includes(SERV_FILTRO_CC.toLowerCase()));
+  if (SERV_FILTRO_STATUS) filtrados = filtrados.filter(l => servStatusDe(l) === SERV_FILTRO_STATUS);
   if (SERV_FILTRO_BUSCA) {
     const q = SERV_FILTRO_BUSCA.toLowerCase();
     filtrados = filtrados.filter(l => (l.descServico||'').toLowerCase().includes(q) || (l.obs||'').toLowerCase().includes(q));
@@ -12403,14 +12436,20 @@ async function carregarLancamentosServicos() {
   window._servFiltrados = filtrados;
 
   const tipoLabel = t => t==='diarias' ? 'Diária' : t==='veiculos' ? 'Veículo' : t==='projetos' ? 'Projeto' : t||'—';
+  const isDirServ = currentProfile === 'diretoria';
 
   const kpisHtml = `
-  <div class="kpi-grid" style="margin-bottom:20px">
+  <div class="kpi-grid" style="margin-bottom:12px">
     <div class="kpi-card blue"><div class="kpi-label">Total de Lançamentos</div><div class="kpi-value">${items.length}</div><div class="kpi-icon">📑</div></div>
     <div class="kpi-card green"><div class="kpi-label">Total Geral (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(total)}</div><div class="kpi-icon">💰</div></div>
     <div class="kpi-card amber"><div class="kpi-label">Diárias (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(porTipo('diarias'))}</div><div class="kpi-icon">👷</div></div>
     <div class="kpi-card"><div class="kpi-label">Veículos (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(porTipo('veiculos'))}</div><div class="kpi-icon">🚗</div></div>
     <div class="kpi-card"><div class="kpi-label">Projetos (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(porTipo('projetos'))}</div><div class="kpi-icon">📋</div></div>
+  </div>
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card amber" onclick="SERV_FILTRO_STATUS=(SERV_FILTRO_STATUS==='Aguardando Aprovação'?'':'Aguardando Aprovação');carregarLancamentosServicos()" style="cursor:pointer" title="Filtrar: aguardando aprovação"><div class="kpi-label">Aguardando Aprovação</div><div class="kpi-value">${aguardando.length}</div><div class="kpi-icon">⏳</div></div>
+    <div class="kpi-card blue" onclick="SERV_FILTRO_STATUS=(SERV_FILTRO_STATUS==='A Pagar'?'':'A Pagar');carregarLancamentosServicos()" style="cursor:pointer" title="Filtrar: a pagar"><div class="kpi-label">A Pagar</div><div class="kpi-value" style="font-size:1.1rem">${fmtBRL(aPagar.reduce((s,l)=>s+(Number(l.total)||0),0))}</div><div class="kpi-icon">💳</div></div>
+    <div class="kpi-card green" onclick="SERV_FILTRO_STATUS=(SERV_FILTRO_STATUS==='Pago'?'':'Pago');carregarLancamentosServicos()" style="cursor:pointer" title="Filtrar: pagos"><div class="kpi-label">Pagos (mês)</div><div class="kpi-value" style="font-size:1.1rem">${fmtBRL(pagosMes.reduce((s,l)=>s+(Number(l.total)||0),0))}</div><div class="kpi-icon">✅</div></div>
   </div>`;
 
   const filtrosHtml = `
@@ -12423,6 +12462,13 @@ async function carregarLancamentosServicos() {
       <option value="veiculos" ${SERV_FILTRO_TIPO==='veiculos'?'selected':''}>Veículos</option>
       <option value="projetos" ${SERV_FILTRO_TIPO==='projetos'?'selected':''}>Projetos</option>
     </select>
+    <select id="serv_filtro_status" onchange="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
+      <option value="">Todos os status</option>
+      <option value="Aguardando Aprovação" ${SERV_FILTRO_STATUS==='Aguardando Aprovação'?'selected':''}>Ag. Aprovação</option>
+      <option value="A Pagar" ${SERV_FILTRO_STATUS==='A Pagar'?'selected':''}>A Pagar</option>
+      <option value="Pago" ${SERV_FILTRO_STATUS==='Pago'?'selected':''}>Pago</option>
+      <option value="Rejeitado" ${SERV_FILTRO_STATUS==='Rejeitado'?'selected':''}>Rejeitado</option>
+    </select>
     <input type="text" id="serv_filtro_resp" value="${SERV_FILTRO_RESP}" placeholder="Responsável..." oninput="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
     <input type="text" id="serv_filtro_benef" value="${SERV_FILTRO_BENEF}" placeholder="Beneficiário..." oninput="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
     <input type="text" id="serv_filtro_cc" value="${SERV_FILTRO_CC}" placeholder="Centro de custo..." oninput="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
@@ -12430,9 +12476,45 @@ async function carregarLancamentosServicos() {
     <button onclick="servLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
   </div>`;
 
+  // Dashboard por Beneficiário — soma Pago vs A Pagar (e Aguardando Aprovação)
+  // por colaborador, pra saber rapidamente quanto já foi pago e quanto ainda
+  // falta pagar pra cada um.
+  const porBenef = {};
+  items.forEach(l => {
+    const nome = l.benef || '—';
+    if (!porBenef[nome]) porBenef[nome] = { pago: 0, aPagar: 0, aguardando: 0 };
+    const st = servStatusDe(l);
+    const v = Number(l.total) || 0;
+    if (st === 'Pago') porBenef[nome].pago += v;
+    else if (st === 'A Pagar') porBenef[nome].aPagar += v;
+    else if (st === 'Aguardando Aprovação') porBenef[nome].aguardando += v;
+  });
+  const benefLinhas = Object.entries(porBenef)
+    .filter(([,v]) => v.pago || v.aPagar || v.aguardando)
+    .sort((a,b) => (b[1].pago+b[1].aPagar+b[1].aguardando) - (a[1].pago+a[1].aPagar+a[1].aguardando));
+  const dashboardBenefHtml = !benefLinhas.length ? '' : `
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-title" style="margin-bottom:14px">👤 Dashboard por Colaborador/Beneficiário</div>
+    <div style="overflow-x:auto">
+    <table class="data-table">
+      <thead><tr><th>Beneficiário</th><th style="text-align:right">Pago</th><th style="text-align:right">A Pagar</th><th style="text-align:right">Ag. Aprovação</th><th style="text-align:right">Total</th></tr></thead>
+      <tbody>
+        ${benefLinhas.map(([nome,v]) => `
+        <tr>
+          <td style="font-size:.8rem;font-weight:600">${nome}</td>
+          <td style="text-align:right;color:var(--green-main);font-weight:700">${fmtBRL(v.pago)}</td>
+          <td style="text-align:right;color:var(--blue);font-weight:700">${fmtBRL(v.aPagar)}</td>
+          <td style="text-align:right;color:#b07700">${v.aguardando?fmtBRL(v.aguardando):'—'}</td>
+          <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif">${fmtBRL(v.pago+v.aPagar+v.aguardando)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+  </div>`;
+
   const semNenhum = !items.length;
   const totalFiltrado = filtrados.reduce((s,l) => s + (Number(l.total)||0), 0);
-  el.innerHTML = kpisHtml + filtrosHtml + `
+  el.innerHTML = kpisHtml + dashboardBenefHtml + filtrosHtml + `
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="margin:0">Lançamentos Registrados <span class="badge">${filtrados.length} itens · ${fmtBRL(totalFiltrado)}</span></div>
@@ -12445,10 +12527,13 @@ async function carregarLancamentosServicos() {
       <div style="font-size:.78rem;margin-top:6px">Use as abas acima para lançar serviços.</div>
     </div>` : !filtrados.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado com os filtros aplicados.</div>' : `
     <div style="overflow-x:auto">
-    <table class="data-table" style="min-width:900px">
-      <thead><tr><th>Tipo</th><th>Serviço</th><th>Data</th><th>Qtd</th><th style="text-align:right">Unit.</th><th style="text-align:right">Total</th><th>Responsável</th><th>Beneficiário</th><th>Centro de Custo</th><th></th></tr></thead>
+    <table class="data-table" style="min-width:1100px">
+      <thead><tr><th>Tipo</th><th>Serviço</th><th>Data</th><th>Qtd</th><th style="text-align:right">Unit.</th><th style="text-align:right">Total</th><th>Responsável</th><th>Beneficiário</th><th>Centro de Custo</th><th>Status</th><th>Ações</th></tr></thead>
       <tbody>
-        ${filtrados.map(l => `
+        ${filtrados.map(l => {
+          const st = servStatusDe(l);
+          const stCor = st==='Pago'?'green':st==='Rejeitado'?'red':st==='A Pagar'?'blue':'amber';
+          return `
         <tr>
           <td style="font-size:.72rem;color:var(--text-muted)">${tipoLabel(l.tipo)}</td>
           <td style="font-size:.78rem">${l.descServico||'—'}${l.veiculo?`<br><span style="font-size:.68rem;color:var(--text-muted)">🚗 ${l.veiculo}</span>`:''}</td>
@@ -12459,8 +12544,13 @@ async function carregarLancamentosServicos() {
           <td style="font-size:.75rem">${l.resp||'—'}</td>
           <td style="font-size:.75rem">${l.benef||'—'}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${l.cc||'—'}</td>
-          <td><button onclick="removerLancamento(${l.Id})" style="font-size:.68rem;padding:3px 8px;border:1px solid var(--red);border-radius:6px;background:#fce8e8;cursor:pointer;color:var(--red)">🗑️</button></td>
-        </tr>`).join('')}
+          <td><span class="status-pill ${stCor}">* ${st}</span>${st==='Rejeitado'&&l.MotivoRejeicao?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.MotivoRejeicao}</div>`:''}${st==='Pago'&&l.BancoPagamento?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.BancoPagamento}</div>`:''}</td>
+          <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
+            ${st==='Aguardando Aprovação'&&isDirServ?`<button class="btn-primary" style="padding:4px 8px;font-size:.68rem" onclick="servAprovarLancamento(${l.Id})">✅ Aprovar</button><button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="servRejeitarLancamento(${l.Id})">↩️ Rejeitar</button>`:''}
+            ${st==='A Pagar'&&isDirServ?`<button class="btn-primary" style="padding:4px 8px;font-size:.68rem" onclick="servAbrirPagamento(${l.Id})">💳 Pagar</button>`:''}
+            ${st!=='Pago'?`<button onclick="removerLancamento(${l.Id})" style="font-size:.68rem;padding:4px 8px;border:1px solid var(--red);border-radius:6px;background:#fce8e8;cursor:pointer;color:var(--red)">🗑️</button>`:''}
+          </td>
+        </tr>`;}).join('')}
       </tbody>
       <tfoot>
         <tr style="background:var(--green-pale)">
@@ -12573,6 +12663,7 @@ async function salvarLancamento(tipo) {
     data: data ? new Date(data + 'T00:00').toLocaleDateString('pt-BR') : '—',
     veiculo, resp, benef, cc, obs,
     LancadoPor: window._currentUser ? window._currentUser.name : '',
+    Status: 'Aguardando Aprovação',
   };
 
   const novo = await dbInserir('Lancamentos_Servicos', lancamento);
@@ -12591,6 +12682,104 @@ async function removerLancamento(id) {
   showToast(ok ? '🗑️ Lançamento excluído.' : '❌ Erro ao excluir.');
   window._servicosTab = 'lancamentos';
   navigate('servicos');
+}
+
+/* ===============================
+   APROVAÇÃO E PAGAMENTO DE LANÇAMENTOS DE SERVIÇOS
+   Fluxo: Aguardando Aprovação (lançado por Diretoria/Coordenação) -> Diretoria
+   aprova (A Pagar) ou rejeita -> Diretoria registra pagamento (Data + Banco,
+   lista suspensa por empresa do Centro de Custo) -> Pago, sincronizando
+   automaticamente com Despesas (mesmo padrão de Contas a Pagar).
+=============================== */
+async function servAprovarLancamento(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Aprovação restrita à Diretoria.'); return; }
+  const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), {
+    Status: 'A Pagar', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
+  });
+  showToast(ok ? '✅ Lançamento aprovado! Aguardando pagamento.' : '❌ Erro ao aprovar.');
+  setTimeout(() => carregarLancamentosServicos(), 600);
+}
+
+async function servRejeitarLancamento(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Rejeição restrita à Diretoria.'); return; }
+  const motivo = prompt('Motivo da rejeição (opcional):', '') || '';
+  const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), {
+    Status: 'Rejeitado', MotivoRejeicao: motivo, RejeitadoPor: window._currentUser ? window._currentUser.name : '',
+  });
+  showToast(ok ? '↩️ Lançamento rejeitado.' : '❌ Erro.');
+  setTimeout(() => carregarLancamentosServicos(), 600);
+}
+
+async function servAbrirPagamento(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Pagamento restrito à Diretoria.'); return; }
+  const existente = document.getElementById('serv-pag-modal'); if (existente) existente.remove();
+  const lista = window._servFiltrados || [];
+  let l = lista.find(x => x.Id === id);
+  if (!l) { const todos = await dbLer('Lancamentos_Servicos'); l = todos.find(x => x.Id === id); }
+  if (!l) { showToast('⚠️ Lançamento não encontrado.'); return; }
+
+  const empresa = servEmpresaDoCC(l.cc);
+  const bancos = RD_BANCOS_POR_EMPRESA[normalizarEmpresa(empresa)] || [];
+
+  const modal = document.createElement('div');
+  modal.id = 'serv-pag-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:420px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-weight:800;font-size:1rem">💳 Registrar Pagamento</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('serv-pag-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.82rem;color:var(--text-muted);margin-bottom:14px">${l.descServico||'—'} · ${l.benef||'—'} · <strong>${fmtBRL(l.total)}</strong></div>
+      <div class="form-group" style="margin-bottom:10px"><label>Data do Pagamento</label><input type="date" id="servp_data" value="${new Date().toISOString().split('T')[0]}"></div>
+      <div class="form-group" style="margin-bottom:16px"><label>Banco</label>
+        <select id="servp_banco">
+          <option value="">Selecione...</option>
+          ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn-primary" style="width:100%" onclick="servConfirmarPagamento(${id})">💾 Confirmar Pagamento</button>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function servConfirmarPagamento(id) {
+  const dataPag = (document.getElementById('servp_data')||{}).value;
+  const banco = (document.getElementById('servp_banco')||{}).value;
+  if (!dataPag) { showToast('⚠️ Informe a data do pagamento.'); return; }
+  if (!banco) { showToast('⚠️ Selecione o banco.'); return; }
+  const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco });
+  if (ok) await servSincronizarDespesa(id, dataPag, banco);
+  showToast(ok ? '✅ Pagamento registrado!' : '❌ Erro ao registrar pagamento.');
+  const m = document.getElementById('serv-pag-modal'); if (m) m.remove();
+  setTimeout(() => carregarLancamentosServicos(), 600);
+}
+
+// Ao marcar um lançamento de serviço como Pago, gera automaticamente o
+// lançamento correspondente em Despesas (modalidade "serviços", mesmo
+// beneficiário/CC/valor/banco/data) — mesmo padrão usado em Contas a Pagar.
+async function servSincronizarDespesa(id, dataPag, banco) {
+  try {
+    const todos = await dbLer('Lancamentos_Servicos');
+    const l = todos.find(x => x.Id === id);
+    if (!l || l.DespesaId) return; // já sincronizado antes — não duplica
+    const empresa = normalizarEmpresa(servEmpresaDoCC(l.cc));
+    const catInfo = SERV_TIPO_PARA_CATEGORIA[l.tipo] || SERV_TIPO_PARA_CATEGORIA.diarias;
+    const despesa = await dbInserir('Despesas', {
+      DataLancamento: l.dataISO || dataPag, Semana: (typeof _rdSemanaDoAno === 'function' ? _rdSemanaDoAno(l.dataISO || dataPag) : ''),
+      Categoria: catInfo.categoria, Subcategoria: catInfo.subcategoria,
+      Modalidade: 'servicos', NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(catInfo.subcategoria) : ''),
+      ServicoId: l.codServico || '', ServicoDesc: l.descServico || '', Beneficiario: l.benef || '', Veiculo: l.veiculo || '',
+      Fornecedor: '', CentroCusto: l.cc || '', Local: '', TipoPagamento: 'avista', FormaPagamento: '',
+      ResponsavelLancamento: l.resp || '', Empresa: empresa,
+      DataPagamento: dataPag, Banco: banco, Vencimento: l.dataISO || '', Valor: l.total || 0,
+      Status: 'Pago', Title: (l.descServico || 'Lançamento de Serviço') + ' · ' + (l.dataISO || dataPag),
+      NumParcela: 1, TotalParcelas: 1, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
+      LancadoPor: window._currentUser ? window._currentUser.name : '',
+      LancamentoServicoId: l.Id, OrigemLancamentoServico: true, Distribuicoes: [],
+    });
+    if (despesa && despesa.Id) await dbAtualizar('Lancamentos_Servicos', id, { DespesaId: despesa.Id });
+  } catch (e) { console.warn('[Serviços] Falha ao sincronizar com Despesas', e); }
 }
 
 function filtrarServicos(q, tblId) {
