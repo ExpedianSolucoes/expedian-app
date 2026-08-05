@@ -3945,7 +3945,8 @@ async function enviarPrestacaoFinanceiro() {
   const file = anexoInput && anexoInput.files[0];
   if (file) {
     showSyncStatus('Enviando comprovante ao OneDrive...');
-    const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.prestacao);
+    const nomeDesejado = financeiroGerarNomeComprovante(dados.DataDespesa, dados.Valor, dados.Fornecedor, file.name);
+    const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.prestacao, nomeDesejado);
     if (resultado) {
       showSyncStatus('Comprovante enviado!', 'ok', 3000);
       dados.ComprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
@@ -4101,7 +4102,7 @@ async function carregarPrestacoes() {
     window._prestFiltradas = items;
 
     if(!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma prestação encontrada.</div>';return;}
-    const scColor=s=>s==='Aprovada'?'green':(s==='Devolvida'||s==='Suspensa'||s==='Reprovada')?'red':(s==='Ag. Financeiro'||s==='Ag. Aprovação Gestor')?'blue':'amber';
+    const scColor=s=>(s==='Aprovada'||s==='Paga')?'green':(s==='Devolvida'||s==='Suspensa'||s==='Reprovada')?'red':(s==='Ag. Financeiro'||s==='Ag. Aprovação Gestor')?'blue':'amber';
     const hoje = new Date(); hoje.setHours(0,0,0,0);
     const diasDesde = iso => iso ? Math.floor((hoje - new Date(iso)) / 86400000) : null;
 
@@ -4147,9 +4148,12 @@ async function carregarPrestacoes() {
           ${(i.Status==='Devolvida'||i.Status==='Suspensa')&&i.MotivoReprovacao?`<div style="font-size:.62rem;color:var(--red);margin-top:2px" title="${i.MotivoReprovacao}">↩️ ${i.MotivoReprovacao.substring(0,40)}${i.MotivoReprovacao.length>40?'...':''}</div>`:''}
         </td>
         <td style="display:flex;gap:4px;padding:8px 6px;flex-wrap:wrap">
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="pcAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
           ${podeAgirFinanceiro?`
             <button class="btn-primary" style="padding:3px 8px;font-size:.68rem" onclick="aprovarPrestacaoFinanceiro(${i.Id})">✅ Aprovar</button>
             <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`:''}
+          ${i.Status==='Aprovada'&&currentProfile==='diretoria'?`
+            <button class="btn-primary" style="padding:3px 8px;font-size:.68rem;background:var(--green-main)" onclick="pcAbrirVisualizar(${i.Id})">💳 Registrar Pagamento</button>`:''}
           ${podeAgirGestorLegado?`
             <button class="btn-primary" style="padding:3px 8px;font-size:.68rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar (fluxo antigo)</button>
             <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Devolver</button>`:''}
@@ -4306,7 +4310,8 @@ async function reenviarPrestacaoDevolvida(id) {
         await deletarArquivoCentral(pastaMes + '/' + original.ComprovanteNome);
       }
 
-      const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.prestacao);
+      const nomeDesejado = financeiroGerarNomeComprovante(original.DataDespesa, original.Valor, original.Fornecedor, file.name);
+      const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.prestacao, nomeDesejado);
       if (resultado) {
         showSyncStatus('Comprovante atualizado!', 'ok', 3000);
         await _finalizarReenvio(id, typeof resultado.url==='string'?resultado.url:'', resultado.nome);
@@ -4395,6 +4400,133 @@ async function devolverPrestacaoFinanceiro(id) {
   const ok = await dbAtualizar('PrestacaoContas', id, { Status: 'Devolvida', MotivoReprovacao: motivo, ReprovadoPor: window._currentUser?.name, DataReprovacao: new Date().toISOString().split('T')[0] });
   showToast(ok ? '↩️ Indeferida — colaborador pode corrigir e reenviar.' : ('❌ Erro' + syncErrorDetalhe()));
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
+}
+
+/* -- Modal de visualização de uma Prestação de Contas, com as ações
+      contextuais conforme o Status (Aprovar/Indeferir, Registrar Pagamento,
+      ou só exibir o resultado se já Paga/Devolvida). Mesmo padrão do
+      "👁️ Visualizar" de Contas a Pagar. -- */
+async function pcAbrirVisualizar(id) {
+  const existente = document.getElementById('pc-view-modal'); if (existente) existente.remove();
+  let i = (window._prestFiltradas || []).find(r => r.Id === id);
+  if (!i) { const todos = await dbLer('PrestacaoContas'); i = todos.find(r => r.Id === id); }
+  if (!i) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+
+  const isDir = currentProfile === 'diretoria';
+  const isGestor = currentProfile === 'diretoria' || currentProfile === 'coordenador';
+  const bancos = pagBancosDaEmpresa(i.Empresa);
+  const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const linha = (label, valor) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
+    <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>`;
+
+  let acoesHtml = '';
+  if ((i.Status === 'Ag. Financeiro' || i.Status === 'Ag. Aprovação Gestor') && isGestor) {
+    acoesHtml = `
+      <div style="margin-top:16px;padding:14px;background:var(--surface2);border-radius:10px">
+        <div style="font-weight:700;font-size:.82rem;margin-bottom:10px">✅ Aprovar ou Indeferir</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-primary" style="flex:1" onclick="document.getElementById('pc-view-modal').remove();aprovarPrestacaoFinanceiro(${id})">✅ Aprovar</button>
+          <button class="btn-secondary" style="flex:1" onclick="document.getElementById('pc-view-modal').remove();devolverPrestacaoFinanceiro(${id})">↩️ Indeferir</button>
+        </div>
+      </div>`;
+  } else if (i.Status === 'Aprovada' && isDir) {
+    acoesHtml = `
+      <div style="margin-top:16px;padding:14px;background:var(--surface2);border-radius:10px">
+        <div style="font-weight:700;font-size:.82rem;margin-bottom:10px">💳 Registrar Pagamento</div>
+        <div class="form-row">
+          <div class="form-group"><label>Data do Pagamento</label><input type="date" id="pcv_data_pagamento" value="${new Date().toISOString().split('T')[0]}"></div>
+          <div class="form-group"><label>Banco</label>
+            <select id="pcv_banco">
+              <option value="">Selecione...</option>
+              ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <button class="btn-primary" style="width:100%" onclick="pcConfirmarPagamento(${id})">💾 Confirmar Pagamento e Enviar a Despesas</button>
+      </div>`;
+  } else if (i.Status === 'Aprovada') {
+    acoesHtml = `<div style="margin-top:16px;padding:12px 14px;background:var(--surface2);border-radius:10px;font-size:.8rem;color:var(--text-muted)">
+      ✅ Aprovada — aguardando a Diretoria registrar o pagamento.
+    </div>`;
+  } else if (i.Status === 'Paga') {
+    acoesHtml = `<div style="margin-top:16px;padding:12px 14px;background:#e6f5ed;border-radius:10px;font-size:.82rem">
+      ✅ Pago em ${fmtData(i.DataPagamento)} · ${i.BancoPagamento||'—'}
+      ${i.DespesaId ? '<br>🔗 Sincronizado em Despesas' : ''}
+    </div>`;
+  } else if (i.Status === 'Devolvida' || i.Status === 'Suspensa') {
+    acoesHtml = `<div style="margin-top:16px;padding:12px 14px;background:#fce8e8;border-radius:10px;font-size:.82rem">
+      ↩️ Devolvida por ${i.ReprovadoPor||'—'}${i.MotivoReprovacao?(': '+i.MotivoReprovacao):''}
+    </div>`;
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'pc-view-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-weight:800;font-size:1rem">👁️ ${i.Fornecedor||'Prestação de Contas'}</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('pc-view-modal').remove()">✕</div>
+      </div>
+      ${linha('Empresa', normalizarEmpresa(i.Empresa)||'—')}
+      ${linha('Fornecedor', i.Fornecedor||'—')}
+      ${linha('Município', i.Municipio||'—')}
+      ${linha('Centro de Custo', i.CentroCusto||'—')}
+      ${linha('Valor', 'R$ '+(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2}))}
+      ${linha('Data da Despesa', fmtData(i.DataDespesa))}
+      ${linha('Forma de Pagamento', i.FormaPagamento||'—')}
+      ${linha('NF/Recibo', i.NumeroNF||'—')}
+      ${linha('Responsável', i.Responsavel||i.EnviadoPor||'—')}
+      ${linha('Status', i.Status||'—')}
+      ${i.Observacoes ? linha('Observações', i.Observacoes) : ''}
+      ${i.ComprovanteUrl ? `<div style="margin-top:8px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.8rem">📎 Ver comprovante</a></div>` : ''}
+      ${acoesHtml}
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function pcConfirmarPagamento(id) {
+  const dataPag = (document.getElementById('pcv_data_pagamento')||{}).value;
+  const banco = (document.getElementById('pcv_banco')||{}).value;
+  if (!dataPag) { showToast('⚠️ Informe a data do pagamento.'); return; }
+  if (!banco) { showToast('⚠️ Selecione o banco.'); return; }
+  _limparSyncError();
+  const ok = await dbAtualizar('PrestacaoContas', parseInt(id), { Status: 'Paga', DataPagamento: dataPag, BancoPagamento: banco });
+  if (ok) await pcSincronizarDespesa(id, dataPag, banco);
+  showToast(ok ? '✅ Pagamento registrado e enviado a Despesas!' : ('❌ Erro' + syncErrorDetalhe()));
+  const m = document.getElementById('pc-view-modal'); if (m) m.remove();
+  setTimeout(() => carregarPrestacoes(), 600);
+}
+
+// Ao registrar o pagamento de uma Prestação de Contas, gera automaticamente o
+// lançamento correspondente em Despesas — mesma Empresa/CC/Valor/Banco/Data —
+// para o extrato bancário bater certinho com as despesas pagas, sem duplicar.
+async function pcSincronizarDespesa(id, dataPag, banco) {
+  try {
+    const todos = await dbLer('PrestacaoContas');
+    const i = todos.find(r => r.Id === id);
+    if (!i || i.DespesaId) return; // já sincronizado antes — não duplica
+    const empresaRd = normalizarEmpresa(i.Empresa);
+    const subcategoriaPadrao = 'Outros (Despesas com Terceiros/Prestadores)';
+    const despesa = await dbInserir('Despesas', {
+      DataLancamento: i.DataDespesa || dataPag,
+      Semana: (typeof _rdSemanaDoAno === 'function' ? _rdSemanaDoAno(i.DataDespesa || dataPag) : ''),
+      Categoria: 'Despesas com Terceiros/Prestadores', Subcategoria: subcategoriaPadrao,
+      Modalidade: 'fornecedor',
+      NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(subcategoriaPadrao) : ''),
+      Fornecedor: i.Fornecedor || '', Beneficiario: '', Veiculo: '',
+      CentroCusto: i.CentroCusto || '', Local: i.Municipio || '',
+      TipoPagamento: i.Parcelamento === 'parcelado' ? 'parcelado' : (i.Parcelamento === 'faturado' ? 'faturado' : 'avista'),
+      FormaPagamento: i.FormaPagamento || '', ResponsavelLancamento: i.Responsavel || i.EnviadoPor || '', Empresa: empresaRd,
+      DataPagamento: dataPag, Banco: banco, Vencimento: i.DataDespesa || '', Valor: i.Valor || 0,
+      Status: 'Pago', Title: (i.Fornecedor || 'Prestação de Contas') + ' · ' + (i.DataDespesa || dataPag),
+      NumParcela: 1, TotalParcelas: 1, Comprovante: i.ComprovanteUrl ? 'Sim' : 'Não',
+      ComprovanteUrl: i.ComprovanteUrl || '', ComprovanteNome: i.ComprovanteNome || '',
+      LancadoPor: window._currentUser ? window._currentUser.name : '',
+      PrestacaoContasId: i.Id, OrigemPrestacaoContas: true, Distribuicoes: [],
+    });
+    if (despesa && despesa.Id) await dbAtualizar('PrestacaoContas', id, { DespesaId: despesa.Id });
+  } catch (e) { console.warn('[PrestacaoContas] Falha ao sincronizar com Despesas', e); }
 }
 
 // Compatibilidade com funções antigas chamadas na Central de Aprovações
@@ -5067,7 +5199,7 @@ async function pagAbrirVisualizar(id) {
   } else if (i.Status === 'Pago') {
     acoesHtml = `<div style="margin-top:16px;padding:12px 14px;background:#e6f5ed;border-radius:10px;font-size:.82rem">
       ✅ Pago em ${fmtData(i.DataPagamento)} · ${i.BancoPagamento||'—'}
-      ${i.DespesaId ? '<br>🔗 Sincronizado em Despesas' : ''}
+      ${i.DespesaId ? '<br>🔗 Sincronizado em Despesas' : `<br><button class="btn-secondary" style="margin-top:8px;padding:5px 10px;font-size:.72rem" onclick="pagSincronizarEEnviar(${id})">📤 Enviar para Despesas</button>`}
     </div>`;
   } else if (i.Status === 'Rejeitada') {
     acoesHtml = `<div style="margin-top:16px;padding:12px 14px;background:#fce8e8;border-radius:10px;font-size:.82rem">
@@ -5166,6 +5298,21 @@ async function pagSincronizarDespesa(id, dataPag, banco) {
     });
     if (despesa && despesa.Id) await dbAtualizar('ContasPagar', id, { DespesaId: despesa.Id });
   } catch (e) { console.warn('[ContasPagar] Falha ao sincronizar com Despesas', e); }
+}
+
+/* -- Botão manual "Enviar para Despesas" — cobre lançamentos que já ficaram
+      'Pago' antes de existir a sincronização automática, ou casos em que ela
+      falhou silenciosamente (ex: instabilidade de rede no momento do pagamento). -- */
+async function pagSincronizarEEnviar(id) {
+  const todos = await dbLer('ContasPagar');
+  const i = todos.find(r => r.Id === id);
+  if (!i) { showToast('⚠️ Lançamento não encontrado.'); return; }
+  if (i.DespesaId) { showToast('Já está sincronizado com Despesas.'); return; }
+  if (!i.DataPagamento || !i.BancoPagamento) { showToast('⚠️ Faltam Data de Pagamento e Banco neste lançamento.'); return; }
+  await pagSincronizarDespesa(id, i.DataPagamento, i.BancoPagamento);
+  showToast('✅ Enviado para Despesas!');
+  const m = document.getElementById('pag-view-modal'); if (m) m.remove();
+  carregarContasPagar();
 }
 
 /* ===============================
@@ -5472,7 +5619,7 @@ async function carregarContasPagar() {
           <td><span class="status-pill ${statusColor(i.Status)}">* ${i.Status||'—'}</span></td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap;align-items:center">
             <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="pagAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
-            ${i.Status==='Pago'?`<span style="font-size:.7rem;color:var(--green-main)">✅ Pago${i.BancoPagamento?' · '+i.BancoPagamento:''}</span>`:''}
+            ${i.Status==='Pago'?`<span style="font-size:.7rem;color:var(--green-main)">✅ Pago${i.BancoPagamento?' · '+i.BancoPagamento:''}</span>${i.DespesaId?'':`<button class="btn-secondary" style="padding:3px 7px;font-size:.65rem;background:var(--amber)" onclick="pagSincronizarEEnviar(${i.Id})">📤 Enviar p/ Despesas</button>`}`:''}
             ${i.Status==='Rejeitada'?`<span style="font-size:.7rem;color:var(--red)">↩️ Rejeitada</span>`:''}
           </td>
         </tr>`;
@@ -6227,12 +6374,15 @@ async function rcAnexarComprovante(inputEl) {
   const file = inputEl.files[0];
   if (!file) return;
   window._rcComprovanteUrl = null; window._rcComprovanteNome = null;
+  window._rcComprovanteId = null; window._rcComprovanteDriveId = null;
   const statusEl = document.getElementById('rc_comprovante_status');
   if (statusEl) statusEl.textContent = '⏳ Enviando...';
   const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.receitas);
   if (resultado) {
     window._rcComprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
     window._rcComprovanteNome = resultado.nome;
+    window._rcComprovanteId = resultado.id || null;
+    window._rcComprovanteDriveId = resultado.driveId || null;
     if (statusEl) statusEl.textContent = '📎 ' + resultado.nome;
     showToast('☁️ Comprovante salvo no OneDrive!');
   } else {
@@ -6276,8 +6426,8 @@ async function salvarReceita() {
   const status = document.getElementById('rc_status').value;
   const medicao = (document.getElementById('rc_medicao')||{}).value || '';
   const numeroNF = (document.getElementById('rc_numero_nf')||{}).value.trim() || '';
-  const comprovanteUrl = window._rcComprovanteUrl || '';
-  const comprovanteNome = window._rcComprovanteNome || '';
+  let comprovanteUrl = window._rcComprovanteUrl || '';
+  let comprovanteNome = window._rcComprovanteNome || '';
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
 
   if (!dataEmissao) { showToast('⚠️ Informe a data de emissão.'); return; }
@@ -6286,6 +6436,13 @@ async function salvarReceita() {
   if (!cc) { showToast('⚠️ Selecione o contrato (centro de custo).'); return; }
   if (!valor) { showToast('⚠️ Informe o valor.'); return; }
   if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
+
+  // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/cliente definitivos
+  if (window._rcComprovanteId && window._rcComprovanteDriveId) {
+    const nomeDesejado = financeiroGerarNomeComprovante(dataEmissao, valor, cliente, comprovanteNome);
+    const renomeado = await renomearArquivoOneDrive(window._rcComprovanteDriveId, window._rcComprovanteId, nomeDesejado);
+    if (renomeado) { comprovanteUrl = renomeado.url || comprovanteUrl; comprovanteNome = renomeado.nome || comprovanteNome; }
+  }
 
   const dados = {
     DataEmissao: dataEmissao, Categoria: categoria, Subcategoria: subcategoria,
@@ -6316,6 +6473,7 @@ async function salvarReceita() {
   const medHint = document.getElementById('rc_medicao_hint'); if (medHint) medHint.textContent = '';
   const medDl = document.getElementById('rc_medicao_dl'); if (medDl) medDl.innerHTML = '';
   window._rcComprovanteUrl = null; window._rcComprovanteNome = null;
+  window._rcComprovanteId = null; window._rcComprovanteDriveId = null;
   const comprovScan = document.getElementById('rc_comprovante_scan'); if (comprovScan) comprovScan.value = '';
   const comprovGaleria = document.getElementById('rc_comprovante_galeria'); if (comprovGaleria) comprovGaleria.value = '';
   const comprovStatus = document.getElementById('rc_comprovante_status'); if (comprovStatus) comprovStatus.textContent = '';
@@ -6466,6 +6624,7 @@ function rcAbrirEdicaoReceita(id) {
   // Preserva o comprovante já vinculado (se houver) até o usuário anexar um novo
   window._rceComprovanteUrl = i.ComprovanteUrl || '';
   window._rceComprovanteNome = i.ComprovanteNome || '';
+  window._rceComprovanteId = null; window._rceComprovanteDriveId = null;
 
   const bancosEmpresa = RD_BANCOS_POR_EMPRESA[i.Empresa] || [];
   const opt = (v,l) => `<option value="${v}" ${i.Status===v?'selected':''}>${l}</option>`;
@@ -6528,12 +6687,15 @@ function rcAbrirEdicaoReceita(id) {
 async function rceAnexarComprovante(inputEl) {
   const file = inputEl.files[0];
   if (!file) return;
+  window._rceComprovanteId = null; window._rceComprovanteDriveId = null;
   const statusEl = document.getElementById('rce_comprovante_status');
   if (statusEl) statusEl.textContent = '⏳ Enviando...';
   const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.receitas);
   if (resultado) {
     window._rceComprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
     window._rceComprovanteNome = resultado.nome;
+    window._rceComprovanteId = resultado.id || null;
+    window._rceComprovanteDriveId = resultado.driveId || null;
     if (statusEl) statusEl.textContent = '📎 ' + resultado.nome + ' — clique em Salvar para vincular';
     showToast('☁️ Comprovante enviado!');
   } else {
@@ -6549,8 +6711,16 @@ async function rcSalvarEdicaoReceita(id) {
   const valor = rdMoedaParaNumero(document.getElementById('rce_valor').value);
   const dataPrevista = document.getElementById('rce_data_prevista').value;
   const numeroNF = (document.getElementById('rce_numero_nf')||{}).value.trim() || '';
-  const comprovanteUrl = window._rceComprovanteUrl || '';
-  const comprovanteNome = window._rceComprovanteNome || '';
+  let comprovanteUrl = window._rceComprovanteUrl || '';
+  let comprovanteNome = window._rceComprovanteNome || '';
+
+  // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/cliente definitivos
+  if (window._rceComprovanteId && window._rceComprovanteDriveId) {
+    const original = (window._rcReceitasPorId || {})[id] || {};
+    const nomeDesejado = financeiroGerarNomeComprovante(original.DataEmissao, valor, original.Cliente, comprovanteNome);
+    const renomeado = await renomearArquivoOneDrive(window._rceComprovanteDriveId, window._rceComprovanteId, nomeDesejado);
+    if (renomeado) { comprovanteUrl = renomeado.url || comprovanteUrl; comprovanteNome = renomeado.nome || comprovanteNome; }
+  }
 
   const campos = {
     Status: status,
@@ -7600,12 +7770,15 @@ async function rdAnexarComprovante(inputEl) {
   const file = inputEl.files[0];
   if (!file) return;
   window._rdComprovanteUrl = null; window._rdComprovanteNome = null;
+  window._rdComprovanteId = null; window._rdComprovanteDriveId = null;
   const statusEl = document.getElementById('rd_comprovante_status');
   if (statusEl) statusEl.textContent = '⏳ Enviando...';
   const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.despesas);
   if (resultado) {
     window._rdComprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
     window._rdComprovanteNome = resultado.nome;
+    window._rdComprovanteId = resultado.id || null;
+    window._rdComprovanteDriveId = resultado.driveId || null;
     if (statusEl) statusEl.textContent = '📎 ' + resultado.nome;
     showToast('☁️ Comprovante salvo no OneDrive!');
   } else {
@@ -7636,8 +7809,8 @@ async function salvarDespesa() {
   const banco = (document.getElementById('rd_banco')||{}).value || '';
   const status = document.getElementById('rd_status').value;
   const medicao = (document.getElementById('rd_medicao')||{}).value || '';
-  const comprovanteUrl = window._rdComprovanteUrl || '';
-  const comprovanteNome = window._rdComprovanteNome || '';
+  let comprovanteUrl = window._rdComprovanteUrl || '';
+  let comprovanteNome = window._rdComprovanteNome || '';
   const semana = _rdSemanaDoAno(dataLancamento);
   const temDistribuicao = (document.getElementById('rd_tem_distribuicao')||{}).checked || false;
   const distribuicoes = temDistribuicao ? (window._rdDistribuicoes||[]) : [];
@@ -7664,6 +7837,13 @@ async function salvarDespesa() {
   }
 
   const descricao = modalidade === 'servicos' ? (servicoOpt ? servicoOpt.id+' · '+servicoOpt.desc : '') : fornecedor;
+
+  // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/fornecedor definitivos
+  if (window._rdComprovanteId && window._rdComprovanteDriveId) {
+    const nomeDesejado = financeiroGerarNomeComprovante(dataLancamento, valorTotal, fornecedor || beneficiario || descricao, comprovanteNome);
+    const renomeado = await renomearArquivoOneDrive(window._rdComprovanteDriveId, window._rdComprovanteId, nomeDesejado);
+    if (renomeado) { comprovanteUrl = renomeado.url || comprovanteUrl; comprovanteNome = renomeado.nome || comprovanteNome; }
+  }
 
   const base = {
     DataLancamento: dataLancamento, Semana: semana, Categoria: categoria, Subcategoria: subcategoria, Modalidade: modalidade,
@@ -7730,6 +7910,7 @@ async function salvarDespesa() {
   const tipoSel = document.getElementById('rd_tipo_pagamento'); if (tipoSel) tipoSel.selectedIndex = 0;
   const statusSel = document.getElementById('rd_status'); if (statusSel) statusSel.selectedIndex = 0;
   window._rdComprovanteUrl = null; window._rdComprovanteNome = null;
+  window._rdComprovanteId = null; window._rdComprovanteDriveId = null;
   const comprovScan = document.getElementById('rd_comprovante_scan'); if (comprovScan) comprovScan.value = '';
   const comprovGaleria = document.getElementById('rd_comprovante_galeria'); if (comprovGaleria) comprovGaleria.value = '';
   const comprovStatus = document.getElementById('rd_comprovante_status'); if (comprovStatus) comprovStatus.textContent = '';
@@ -8106,6 +8287,7 @@ function rdAbrirEdicaoDespesa(id) {
   // Preserva o comprovante já vinculado (se houver) até o usuário anexar um novo
   window._rdeComprovanteUrl = i.ComprovanteUrl || '';
   window._rdeComprovanteNome = i.ComprovanteNome || '';
+  window._rdeComprovanteId = null; window._rdeComprovanteDriveId = null;
   // Empresa do lançamento sendo editado — usada pra filtrar a lista de Contratos/CC
   // disponíveis pro reatribuir contrato/medição desta parcela específica.
   window._rdeEmpresaAtual = i.Empresa || (RD_EMPRESAS && RD_EMPRESAS[0]) || '';
@@ -8245,12 +8427,15 @@ async function rdeAtualizarMedicaoPorCC(cc) {
 async function rdeAnexarComprovante(inputEl) {
   const file = inputEl.files[0];
   if (!file) return;
+  window._rdeComprovanteId = null; window._rdeComprovanteDriveId = null;
   const statusEl = document.getElementById('rde_comprovante_status');
   if (statusEl) statusEl.textContent = '⏳ Enviando...';
   const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.despesas);
   if (resultado) {
     window._rdeComprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
     window._rdeComprovanteNome = resultado.nome;
+    window._rdeComprovanteId = resultado.id || null;
+    window._rdeComprovanteDriveId = resultado.driveId || null;
     if (statusEl) statusEl.textContent = '📎 ' + resultado.nome + ' — clique em Salvar para vincular';
     showToast('☁️ Comprovante enviado!');
   } else {
@@ -8267,8 +8452,16 @@ async function rdSalvarEdicaoDespesa(id) {
   const vencimento = document.getElementById('rde_vencimento').value;
   const centroCusto = (document.getElementById('rde_cc')||{}).value || '';
   const numMedicao = (document.getElementById('rde_medicao')||{}).value.trim() || '';
-  const comprovanteUrl = window._rdeComprovanteUrl || '';
-  const comprovanteNome = window._rdeComprovanteNome || '';
+  let comprovanteUrl = window._rdeComprovanteUrl || '';
+  let comprovanteNome = window._rdeComprovanteNome || '';
+
+  // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/fornecedor definitivos
+  if (window._rdeComprovanteId && window._rdeComprovanteDriveId) {
+    const original = (window._rdDespesasPorId || {})[id] || {};
+    const nomeDesejado = financeiroGerarNomeComprovante(original.DataLancamento, valor, original.Fornecedor || original.Beneficiario, comprovanteNome);
+    const renomeado = await renomearArquivoOneDrive(window._rdeComprovanteDriveId, window._rdeComprovanteId, nomeDesejado);
+    if (renomeado) { comprovanteUrl = renomeado.url || comprovanteUrl; comprovanteNome = renomeado.nome || comprovanteNome; }
+  }
 
   const campos = {
     Status: status,
@@ -18544,11 +18737,59 @@ function odPastaPrestacaoMes() {
    mês, o próprio Graph resolve o conflito renomeando ("nome (1).pdf"), do
    mesmo jeito que o Explorer/OneDrive fazem. Retorna {url, nome} (nome já
    é o nome final, possivelmente com sufixo de desambiguação) ou null. */
-async function uploadComprovanteComNomeOriginal(file, pastaBase) {
+async function uploadComprovanteComNomeOriginal(file, pastaBase, nomeDesejado) {
   if (!file) return null;
   const pasta = odPastaMesAtual(pastaBase);
-  const resultado = await uploadParaOneDrive(file, pasta, file.name, { conflictBehavior: 'rename', retornarNome: true });
+  const nomeFinal = nomeDesejado || file.name;
+  const resultado = await uploadParaOneDrive(file, pasta, nomeFinal, { conflictBehavior: 'rename', retornarNome: true });
   return resultado || null;
+}
+
+/* -- Nomeação automática de comprovantes: "DD-MM-AAAA_R$Valor_RazãoSocial.ext" --
+   Usado para que qualquer PDF/foto subido (com qualquer nome original) fique
+   identificável na pasta pela data de lançamento, valor e razão social
+   (fornecedor/cliente) cadastrados no lançamento. -- */
+function financeiroSanitizarNomeArquivo(txt) {
+  return (txt || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function financeiroGerarNomeComprovante(dataISO, valor, nome, nomeOriginal) {
+  const ponto = (nomeOriginal || '').lastIndexOf('.');
+  const ext = ponto > -1 ? nomeOriginal.slice(ponto) : '';
+  const dataFmt = dataISO ? new Date(dataISO + 'T00:00:00').toLocaleDateString('pt-BR').replace(/\//g, '-') : 'sem-data';
+  const valorFmt = valor ? ('R$' + Number(valor).toFixed(2).replace('.', ',')) : 'sem-valor';
+  const nomeFmt = financeiroSanitizarNomeArquivo(nome) || 'sem-nome';
+  let base = financeiroSanitizarNomeArquivo(dataFmt + '_' + valorFmt + '_' + nomeFmt);
+  if (base.length > 80) base = base.slice(0, 80);
+  return base + ext;
+}
+
+/* -- Renomeia um arquivo já enviado ao OneDrive (usado quando o upload acontece
+   antes de todos os dados do lançamento estarem preenchidos — o arquivo sobe
+   com o nome original e é renomeado no momento de Salvar, quando já sabemos
+   data/valor/razão social definitivos). Retorna {url, nome} atualizados ou
+   null se não foi possível renomear (nesse caso mantém o nome anterior). -- */
+async function renomearArquivoOneDrive(driveId, itemId, novoNome) {
+  if (!driveId || !itemId || !novoNome) return null;
+  try {
+    const token = await getOneDriveToken();
+    if (!token) return null;
+    const resp = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + itemId, {
+      method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: novoNome, '@microsoft.graph.conflictBehavior': 'rename' }),
+    });
+    if (!resp.ok) { console.warn('[OD] Falha ao renomear comprovante', resp.status, await resp.text()); return null; }
+    const data = await resp.json();
+    return { url: data.webUrl || null, nome: data.name || novoNome };
+  } catch(e) {
+    console.warn('[OD] Erro ao renomear comprovante:', e);
+    return null;
+  }
 }
 
 /* -- Pasta central no OneDrive de atendimento@expediansolucoes.com.br --
@@ -18879,7 +19120,7 @@ async function uploadParaOneDrive(blob, subpasta, nomeArquivo, opts) {
       if (resp.ok) {
         const data = await resp.json();
         console.log('[OD] Arquivo salvo:', data.webUrl);
-        return opts.retornarNome ? { url: data.webUrl || true, nome: data.name || nomeArquivo } : (data.webUrl || true);
+        return opts.retornarNome ? { url: data.webUrl || true, nome: data.name || nomeArquivo, id: data.id, driveId: driveId } : (data.webUrl || true);
       }
       const errTxt = await resp.text();
       console.warn('[OD] Erro upload simples', resp.status, errTxt.substring(0, 300));
@@ -18931,7 +19172,7 @@ async function uploadParaOneDrive(blob, subpasta, nomeArquivo, opts) {
       offset = fim;
     }
     console.log('[OD] Arquivo grande salvo:', ultimaResposta && ultimaResposta.webUrl);
-    if (opts.retornarNome) return { url: (ultimaResposta && ultimaResposta.webUrl) || true, nome: (ultimaResposta && ultimaResposta.name) || nomeArquivo };
+    if (opts.retornarNome) return { url: (ultimaResposta && ultimaResposta.webUrl) || true, nome: (ultimaResposta && ultimaResposta.name) || nomeArquivo, id: ultimaResposta && ultimaResposta.id, driveId: driveId };
     return (ultimaResposta && ultimaResposta.webUrl) || true;
   } catch(e) {
     console.warn('[OD] Upload erro de rede:', e);
