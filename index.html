@@ -5231,12 +5231,22 @@ async function salvarContaPagar(enviarFinanceiro=false) {
   if(!valor){showToast('⚠️ Informe o valor.');return;}
   if(!empresa){showToast('⚠️ Selecione a empresa.');return;}
 
+  // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/fornecedor definitivos
+  let comprovanteUrlFinal = window._pagComprovanteUrl || '';
+  let comprovanteNomeFinal = window._pagComprovanteNome || '';
+  if (window._pagComprovanteId && window._pagComprovanteDriveId) {
+    const dataRef = vencimento || (window._pagParcelas && window._pagParcelas[0] && window._pagParcelas[0].vencimento) || '';
+    const nomeDesejado = financeiroGerarNomeComprovante(dataRef, valor, fornecedor, comprovanteNomeFinal);
+    const renomeado = await renomearArquivoOneDrive(window._pagComprovanteDriveId, window._pagComprovanteId, nomeDesejado);
+    if (renomeado) { comprovanteUrlFinal = renomeado.url || comprovanteUrlFinal; comprovanteNomeFinal = renomeado.nome || comprovanteNomeFinal; }
+  }
+
   const base = {
     Fornecedor:fornecedor, Descricao:desc, Empresa:empresa, CentroCusto:cc,
     Categoria: categoria, Subcategoria: subcategoria, NaturezaEconomica: rdNaturezaDeSubcategoria(subcategoria),
     FormaPagamento:formaPgto, Observacao:obs, EnviadoFinanceiro:enviarFinanceiro,
     LancadoPor:window._currentUser?window._currentUser.name:'',
-    ComprovanteUrl: window._pagComprovanteUrl || '', ComprovanteNome: window._pagComprovanteNome || '',
+    ComprovanteUrl: comprovanteUrlFinal, ComprovanteNome: comprovanteNomeFinal,
   };
   const statusFinal = enviarFinanceiro ? 'Aguardando Aprovação' : (document.getElementById('pag_status').value || null);
 
@@ -5275,6 +5285,7 @@ async function salvarContaPagar(enviarFinanceiro=false) {
   const parcSel=document.getElementById('pag_parcelamento');if(parcSel){parcSel.selectedIndex=0;pagToggleParcelas();}
   window._pagParcelas = null;
   window._pagComprovanteUrl = null; window._pagComprovanteNome = null;
+  window._pagComprovanteId = null; window._pagComprovanteDriveId = null;
   const pagAnexoEl = document.getElementById('pag_anexo'); if (pagAnexoEl) pagAnexoEl.value = '';
   const pagAnexoNomeEl = document.getElementById('pag_anexo_nome'); if (pagAnexoNomeEl) pagAnexoNomeEl.textContent = '';
   setTimeout(()=>carregarContasPagar(),900);
@@ -18904,13 +18915,17 @@ function financeiroSanitizarNomeArquivo(txt) {
     .trim();
 }
 
+// Padrão fixo pedido pelo Tiago: "02.08.26 - R$ 200,00 - Engesol.pdf"
+// (data DD.MM.AA · " - " como separador · "R$ " com espaço · vírgula decimal)
 function financeiroGerarNomeComprovante(dataISO, valor, nome, nomeOriginal) {
   const ponto = (nomeOriginal || '').lastIndexOf('.');
   const ext = ponto > -1 ? nomeOriginal.slice(ponto) : '';
-  const dataFmt = dataISO ? new Date(dataISO + 'T00:00:00').toLocaleDateString('pt-BR').replace(/\//g, '-') : 'sem-data';
-  const valorFmt = valor ? ('R$' + Number(valor).toFixed(2).replace('.', ',')) : 'sem-valor';
-  const nomeFmt = financeiroSanitizarNomeArquivo(nome) || 'sem-nome';
-  let base = financeiroSanitizarNomeArquivo(dataFmt + '_' + valorFmt + '_' + nomeFmt);
+  const dataFmt = dataISO
+    ? new Date(dataISO + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }).replace(/\//g, '.')
+    : 'sem data';
+  const valorFmt = valor ? ('R$ ' + Number(valor).toFixed(2).replace('.', ',')) : 'sem valor';
+  const nomeFmt = financeiroSanitizarNomeArquivo(nome) || 'sem nome';
+  let base = `${dataFmt} - ${valorFmt} - ${nomeFmt}`;
   if (base.length > 80) base = base.slice(0, 80);
   return base + ext;
 }
@@ -22162,12 +22177,16 @@ function iniciarListenersAnexos() {
       if (!file) return;
       window._pagComprovanteUrl = null;
       window._pagComprovanteNome = null;
+      window._pagComprovanteId = null;
+      window._pagComprovanteDriveId = null;
       showToast('☁️ Enviando comprovante ao OneDrive...');
       const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.contasPagar);
       const nomeEl = document.getElementById('pag_anexo_nome');
       if (resultado) {
         window._pagComprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
         window._pagComprovanteNome = resultado.nome;
+        window._pagComprovanteId = resultado.id || null;
+        window._pagComprovanteDriveId = resultado.driveId || null;
         if (nomeEl) nomeEl.textContent = '📎 ' + resultado.nome;
         showToast('☁️ Comprovante salvo no OneDrive: ' + resultado.nome);
       } else {
