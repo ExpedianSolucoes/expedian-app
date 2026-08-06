@@ -6132,6 +6132,7 @@ function _rdSemanaDoAno(dataStr) {
 }
 
 function _rdServicosTodos() {
+  if (!_servicosCatalogoCarregado) servCarregarCatalogo(); // sincroniza em segundo plano (fire-and-forget)
   const combinados = [];
   ['diarias', 'veiculos', 'projetos'].forEach(grupo => {
     (servicosDB[grupo] || []).forEach(s => combinados.push({ ...s, grupo }));
@@ -12409,7 +12410,7 @@ function showAPRHistorico() {
    CATÁLOGO DE SERVIÇOS
 =============================== */
 
-const servicosDB = {
+let servicosDB = {
   diarias: [
     { id:'D01', desc:'Diária Engenheiro - Semanal (Vistorias/Coleta)', categoria:'Engenharia', valor:315.23 },
     { id:'D02', desc:'Diária Engenheiro - Final de Semana/Feriados (Coleta de Resíduos)', categoria:'Engenharia', valor:325.23 },
@@ -12499,6 +12500,35 @@ const servicosDB = {
   ]
 };
 
+// A tabela de preços acima é usada apenas como SEED inicial (1ª vez que o app roda).
+// A partir daí, o catálogo de verdade fica persistido no OneDrive (tabela ServicosCatalogo),
+// permitindo editar/excluir/adicionar itens pela tela sem precisar mexer no código.
+let _servicosCatalogoCarregado = false;
+
+async function servCarregarCatalogo() {
+  if (_servicosCatalogoCarregado) return;
+  let lista = await dbLer('ServicosCatalogo');
+  if (!lista || !lista.length) {
+    const seed = [];
+    ['diarias', 'veiculos', 'projetos'].forEach(tipo => {
+      (servicosDB[tipo] || []).forEach(i => seed.push({ ...i, tipo }));
+    });
+    await dbSalvar('ServicosCatalogo', seed);
+    lista = seed;
+  }
+  const agrupado = { diarias: [], veiculos: [], projetos: [] };
+  lista.forEach(i => { if (agrupado[i.tipo]) agrupado[i.tipo].push(i); });
+  servicosDB = agrupado;
+  _servicosCatalogoCarregado = true;
+}
+
+async function servCarregarCatalogoEExibir(tab) {
+  await servCarregarCatalogo();
+  if ((window._servicosTab || 'diarias') !== tab) return;
+  const c = document.getElementById('servicos-catalogo-container');
+  if (c) c.innerHTML = renderServicosTab(servicosDB[tab] || [], tab);
+}
+
 // Lançamentos do Catálogo de Serviços — persistidos no OneDrive central (tabela Lancamentos_Servicos),
 // carregados sob demanda pela aba "Lançamentos" (ver carregarLancamentosServicos).
 let lancamentos = [];
@@ -12561,6 +12591,7 @@ function pageServicos() {
   ];
 
   if (tab === 'lancamentos') setTimeout(() => carregarLancamentosServicos(), 200);
+  else if (!_servicosCatalogoCarregado) setTimeout(() => servCarregarCatalogoEExibir(tab), 150);
 
   return `
   <div class="page-header">
@@ -12581,9 +12612,12 @@ function pageServicos() {
     </button>`).join('')}
   </div>
 
-  ${tab === 'diarias'   ? renderServicosTab(servicosDB.diarias,  'diarias')  : ''}
-  ${tab === 'veiculos'  ? renderServicosTab(servicosDB.veiculos, 'veiculos') : ''}
-  ${tab === 'projetos'  ? renderServicosTab(servicosDB.projetos, 'projetos') : ''}
+  ${(tab === 'diarias' || tab === 'veiculos' || tab === 'projetos') ? `
+  <div id="servicos-catalogo-container">
+    ${_servicosCatalogoCarregado
+      ? renderServicosTab(servicosDB[tab] || [], tab)
+      : '<div class="card" style="text-align:center;padding:32px 24px;color:var(--text-muted)">Carregando catálogo...</div>'}
+  </div>` : ''}
   ${tab === 'lancamentos' ? '<div id="servicos-lancamentos-container"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>' : ''}
   `;
 }
@@ -12688,16 +12722,21 @@ function renderServicosTab(items, tipo) {
     </div>
   </div>`;
 
+  const podeGerenciar = _servicosPodeLancar();
+
   return `
   ${formulario}
 
   <!-- TABELA DE PREÇOS -->
   <div class="card">
-    <div class="card-title" style="font-size:.9rem;margin-bottom:4px">
-      Tabela de Preços 2026
-      <span class="badge">${items.length} itens</span>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px">
+      <div class="card-title" style="font-size:.9rem;margin-bottom:0">
+        Tabela de Preços 2026
+        <span class="badge">${items.length} itens</span>
+      </div>
+      ${podeGerenciar ? `<button class="btn-secondary" style="font-size:.75rem;padding:6px 12px" onclick="servAbrirModalItem('${tipo}')">➕ Novo Serviço</button>` : ''}
     </div>
-    <div style="margin-bottom:14px">
+    <div style="margin:14px 0">
       <input placeholder="🔍 Filtrar serviços..." oninput="filtrarServicos(this.value,'tbl_${tipo}')"
         style="width:100%;border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:.82rem;font-family:'Mont',sans-serif;outline:none;background:var(--surface2)">
     </div>
@@ -12714,18 +12753,65 @@ function renderServicosTab(items, tipo) {
             <td style="font-weight:700;color:var(--green-main);font-size:.8rem">${i.id}</td>
             <td style="font-size:.82rem">${i.desc}${i.unidade ? `<span style="font-size:.68rem;color:var(--text-muted);margin-left:6px">${i.unidade}</span>` : ''}</td>
             <td style="text-align:right;font-weight:700;font-family:'Mont',sans-serif;color:${i.valor?'var(--green-main)':'var(--text-muted)'}">${fmtBRL(i.valor)}</td>
-            <td>
+            <td style="white-space:nowrap">
               <button onclick="preencherForm('${tipo}','${i.id}')"
                 style="font-size:.68rem;padding:4px 10px;border:1px solid var(--green-main);
                   border-radius:6px;background:var(--green-pale);cursor:pointer;color:var(--green-main);white-space:nowrap">
                 ➕ Lançar
               </button>
+              ${podeGerenciar ? `
+              <button onclick="servAbrirModalItem('${tipo}','${i.id}')" title="Editar"
+                style="font-size:.68rem;padding:4px 8px;border:1px solid var(--border);
+                  border-radius:6px;background:var(--surface2);cursor:pointer;color:var(--text);margin-left:4px">
+                ✏️
+              </button>
+              <button onclick="servExcluirItem('${tipo}','${i.id}')" title="Excluir"
+                style="font-size:.68rem;padding:4px 8px;border:1px solid var(--border);
+                  border-radius:6px;background:var(--surface2);cursor:pointer;color:#c0392b;margin-left:4px">
+                🗑️
+              </button>` : ''}
             </td>
           </tr>`).join('')}
         </tbody>
       </table>
     </div>`).join('')}
-  </div>`;
+  </div>
+
+  ${podeGerenciar ? `
+  <!-- MODAL NOVO/EDITAR SERVIÇO -->
+  <div id="modal-servico-item" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center">
+    <div class="card" style="max-width:440px;width:92%;max-height:90vh;overflow:auto">
+      <div class="card-title" style="font-size:.95rem;margin-bottom:14px" id="servico-modal-titulo">Novo Serviço</div>
+      <input type="hidden" id="servico_modal_tipo" value="${tipo}">
+      <input type="hidden" id="servico_modal_id_original" value="">
+      <div class="form-group" style="margin-bottom:10px">
+        <label>Código</label>
+        <input id="servico_modal_codigo" placeholder="Ex: D36, V14, P34">
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label>Categoria</label>
+        <input id="servico_modal_categoria" placeholder="Ex: Engenharia, Veículo, Fauna...">
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label>Descrição</label>
+        <input id="servico_modal_desc" placeholder="Descrição do serviço">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="form-group" style="margin-bottom:10px">
+          <label>Valor Unitário (R$)</label>
+          <input id="servico_modal_valor" type="number" step="0.01" placeholder="Deixe vazio p/ 'A consultar'">
+        </div>
+        <div class="form-group" style="margin-bottom:10px">
+          <label>Unidade (opcional)</label>
+          <input id="servico_modal_unidade" placeholder="Ex: por folha">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+        <button class="btn-primary" onclick="servSalvarItem()">💾 Salvar</button>
+        <button class="btn-secondary" onclick="servFecharModalItem()">Cancelar</button>
+      </div>
+    </div>
+  </div>` : ''}`;
 }
 
 /* -- Lançamentos: KPIs + filtros + busca + exportação Excel, dados de verdade no OneDrive
@@ -12987,6 +13073,83 @@ function limparForm(tipo) {
     const el = document.getElementById(p + tipo);
     if (el) el.value = el.tagName === 'SELECT' ? '' : el.type === 'number' && p === 'val_qtd_' ? '1' : '';
   });
+}
+
+/* -- CRUD do Catálogo de Preços (Diárias/Veículos/Projetos), persistido em ServicosCatalogo -- */
+function servAbrirModalItem(tipo, id) {
+  if (!_servicosPodeLancar()) { showToast('⛔ Restrito à Diretoria e Coordenação.'); return; }
+  const item = id ? (servicosDB[tipo] || []).find(i => i.id === id) : null;
+  document.getElementById('servico_modal_tipo').value = tipo;
+  document.getElementById('servico_modal_id_original').value = id || '';
+  document.getElementById('servico_modal_codigo').value = item ? item.id : '';
+  document.getElementById('servico_modal_categoria').value = item ? item.categoria : '';
+  document.getElementById('servico_modal_desc').value = item ? item.desc : '';
+  document.getElementById('servico_modal_valor').value = item && item.valor !== null && item.valor !== undefined ? item.valor : '';
+  document.getElementById('servico_modal_unidade').value = item && item.unidade ? item.unidade : '';
+  document.getElementById('servico-modal-titulo').textContent = item ? 'Editar Serviço' : 'Novo Serviço';
+  const m = document.getElementById('modal-servico-item');
+  if (m) m.style.display = 'flex';
+}
+
+function servFecharModalItem() {
+  const m = document.getElementById('modal-servico-item');
+  if (m) m.style.display = 'none';
+}
+
+async function servSalvarItem() {
+  const tipo = document.getElementById('servico_modal_tipo').value;
+  const idOriginal = document.getElementById('servico_modal_id_original').value;
+  const codigo = document.getElementById('servico_modal_codigo').value.trim();
+  const categoria = document.getElementById('servico_modal_categoria').value.trim();
+  const desc = document.getElementById('servico_modal_desc').value.trim();
+  const valorRaw = document.getElementById('servico_modal_valor').value;
+  const valor = valorRaw !== '' ? parseFloat(valorRaw) : null;
+  const unidade = document.getElementById('servico_modal_unidade').value.trim();
+
+  if (!codigo) { showToast('⚠️ Informe o código.'); return; }
+  if (!categoria) { showToast('⚠️ Informe a categoria.'); return; }
+  if (!desc) { showToast('⚠️ Informe a descrição.'); return; }
+
+  const lista = await dbLer('ServicosCatalogo');
+  const item = { id: codigo, desc, categoria, valor, tipo };
+  if (unidade) item.unidade = unidade;
+
+  let idx = -1;
+  if (idOriginal) idx = lista.findIndex(i => i.tipo === tipo && i.id === idOriginal);
+  if (idx > -1) lista[idx] = item;
+  else {
+    if (lista.some(i => i.tipo === tipo && i.id === codigo)) { showToast('⚠️ Já existe um serviço com esse código nesta aba.'); return; }
+    lista.push(item);
+  }
+
+  const ok = await dbSalvar('ServicosCatalogo', lista);
+  if (ok) {
+    const agrupado = { diarias: [], veiculos: [], projetos: [] };
+    lista.forEach(i => { if (agrupado[i.tipo]) agrupado[i.tipo].push(i); });
+    servicosDB = agrupado;
+  }
+  showToast(ok ? '✅ Serviço salvo!' : '❌ Erro ao salvar serviço.');
+  servFecharModalItem();
+  const c = document.getElementById('servicos-catalogo-container');
+  if (c) c.innerHTML = renderServicosTab(servicosDB[tipo] || [], tipo);
+}
+
+async function servExcluirItem(tipo, id) {
+  if (!_servicosPodeLancar()) { showToast('⛔ Restrito à Diretoria e Coordenação.'); return; }
+  if (!confirm('Tem certeza que deseja excluir este serviço da tabela de preços?')) return;
+  const lista = await dbLer('ServicosCatalogo');
+  const idx = lista.findIndex(i => i.tipo === tipo && i.id === id);
+  if (idx === -1) { showToast('❌ Item não encontrado.'); return; }
+  lista.splice(idx, 1);
+  const ok = await dbSalvar('ServicosCatalogo', lista);
+  if (ok) {
+    const agrupado = { diarias: [], veiculos: [], projetos: [] };
+    lista.forEach(i => { if (agrupado[i.tipo]) agrupado[i.tipo].push(i); });
+    servicosDB = agrupado;
+  }
+  showToast(ok ? '🗑️ Serviço excluído.' : '❌ Erro ao excluir.');
+  const c = document.getElementById('servicos-catalogo-container');
+  if (c) c.innerHTML = renderServicosTab(servicosDB[tipo] || [], tipo);
 }
 
 function servToggleFormNovo(tipo, forcar) {
