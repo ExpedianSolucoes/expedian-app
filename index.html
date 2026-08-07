@@ -15685,6 +15685,10 @@ function exportarBombeamentoPdf() {
 if (typeof window._mitData === 'undefined') window._mitData = {};
 if (typeof window._mitHistorico === 'undefined') window._mitHistorico = null; // null = ainda não carregado
 if (typeof window._mitRegistroAtualId === 'undefined') window._mitRegistroAtualId = null;
+if (typeof window._mitDashFiltroMes === 'undefined') window._mitDashFiltroMes = '';
+if (typeof window._mitDashFiltroAno === 'undefined') window._mitDashFiltroAno = '';
+
+const MIT_MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
 const MIT_ITENS = [
   'Mantas/almofadas absorventes para óleo e produtos químicos',
@@ -15802,22 +15806,125 @@ async function carregarMitigacaoHistorico(forcar) {
   navigate('checklist_mitigacao');
 }
 
-function renderMitHistoricoLista() {
+function mitDashFiltrarMes(v) { window._mitDashFiltroMes = v; navigate('checklist_mitigacao'); }
+function mitDashFiltrarAno(v) { window._mitDashFiltroAno = v; navigate('checklist_mitigacao'); }
+
+/* -- Limpa TODO o histórico de checklists de Mitigação Ambiental (local + OneDrive central). Ação destrutiva. -- */
+async function mitLimparHistorico() {
+  const total = Array.isArray(window._mitHistorico) ? window._mitHistorico.length : 0;
+  const confirmar = confirm(
+    `⚠️ Isso vai APAGAR todo o histórico de checklists de Kit de Mitigação Ambiental (${total} registro(s)) ` +
+    `de todos os inspetores, salvo na pasta central do OneDrive.\n\n` +
+    `Os documentos/PDFs já enviados para a pasta "Checklists" NÃO serão apagados, só o histórico do dashboard.\n\n` +
+    `Essa ação não pode ser desfeita. Deseja continuar?`
+  );
+  if (!confirmar) return;
+
+  showSyncStatus('Limpando histórico no OneDrive...');
+  const ok = await dbSalvar('ChecklistMitigacao', []);
+  window._mitHistorico = [];
+  window._mitDashFiltroMes = '';
+  window._mitDashFiltroAno = '';
+  try { localStorage.setItem('mit_historico_cache', JSON.stringify([])); } catch(e) {}
+
+  if (ok) {
+    showSyncStatus('Histórico limpo!', 'ok', 4000);
+    showToast('🗑️ Histórico de checklists de Mitigação Ambiental zerado. Começando do zero a partir de agora.');
+  } else {
+    showSyncStatus('Falha ao limpar no OneDrive', 'err', 6000);
+    showToast('⚠️ Limpei localmente, mas não consegui confirmar a limpeza no OneDrive. Verifique a conexão e tente de novo.');
+  }
+  navigate('checklist_mitigacao');
+}
+
+/* -- Mini dashboard: filtros por mês/ano, KPIs de conformidade e lista de checklists já vistoriados -- */
+function renderMitMiniDashboard() {
   const historico = Array.isArray(window._mitHistorico) ? window._mitHistorico : [];
-  if (window._mitHistorico === null) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</div>';
-  if (!historico.length) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum checklist salvo ainda.</div>';
-  const ordenado = historico.slice().sort((a,b)=>(b.Id||0)-(a.Id||0));
-  return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Local / Frente de Serviço</th><th>Data</th><th>Responsável</th><th>Pontuação</th><th>Ações</th></tr></thead><tbody>' +
-    ordenado.map(r => `<tr>
-      <td><strong>${r.local||'—'}</strong></td>
-      <td>${r.data?new Date(r.data+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
-      <td>${r.responsavel||'—'}</td>
-      <td>${r.pontuacaoLabel ? (r.pontuacaoIcone||'') + ' ' + r.pontuacaoLabel + (r.pontuacaoPct!=null?' ('+r.pontuacaoPct.toFixed(0)+'%)':'') : '—'}</td>
-      <td style="white-space:nowrap;display:flex;gap:4px;flex-wrap:wrap">
-        <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="mitEditarChecklist(${r.Id})">✏️ Editar</button>
-        <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" title="${r.documentoUrl?'Ver PDF/documento gerado':'Ainda sem PDF exportado'}" onclick="mitVerChecklist(${r.Id})">👁️ Ver</button>
-      </td>
-    </tr>`).join('') + '</tbody></table></div>';
+
+  const comData = historico.map(r => {
+    let ano = '', mes = '';
+    if (r.data && /^\d{4}-\d{2}/.test(r.data)) { ano = r.data.slice(0,4); mes = r.data.slice(5,7); }
+    return { ...r, _ano: ano, _mes: mes };
+  });
+
+  const anosDisponiveis = [...new Set(comData.map(r => r._ano).filter(Boolean))].sort().reverse();
+
+  const filtrados = comData.filter(r =>
+    (!window._mitDashFiltroAno || r._ano === window._mitDashFiltroAno) &&
+    (!window._mitDashFiltroMes || r._mes === window._mitDashFiltroMes)
+  ).sort((a,b) => (b.Id||0)-(a.Id||0));
+
+  const locaisUnicos = new Set(filtrados.map(r => (r.local||'Sem local').trim()).filter(Boolean));
+  const comPontuacao = filtrados.filter(r => typeof r.pontuacaoPct === 'number');
+  const mediaPct = comPontuacao.length ? (comPontuacao.reduce((s,r)=>s+r.pontuacaoPct,0) / comPontuacao.length) : null;
+  const naoAceitaveis = filtrados.filter(r => r.pontuacaoLabel === 'Não Aceitável').length;
+
+  return `
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📊 Mini Dashboard — Kit de Mitigação Ambiental</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select onchange="mitDashFiltrarMes(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
+          <option value="">Todos os meses</option>
+          ${MIT_MESES.map((m,idx) => `<option value="${String(idx+1).padStart(2,'0')}" ${window._mitDashFiltroMes===String(idx+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}
+        </select>
+        <select onchange="mitDashFiltrarAno(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
+          <option value="">Todos os anos</option>
+          ${anosDisponiveis.map(a => `<option value="${a}" ${window._mitDashFiltroAno===a?'selected':''}>${a}</option>`).join('')}
+        </select>
+        <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="carregarMitigacaoHistorico(true)">🔄 Atualizar</button>
+        <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem;color:var(--red)" onclick="mitLimparHistorico()">🗑️ Limpar Histórico</button>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+      <div class="kpi-card green" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Checklists no Filtro</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${filtrados.length}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Total Geral (todos os períodos)</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${historico.length}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Pontuação Média (no filtro)</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${mediaPct===null?'—':mediaPct.toFixed(0)+'%'}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px${naoAceitaveis>0?';border-color:var(--red)':''}">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🔴 Não Aceitável (no filtro)</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${naoAceitaveis>0?'var(--red)':'inherit'}">${naoAceitaveis}</div>
+      </div>
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
+      Locais / Frentes de Serviço Vistoriados (${locaisUnicos.size} distintos no filtro)
+    </div>
+    <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
+      ${window._mitHistorico === null
+        ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Carregando histórico...</div>`
+        : filtrados.length === 0
+          ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Nenhum checklist encontrado para este período.</div>`
+          : filtrados.map((r,idx) => `
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;${idx%2===0?'background:var(--surface)':'background:var(--surface2)'};${idx<filtrados.length-1?'border-bottom:1px solid var(--border)':''}">
+              <div style="flex:1;min-width:140px">
+                <div style="font-size:.82rem;font-weight:700">${r.local || 'Sem local'}</div>
+                <div style="font-size:.68rem;color:var(--text-muted)">${r.responsavel || '—'} ${r.veiculo?'· '+r.veiculo:''}</div>
+              </div>
+              <div style="font-size:.75rem;color:var(--text-muted);min-width:80px;text-align:center">
+                ${r.data ? new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}
+              </div>
+              <div style="font-size:.78rem;font-weight:700;min-width:120px;text-align:right;color:${r.pontuacaoLabel==='Não Aceitável'?'var(--red)':r.pontuacaoLabel==='Excelente'?'#2d8c5a':r.pontuacaoLabel==='Aceitável'?'#1a63c9':'var(--text-muted)'}">
+                ${r.pontuacaoLabel ? (r.pontuacaoIcone||'') + ' ' + (r.pontuacaoPct!=null?r.pontuacaoPct.toFixed(0)+'%':r.pontuacaoLabel) : '—'}
+              </div>
+              <div style="display:flex;gap:4px;flex-shrink:0">
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="${r.documentoUrl?'Ver PDF/documento gerado':'Ainda sem PDF exportado'}" onclick="mitVerChecklist(${r.Id})">👁️ Ver</button>
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="mitEditarChecklist(${r.Id})">✏️ Editar</button>
+              </div>
+            </div>`).join('')
+      }
+    </div>
+  </div>
+  `;
 }
 
 function pageChecklistMitigacao() {
@@ -15829,6 +15936,8 @@ function pageChecklistMitigacao() {
     <h1>Kit de Mitigação Ambiental</h1>
     <p>Checklist de vistoria do kit de contenção/mitigação ambiental — para fins de fiscalização ambiental</p>
   </div>
+
+  ${renderMitMiniDashboard()}
 
   <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap">
     <button class="btn-secondary" onclick="mitNovoChecklist()">🆕 Novo Checklist</button>
@@ -15957,10 +16066,6 @@ function pageChecklistMitigacao() {
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-title">Histórico de Checklists</div>
-    <div id="mit-historico-lista">${renderMitHistoricoLista()}</div>
-  </div>
   `;
 }
 
