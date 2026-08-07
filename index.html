@@ -15986,8 +15986,8 @@ function pageChecklistMitigacao() {
         <div style="min-width:28px;height:28px;border-radius:6px;background:#eef2f5;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:'Mont',sans-serif;font-size:.7rem;font-weight:800;color:var(--text-muted);flex-shrink:0">${String(i+1).padStart(2,'0')}</div>
         <div style="flex:1;font-size:.83rem;padding-top:4px">${item}</div>
         <select oninput="mitAtualizarItem(${i},this.value)"
-          style="border:1px solid var(--border);border-radius:7px;padding:4px 8px;font-size:.75rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer;min-width:130px"
-          onchange="this.style.background=this.value==='conforme'?'#e6f5ed':this.value==='nao_conforme'?'#fce8e8':'';this.style.color=this.value==='conforme'?'#2d8c5a':this.value==='nao_conforme'?'#e03d3d':''">
+          style="border:1px solid var(--border);border-radius:7px;padding:4px 8px;font-size:.75rem;font-weight:700;font-family:'Mont',sans-serif;outline:none;cursor:pointer;min-width:130px;background:${d['item_'+i]==='conforme'?'#e6f5ed':d['item_'+i]==='nao_conforme'?'#fce8e8':d['item_'+i]==='na'?'#eceef0':''};color:${d['item_'+i]==='conforme'?'#2d8c5a':d['item_'+i]==='nao_conforme'?'#e03d3d':d['item_'+i]==='na'?'#1a1a1a':''}"
+          onchange="this.style.background=this.value==='conforme'?'#e6f5ed':this.value==='nao_conforme'?'#fce8e8':this.value==='na'?'#eceef0':'';this.style.color=this.value==='conforme'?'#2d8c5a':this.value==='nao_conforme'?'#e03d3d':this.value==='na'?'#1a1a1a':''">
           <option value="">—</option>
           <option value="conforme" ${d['item_'+i]==='conforme'?'selected':''}>✅ Conforme</option>
           <option value="nao_conforme" ${d['item_'+i]==='nao_conforme'?'selected':''}>❌ Não Conforme</option>
@@ -22178,9 +22178,41 @@ async function asoGerarPDF() {
 // FICHA DE EPI — Controle de entrega/devolução de Equipamento de Proteção
 // Individual, conforme NR-06 (e NR-10 quando aplicável), com o kit sugerido
 // automaticamente a partir da função do colaborador no PGR REV04.
+//
+// Histórico persistido por colaborador (window._gdDados.epiHistorico[colabId]):
+// cada "Nova Entrega" soma um registro novo (nunca apaga os anteriores) e cada
+// "Devolução/Troca" marca o item entregue como devolvido + soma um registro na
+// tabela de devolução — a Ficha impressa sempre mostra o acumulado completo.
 // ─────────────────────────────────────────────────────────────
 let _epiColabIdx = null;
 window._epiItens = [];
+
+const EPI_MOTIVOS_DEVOLUCAO = [
+  'Dano / desgaste natural', 'Substituição periódica', 'Troca de tamanho',
+  'Extravio', 'Fim de validade / vencido', 'Desligamento do colaborador', 'Outro',
+];
+const EPI_CONDICOES_DEVOLUCAO = [
+  'Bom estado (reaproveitável)', 'Danificado (descarte)', 'Extraviado (não devolvido fisicamente)',
+];
+
+function gdEpiObter(colabId) {
+  if (!window._gdDados.epiHistorico) window._gdDados.epiHistorico = {};
+  if (!window._gdDados.epiHistorico[colabId]) window._gdDados.epiHistorico[colabId] = { entregas: [], devolucoes: [], nr10Consentido: false };
+  const h = window._gdDados.epiHistorico[colabId];
+  if (!Array.isArray(h.entregas)) h.entregas = [];
+  if (!Array.isArray(h.devolucoes)) h.devolucoes = [];
+  return h;
+}
+
+/* -- Itens já entregues e ainda não devolvidos (o que o colaborador está "em posse"). -- */
+function gdEpiItensEmPosse(colabId) {
+  const h = gdEpiObter(colabId);
+  const lista = [];
+  h.entregas.forEach(e => (e.itens || []).forEach(it => {
+    if (!it.devolvidoEm) lista.push({ ...it, entregaId: e.id, dataEntrega: e.data });
+  }));
+  return lista;
+}
 
 function epiRenderItens() {
   const cont = document.getElementById('epi-itens-container');
@@ -22227,14 +22259,15 @@ function gerarEPI(cIdx) {
   el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
   el.innerHTML = '<div style="background:#fff;border-radius:16px;width:100%;max-width:760px;max-height:92vh;overflow-y:auto;box-shadow:0 24px 80px rgba(0,0,0,.3)">'
     + '<div style="padding:18px 22px 0;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #eee;padding-bottom:14px">'
-    + '<div><div style="font-weight:800;font-size:1rem">🦺 Ficha de EPI — ' + colab.nome + '</div>'
+    + '<div><div style="font-weight:800;font-size:1rem">🦺 Nova Entrega de EPI — ' + colab.nome + '</div>'
     + '<div style="font-size:.75rem;color:#666;margin-top:2px">' + (colab.cargo||'') + ' · CPF: ' + (cpf||'não cadastrado') + ' · ' + pgrGheLabel(ghe) + '</div></div>'
     + '<button onclick="document.getElementById(\'modal-epi\').remove()" style="border:none;background:#f0f0f0;border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>'
     + '</div>'
     + '<div style="padding:18px 22px">'
 
     + '<div style="background:#fff8e6;border:1px solid #f0d894;border-radius:8px;padding:10px 12px;margin-bottom:16px;font-size:.78rem;color:#8a6d1a">'
-    + 'Kit sugerido automaticamente a partir da função (' + (colab.cargo||'—') + ') e dos riscos mapeados no PGR REV04. Ajuste itens, quantidades, C.A. e validade conforme o que for realmente entregue — pode adicionar ou remover linhas.'
+    + 'Kit sugerido automaticamente a partir da função (' + (colab.cargo||'—') + ') e dos riscos mapeados no PGR REV04. Ajuste itens, quantidades, C.A. e validade conforme o que for realmente entregue — pode adicionar ou remover linhas. '
+    + '<strong>Isso soma uma nova entrega ao histórico do colaborador — nada do que já foi registrado antes é apagado.</strong> Pra devolução ou troca de um item já entregue, use o botão "🔄 Devolução/Troca" na lista de colaboradores.'
     + '</div>'
 
     + '<label style="display:flex;align-items:center;gap:6px;margin-bottom:16px;font-size:.85rem;cursor:pointer">'
@@ -22260,18 +22293,16 @@ function gerarEPI(cIdx) {
 
     + '<div style="display:flex;gap:10px;justify-content:flex-end;padding-top:12px;border-top:1px solid #eee">'
     + '<button onclick="document.getElementById(\'modal-epi\').remove()" style="padding:9px 20px;border:1.5px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;font-size:.85rem">Cancelar</button>'
-    + '<button onclick="epiGerarPDF()" style="padding:9px 24px;border:none;border-radius:8px;background:#b45309;color:#fff;font-weight:700;font-size:.85rem;cursor:pointer">🖨️ Gerar Ficha de EPI / PDF</button>'
+    + '<button onclick="epiGerarPDF()" style="padding:9px 24px;border:none;border-radius:8px;background:#b45309;color:#fff;font-weight:700;font-size:.85rem;cursor:pointer">🖨️ Registrar Entrega e Gerar Ficha</button>'
     + '</div>'
     + '</div></div>';
   document.body.appendChild(el);
   epiRenderItens();
 }
 
-async function epiGerarPDF() {
-  const colab = window._gdDados && window._gdDados.colaboradores[_epiColabIdx];
-  if (!colab) return;
-
-  // Número sequencial automático da Ficha de EPI (persistido em OneDrive — nunca reutilizado)
+/* -- Gera o número sequencial da Ficha de EPI (persistido em OneDrive — nunca reutilizado)
+      e registra no log de auditoria "EpiRegistros" (quem/quando cada ficha foi gerada). -- */
+async function epiProximoNumero(colab) {
   let numeroEpi = '000000';
   try {
     const registrosEpi = await dbLer('EpiRegistros');
@@ -22285,26 +22316,42 @@ async function epiGerarPDF() {
       dataGeracao: new Date().toISOString(),
     });
   } catch(e) { console.warn('[EPI] Falha ao gerar número sequencial', e); }
+  return numeroEpi;
+}
 
+/* -- Monta o HTML impresso da Ficha de EPI a partir do HISTÓRICO ACUMULADO do colaborador
+      (todas as entregas + todas as devoluções já registradas, não só a ação atual) — assim
+      nenhuma entrega/devolução anterior some quando a ficha é reimpressa depois. -- */
+function epiConstruirHtml(colab, opts) {
+  const numeroEpi = opts.numeroFicha;
+  const hoje = new Date().toLocaleDateString('pt-BR');
   const seed = GD_SEED_COLABORADORES.find(s => s.nome.toLowerCase() === colab.nome.toLowerCase());
   const cpf = (seed && seed.cpf) || colab.cpf || '';
   const funcao = pgrFuncaoPorNome(colab.cargo);
   const ghe = funcao ? funcao.ghe.slice(-2) : '02';
-  const incluirNr10 = !!document.getElementById('epi-nr10').checked;
-  const obs = document.getElementById('epi-obs').value.trim();
-  const itens = (window._epiItens || []).filter(it => (it.desc||'').trim());
-  const hoje = new Date().toLocaleDateString('pt-BR');
+  const incluirNr10 = !!opts.incluirNr10;
+  const obs = opts.obs || '';
+  const hist = gdEpiObter(colab.id);
 
-  // Linhas preenchidas + algumas linhas em branco pra novas entregas anotadas à mão no papel
-  const linhasEntrega = itens.map(it => `<tr>
-      <td>${hoje}</td><td style="text-align:center">${it.qtd||1}</td><td>${it.desc}</td>
+  // Linhas de entrega: todo o histórico acumulado (mais antigo primeiro), marcando quando já foi devolvido
+  const todosItensEntrega = [];
+  hist.entregas.forEach(e => (e.itens || []).forEach(it => todosItensEntrega.push({ ...it, dataEntrega: e.data })));
+  const linhasEntregaPreenchidas = todosItensEntrega.map(it => `<tr>
+      <td>${it.dataEntrega || hoje}</td><td style="text-align:center">${it.qtd||1}</td>
+      <td>${it.desc}${it.devolvidoEm ? ` <span style="color:#999;font-style:italic">(devolvido em ${it.devolvidoEm})</span>` : ''}</td>
       <td style="text-align:center">${it.ca||'—'}</td>
       <td style="text-align:center">${it.venc?new Date(it.venc+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
       <td></td>
-    </tr>`).join('')
-    + Array.from({length:6}).map(() => '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>').join('');
+    </tr>`).join('');
+  const linhasEntrega = linhasEntregaPreenchidas
+    + Array.from({length:3}).map(() => '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>').join('');
 
-  const linhasDevolucao = Array.from({length:6}).map(() => '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>').join('');
+  const linhasDevolucaoPreenchidas = hist.devolucoes.map(dv => `<tr>
+      <td>${dv.data || hoje}</td><td style="text-align:center">${dv.qtd||1}</td><td>${dv.desc}</td>
+      <td>${dv.motivo||'—'}</td><td>${dv.condicao||'—'}</td><td></td>
+    </tr>`).join('');
+  const linhasDevolucao = linhasDevolucaoPreenchidas
+    + Array.from({length:3}).map(() => '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>').join('');
 
   const html = '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Ficha de EPI — ' + colab.nome + '</title>'
     + ASO_FONT_CSS
@@ -22461,11 +22508,148 @@ async function epiGerarPDF() {
     + '</td></tr></tbody></table>'
     + '</body></html>';
 
-  document.getElementById('modal-epi').remove();
+  return html;
+}
+
+function epiAbrirJanelaImpressao(html) {
   const w = window.open('', '_blank', 'width=880,height=740,scrollbars=yes');
   if (!w) { showToast('⚠️ Permita pop-ups para gerar a Ficha de EPI.'); return; }
   w.document.write(html);
   w.document.close();
+}
+
+/* -- Registra uma NOVA entrega no histórico do colaborador (soma, não substitui) e imprime
+      a ficha já com todo o acumulado (entregas + devoluções anteriores). -- */
+async function epiGerarPDF() {
+  const colab = window._gdDados && window._gdDados.colaboradores[_epiColabIdx];
+  if (!colab) return;
+
+  const incluirNr10 = !!document.getElementById('epi-nr10').checked;
+  const obs = document.getElementById('epi-obs').value.trim();
+  const itens = (window._epiItens || []).filter(it => (it.desc||'').trim());
+  if (!itens.length) { showToast('⚠️ Adicione ao menos um item de EPI antes de gerar a ficha.'); return; }
+  const hoje = new Date().toLocaleDateString('pt-BR');
+
+  const numeroEpi = await epiProximoNumero(colab);
+
+  const hist = gdEpiObter(colab.id);
+  hist.nr10Consentido = incluirNr10 || hist.nr10Consentido;
+  hist.entregas.push({
+    id: 'e' + Date.now(),
+    data: hoje,
+    numeroFicha: numeroEpi,
+    itens: itens.map(it => ({
+      itemId: 'i' + Date.now() + Math.random().toString(36).slice(2, 6),
+      desc: it.desc, qtd: it.qtd || 1, ca: it.ca || '', venc: it.venc || '', devolvidoEm: null,
+    })),
+  });
+  await gdSalvar();
+
+  const html = epiConstruirHtml(colab, { numeroFicha: numeroEpi, incluirNr10: hist.nr10Consentido, obs });
+  document.getElementById('modal-epi').remove();
+  epiAbrirJanelaImpressao(html);
+  showToast('💾 Entrega registrada no histórico do colaborador!');
+}
+
+/* -- Modal de Devolução/Troca: lista só os itens ainda "em posse" (entregues e não devolvidos)
+      pra escolher o que está voltando, sem precisar digitar tudo de novo. -- */
+function gdAbrirDevolucaoEpi(cIdx) {
+  const colab = window._gdDados && window._gdDados.colaboradores[cIdx];
+  if (!colab) { showToast('⚠️ Colaborador não encontrado.'); return; }
+  _epiColabIdx = cIdx;
+
+  const emPosse = gdEpiItensEmPosse(colab.id);
+  if (!emPosse.length) {
+    showToast('📭 Nenhum item em posse registrado ainda pra esse colaborador. Registre uma entrega primeiro (botão 🦺 EPI).');
+    return;
+  }
+
+  const modal = document.getElementById('modal-epi-dev');
+  if (modal) modal.remove();
+
+  const itensHtml = emPosse.map((it, i) => `
+    <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid #eee;border-radius:8px;margin-bottom:6px;cursor:pointer">
+      <input type="checkbox" class="epi-dev-item" data-entrega-id="${it.entregaId}" data-item-id="${it.itemId}" data-desc="${it.desc.replace(/"/g,'&quot;')}" data-qtd="${it.qtd||1}" style="accent-color:#b45309;width:16px;height:16px">
+      <span style="flex:1;font-size:.83rem">${it.desc} <span style="color:#999">· qtd ${it.qtd||1}</span></span>
+      <span style="font-size:.68rem;color:#999">entregue em ${it.dataEntrega||'—'}</span>
+    </label>`).join('');
+
+  const el = document.createElement('div');
+  el.id = 'modal-epi-dev';
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
+  el.innerHTML = '<div style="background:#fff;border-radius:16px;width:100%;max-width:640px;max-height:92vh;overflow-y:auto;box-shadow:0 24px 80px rgba(0,0,0,.3)">'
+    + '<div style="padding:18px 22px 0;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #eee;padding-bottom:14px">'
+    + '<div><div style="font-weight:800;font-size:1rem">🔄 Devolução/Troca de EPI — ' + colab.nome + '</div>'
+    + '<div style="font-size:.75rem;color:#666;margin-top:2px">Selecione o(s) item(ns) que está(ão) voltando</div></div>'
+    + '<button onclick="document.getElementById(\'modal-epi-dev\').remove()" style="border:none;background:#f0f0f0;border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>'
+    + '</div>'
+    + '<div style="padding:18px 22px">'
+
+    + '<div style="margin-bottom:16px">' + itensHtml + '</div>'
+
+    + '<div class="form-row" style="display:flex;gap:10px;margin-bottom:12px">'
+    + '<div style="flex:1"><label style="display:block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#666;margin-bottom:6px">Motivo</label>'
+    + '<select id="epi-dev-motivo" style="height:38px;border:1.5px solid #ddd;border-radius:8px;padding:0 12px;font-size:.85rem;width:100%">'
+    + EPI_MOTIVOS_DEVOLUCAO.map(m => `<option value="${m}">${m}</option>`).join('')
+    + '</select></div>'
+    + '<div style="flex:1"><label style="display:block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#666;margin-bottom:6px">Condição</label>'
+    + '<select id="epi-dev-condicao" style="height:38px;border:1.5px solid #ddd;border-radius:8px;padding:0 12px;font-size:.85rem;width:100%">'
+    + EPI_CONDICOES_DEVOLUCAO.map(c => `<option value="${c}">${c}</option>`).join('')
+    + '</select></div>'
+    + '</div>'
+
+    + '<div style="margin-bottom:16px">'
+    + '<label style="display:block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#666;margin-bottom:6px">Data</label>'
+    + '<input id="epi-dev-data" type="date" value="' + new Date().toISOString().slice(0,10) + '" style="height:38px;border:1.5px solid #ddd;border-radius:8px;padding:0 12px;font-size:.85rem;max-width:200px">'
+    + '</div>'
+
+    + '<div style="margin-bottom:16px">'
+    + '<label style="display:block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#666;margin-bottom:6px">Observação (opcional)</label>'
+    + '<input id="epi-dev-obs" type="text" placeholder="Ex: Trocado por tamanho incorreto" style="width:100%;height:36px;border:1.5px solid #ddd;border-radius:8px;padding:0 12px;font-size:.85rem">'
+    + '</div>'
+
+    + '<div style="display:flex;gap:10px;justify-content:flex-end;padding-top:12px;border-top:1px solid #eee">'
+    + '<button onclick="document.getElementById(\'modal-epi-dev\').remove()" style="padding:9px 20px;border:1.5px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;font-size:.85rem">Cancelar</button>'
+    + '<button onclick="gdSalvarDevolucaoEpi(' + cIdx + ')" style="padding:9px 24px;border:none;border-radius:8px;background:#b45309;color:#fff;font-weight:700;font-size:.85rem;cursor:pointer">🖨️ Registrar Devolução e Gerar Ficha</button>'
+    + '</div>'
+    + '</div></div>';
+  document.body.appendChild(el);
+}
+
+async function gdSalvarDevolucaoEpi(cIdx) {
+  const colab = window._gdDados && window._gdDados.colaboradores[cIdx];
+  if (!colab) return;
+
+  const selecionados = Array.from(document.querySelectorAll('.epi-dev-item:checked'));
+  if (!selecionados.length) { showToast('⚠️ Selecione ao menos um item que está sendo devolvido/trocado.'); return; }
+
+  const motivo = document.getElementById('epi-dev-motivo').value;
+  const condicao = document.getElementById('epi-dev-condicao').value;
+  const dataIso = document.getElementById('epi-dev-data').value;
+  const dataFmt = dataIso ? new Date(dataIso+'T12:00').toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR');
+  const obsDev = document.getElementById('epi-dev-obs').value.trim();
+
+  const numeroEpi = await epiProximoNumero(colab);
+  const hist = gdEpiObter(colab.id);
+
+  selecionados.forEach(chk => {
+    const entregaId = chk.dataset.entregaId, itemId = chk.dataset.itemId;
+    const entrega = hist.entregas.find(e => e.id === entregaId);
+    const item = entrega && entrega.itens.find(it => it.itemId === itemId);
+    if (item) item.devolvidoEm = dataFmt;
+    hist.devolucoes.push({
+      id: 'd' + Date.now() + Math.random().toString(36).slice(2,6),
+      data: dataFmt, itemId, entregaId,
+      desc: chk.dataset.desc, qtd: chk.dataset.qtd,
+      motivo, condicao, obs: obsDev, numeroFicha: numeroEpi,
+    });
+  });
+  await gdSalvar();
+
+  const html = epiConstruirHtml(colab, { numeroFicha: numeroEpi, incluirNr10: hist.nr10Consentido, obs: obsDev });
+  document.getElementById('modal-epi-dev').remove();
+  epiAbrirJanelaImpressao(html);
+  showToast('💾 Devolução/troca registrada — nada do histórico anterior foi apagado!');
 }
 // ─────────────────────────────────────────────────────────────
 
@@ -23160,6 +23344,7 @@ function pageGestaoDocumental() {
               <button class="btn-primary" style="padding:4px 10px;font-size:.68rem" onclick="event.stopPropagation();gdAbrirModalDocColab('${colab.id}','${nomeEsc}')">+ Doc</button>
               <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:var(--blue,#3b82f6);color:#fff" onclick="event.stopPropagation();gerarASO(${cIdx})">📋 ASO</button>
               <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#b45309;color:#fff" onclick="event.stopPropagation();gerarEPI(${cIdx})">🦺 EPI</button>
+              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#92400e;color:#fff" onclick="event.stopPropagation();gdAbrirDevolucaoEpi(${cIdx})">🔄 Devolução/Troca</button>
               ${sitInfo.situacao!=='inativo' ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#b91c1c;color:#fff" onclick="event.stopPropagation();gdAbrirModalDesligamento(${cIdx})">🚪 ${sitInfo.situacao==='desligamento'?'Continuar Desligamento':'Desligar'}</button>` : ''}
               <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="event.stopPropagation();gdAbrirModalColaborador(${cIdx})">✏️</button>
               <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:var(--red)" onclick="event.stopPropagation();gdExcluirColaborador(${cIdx})">🗑️</button>
