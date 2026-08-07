@@ -1049,6 +1049,7 @@ const menus = {
       { id: 'checklist_ero', icon: '🌿', label: 'Inspeção de Subestação' },
       { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
+      { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
@@ -1088,6 +1089,7 @@ const menus = {
       { id: 'checklist_ero', icon: '🌿', label: 'Inspeção de Subestação' },
       { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
+      { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
@@ -1121,6 +1123,7 @@ const menus = {
       { id: 'checklist_ero', icon: '🌿', label: 'Inspeção de Subestação' },
       { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
+      { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
@@ -1267,6 +1270,7 @@ function renderPage(id) {
     checklist_ero: () => pageChecklistERO(),
     checklist_linha: () => pageChecklistLinha(),
     checklist_bombeamento: () => pageChecklistBombeamento(),
+    checklist_mitigacao: () => pageChecklistMitigacao(),
     equipamentos: () => pageEquipamentos(),
     docs: () => pageGestaoDocumental(),
     documentos: () => pageDocumentos(),
@@ -15673,6 +15677,526 @@ function exportarBombeamentoPdf() {
 }
 
 /* =============================================================
+   CHECKLIST — KIT DE MITIGAÇÃO AMBIENTAL
+   Vistoria do kit de contenção/mitigação ambiental (veículos e
+   frentes de serviço) para fins de fiscalização ambiental, com
+   pontuação de conformidade automática e dupla assinatura.
+   ============================================================= */
+if (typeof window._mitData === 'undefined') window._mitData = {};
+if (typeof window._mitHistorico === 'undefined') window._mitHistorico = null; // null = ainda não carregado
+if (typeof window._mitRegistroAtualId === 'undefined') window._mitRegistroAtualId = null;
+
+const MIT_ITENS = [
+  'Mantas/almofadas absorventes para óleo e produtos químicos',
+  'Barreira de contenção absorvente (tipo "salsicha"/boom)',
+  'Material absorvente granulado (vermiculita ou similar)',
+  'Pá/rodo não metálico (antifaísca)',
+  'Sacos coletores para resíduos contaminados, devidamente identificados',
+  'Luvas de proteção química (nitrílica ou PVC)',
+  'Óculos de proteção',
+  'Máscara/respirador com filtro para vapores orgânicos',
+  'Botas de PVC / proteção para os pés',
+  'Bombona ou tambor para acondicionamento de resíduo contaminado',
+  'Etiquetas de identificação de resíduos perigosos',
+  'Lona/plástico impermeável para proteção do solo',
+  'Extintor de incêndio compatível e dentro da validade',
+  'Sinalização de área isolada (cones e/ou fita zebrada)',
+  'FISPQ dos produtos armazenados/transportados, disponível no kit',
+  'Lista de contatos de emergência (Bombeiros, Defesa Civil, órgão ambiental)',
+];
+
+const MIT_MOTIVOS = ['Vistoria de Rotina', 'Vistoria Periódica', 'Antes do Início da Operação', 'Após Incidente/Ocorrência', 'Auditoria / Fiscalização Ambiental', 'Outro'];
+
+function mitCampo(campo, valor) {
+  window._mitData[campo] = valor;
+}
+
+function mitAtualizarItem(idx, valor) {
+  window._mitData['item_' + idx] = valor;
+  const badge = document.getElementById('mit-score-badge');
+  if (badge) badge.outerHTML = mitRenderScoreBadge();
+}
+
+function mitObsItem(idx, valor) {
+  window._mitData['item_obs_' + idx] = valor;
+}
+
+/* -- Pontuação: Conforme=1 / Não Conforme=0 / N.A. fica fora do denominador.
+      100% = Excelente · 75-99% = Aceitável · abaixo de 75% = Não Aceitável -- */
+function mitCalcularPontuacao() {
+  const d = window._mitData;
+  let conforme = 0, naoConforme = 0;
+  MIT_ITENS.forEach((_, i) => {
+    const v = d['item_' + i];
+    if (v === 'conforme') conforme++;
+    else if (v === 'nao_conforme') naoConforme++;
+  });
+  const total = conforme + naoConforme;
+  const pct = total ? (conforme / total) * 100 : null;
+  let label = 'Sem itens avaliados', cor = 'var(--text-muted)', bg = 'var(--surface2)', icone = '⚪';
+  if (pct !== null) {
+    if (pct === 100)      { label = 'Excelente';     cor = '#2d8c5a'; bg = '#e6f5ed'; icone = '🟢'; }
+    else if (pct >= 75)   { label = 'Aceitável';      cor = '#1a63c9'; bg = '#e7f0fd'; icone = '🔵'; }
+    else                  { label = 'Não Aceitável';  cor = '#e03d3d'; bg = '#fce8e8'; icone = '🔴'; }
+  }
+  return { conforme, naoConforme, total, pct, label, cor, bg, icone };
+}
+
+function mitRenderScoreBadge() {
+  const s = mitCalcularPontuacao();
+  const pctTxt = s.pct === null ? '—' : s.pct.toFixed(0) + '%';
+  return `
+  <div id="mit-score-badge" style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:10px;background:${s.bg};border:1px solid ${s.cor}">
+    <div style="font-size:1.8rem;line-height:1">${s.icone}</div>
+    <div>
+      <div style="font-family:'Mont',sans-serif;font-size:1.1rem;font-weight:800;color:${s.cor}">${pctTxt} — ${s.label}</div>
+      <div style="font-size:.75rem;color:var(--text-muted)">${s.conforme} conforme(s) · ${s.naoConforme} não conforme(s) · ${MIT_ITENS.length - s.total} não aplicável / não avaliado de ${MIT_ITENS.length} itens</div>
+    </div>
+  </div>`;
+}
+
+/* -- Fotos por item (reaproveita o redimensionador 6×8 já usado no ERO) -- */
+function loadMitFoto(event, idx, fn) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  const ordered = [fn, ...[1,2,3,4].filter(n => n !== fn && !window._mitData['foto_mit' + idx + '_' + n])];
+  if (files.length > ordered.length) {
+    showToast('⚠️ Só cabem ' + ordered.length + ' foto(s) aqui — as demais foram ignoradas (máximo 4 por item).');
+  }
+  Promise.all(files.slice(0, ordered.length).map((file, i) =>
+    _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => {
+      const slotFn = ordered[i];
+      window._mitData['foto_mit' + idx + '_' + slotFn] = dataUrl;
+      window._mitData['foto_mit' + idx + '_' + slotFn + '_h'] = horizontal;
+    })
+  )).then(() => navigate('checklist_mitigacao'));
+}
+
+function removeMitFoto(idx, fn) {
+  delete window._mitData['foto_mit' + idx + '_' + fn];
+  navigate('checklist_mitigacao');
+}
+
+function mitNovoChecklist() {
+  if (window._mitData && Object.keys(window._mitData).length && !confirm('Isso vai limpar o formulário atual (os dados não salvos serão perdidos). Deseja continuar?')) return;
+  window._mitData = {};
+  window._mitRegistroAtualId = null;
+  ['sig_mit_vistoria', 'sig_mit_frente'].forEach(id => clearSig(id));
+  navigate('checklist_mitigacao');
+}
+
+async function carregarMitigacaoHistorico(forcar) {
+  if (window._mitHistorico !== null && !forcar) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('mit_historico_cache') || '[]'); } catch(e) { cacheLocal = []; }
+  if (window._mitHistorico === null) window._mitHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('ChecklistMitigacao');
+    if (Array.isArray(lista)) {
+      window._mitHistorico = lista;
+      try { localStorage.setItem('mit_historico_cache', JSON.stringify(lista)); } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('[Mitigação] Falha ao carregar histórico, usando cache local.', e);
+  }
+  navigate('checklist_mitigacao');
+}
+
+function renderMitHistoricoLista() {
+  const historico = Array.isArray(window._mitHistorico) ? window._mitHistorico : [];
+  if (window._mitHistorico === null) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</div>';
+  if (!historico.length) return '<div style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum checklist salvo ainda.</div>';
+  const ordenado = historico.slice().sort((a,b)=>(b.Id||0)-(a.Id||0));
+  return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Local / Frente de Serviço</th><th>Data</th><th>Responsável</th><th>Pontuação</th><th>Ações</th></tr></thead><tbody>' +
+    ordenado.map(r => `<tr>
+      <td><strong>${r.local||'—'}</strong></td>
+      <td>${r.data?new Date(r.data+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
+      <td>${r.responsavel||'—'}</td>
+      <td>${r.pontuacaoLabel ? (r.pontuacaoIcone||'') + ' ' + r.pontuacaoLabel + (r.pontuacaoPct!=null?' ('+r.pontuacaoPct.toFixed(0)+'%)':'') : '—'}</td>
+      <td style="white-space:nowrap;display:flex;gap:4px;flex-wrap:wrap">
+        <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="mitEditarChecklist(${r.Id})">✏️ Editar</button>
+        <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" title="${r.documentoUrl?'Ver PDF/documento gerado':'Ainda sem PDF exportado'}" onclick="mitVerChecklist(${r.Id})">👁️ Ver</button>
+      </td>
+    </tr>`).join('') + '</tbody></table></div>';
+}
+
+function pageChecklistMitigacao() {
+  const d = window._mitData;
+  if (window._mitHistorico === null) carregarMitigacaoHistorico();
+
+  return `
+  <div class="page-header">
+    <h1>Kit de Mitigação Ambiental</h1>
+    <p>Checklist de vistoria do kit de contenção/mitigação ambiental — para fins de fiscalização ambiental</p>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap">
+    <button class="btn-secondary" onclick="mitNovoChecklist()">🆕 Novo Checklist</button>
+    <button class="btn-primary" onclick="salvarMitigacaoChecklist()">💾 Salvar e Sincronizar com OneDrive</button>
+    <button class="btn-primary" style="background:var(--brand-brown,#3F261F)" onclick="exportarMitigacaoPdf()">🖨️ Exportar PDF</button>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Identificação</div>
+    <div class="form-row">
+      <div class="form-group"><label>Data da Vistoria</label><input type="date" id="mit_data" value="${d.data||''}" oninput="mitCampo('data',this.value)"></div>
+      <div class="form-group" style="flex:2"><label>Responsável pela Vistoria</label>
+        <select id="mit_responsavel" onchange="mitCampo('responsavel',this.value)">
+          <option value="">Selecione...</option>
+          ${ERO_TECNICOS.map(n => `<option value="${n}" ${(d.responsavel||(window._currentUser?window._currentUser.name:''))===n?'selected':''}>${n}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Veículo / Placa / Equipe</label><input id="mit_veiculo" value="${d.veiculo||''}" oninput="mitCampo('veiculo',this.value)" placeholder="Ex: Hilux ABC-1D23 / Equipe 2"></div>
+      <div class="form-group" style="flex:2"><label>Local / Frente de Serviço</label><input id="mit_local" value="${d.local||''}" oninput="mitCampo('local',this.value)" placeholder="Ex: Subestação X / Trecho da LT / Poço Y"></div>
+    </div>
+    <div class="form-group">
+      <label>Motivo da Vistoria</label>
+      <select id="mit_motivo" onchange="mitCampo('motivo',this.value)">
+        <option value="">Selecione...</option>
+        ${MIT_MOTIVOS.map(m => `<option value="${m}" ${d.motivo===m?'selected':''}>${m}</option>`).join('')}
+      </select>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Pontuação de Conformidade</div>
+    ${mitRenderScoreBadge()}
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800;margin-bottom:16px">Itens do Kit de Mitigação Ambiental</div>
+    ${MIT_ITENS.map((item, i) => `
+    <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;background:var(--surface2)">
+      <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:10px">
+        <div style="min-width:28px;height:28px;border-radius:6px;background:#eef2f5;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:'Mont',sans-serif;font-size:.7rem;font-weight:800;color:var(--text-muted);flex-shrink:0">${String(i+1).padStart(2,'0')}</div>
+        <div style="flex:1;font-size:.83rem;padding-top:4px">${item}</div>
+        <select oninput="mitAtualizarItem(${i},this.value)"
+          style="border:1px solid var(--border);border-radius:7px;padding:4px 8px;font-size:.75rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer;min-width:130px"
+          onchange="this.style.background=this.value==='conforme'?'#e6f5ed':this.value==='nao_conforme'?'#fce8e8':'';this.style.color=this.value==='conforme'?'#2d8c5a':this.value==='nao_conforme'?'#e03d3d':''">
+          <option value="">—</option>
+          <option value="conforme" ${d['item_'+i]==='conforme'?'selected':''}>✅ Conforme</option>
+          <option value="nao_conforme" ${d['item_'+i]==='nao_conforme'?'selected':''}>❌ Não Conforme</option>
+          <option value="na" ${d['item_'+i]==='na'?'selected':''}>➖ Não Aplicável</option>
+        </select>
+      </div>
+      <textarea rows="2" oninput="mitObsItem(${i},this.value)"
+        placeholder="Observação..."
+        style="width:100%;border:1px solid var(--border);border-radius:8px;padding:8px;font-size:.78rem;font-family:'Mont',sans-serif;outline:none;resize:vertical"
+      >${d['item_obs_'+i]||''}</textarea>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <span style="font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);white-space:nowrap">📷 Fotos:</span>
+        ${[1,2,3,4].map(fn => `
+        <label style="cursor:pointer;display:block;flex-shrink:0" title="Foto ${fn} (6×8 cm)">
+          <div id="foto_prev_mit${i}_${fn}"
+            style="width:44px;height:44px;border-radius:8px;border:2px dashed ${d['foto_mit'+i+'_'+fn]?'var(--green-main)':'var(--border)'};background:${d['foto_mit'+i+'_'+fn]?'transparent':'var(--surface)'};display:flex;align-items:center;justify-content:center;overflow:hidden">
+            ${d['foto_mit'+i+'_'+fn] ? `<img src="${d['foto_mit'+i+'_'+fn]}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">` : `<span style="font-size:1.1rem;opacity:.5">📷</span>`}
+          </div>
+          <input type="file" accept="image/*" multiple style="display:none" onchange="loadMitFoto(event,${i},${fn})">
+        </label>`).join('')}
+        ${d['foto_mit'+i+'_1']||d['foto_mit'+i+'_2']||d['foto_mit'+i+'_3']||d['foto_mit'+i+'_4'] ? `<button onclick="[1,2,3,4].forEach(fn=>removeMitFoto(${i},fn))" style="font-size:.65rem;color:var(--red);background:none;border:none;cursor:pointer">✕ limpar fotos</button>` : ''}
+      </div>
+    </div>
+    `).join('')}
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Avaliação Geral</div>
+    <div class="form-row">
+      <div class="form-group"><label>Ação corretiva necessária?</label>
+        <select id="mit_acao_necessaria" onchange="mitCampo('acaoNecessaria',this.value)">
+          <option value="">Selecione...</option>
+          <option value="nao" ${d.acaoNecessaria==='nao'?'selected':''}>Não</option>
+          <option value="sim" ${d.acaoNecessaria==='sim'?'selected':''}>Sim</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Prazo para regularização</label><input type="date" id="mit_prazo" value="${d.prazo||''}" oninput="mitCampo('prazo',this.value)"></div>
+    </div>
+    <div class="form-group">
+      <label>Descrição da ação corretiva (se aplicável)</label>
+      <textarea rows="2" id="mit_acao_desc" oninput="mitCampo('acaoDescricao',this.value)" placeholder="Descreva a ação corretiva necessária...">${d.acaoDescricao||''}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Observações gerais</label>
+      <textarea rows="3" id="mit_obs_gerais" oninput="mitCampo('obsGerais',this.value)" placeholder="Observações gerais da vistoria...">${d.obsGerais||''}</textarea>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Assinaturas</div>
+    <div style="display:flex;flex-direction:column;gap:20px">
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)">Assinatura do Responsável pela Vistoria</div>
+        <canvas id="sig_mit_vistoria" width="500" height="90"
+          style="border:1px solid var(--border);border-radius:8px;background:#fff;cursor:crosshair;touch-action:none;width:100%;max-width:500px;height:90px"
+          onmousedown="startSign(event,'sig_mit_vistoria')" onmousemove="drawSign(event,'sig_mit_vistoria')"
+          onmouseup="stopSign('sig_mit_vistoria')" onmouseleave="stopSign('sig_mit_vistoria')"
+          ontouchstart="startSign(event,'sig_mit_vistoria')" ontouchmove="drawSign(event,'sig_mit_vistoria')" ontouchend="stopSign('sig_mit_vistoria')">
+        </canvas>
+        <div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">
+          <button onclick="clearSig('sig_mit_vistoria')" style="font-size:.68rem;padding:4px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;color:var(--text-muted)">🗑️ Limpar</button>
+          <button onclick="stampTime('mit_dt_vistoria')" style="font-size:.68rem;padding:4px 12px;border:1px solid var(--green-main);border-radius:6px;background:var(--green-pale);cursor:pointer;color:var(--green-main)">📅 Registrar Data/Hora</button>
+          <span style="font-size:.72rem;color:var(--text-muted)">Carimbo: <strong id="mit_dt_vistoria" style="color:var(--green-main)">—</strong></span>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)">Assinatura do Responsável pela Frente de Serviço</div>
+        <canvas id="sig_mit_frente" width="500" height="90"
+          style="border:1px solid var(--border);border-radius:8px;background:#fff;cursor:crosshair;touch-action:none;width:100%;max-width:500px;height:90px"
+          onmousedown="startSign(event,'sig_mit_frente')" onmousemove="drawSign(event,'sig_mit_frente')"
+          onmouseup="stopSign('sig_mit_frente')" onmouseleave="stopSign('sig_mit_frente')"
+          ontouchstart="startSign(event,'sig_mit_frente')" ontouchmove="drawSign(event,'sig_mit_frente')" ontouchend="stopSign('sig_mit_frente')">
+        </canvas>
+        <div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">
+          <button onclick="clearSig('sig_mit_frente')" style="font-size:.68rem;padding:4px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;color:var(--text-muted)">🗑️ Limpar</button>
+          <button onclick="stampTime('mit_dt_frente')" style="font-size:.68rem;padding:4px 12px;border:1px solid var(--green-main);border-radius:6px;background:var(--green-pale);cursor:pointer;color:var(--green-main)">📅 Registrar Data/Hora</button>
+          <span style="font-size:.72rem;color:var(--text-muted)">Carimbo: <strong id="mit_dt_frente" style="color:var(--green-main)">—</strong></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Histórico de Checklists</div>
+    <div id="mit-historico-lista">${renderMitHistoricoLista()}</div>
+  </div>
+  `;
+}
+
+/* -- Salva o checklist (resumo leve na tabela + snapshot completo com fotos e assinaturas em arquivo à parte) -- */
+async function salvarMitigacaoChecklist() {
+  const d = window._mitData || {};
+
+  // Captura as assinaturas desenhadas nesta sessão (se houve traço novo, sobrescreve; senão mantém a anterior)
+  ['vistoria', 'frente'].forEach(qual => {
+    const sigId = 'sig_mit_' + qual;
+    if (_sigState[sigId]) {
+      const canvas = document.getElementById(sigId);
+      if (canvas) d['assinatura_' + qual] = canvas.toDataURL('image/png');
+    }
+  });
+
+  if (!d.assinatura_vistoria || !d.assinatura_frente) {
+    showToast('⚠️ Recomendado colher as duas assinaturas (Vistoria e Frente de Serviço) antes de finalizar o checklist.');
+  }
+
+  const pontuacao = mitCalcularPontuacao();
+  const editando = !!window._mitRegistroAtualId;
+  const meuId = editando ? window._mitRegistroAtualId : Date.now();
+
+  const registro = {
+    Id: meuId,
+    Title: 'Mitigação Ambiental - ' + (d.local || 'Sem local') + ' - ' + (d.data || new Date().toLocaleDateString('pt-BR')),
+    local: d.local || '',
+    veiculo: d.veiculo || '',
+    responsavel: d.responsavel || (window._currentUser ? window._currentUser.name : ''),
+    data: d.data || '',
+    motivo: d.motivo || '',
+    pontuacaoPct: pontuacao.pct,
+    pontuacaoLabel: pontuacao.label,
+    pontuacaoIcone: pontuacao.icone,
+    arquivoDados: 'Checklists/Mitigacao/dados/' + meuId + '.json',
+  };
+
+  showSyncStatus('Enviando para OneDrive...');
+
+  const novo = editando
+    ? (await dbAtualizar('ChecklistMitigacao', meuId, registro)) ? registro : null
+    : await dbInserir('ChecklistMitigacao', registro);
+
+  // Snapshot completo (todos os campos + fotos + assinaturas) num arquivo à parte, pra reabrir e editar depois
+  const blobDados = new Blob([JSON.stringify(d)], { type: 'application/json' });
+  await uploadParaOneDrive(blobDados, OD_FOLDERS.checklistsMitigacao + '/dados', meuId + '.json');
+
+  window._mitRegistroAtualId = meuId;
+
+  if (!Array.isArray(window._mitHistorico)) window._mitHistorico = [];
+  const idxExistente = window._mitHistorico.findIndex(r => r.Id === meuId);
+  const registroSalvo = novo || { ...registro, Created: new Date().toISOString() };
+  if (idxExistente >= 0) window._mitHistorico[idxExistente] = registroSalvo;
+  else window._mitHistorico.unshift(registroSalvo);
+  try { localStorage.setItem('mit_historico_cache', JSON.stringify(window._mitHistorico)); } catch(e) {}
+
+  if (novo) {
+    showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
+    showToast(editando ? '☁️ Checklist atualizado no OneDrive!' : '☁️ Checklist salvo e sincronizado com o OneDrive!');
+  } else {
+    showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
+    showToast('⚠️ Salvo apenas neste dispositivo. Verifique o login com Microsoft e tente sincronizar de novo.');
+  }
+  navigate('checklist_mitigacao');
+}
+
+/* -- Carrega de volta um checklist já salvo, pra continuar editando -- */
+async function mitEditarChecklist(id) {
+  showSyncStatus('Carregando checklist para edição...');
+  const texto = await baixarArquivoCentral('Checklists/Mitigacao/dados/' + id + '.json');
+  if (!texto) {
+    showSyncStatus('Não foi possível carregar', 'err', 4000);
+    showToast('⚠️ Não encontrei os dados completos desse checklist (pode ter sido salvo antes desse recurso existir).');
+    return;
+  }
+  try {
+    window._mitData = JSON.parse(texto);
+    window._mitRegistroAtualId = id;
+    showSyncStatus('Checklist carregado!', 'ok', 3000);
+    showToast('✏️ Checklist carregado para edição. Altere o que precisar e clique em Salvar.');
+    navigate('checklist_mitigacao');
+  } catch(e) {
+    showToast('⚠️ Erro ao interpretar os dados salvos desse checklist.');
+  }
+}
+
+/* -- Abre o PDF/documento já gerado desse checklist (se já foi exportado alguma vez) -- */
+function mitVerChecklist(id) {
+  const r = (window._mitHistorico || []).find(r => r.Id === id);
+  if (r && r.documentoUrl) {
+    window.open(r.documentoUrl, '_blank');
+  } else {
+    showToast('📄 Esse checklist ainda não tem um PDF exportado. Abra-o (Editar) e clique em "Exportar PDF" primeiro.');
+  }
+}
+
+/* -- Gera o relatório em PDF (janela de impressão) e sincroniza como HTML no OneDrive -- */
+function exportarMitigacaoPdf() {
+  showToast('🔄 Gerando relatório... aguarde.');
+  setTimeout(async () => {
+    const d = window._mitData;
+    const pontuacao = mitCalcularPontuacao();
+    const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
+    const pctTxt = pontuacao.pct === null ? '—' : pontuacao.pct.toFixed(0) + '%';
+
+    const linhasItens = MIT_ITENS.map((item, i) => {
+      const v = d['item_'+i];
+      const statusTxt = v==='conforme' ? 'Conforme' : v==='nao_conforme' ? 'Não Conforme' : v==='na' ? 'N/A' : '—';
+      return `<tr>
+        <td>${String(i+1).padStart(2,'0')}</td>
+        <td>${item}</td>
+        <td style="text-align:center;font-weight:700">${statusTxt}</td>
+        <td>${(d['item_obs_'+i]||'—').replace(/\n/g,'<br>')}</td>
+      </tr>`;
+    }).join('');
+
+    const fotosHtml = MIT_ITENS.map((item, i) => [1,2,3,4].filter(fn => d['foto_mit'+i+'_'+fn]).map(fn => `
+      <div style="text-align:center">
+        <img src="${d['foto_mit'+i+'_'+fn]}" style="width:100%;aspect-ratio:${d['foto_mit'+i+'_'+fn+'_h']?'4/3':'3/4'};object-fit:cover;border:1px solid #ccc;border-radius:4px">
+        <div style="font-size:7pt;color:#555;margin-top:2px">Item ${String(i+1).padStart(2,'0')}</div>
+      </div>`).join('')).join('');
+
+    const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
+    <meta charset="UTF-8">
+    <title>Checklist de Kit de Mitigação Ambiental</title>
+    <style>
+      :root{--b-green:#80C476;--b-green-deep:#3a7030;--b-brown:#3F261F;--b-pale:#eef7ec;}
+      @page { size: A4; margin: 15mm 12mm; }
+      * { box-sizing: border-box; margin:0; padding:0; }
+      body { font-family: Arial, sans-serif; font-size: 9pt; color:#1a1a1a; }
+      .header-box { border: 2px solid var(--b-green-deep); border-radius:6px; padding:10px 14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; }
+      .header-info { text-align:right; font-size:7.5pt; color:#555; }
+      .section-title { background: var(--b-green-deep); color:#fff; padding:6px 10px; font-weight:700; font-size:9pt; margin:10px 0 6px; border-radius:4px; }
+      table { width:100%; border-collapse:collapse; margin-bottom:8px; }
+      th { background:#f0f4f1; font-size:7.5pt; font-weight:700; padding:4px 6px; text-align:left; border:1px solid #ccc; }
+      td { font-size:7.8pt; padding:4px 6px; border:1px solid #ddd; vertical-align:top; }
+      tr:nth-child(even) td { background:#f9fbf9; }
+      .foto-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:6px; }
+      .score-box { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:6px; margin-bottom:8px; }
+      .assinatura { display:flex; gap:20px; margin-top:20px; }
+      .ass-box { flex:1; text-align:center; }
+      .ass-box img { max-height:60px; border-bottom:1.5px solid #333; }
+      .ass-box div.linha { border-top:1.5px solid #333; padding-top:4px; font-size:7.5pt; margin-top:4px; }
+      .footer { margin-top:16px; border-top:1.5px solid #ccc; padding-top:8px; font-size:7pt; color:#888; display:flex; justify-content:space-between; }
+      @media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
+    </style></head><body>
+
+    <div class="header-box">
+      <img src="${(typeof ASO_LOGO_B64!=='undefined'?ASO_LOGO_B64:'')}" alt="Logo Expedian" style="height:44px;object-fit:contain">
+      <div class="header-info">
+        <strong style="font-size:10pt">CHECKLIST — KIT DE MITIGAÇÃO AMBIENTAL</strong><br>
+        EXPEDIAN Soluções Ambientais
+      </div>
+    </div>
+
+    <table>
+      <tr><th style="width:30%">Local / Frente de Serviço</th><th style="width:25%">Veículo / Placa / Equipe</th><th style="width:25%">Responsável pela Vistoria</th><th style="width:20%">Data</th></tr>
+      <tr><td><strong>${d.local||'—'}</strong></td><td>${d.veiculo||'—'}</td><td>${d.responsavel||'—'}</td><td>${dataFmt}</td></tr>
+      <tr><th colspan="4">Motivo da Vistoria</th></tr>
+      <tr><td colspan="4">${d.motivo||'—'}</td></tr>
+    </table>
+
+    <div class="section-title">Pontuação de Conformidade</div>
+    <div class="score-box" style="background:${pontuacao.bg};border:1px solid ${pontuacao.cor}">
+      <strong style="font-size:12pt;color:${pontuacao.cor}">${pctTxt} — ${pontuacao.label}</strong>
+      <span style="font-size:7.5pt;color:#555">(${pontuacao.conforme} conforme · ${pontuacao.naoConforme} não conforme · ${MIT_ITENS.length-pontuacao.total} N/A)</span>
+    </div>
+
+    <div class="section-title">Itens do Kit de Mitigação Ambiental</div>
+    <table>
+      <thead><tr><th style="width:6%">Nº</th><th style="width:38%">Item</th><th style="width:16%">Status</th><th>Observação</th></tr></thead>
+      <tbody>${linhasItens}</tbody>
+    </table>
+
+    ${d.acaoNecessaria ? `<div class="section-title">Ação Corretiva</div>
+    <table>
+      <tr><th style="width:30%">Ação necessária?</th><th style="width:20%">Prazo</th><th>Descrição</th></tr>
+      <tr><td>${d.acaoNecessaria==='sim'?'Sim':'Não'}</td><td>${d.prazo?new Date(d.prazo+'T12:00').toLocaleDateString('pt-BR'):'—'}</td><td>${(d.acaoDescricao||'—').replace(/\n/g,'<br>')}</td></tr>
+    </table>` : ''}
+
+    ${d.obsGerais ? `<div class="section-title">Observações Gerais</div><div style="font-size:8.5pt;padding:6px 2px">${d.obsGerais.replace(/\n/g,'<br>')}</div>` : ''}
+
+    ${fotosHtml ? `<div class="section-title">📷 Registro Fotográfico</div><div class="foto-grid">${fotosHtml}</div>` : ''}
+
+    <div class="assinatura">
+      <div class="ass-box">
+        ${d.assinatura_vistoria ? `<img src="${d.assinatura_vistoria}">` : ''}
+        <div class="linha">${d.responsavel||'___________________________'}<br>Responsável pela Vistoria</div>
+      </div>
+      <div class="ass-box">
+        ${d.assinatura_frente ? `<img src="${d.assinatura_frente}">` : ''}
+        <div class="linha">___________________________<br>Responsável pela Frente de Serviço</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span>EXPEDIAN Soluções Ambientais — Nós cuidamos do caminho.</span>
+      <span>Emitido em: ${new Date().toLocaleString('pt-BR')}</span>
+    </div>
+
+    <script>window.onload=()=>window.print();<\/script>
+    </body></html>`;
+
+    const win = window.open('', '_blank');
+    win.document.write(htmlContent);
+    win.document.close();
+
+    if (typeof uploadParaOneDrive === 'function') {
+      try {
+        const dataFmtOD = d.data
+          ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR').replace(/\//g, '-')
+          : new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
+        const localOD = (d.local || 'Mitigacao')
+          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 40);
+        const respOD = (d.responsavel || '')
+          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 20);
+        const nomeBase = `KitMitigacaoAmbiental_${localOD}_${respOD}_${dataFmtOD}`;
+        const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
+        const url = await uploadParaOneDrive(blob, OD_FOLDERS.checklistsMitigacao, nomeBase + '.html');
+        if (url && window._mitRegistroAtualId) {
+          await dbAtualizar('ChecklistMitigacao', window._mitRegistroAtualId, { documentoUrl: url, documentoNome: nomeBase + '.html' });
+          const idx = (window._mitHistorico || []).findIndex(r => r.Id === window._mitRegistroAtualId);
+          if (idx >= 0) { window._mitHistorico[idx].documentoUrl = url; window._mitHistorico[idx].documentoNome = nomeBase + '.html'; }
+          try { localStorage.setItem('mit_historico_cache', JSON.stringify(window._mitHistorico)); } catch(e) {}
+          showSyncStatus('Relatório sincronizado!', 'ok', 4000);
+        }
+      } catch(e) {
+        console.warn('[OneDrive] Erro ao sincronizar Mitigação Ambiental:', e);
+        showSyncStatus('Erro ao sincronizar com OneDrive', 'err', 6000);
+      }
+    }
+  }, 300);
+}
+
+/* =============================================================
    EQUIPAMENTOS — Termo de Recebimento e Responsabilidade
    Catálogo de equipamentos + termo assinado digitalmente (canvas)
    ao ser entregue a um colaborador. Enquanto o termo estiver
@@ -19042,6 +19566,7 @@ const OD_FOLDERS = {
   checklistsERO:       'Checklists/ERO',
   checklistsVeicular:  'Checklists/Veicular',
   checklistsBombeamento: 'Checklists/Bombeamento',
+  checklistsMitigacao: 'Checklists/Mitigacao',
   termosEquipamento: 'Termos/Equipamentos',
   notasFiscaisEquip: 'Equipamentos/NotasFiscais',
   certificadosCalibracao: 'Equipamentos/CertificadosCalibracao',
