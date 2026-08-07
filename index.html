@@ -22377,17 +22377,43 @@ function gdEpiItensEmPosse(colabId) {
   return lista;
 }
 
+/* -- Lista de descrições padrão (todos os kits GHE01/02/03) pro datalist de sugestão. -- */
+function epiListaItensPadrao() {
+  return [...new Set([...PGR_EPI_KIT_GHE01, ...PGR_EPI_KIT_GHE02, ...PGR_EPI_KIT_GHE03])];
+}
+
 function epiRenderItens() {
   const cont = document.getElementById('epi-itens-container');
   if (!cont) return;
-  cont.innerHTML = window._epiItens.map((it, idx) => `
+  cont.innerHTML = '<datalist id="epi_dl_itens">' + epiListaItensPadrao().map(d => `<option value="${d}">`).join('') + '</datalist>'
+    + window._epiItens.map((it, idx) => `
     <div style="display:grid;grid-template-columns:1fr 56px 90px 120px 30px;gap:6px;align-items:center;margin-bottom:6px">
-      <input value="${(it.desc||'').replace(/"/g,'&quot;')}" oninput="window._epiItens[${idx}].desc=this.value" placeholder="Descrição do EPI" style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 8px;font-size:.78rem">
+      <input value="${(it.desc||'').replace(/"/g,'&quot;')}" list="epi_dl_itens" oninput="window._epiItens[${idx}].desc=this.value" onchange="epiAtualizarDesc(${idx},this.value)" placeholder="Descrição do EPI (digite pra sugerir)" style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 8px;font-size:.78rem">
       <input type="number" min="1" value="${it.qtd||1}" oninput="window._epiItens[${idx}].qtd=this.value" style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 6px;font-size:.78rem;text-align:center">
-      <input value="${(it.ca||'').replace(/"/g,'&quot;')}" oninput="window._epiItens[${idx}].ca=this.value" placeholder="C.A." style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 6px;font-size:.78rem">
-      <input type="date" value="${it.venc||''}" oninput="window._epiItens[${idx}].venc=this.value" style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 6px;font-size:.72rem">
+      <input id="epi_ca_${idx}" value="${(it.ca||'').replace(/"/g,'&quot;')}" oninput="window._epiItens[${idx}].ca=this.value" placeholder="C.A." style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 6px;font-size:.78rem">
+      <input id="epi_venc_${idx}" type="date" value="${it.venc||''}" oninput="window._epiItens[${idx}].venc=this.value" style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 6px;font-size:.72rem">
       <button onclick="epiRemoverItem(${idx})" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:.95rem" title="Remover">✕</button>
     </div>`).join('');
+}
+
+/* -- Ao escolher/digitar uma descrição que bate com o catálogo padrão, preenche
+      C.A./vencimento sozinho (só se ainda estiverem vazios, pra não sobrescrever
+      um valor que a pessoa já ajustou na mão). -- */
+function epiAtualizarDesc(idx, valor) {
+  window._epiItens[idx].desc = valor;
+  const padrao = EPI_CA_PADRAO[valor];
+  if (padrao) {
+    if (!window._epiItens[idx].ca) {
+      window._epiItens[idx].ca = padrao.ca || '';
+      const elCa = document.getElementById('epi_ca_' + idx);
+      if (elCa) elCa.value = window._epiItens[idx].ca;
+    }
+    if (!window._epiItens[idx].venc) {
+      window._epiItens[idx].venc = padrao.venc || '';
+      const elVenc = document.getElementById('epi_venc_' + idx);
+      if (elVenc) elVenc.value = window._epiItens[idx].venc;
+    }
+  }
 }
 
 function epiAddItem(desc, ca, venc, qtd) {
@@ -22408,10 +22434,19 @@ function gerarEPI(cIdx) {
   const funcao = pgrFuncaoPorNome(colab.cargo);
   const ghe = funcao ? funcao.ghe : 'ghe02';
   const sugestoes = (funcao && funcao.epis) || PGR_EPI_KIT_GHE02;
-  window._epiItens = sugestoes.map(desc => {
-    const padrao = EPI_CA_PADRAO[desc];
-    return { desc, qtd: /uniforme|protetor solar/i.test(desc) ? 1 : 2, ca: (padrao && padrao.ca) || '', venc: (padrao && padrao.venc) || '' };
-  });
+  const jaTemEntregaAnterior = gdEpiObter(colab.id).entregas.length > 0;
+  if (jaTemEntregaAnterior) {
+    // Colaborador já recebeu o kit completo antes — a Nova Entrega aqui é reposição/complemento,
+    // então começa vazia: só entra o(s) item(ns) que realmente estão sendo entregues agora,
+    // sem repetir o kit inteiro de novo no histórico.
+    window._epiItens = [{ desc: '', qtd: 1, ca: '', venc: '' }];
+  } else {
+    // Primeira entrega desse colaborador — sugere o kit completo da função.
+    window._epiItens = sugestoes.map(desc => {
+      const padrao = EPI_CA_PADRAO[desc];
+      return { desc, qtd: /uniforme|protetor solar/i.test(desc) ? 1 : 2, ca: (padrao && padrao.ca) || '', venc: (padrao && padrao.venc) || '' };
+    });
+  }
 
   const seed = GD_SEED_COLABORADORES.find(s => s.nome.toLowerCase() === colab.nome.toLowerCase());
   const cpf = (seed && seed.cpf) || colab.cpf || '';
@@ -22432,7 +22467,10 @@ function gerarEPI(cIdx) {
     + '<div style="padding:18px 22px">'
 
     + '<div style="background:#fff8e6;border:1px solid #f0d894;border-radius:8px;padding:10px 12px;margin-bottom:16px;font-size:.78rem;color:#8a6d1a">'
-    + 'Kit sugerido automaticamente a partir da função (' + (colab.cargo||'—') + ') e dos riscos mapeados no PGR REV04, com C.A. e validade pré-preenchidos pelo lote mais recente usado na empresa. <strong>Confira sempre no item físico entregue</strong> — se for de um lote diferente, ajuste o C.A./validade da linha. Ajuste itens, quantidades ou remova/adicione linhas conforme o que for realmente entregue. '
+    + (jaTemEntregaAnterior
+        ? 'Esse colaborador já tem entrega(s) registrada(s) — <strong>essa tela começa vazia</strong>, adicione só o(s) item(ns) que estão sendo entregues agora (reposição/complemento). Digite a descrição pra ver sugestões com C.A./validade padrão, ou ajuste na mão.'
+        : 'Kit completo sugerido automaticamente a partir da função (' + (colab.cargo||'—') + ') e dos riscos mapeados no PGR REV04, com C.A. e validade pré-preenchidos pelo lote mais recente usado na empresa. <strong>Confira sempre no item físico entregue</strong> — se for de um lote diferente, ajuste o C.A./validade da linha.')
+    + ' Ajuste itens, quantidades ou remova/adicione linhas conforme o que for realmente entregue. '
     + '<strong>Isso soma uma nova entrega ao histórico do colaborador — nada do que já foi registrado antes é apagado.</strong> Pra devolução ou troca de um item já entregue, use o botão "🔄 Devolução/Troca" na lista de colaboradores.'
     + '</div>'
 
@@ -22691,6 +22729,21 @@ function epiAbrirJanelaImpressao(html) {
   if (!w) { showToast('⚠️ Permita pop-ups para gerar a Ficha de EPI.'); return; }
   w.document.write(html);
   w.document.close();
+}
+
+/* -- Visualiza/imprime a Ficha de EPI com o histórico acumulado do colaborador SEM
+      registrar uma nova entrega — pra isso existe o botão "Nova Entrega" separado. -- */
+function epiVerFicha(cIdx) {
+  const colab = window._gdDados && window._gdDados.colaboradores[cIdx];
+  if (!colab) { showToast('⚠️ Colaborador não encontrado.'); return; }
+  const hist = gdEpiObter(colab.id);
+  if (!hist.entregas.length) {
+    showToast('⚠️ Esse colaborador ainda não tem nenhuma entrega de EPI registrada. Use "🦺 Nova Entrega" primeiro.');
+    return;
+  }
+  const numeroFicha = hist.entregas[hist.entregas.length - 1].numeroFicha || '—';
+  const html = epiConstruirHtml(colab, { numeroFicha, incluirNr10: hist.nr10Consentido, obs: '' });
+  epiAbrirJanelaImpressao(html);
 }
 
 /* -- Registra uma NOVA entrega no histórico do colaborador (soma, não substitui) e imprime
@@ -23519,7 +23572,8 @@ function pageGestaoDocumental() {
               ${resumo}
               <button class="btn-primary" style="padding:4px 10px;font-size:.68rem" onclick="event.stopPropagation();gdAbrirModalDocColab('${colab.id}','${nomeEsc}')">+ Doc</button>
               <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:var(--blue,#3b82f6);color:#fff" onclick="event.stopPropagation();gerarASO(${cIdx})">📋 ASO</button>
-              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#b45309;color:#fff" onclick="event.stopPropagation();gerarEPI(${cIdx})">🦺 EPI</button>
+              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#b45309;color:#fff" onclick="event.stopPropagation();gerarEPI(${cIdx})">🦺 Nova Entrega</button>
+              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#78350f;color:#fff" onclick="event.stopPropagation();epiVerFicha(${cIdx})">👁️ Ver Ficha EPI</button>
               <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#92400e;color:#fff" onclick="event.stopPropagation();gdAbrirDevolucaoEpi(${cIdx})">🔄 Devolução/Troca</button>
               ${sitInfo.situacao!=='inativo' ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#b91c1c;color:#fff" onclick="event.stopPropagation();gdAbrirModalDesligamento(${cIdx})">🚪 ${sitInfo.situacao==='desligamento'?'Continuar Desligamento':'Desligar'}</button>` : ''}
               <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="event.stopPropagation();gdAbrirModalColaborador(${cIdx})">✏️</button>
