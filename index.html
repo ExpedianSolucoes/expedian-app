@@ -16374,23 +16374,19 @@ function colAtualizarRegional(valor) {
   navigate('checklist_coleta');
 }
 
-/* -- Lista única de tipos de resíduo (Classe I e II juntos, agrupados por optgroup) —
-      ao escolher o tipo, a classe é preenchida automaticamente (não precisa mais
-      escolher a classe manualmente antes). -- */
+/* -- Lista única de tipos de resíduo (Classe I e II juntos), usada num <input list="...">
+      + <datalist> — campo digitável/pesquisável (digita e filtra), em vez de <select> nativo,
+      pra facilitar achar o resíduo numa lista longa. Ao escolher/digitar um tipo que bate com
+      a lista, a classe é preenchida automaticamente. -- */
 function colClasseDoTipo(tipo) {
   if (COL_RESIDUOS_LISTA.classeI.includes(tipo)) return 'I';
   if (COL_RESIDUOS_LISTA.classeII.includes(tipo)) return 'II';
   return '';
 }
 
-function colBuildResiduoOptions(tipoSelecionado) {
-  return '<option value="">— Selecione o resíduo —</option>'
-    + '<optgroup label="Classe I">'
-    + COL_RESIDUOS_LISTA.classeI.map(r => `<option value="${r}" ${tipoSelecionado===r?'selected':''}>${r}</option>`).join('')
-    + '</optgroup>'
-    + '<optgroup label="Classe II">'
-    + COL_RESIDUOS_LISTA.classeII.map(r => `<option value="${r}" ${tipoSelecionado===r?'selected':''}>${r}</option>`).join('')
-    + '</optgroup>';
+function colBuildResiduoDatalist() {
+  return COL_RESIDUOS_LISTA.classeI.map(r => `<option value="${r}">`).join('')
+    + COL_RESIDUOS_LISTA.classeII.map(r => `<option value="${r}">`).join('');
 }
 
 function colAddLinhaResiduo() {
@@ -16404,11 +16400,28 @@ function colRemLinhaResiduo(idx) {
   navigate('checklist_coleta');
 }
 
-function colAtualizarResiduo(idx, campo, valor) {
+/* -- Atualiza o tipo do resíduo sem re-renderizar a página inteira (pra não perder o foco/
+      cursor a cada letra digitada no campo pesquisável) — só atualiza o badge da classe. -- */
+function colAtualizarResiduoTipo(idx, valor) {
+  if (!window._colData.residuos[idx]) return;
+  window._colData.residuos[idx].tipo = valor;
+  const classe = colClasseDoTipo(valor);
+  window._colData.residuos[idx].classe = classe;
+  const badge = document.getElementById('col-classe-badge-' + idx);
+  if (badge) {
+    badge.textContent = classe ? 'Classe ' + classe : '—';
+    badge.style.background = classe==='I' ? '#fce8e8' : classe==='II' ? '#e6f5ed' : 'var(--surface)';
+    badge.style.color = classe==='I' ? '#e03d3d' : classe==='II' ? '#2d8c5a' : 'var(--text-muted)';
+  }
+}
+
+/* -- Atualiza peso/unidade sem re-render completo — só recalcula o total exibido no topo. -- */
+function colAtualizarResiduoNum(idx, campo, valor) {
   if (!window._colData.residuos[idx]) return;
   window._colData.residuos[idx][campo] = valor;
-  if (campo === 'tipo') window._colData.residuos[idx].classe = colClasseDoTipo(valor); // classe automática pelo tipo
-  navigate('checklist_coleta');
+  const tot = colCalcularTotais();
+  const totEl = document.getElementById('col-total-kg-header');
+  if (totEl) totEl.textContent = 'Total: ' + tot.totalKg.toLocaleString('pt-BR',{minimumFractionDigits:2}) + ' kg';
 }
 
 function colCalcularTotais() {
@@ -16655,17 +16668,16 @@ function pageChecklistColeta() {
   <div class="card" style="margin-bottom:16px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="margin:0">Resíduos Coletados</div>
-      <div style="font-size:.85rem;font-weight:700;color:var(--green-main);font-family:'Mont',sans-serif">Total: ${tot.totalKg.toLocaleString('pt-BR',{minimumFractionDigits:2})} kg</div>
+      <div id="col-total-kg-header" style="font-size:.85rem;font-weight:700;color:var(--green-main);font-family:'Mont',sans-serif">Total: ${tot.totalKg.toLocaleString('pt-BR',{minimumFractionDigits:2})} kg</div>
     </div>
+    <datalist id="col_dl_residuos">${colBuildResiduoDatalist()}</datalist>
     ${d.residuos.map((r, i) => `
     <div style="display:grid;grid-template-columns:28px 1fr 74px 90px 70px 32px;gap:8px;align-items:center;margin-bottom:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
       <div style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-align:center">${i+1}</div>
-      <select onchange="colAtualizarResiduo(${i},'tipo',this.value)" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
-        ${colBuildResiduoOptions(r.tipo)}
-      </select>
-      <div style="text-align:center;font-size:.68rem;font-weight:700;padding:5px 4px;border-radius:6px;background:${r.classe==='I'?'#fce8e8':r.classe==='II'?'#e6f5ed':'var(--surface)'};color:${r.classe==='I'?'#e03d3d':r.classe==='II'?'#2d8c5a':'var(--text-muted)'}">${r.classe?'Classe '+r.classe:'—'}</div>
-      <input type="number" step="0.01" min="0" value="${r.peso||''}" oninput="colAtualizarResiduo(${i},'peso',this.value)" placeholder="Peso" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
-      <select onchange="colAtualizarResiduo(${i},'unid',this.value)" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
+      <input type="text" list="col_dl_residuos" value="${(r.tipo||'').replace(/"/g,'&quot;')}" oninput="colAtualizarResiduoTipo(${i},this.value)" placeholder="Buscar resíduo... (digite pra filtrar)" style="border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.75rem">
+      <div id="col-classe-badge-${i}" style="text-align:center;font-size:.68rem;font-weight:700;padding:5px 4px;border-radius:6px;background:${r.classe==='I'?'#fce8e8':r.classe==='II'?'#e6f5ed':'var(--surface)'};color:${r.classe==='I'?'#e03d3d':r.classe==='II'?'#2d8c5a':'var(--text-muted)'}">${r.classe?'Classe '+r.classe:'—'}</div>
+      <input type="number" step="0.01" min="0" value="${r.peso||''}" oninput="colAtualizarResiduoNum(${i},'peso',this.value)" placeholder="Peso" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
+      <select onchange="colAtualizarResiduoNum(${i},'unid',this.value)" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
         <option value="kg" ${r.unid==='kg'?'selected':''}>kg</option>
         <option value="un" ${r.unid==='un'?'selected':''}>un</option>
         <option value="lt" ${r.unid==='lt'?'selected':''}>lt</option>
