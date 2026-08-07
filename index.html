@@ -1050,6 +1050,7 @@ const menus = {
       { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
       { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
+      { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
@@ -1090,6 +1091,7 @@ const menus = {
       { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
       { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
+      { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
@@ -1124,6 +1126,7 @@ const menus = {
       { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
       { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
+      { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
@@ -1271,6 +1274,7 @@ function renderPage(id) {
     checklist_linha: () => pageChecklistLinha(),
     checklist_bombeamento: () => pageChecklistBombeamento(),
     checklist_mitigacao: () => pageChecklistMitigacao(),
+    checklist_coleta: () => pageChecklistColeta(),
     equipamentos: () => pageEquipamentos(),
     docs: () => pageGestaoDocumental(),
     documentos: () => pageDocumentos(),
@@ -16302,6 +16306,526 @@ function exportarMitigacaoPdf() {
 }
 
 /* =============================================================
+   CHECKLIST — COLETA DE RESÍDUOS
+   Relatório operacional de coleta de resíduos em campo: dados da
+   coleta, lista de resíduos por classe (I/II) com peso, fotos de
+   evidência e observações. Sem vínculo a contrato/faturamento.
+   ============================================================= */
+if (typeof window._colData === 'undefined') window._colData = { residuos: [], fotos: [] };
+if (typeof window._colHistorico === 'undefined') window._colHistorico = null; // null = ainda não carregado
+if (typeof window._colRegistroAtualId === 'undefined') window._colRegistroAtualId = null;
+if (typeof window._colDashFiltroMes === 'undefined') window._colDashFiltroMes = '';
+if (typeof window._colDashFiltroAno === 'undefined') window._colDashFiltroAno = '';
+
+const COL_MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+
+const COL_RESIDUOS_LISTA = {
+  classeI: [
+    'Pilhas e Baterias','Lâmpada Fluorescente',"EPI's contaminados",'Brita contaminada',
+    'Solo contaminado',"EPC's contaminados",'Estopas contaminadas','Pó de serra contaminada',
+    'Manta contaminada','Travesseiro absorvente contaminado','Lata de Tinta e Solvente',
+    'Graxa','Sucata Contaminada','Sílica contaminada com óleo','Mercúrio',
+    'Embalagem de Produtos Químicos','Derivados de Petróleo','Outros Resíduos Classe I'
+  ],
+  classeII: [
+    'Papelão','Papel Branco','Plástico em Geral','Borracha e Pneus Inservíveis','Madeira',
+    'Sucata de cabo de aço','Sucata de cabo de alumínio','Vidro em Geral','Lâmpada de LED',
+    'Escadas de alumínio e fibra','Cones',"EPI's em Geral",'Lacres',"EPC's",
+    'Sucata de Eletrônicos','Sucata de Ferro','Porcelana','Bolsas','Uniforme','Sílica',
+    'Outros Resíduos Classe II'
+  ]
+};
+
+function colCampo(campo, valor) {
+  window._colData[campo] = valor;
+}
+
+function colBuildResiduoOptions(classeAtual, tipoSelecionado) {
+  const lista = classeAtual === 'I' ? COL_RESIDUOS_LISTA.classeI : COL_RESIDUOS_LISTA.classeII;
+  return '<option value="">— Selecione o resíduo —</option>' +
+    lista.map(r => `<option value="${r}" ${tipoSelecionado===r?'selected':''}>${r}</option>`).join('');
+}
+
+function colAddLinhaResiduo() {
+  if (!Array.isArray(window._colData.residuos)) window._colData.residuos = [];
+  window._colData.residuos.push({ classe: 'I', tipo: '', peso: '', unid: 'kg' });
+  navigate('checklist_coleta');
+}
+
+function colRemLinhaResiduo(idx) {
+  window._colData.residuos.splice(idx, 1);
+  navigate('checklist_coleta');
+}
+
+function colAtualizarResiduo(idx, campo, valor) {
+  if (!window._colData.residuos[idx]) return;
+  window._colData.residuos[idx][campo] = valor;
+  if (campo === 'classe') window._colData.residuos[idx].tipo = ''; // troca de classe reseta o tipo
+  navigate('checklist_coleta');
+}
+
+function colCalcularTotais() {
+  const residuos = Array.isArray(window._colData.residuos) ? window._colData.residuos : [];
+  let totalKg = 0, c1Kg = 0, c2Kg = 0;
+  residuos.forEach(r => {
+    const peso = parseFloat(r.peso) || 0;
+    if (r.unid !== 'kg') return; // soma só o que está em kg pro total geral
+    totalKg += peso;
+    if (r.classe === 'I') c1Kg += peso; else c2Kg += peso;
+  });
+  return { totalKg, c1Kg, c2Kg, qtdItens: residuos.length };
+}
+
+/* -- Fotos: descrição + captura de imagem (reaproveita o redimensionador 6×8 já usado no ERO) -- */
+function colAddFoto() {
+  if (!Array.isArray(window._colData.fotos)) window._colData.fotos = [];
+  window._colData.fotos.push({ desc: '', dataUrl: '', horizontal: true });
+  navigate('checklist_coleta');
+}
+
+function colRemFoto(idx) {
+  window._colData.fotos.splice(idx, 1);
+  navigate('checklist_coleta');
+}
+
+function colAtualizarFotoDesc(idx, valor) {
+  if (!window._colData.fotos[idx]) return;
+  window._colData.fotos[idx].desc = valor;
+}
+
+function colCarregarFoto(event, idx) {
+  const file = event.target.files[0];
+  if (!file) return;
+  _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => {
+    if (!window._colData.fotos[idx]) return;
+    window._colData.fotos[idx].dataUrl = dataUrl;
+    window._colData.fotos[idx].horizontal = horizontal;
+    navigate('checklist_coleta');
+  });
+}
+
+function colNovoChecklist() {
+  const temDados = window._colData && ((window._colData.residuos||[]).length || (window._colData.fotos||[]).length || window._colData.num);
+  if (temDados && !confirm('Isso vai limpar o formulário atual (os dados não salvos serão perdidos). Deseja continuar?')) return;
+  window._colData = { residuos: [], fotos: [] };
+  window._colRegistroAtualId = null;
+  colAddLinhaResiduo();
+}
+
+async function carregarColetaHistorico(forcar) {
+  if (window._colHistorico !== null && !forcar) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('col_historico_cache') || '[]'); } catch(e) { cacheLocal = []; }
+  if (window._colHistorico === null) window._colHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('ChecklistColeta');
+    if (Array.isArray(lista)) {
+      window._colHistorico = lista;
+      try { localStorage.setItem('col_historico_cache', JSON.stringify(lista)); } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('[Coleta] Falha ao carregar histórico, usando cache local.', e);
+  }
+  navigate('checklist_coleta');
+}
+
+function colDashFiltrarMes(v) { window._colDashFiltroMes = v; navigate('checklist_coleta'); }
+function colDashFiltrarAno(v) { window._colDashFiltroAno = v; navigate('checklist_coleta'); }
+
+async function colLimparHistorico() {
+  const total = Array.isArray(window._colHistorico) ? window._colHistorico.length : 0;
+  const confirmar = confirm(
+    `⚠️ Isso vai APAGAR todo o histórico de Coleta de Resíduos (${total} registro(s)) ` +
+    `de todos os inspetores, salvo na pasta central do OneDrive.\n\n` +
+    `Os documentos/PDFs já enviados para a pasta "Checklists" NÃO serão apagados, só o histórico do dashboard.\n\n` +
+    `Essa ação não pode ser desfeita. Deseja continuar?`
+  );
+  if (!confirmar) return;
+
+  showSyncStatus('Limpando histórico no OneDrive...');
+  const ok = await dbSalvar('ChecklistColeta', []);
+  window._colHistorico = [];
+  window._colDashFiltroMes = '';
+  window._colDashFiltroAno = '';
+  try { localStorage.setItem('col_historico_cache', JSON.stringify([])); } catch(e) {}
+
+  if (ok) {
+    showSyncStatus('Histórico limpo!', 'ok', 4000);
+    showToast('🗑️ Histórico de Coleta de Resíduos zerado. Começando do zero a partir de agora.');
+  } else {
+    showSyncStatus('Falha ao limpar no OneDrive', 'err', 6000);
+    showToast('⚠️ Limpei localmente, mas não consegui confirmar a limpeza no OneDrive. Verifique a conexão e tente de novo.');
+  }
+  navigate('checklist_coleta');
+}
+
+/* -- Mini dashboard: filtros por mês/ano, KPIs de volume coletado e lista de relatórios -- */
+function renderColMiniDashboard() {
+  const historico = Array.isArray(window._colHistorico) ? window._colHistorico : [];
+
+  const comData = historico.map(r => {
+    let ano = '', mes = '';
+    if (r.data && /^\d{4}-\d{2}/.test(r.data)) { ano = r.data.slice(0,4); mes = r.data.slice(5,7); }
+    return { ...r, _ano: ano, _mes: mes };
+  });
+
+  const anosDisponiveis = [...new Set(comData.map(r => r._ano).filter(Boolean))].sort().reverse();
+
+  const filtrados = comData.filter(r =>
+    (!window._colDashFiltroAno || r._ano === window._colDashFiltroAno) &&
+    (!window._colDashFiltroMes || r._mes === window._colDashFiltroMes)
+  ).sort((a,b) => (b.Id||0)-(a.Id||0));
+
+  const totalKgFiltro = filtrados.reduce((s,r) => s + (r.totalKg||0), 0);
+  const c1KgFiltro = filtrados.reduce((s,r) => s + (r.c1Kg||0), 0);
+  const c2KgFiltro = filtrados.reduce((s,r) => s + (r.c2Kg||0), 0);
+
+  return `
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📊 Mini Dashboard — Coleta de Resíduos</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select onchange="colDashFiltrarMes(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
+          <option value="">Todos os meses</option>
+          ${COL_MESES.map((m,idx) => `<option value="${String(idx+1).padStart(2,'0')}" ${window._colDashFiltroMes===String(idx+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}
+        </select>
+        <select onchange="colDashFiltrarAno(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
+          <option value="">Todos os anos</option>
+          ${anosDisponiveis.map(a => `<option value="${a}" ${window._colDashFiltroAno===a?'selected':''}>${a}</option>`).join('')}
+        </select>
+        <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="carregarColetaHistorico(true)">🔄 Atualizar</button>
+        <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem;color:var(--red)" onclick="colLimparHistorico()">🗑️ Limpar Histórico</button>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+      <div class="kpi-card green" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Coletas no Filtro</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${filtrados.length}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Total Coletado (kg, no filtro)</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${totalKgFiltro.toLocaleString('pt-BR',{minimumFractionDigits:0})}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Classe I (kg)</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:#c0392b">${c1KgFiltro.toLocaleString('pt-BR',{minimumFractionDigits:0})}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Classe II (kg)</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:#2d8c5a">${c2KgFiltro.toLocaleString('pt-BR',{minimumFractionDigits:0})}</div>
+      </div>
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
+      Relatórios de Coleta
+    </div>
+    <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
+      ${window._colHistorico === null
+        ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Carregando histórico...</div>`
+        : filtrados.length === 0
+          ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Nenhuma coleta encontrada para este período.</div>`
+          : filtrados.map((r,idx) => `
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;${idx%2===0?'background:var(--surface)':'background:var(--surface2)'};${idx<filtrados.length-1?'border-bottom:1px solid var(--border)':''}">
+              <div style="flex:1;min-width:140px">
+                <div style="font-size:.82rem;font-weight:700">Nº ${r.num || '—'} · ${r.local || 'Sem local'}</div>
+                <div style="font-size:.68rem;color:var(--text-muted)">${r.motorista || '—'} ${r.placa?'· '+r.placa:''}</div>
+              </div>
+              <div style="font-size:.75rem;color:var(--text-muted);min-width:80px;text-align:center">
+                ${r.data ? new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}
+              </div>
+              <div style="font-size:.78rem;font-weight:700;min-width:90px;text-align:right;color:var(--green-main)">
+                ${(r.totalKg||0).toLocaleString('pt-BR',{minimumFractionDigits:2})} kg
+              </div>
+              <div style="display:flex;gap:4px;flex-shrink:0">
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="${r.documentoUrl?'Ver PDF/documento gerado':'Ainda sem PDF exportado'}" onclick="colVerChecklist(${r.Id})">👁️ Ver</button>
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="colEditarChecklist(${r.Id})">✏️ Editar</button>
+              </div>
+            </div>`).join('')
+      }
+    </div>
+  </div>
+  `;
+}
+
+function pageChecklistColeta() {
+  const d = window._colData;
+  if (!Array.isArray(d.residuos)) d.residuos = [];
+  if (!Array.isArray(d.fotos)) d.fotos = [];
+  if (!d.residuos.length) d.residuos.push({ classe: 'I', tipo: '', peso: '', unid: 'kg' });
+  if (window._colHistorico === null) carregarColetaHistorico();
+
+  const tot = colCalcularTotais();
+
+  return `
+  <div class="page-header">
+    <h1>Coleta de Resíduos</h1>
+    <p>Relatório operacional de coleta de resíduos em campo — Classe I e Classe II</p>
+  </div>
+
+  ${renderColMiniDashboard()}
+
+  <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap">
+    <button class="btn-secondary" onclick="colNovoChecklist()">🆕 Novo Relatório</button>
+    <button class="btn-primary" onclick="salvarColetaChecklist()">💾 Salvar e Sincronizar com OneDrive</button>
+    <button class="btn-primary" style="background:var(--brand-brown,#3F261F)" onclick="exportarColetaPdf()">🖨️ Exportar PDF</button>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Identificação</div>
+    <div class="form-row">
+      <div class="form-group"><label>Nº do Relatório</label><input id="col_num" value="${d.num||''}" oninput="colCampo('num',this.value)" placeholder="Ex: 001"></div>
+      <div class="form-group"><label>Data da Coleta</label><input type="date" id="col_data" value="${d.data||''}" oninput="colCampo('data',this.value)"></div>
+      <div class="form-group" style="flex:2"><label>Local / Unidade</label><input id="col_local" value="${d.local||''}" oninput="colCampo('local',this.value)" placeholder="Ex: Subestação X / Base Operacional"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Motorista</label><input id="col_motorista" value="${d.motorista||''}" oninput="colCampo('motorista',this.value)"></div>
+      <div class="form-group"><label>Placa Veículo</label><input id="col_placa" value="${d.placa||''}" oninput="colCampo('placa',this.value.toUpperCase())" style="text-transform:uppercase" placeholder="ABC-1D23"></div>
+      <div class="form-group"><label>Placa Reboque</label><input id="col_reboque" value="${d.reboque||''}" oninput="colCampo('reboque',this.value.toUpperCase())" style="text-transform:uppercase" placeholder="Se houver"></div>
+      <div class="form-group"><label>Transportadora</label><input id="col_transportadora" value="${d.transportadora||'Expedian'}" oninput="colCampo('transportadora',this.value)"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="margin:0">Resíduos Coletados</div>
+      <div style="font-size:.85rem;font-weight:700;color:var(--green-main);font-family:'Mont',sans-serif">Total: ${tot.totalKg.toLocaleString('pt-BR',{minimumFractionDigits:2})} kg</div>
+    </div>
+    ${d.residuos.map((r, i) => `
+    <div style="display:grid;grid-template-columns:36px 90px 1fr 100px 80px 36px;gap:8px;align-items:center;margin-bottom:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+      <div style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-align:center">${i+1}</div>
+      <select onchange="colAtualizarResiduo(${i},'classe',this.value)" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
+        <option value="I" ${r.classe==='I'?'selected':''}>Classe I</option>
+        <option value="II" ${r.classe==='II'?'selected':''}>Classe II</option>
+      </select>
+      <select onchange="colAtualizarResiduo(${i},'tipo',this.value)" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
+        ${colBuildResiduoOptions(r.classe, r.tipo)}
+      </select>
+      <input type="number" step="0.01" min="0" value="${r.peso||''}" oninput="colAtualizarResiduo(${i},'peso',this.value)" placeholder="Peso" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
+      <select onchange="colAtualizarResiduo(${i},'unid',this.value)" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
+        <option value="kg" ${r.unid==='kg'?'selected':''}>kg</option>
+        <option value="un" ${r.unid==='un'?'selected':''}>un</option>
+        <option value="lt" ${r.unid==='lt'?'selected':''}>lt</option>
+      </select>
+      <button onclick="colRemLinhaResiduo(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.95rem" title="Remover">✕</button>
+    </div>
+    `).join('')}
+    <button class="btn-secondary" style="font-size:.78rem" onclick="colAddLinhaResiduo()">+ Adicionar resíduo</button>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">📷 Fotos de Evidência</div>
+    ${d.fotos.map((f, i) => `
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+      <label style="cursor:pointer;flex-shrink:0">
+        <div style="width:56px;height:56px;border-radius:8px;border:2px dashed ${f.dataUrl?'var(--green-main)':'var(--border)'};background:${f.dataUrl?'transparent':'var(--surface)'};display:flex;align-items:center;justify-content:center;overflow:hidden">
+          ${f.dataUrl ? `<img src="${f.dataUrl}" style="width:100%;height:100%;object-fit:cover">` : `<span style="font-size:1.3rem;opacity:.5">📷</span>`}
+        </div>
+        <input type="file" accept="image/*" capture="environment" style="display:none" onchange="colCarregarFoto(event,${i})">
+      </label>
+      <input value="${f.desc||''}" oninput="colAtualizarFotoDesc(${i},this.value)" placeholder="Descrição da foto ${i+1}" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.78rem">
+      <button onclick="colRemFoto(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.95rem;flex-shrink:0" title="Remover">✕</button>
+    </div>
+    `).join('')}
+    <button class="btn-secondary" style="font-size:.78rem" onclick="colAddFoto()">+ Adicionar foto</button>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Observações</div>
+    <textarea rows="3" id="col_obs" oninput="colCampo('obs',this.value)" placeholder="Observações sobre a coleta...">${d.obs||''}</textarea>
+  </div>
+  `;
+}
+
+/* -- Salva o relatório (resumo leve na tabela + snapshot completo com fotos em arquivo à parte) -- */
+async function salvarColetaChecklist() {
+  const d = window._colData || {};
+  const num = (d.num || '').trim();
+  if (!num) { showToast('⚠️ Informe o Nº do Relatório antes de salvar.'); return; }
+
+  const tot = colCalcularTotais();
+  const editando = !!window._colRegistroAtualId;
+  const meuId = editando ? window._colRegistroAtualId : Date.now();
+
+  const registro = {
+    Id: meuId,
+    Title: 'Coleta de Resíduos - ' + num + ' - ' + (d.local || 'Sem local') + ' - ' + (d.data || new Date().toLocaleDateString('pt-BR')),
+    num: num,
+    local: d.local || '',
+    motorista: d.motorista || '',
+    placa: d.placa || '',
+    data: d.data || '',
+    totalKg: tot.totalKg,
+    c1Kg: tot.c1Kg,
+    c2Kg: tot.c2Kg,
+    qtdItens: tot.qtdItens,
+    arquivoDados: 'Checklists/ColetaResiduos/dados/' + meuId + '.json',
+  };
+
+  showSyncStatus('Enviando para OneDrive...');
+
+  const novo = editando
+    ? (await dbAtualizar('ChecklistColeta', meuId, registro)) ? registro : null
+    : await dbInserir('ChecklistColeta', registro);
+
+  const blobDados = new Blob([JSON.stringify(d)], { type: 'application/json' });
+  await uploadParaOneDrive(blobDados, OD_FOLDERS.checklistsColeta + '/dados', meuId + '.json');
+
+  window._colRegistroAtualId = meuId;
+
+  if (!Array.isArray(window._colHistorico)) window._colHistorico = [];
+  const idxExistente = window._colHistorico.findIndex(r => r.Id === meuId);
+  const registroSalvo = novo || { ...registro, Created: new Date().toISOString() };
+  if (idxExistente >= 0) window._colHistorico[idxExistente] = registroSalvo;
+  else window._colHistorico.unshift(registroSalvo);
+  try { localStorage.setItem('col_historico_cache', JSON.stringify(window._colHistorico)); } catch(e) {}
+
+  if (novo) {
+    showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
+    showToast(editando ? '☁️ Relatório atualizado no OneDrive!' : '☁️ Relatório salvo e sincronizado com o OneDrive!');
+  } else {
+    showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
+    showToast('⚠️ Salvo apenas neste dispositivo. Verifique o login com Microsoft e tente sincronizar de novo.');
+  }
+  navigate('checklist_coleta');
+}
+
+async function colEditarChecklist(id) {
+  showSyncStatus('Carregando relatório para edição...');
+  const texto = await baixarArquivoCentral('Checklists/ColetaResiduos/dados/' + id + '.json');
+  if (!texto) {
+    showSyncStatus('Não foi possível carregar', 'err', 4000);
+    showToast('⚠️ Não encontrei os dados completos desse relatório (pode ter sido salvo antes desse recurso existir).');
+    return;
+  }
+  try {
+    window._colData = JSON.parse(texto);
+    if (!Array.isArray(window._colData.residuos)) window._colData.residuos = [];
+    if (!Array.isArray(window._colData.fotos)) window._colData.fotos = [];
+    window._colRegistroAtualId = id;
+    showSyncStatus('Relatório carregado!', 'ok', 3000);
+    showToast('✏️ Relatório carregado para edição. Altere o que precisar e clique em Salvar.');
+    navigate('checklist_coleta');
+  } catch(e) {
+    showToast('⚠️ Erro ao interpretar os dados salvos desse relatório.');
+  }
+}
+
+function colVerChecklist(id) {
+  const r = (window._colHistorico || []).find(r => r.Id === id);
+  if (r && r.documentoUrl) {
+    window.open(r.documentoUrl, '_blank');
+  } else {
+    showToast('📄 Esse relatório ainda não tem um PDF exportado. Abra-o (Editar) e clique em "Exportar PDF" primeiro.');
+  }
+}
+
+/* -- Gera o relatório em PDF (janela de impressão) e sincroniza como HTML no OneDrive -- */
+function exportarColetaPdf() {
+  showToast('🔄 Gerando relatório... aguarde.');
+  setTimeout(async () => {
+    const d = window._colData;
+    const tot = colCalcularTotais();
+    const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
+
+    const linhasResiduos = (d.residuos||[]).filter(r => r.tipo || r.peso).map((r,i) => `<tr>
+      <td>${i+1}</td>
+      <td>Classe ${r.classe}</td>
+      <td>${r.tipo||'—'}</td>
+      <td style="text-align:right">${r.peso||'0'} ${r.unid||'kg'}</td>
+    </tr>`).join('');
+
+    const fotosHtml = (d.fotos||[]).filter(f => f.dataUrl).map(f => `
+      <div style="text-align:center">
+        <img src="${f.dataUrl}" style="width:100%;aspect-ratio:${f.horizontal?'4/3':'3/4'};object-fit:cover;border:1px solid #ccc;border-radius:4px">
+        <div style="font-size:7pt;color:#555;margin-top:2px">${f.desc||'—'}</div>
+      </div>`).join('');
+
+    const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
+    <meta charset="UTF-8">
+    <title>Relatório de Coleta de Resíduos</title>
+    <style>
+      :root{--b-green:#80C476;--b-green-deep:#3a7030;--b-brown:#3F261F;--b-pale:#eef7ec;}
+      @page { size: A4; margin: 15mm 12mm; }
+      * { box-sizing: border-box; margin:0; padding:0; }
+      body { font-family: Arial, sans-serif; font-size: 9pt; color:#1a1a1a; }
+      .header-box { border: 2px solid var(--b-green-deep); border-radius:6px; padding:10px 14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; }
+      .header-info { text-align:right; font-size:7.5pt; color:#555; }
+      .section-title { background: var(--b-green-deep); color:#fff; padding:6px 10px; font-weight:700; font-size:9pt; margin:10px 0 6px; border-radius:4px; }
+      table { width:100%; border-collapse:collapse; margin-bottom:8px; }
+      th { background:#f0f4f1; font-size:7.5pt; font-weight:700; padding:4px 6px; text-align:left; border:1px solid #ccc; }
+      td { font-size:8pt; padding:4px 6px; border:1px solid #ddd; }
+      tr:nth-child(even) td { background:#f9fbf9; }
+      .foto-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:6px; }
+      .footer { margin-top:16px; border-top:1.5px solid #ccc; padding-top:8px; font-size:7pt; color:#888; display:flex; justify-content:space-between; }
+      @media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
+    </style></head><body>
+
+    <div class="header-box">
+      <img src="${(typeof ASO_LOGO_B64!=='undefined'?ASO_LOGO_B64:'')}" alt="Logo Expedian" style="height:44px;object-fit:contain">
+      <div class="header-info">
+        <strong style="font-size:10pt">RELATÓRIO DE COLETA DE RESÍDUOS</strong><br>
+        EXPEDIAN Soluções Ambientais
+      </div>
+    </div>
+
+    <table>
+      <tr><th style="width:15%">Nº Relatório</th><th style="width:25%">Data</th><th style="width:35%">Local / Unidade</th><th style="width:25%">Transportadora</th></tr>
+      <tr><td><strong>${d.num||'—'}</strong></td><td>${dataFmt}</td><td>${d.local||'—'}</td><td>${d.transportadora||'—'}</td></tr>
+      <tr><th>Motorista</th><th colspan="2">Placa Veículo</th><th>Placa Reboque</th></tr>
+      <tr><td>${d.motorista||'—'}</td><td colspan="2">${d.placa||'—'}</td><td>${d.reboque||'—'}</td></tr>
+    </table>
+
+    <div class="section-title">Resíduos Coletados — Total: ${tot.totalKg.toLocaleString('pt-BR',{minimumFractionDigits:2})} kg</div>
+    <table>
+      <thead><tr><th style="width:8%">Nº</th><th style="width:15%">Classe</th><th>Tipo de Resíduo</th><th style="width:18%">Peso/Qtd.</th></tr></thead>
+      <tbody>${linhasResiduos}</tbody>
+    </table>
+
+    ${d.obs ? `<div class="section-title">Observações</div><div style="font-size:8.5pt;padding:6px 2px">${d.obs.replace(/\n/g,'<br>')}</div>` : ''}
+
+    ${fotosHtml ? `<div class="section-title">📷 Fotos de Evidência</div><div class="foto-grid">${fotosHtml}</div>` : ''}
+
+    <div class="footer">
+      <span>EXPEDIAN Soluções Ambientais — Nós cuidamos do caminho.</span>
+      <span>Emitido em: ${new Date().toLocaleString('pt-BR')}</span>
+    </div>
+
+    <script>window.onload=()=>window.print();<\/script>
+    </body></html>`;
+
+    const win = window.open('', '_blank');
+    win.document.write(htmlContent);
+    win.document.close();
+
+    if (typeof uploadParaOneDrive === 'function') {
+      try {
+        const dataFmtOD = d.data
+          ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR').replace(/\//g, '-')
+          : new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
+        const localOD = (d.local || 'ColetaResiduos')
+          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 40);
+        const numOD = (d.num || '')
+          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 20);
+        const nomeBase = `ColetaResiduos_${numOD}_${localOD}_${dataFmtOD}`;
+        const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
+        const url = await uploadParaOneDrive(blob, OD_FOLDERS.checklistsColeta, nomeBase + '.html');
+        if (url && window._colRegistroAtualId) {
+          await dbAtualizar('ChecklistColeta', window._colRegistroAtualId, { documentoUrl: url, documentoNome: nomeBase + '.html' });
+          const idx = (window._colHistorico || []).findIndex(r => r.Id === window._colRegistroAtualId);
+          if (idx >= 0) { window._colHistorico[idx].documentoUrl = url; window._colHistorico[idx].documentoNome = nomeBase + '.html'; }
+          try { localStorage.setItem('col_historico_cache', JSON.stringify(window._colHistorico)); } catch(e) {}
+          showSyncStatus('Relatório sincronizado!', 'ok', 4000);
+        }
+      } catch(e) {
+        console.warn('[OneDrive] Erro ao sincronizar Coleta de Resíduos:', e);
+        showSyncStatus('Erro ao sincronizar com OneDrive', 'err', 6000);
+      }
+    }
+  }, 300);
+}
+
+/* =============================================================
    EQUIPAMENTOS — Termo de Recebimento e Responsabilidade
    Catálogo de equipamentos + termo assinado digitalmente (canvas)
    ao ser entregue a um colaborador. Enquanto o termo estiver
@@ -19672,6 +20196,7 @@ const OD_FOLDERS = {
   checklistsVeicular:  'Checklists/Veicular',
   checklistsBombeamento: 'Checklists/Bombeamento',
   checklistsMitigacao: 'Checklists/Mitigacao',
+  checklistsColeta: 'Checklists/ColetaResiduos',
   termosEquipamento: 'Termos/Equipamentos',
   notasFiscaisEquip: 'Equipamentos/NotasFiscais',
   certificadosCalibracao: 'Equipamentos/CertificadosCalibracao',
