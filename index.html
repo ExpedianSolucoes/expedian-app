@@ -15731,7 +15731,9 @@ function mitObsItem(idx, valor) {
 /* -- Pontuação: Conforme=1 / Não Conforme=0 / N.A. fica fora do denominador.
       100% = Excelente · 75-99% = Aceitável · abaixo de 75% = Não Aceitável -- */
 function mitCalcularPontuacao() {
-  const d = window._mitData;
+  return mitCalcularPontuacaoDe(window._mitData);
+}
+function mitCalcularPontuacaoDe(d) {
   let conforme = 0, naoConforme = 0;
   MIT_ITENS.forEach((_, i) => {
     const v = d['item_' + i];
@@ -16220,21 +16222,39 @@ async function mitConcluirAcao(id) {
 
   if (ok) {
     showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
-    showToast('✅ Ação corretiva marcada como concluída!');
+    showToast('✅ Ação corretiva marcada como concluída! Gerando relatório atualizado...');
   } else {
     showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
     showToast('⚠️ Concluída apenas neste dispositivo. Verifique o login com Microsoft.');
   }
+
+  await mitAbrirEExportar(dados, id);
   navigate('checklist_mitigacao');
 }
 
 /* -- Abre o PDF/documento já gerado desse checklist (se já foi exportado alguma vez) -- */
-function mitVerChecklist(id) {
+/* -- Visualiza o checklist: abre o PDF já exportado se existir; senão monta a
+      visualização na hora a partir do snapshot salvo (não precisa ter exportado antes). -- */
+async function mitVerChecklist(id) {
   const r = (window._mitHistorico || []).find(r => r.Id === id);
   if (r && r.documentoUrl) {
     window.open(r.documentoUrl, '_blank');
-  } else {
-    showToast('📄 Esse checklist ainda não tem um PDF exportado. Abra-o (Editar) e clique em "Exportar PDF" primeiro.');
+    return;
+  }
+  showToast('🔄 Carregando checklist para visualização...');
+  const texto = await baixarArquivoCentral('Checklists/Mitigacao/dados/' + id + '.json');
+  if (!texto) {
+    showToast('⚠️ Não encontrei os dados completos desse checklist para visualizar.');
+    return;
+  }
+  try {
+    const dados = JSON.parse(texto);
+    const htmlContent = mitConstruirHtml(dados);
+    const win = window.open('', '_blank');
+    win.document.write(htmlContent);
+    win.document.close();
+  } catch(e) {
+    showToast('⚠️ Erro ao interpretar os dados salvos desse checklist.');
   }
 }
 
@@ -16242,8 +16262,15 @@ function mitVerChecklist(id) {
 function exportarMitigacaoPdf() {
   showToast('🔄 Gerando relatório... aguarde.');
   setTimeout(async () => {
-    const d = window._mitData;
-    const pontuacao = mitCalcularPontuacao();
+    await mitAbrirEExportar(window._mitData, window._mitRegistroAtualId);
+  }, 300);
+}
+
+/* -- Monta o HTML do relatório impresso a partir de um objeto de dados `d` qualquer
+      (não depende de window._mitData — permite reimprimir um checklist já concluído
+      sem precisar carregá-lo no formulário em edição). -- */
+function mitConstruirHtml(d) {
+    const pontuacao = mitCalcularPontuacaoDe(d);
     const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
     const pctTxt = pontuacao.pct === null ? '—' : pontuacao.pct.toFixed(0) + '%';
 
@@ -16345,6 +16372,15 @@ function exportarMitigacaoPdf() {
     <script>window.onload=()=>window.print();<\/script>
     </body></html>`;
 
+    return htmlContent;
+}
+
+/* -- Abre a janela de impressão a partir de um `d` qualquer e sincroniza o documento
+      gerado com o OneDrive, associando ao `registroId` informado (não depende de
+      qual checklist está carregado no formulário no momento). -- */
+async function mitAbrirEExportar(d, registroId) {
+    const htmlContent = mitConstruirHtml(d);
+
     const win = window.open('', '_blank');
     win.document.write(htmlContent);
     win.document.close();
@@ -16361,9 +16397,9 @@ function exportarMitigacaoPdf() {
         const nomeBase = `KitMitigacaoAmbiental_${localOD}_${respOD}_${dataFmtOD}`;
         const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
         const url = await uploadParaOneDrive(blob, OD_FOLDERS.checklistsMitigacao, nomeBase + '.html');
-        if (url && window._mitRegistroAtualId) {
-          await dbAtualizar('ChecklistMitigacao', window._mitRegistroAtualId, { documentoUrl: url, documentoNome: nomeBase + '.html' });
-          const idx = (window._mitHistorico || []).findIndex(r => r.Id === window._mitRegistroAtualId);
+        if (url && registroId) {
+          await dbAtualizar('ChecklistMitigacao', registroId, { documentoUrl: url, documentoNome: nomeBase + '.html' });
+          const idx = (window._mitHistorico || []).findIndex(r => r.Id === registroId);
           if (idx >= 0) { window._mitHistorico[idx].documentoUrl = url; window._mitHistorico[idx].documentoNome = nomeBase + '.html'; }
           try { localStorage.setItem('mit_historico_cache', JSON.stringify(window._mitHistorico)); } catch(e) {}
           showSyncStatus('Relatório sincronizado!', 'ok', 4000);
@@ -16373,7 +16409,6 @@ function exportarMitigacaoPdf() {
         showSyncStatus('Erro ao sincronizar com OneDrive', 'err', 6000);
       }
     }
-  }, 300);
 }
 
 /* =============================================================
@@ -21673,6 +21708,25 @@ const PGR_EPI_KIT_GHE03 = [
   'Protetor auricular', 'Uniforme refletivo', 'Protetor solar fator 50 ou mais c/ repelente',
 ];
 
+/* -- C.A. e vencimento padrão do lote mais recente em uso, por item — usado só para
+      pré-preencher sugestão na Nova Entrega de EPI (o C.A. é do modelo, não do item físico,
+      então isso é seguro; ainda assim, sempre bom confirmar no item entregue). Itens sem
+      registro histórico (ex.: kit GHE03 nunca entregue ainda) ficam sem sugestão. -- */
+const EPI_CA_PADRAO = {
+  'Capacete aba frontal': { ca: '35.983', venc: '2027-11-11' },
+  'Bota eletricista': { ca: '35.768', venc: '2028-07-08' },
+  'Luva pigmentada': { ca: '34.491', venc: '2028-12-27' },
+  'Par Luva Nitrílica': { ca: '43.392', venc: '2029-01-25' },
+  'Perneira': { ca: '42.884', venc: '2028-12-29' },
+  'Óculos de proteção incolor': { ca: '14.990', venc: '2028-03-07' },
+  'Óculos de proteção fumê': { ca: '15.298', venc: '2027-10-20' },
+  'Camisa antichama': { ca: '45.753', venc: '2030-07-22' },
+  'Calça antichama': { ca: '49.171', venc: '2027-01-19' },
+  'Capuz Balaclava': { ca: '45.749', venc: '2030-12-16' },
+  'Protetor auricular': { ca: '14.470', venc: '2029-02-09' },
+  'Máscara semifacial PFF2': { ca: '39.236', venc: '2029-10-16' },
+};
+
 const PGR_FUNCOES = [
   { nome:'Auxiliar Administrativo',            ghe:'ghe01', cbo:'',        riscos:['Ergonômicos'], epis: PGR_EPI_KIT_GHE01 },
   { nome:'Auxiliar de Campo I',                ghe:'ghe02', cbo:'',        riscos:['Acidentes/Mecânicos','Ergonômicos','Físicos'], epis: PGR_EPI_KIT_GHE02 },
@@ -22316,7 +22370,10 @@ function gerarEPI(cIdx) {
   const funcao = pgrFuncaoPorNome(colab.cargo);
   const ghe = funcao ? funcao.ghe : 'ghe02';
   const sugestoes = (funcao && funcao.epis) || PGR_EPI_KIT_GHE02;
-  window._epiItens = sugestoes.map(desc => ({ desc, qtd: /uniforme|protetor solar/i.test(desc) ? 1 : 2, ca: '', venc: '' }));
+  window._epiItens = sugestoes.map(desc => {
+    const padrao = EPI_CA_PADRAO[desc];
+    return { desc, qtd: /uniforme|protetor solar/i.test(desc) ? 1 : 2, ca: (padrao && padrao.ca) || '', venc: (padrao && padrao.venc) || '' };
+  });
 
   const seed = GD_SEED_COLABORADORES.find(s => s.nome.toLowerCase() === colab.nome.toLowerCase());
   const cpf = (seed && seed.cpf) || colab.cpf || '';
@@ -22337,7 +22394,7 @@ function gerarEPI(cIdx) {
     + '<div style="padding:18px 22px">'
 
     + '<div style="background:#fff8e6;border:1px solid #f0d894;border-radius:8px;padding:10px 12px;margin-bottom:16px;font-size:.78rem;color:#8a6d1a">'
-    + 'Kit sugerido automaticamente a partir da função (' + (colab.cargo||'—') + ') e dos riscos mapeados no PGR REV04. Ajuste itens, quantidades, C.A. e validade conforme o que for realmente entregue — pode adicionar ou remover linhas. '
+    + 'Kit sugerido automaticamente a partir da função (' + (colab.cargo||'—') + ') e dos riscos mapeados no PGR REV04, com C.A. e validade pré-preenchidos pelo lote mais recente usado na empresa. <strong>Confira sempre no item físico entregue</strong> — se for de um lote diferente, ajuste o C.A./validade da linha. Ajuste itens, quantidades ou remova/adicione linhas conforme o que for realmente entregue. '
     + '<strong>Isso soma uma nova entrega ao histórico do colaborador — nada do que já foi registrado antes é apagado.</strong> Pra devolução ou troca de um item já entregue, use o botão "🔄 Devolução/Troca" na lista de colaboradores.'
     + '</div>'
 
