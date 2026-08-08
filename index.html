@@ -15761,6 +15761,7 @@ const MIT_ITENS = [
   'Luvas nitrílicas (par) presentes e dentro da validade?',
   'Óculos de proteção presente?',
   'Bacia de contenção portátil presente?',
+  'Pá e enxada antifaísca presentes e em bom estado?',
   'Sacos de resíduos presentes (mínimo 5)?',
   'Rótulo identificador do resíduo coletado presente?',
   'Sinalização de segurança (cone/fita zebrada) presente?',
@@ -20515,10 +20516,64 @@ function odPastaPrestacaoMes() {
    é o nome final, possivelmente com sufixo de desambiguação) ou null. */
 async function uploadComprovanteComNomeOriginal(file, pastaBase, nomeDesejado) {
   if (!file) return null;
+  file = await converterImagemParaPdfSeNecessario(file);
   const pasta = odPastaMesAtual(pastaBase);
-  const nomeFinal = nomeDesejado || file.name;
+  let nomeFinal = nomeDesejado || file.name;
+  // Se a foto foi convertida em PDF, garante que o nome final também vire .pdf
+  // (nomeDesejado costuma vir pronto com a extensão original da foto, ex: .jpg).
+  if (file.type === 'application/pdf' && /\.(jpe?g|png|heic|heif|webp)$/i.test(nomeFinal)) {
+    nomeFinal = nomeFinal.replace(/\.(jpe?g|png|heic|heif|webp)$/i, '.pdf');
+  }
   const resultado = await uploadParaOneDrive(file, pasta, nomeFinal, { conflictBehavior: 'rename', retornarNome: true });
   return resultado || null;
+}
+
+/* -- Garante que a biblioteca jsPDF esteja carregada (lazy-load via CDN,
+   mesmo padrão usado para o SheetJS/XLSX neste app). -- */
+async function _garantirJsPDF() {
+  if (window.jspdf && window.jspdf.jsPDF) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+/* -- Converte automaticamente uma foto de comprovante (JPEG/PNG/etc, tirada
+   pela opção "📷 Escanear") em um PDF de uma página antes do upload ao
+   OneDrive — assim tudo que sobe fica no mesmo padrão (PDF), mais fácil de
+   auditar e imprimir. Se o arquivo já não for imagem (já é PDF, por ex.),
+   devolve o arquivo original sem mexer. Em caso de falha na conversão,
+   também devolve o original, pra nunca bloquear o envio do comprovante. -- */
+async function converterImagemParaPdfSeNecessario(file) {
+  if (!file || !file.type || !file.type.startsWith('image/')) return file;
+  try {
+    await _garantirJsPDF();
+    const dataUrl = await new Promise((res, rej) => {
+      const reader = new FileReader();
+      reader.onload = () => res(reader.result);
+      reader.onerror = rej;
+      reader.readAsDataURL(file);
+    });
+    const img = await new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => res(im);
+      im.onerror = rej;
+      im.src = dataUrl;
+    });
+    const { jsPDF } = window.jspdf;
+    const orientacao = img.width >= img.height ? 'l' : 'p';
+    const doc = new jsPDF({ orientation: orientacao, unit: 'pt', format: [img.width, img.height] });
+    const formatoImg = /png/i.test(file.type) ? 'PNG' : 'JPEG';
+    doc.addImage(dataUrl, formatoImg, 0, 0, img.width, img.height);
+    const blob = doc.output('blob');
+    const nomeBase = (file.name || 'comprovante').replace(/\.[^.]+$/, '');
+    return new File([blob], nomeBase + '.pdf', { type: 'application/pdf' });
+  } catch (e) {
+    console.warn('[Comprovante] Falha ao converter foto em PDF, enviando original:', e);
+    return file;
+  }
 }
 
 /* -- Nomeação automática de comprovantes: "DD-MM-AAAA_R$Valor_RazãoSocial.ext" --
