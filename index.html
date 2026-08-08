@@ -4203,7 +4203,11 @@ async function carregarPrestacoes() {
     else if (PC_FILTRO_KPI === 'aprovadas') items = items.filter(r=>r.Status==='Aprovada');
     else if (PC_FILTRO_KPI === 'devolvidas') items = items.filter(r=>r.Status==='Devolvida'||r.Status==='Suspensa');
 
-    items=items.sort((a,b)=>b.Id-a.Id);
+    const pendentes = items.filter(i => i.Status !== 'Paga')
+      .sort((a,b) => new Date(a.DataLancamento||a.DataDespesa||0) - new Date(b.DataLancamento||b.DataDespesa||0));
+    const pagas = items.filter(i => i.Status === 'Paga')
+      .sort((a,b) => new Date(b.DataPagamento||b.DataLancamento||0) - new Date(a.DataPagamento||a.DataLancamento||0));
+    items = pendentes.concat(pagas);
     window._prestFiltradas = items;
 
     if(!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma prestação encontrada.</div>';return;}
@@ -4212,7 +4216,7 @@ async function carregarPrestacoes() {
     const diasDesde = iso => iso ? Math.floor((hoje - new Date(iso)) / 86400000) : null;
 
     // -- Lembrete: prestações aguardando o Financeiro há mais de 3 dias --
-    const atrasadas = items.filter(i => {
+    const atrasadas = pendentes.filter(i => {
       if (i.Status !== 'Ag. Financeiro' && i.Status !== 'Ag. Aprovação Gestor') return false;
       const dias = diasDesde(i.DataLancamento);
       return dias !== null && dias > 3;
@@ -4232,8 +4236,8 @@ async function carregarPrestacoes() {
       }
     }
 
-    el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Fornecedor</th><th>Município</th><th>Empresa / CC</th><th>Pagamento</th><th>NF/Recibo</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
-      items.map(i=>{
+    const theadPrestHtml = '<thead><tr><th>Data</th><th>Fornecedor</th><th>Município</th><th>Empresa / CC</th><th>Pagamento</th><th>NF/Recibo</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead>';
+    const linhaPrest = i=>{
         const dias = diasDesde(i.DataLancamento);
         const atrasado = (i.Status === 'Ag. Financeiro' || i.Status === 'Ag. Aprovação Gestor') && dias !== null && dias > 3;
         const podeAgirFinanceiro = i.Status==='Ag. Financeiro' && isGestor;
@@ -4270,8 +4274,18 @@ async function carregarPrestacoes() {
             <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="pcExcluirPrestacao(${i.Id})">🗑️ Excluir</button>`:''}
         </td>
       </tr>`;
-      }).join('')+
-      '</tbody></table></div>';
+    };
+
+    el.innerHTML =
+      (pendentes.length
+        ? `<div style="overflow-x:auto"><table class="data-table">${theadPrestHtml}<tbody>${pendentes.map(linhaPrest).join('')}</tbody></table></div>`
+        : `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma prestação pendente — tudo em dia. ✅</div>`) +
+      (pagas.length
+        ? `<details style="margin-top:16px">
+             <summary style="cursor:pointer;font-size:.82rem;font-weight:700;color:var(--green-main);padding:8px 4px;list-style:none;display:flex;align-items:center;gap:6px">▶ ✅ Pagas <span class="badge">${pagas.length}</span></summary>
+             <div style="overflow-x:auto;margin-top:8px"><table class="data-table">${theadPrestHtml}<tbody>${pagas.map(linhaPrest).join('')}</tbody></table></div>
+           </details>`
+        : '');
   } catch(e){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';}
 }
 
@@ -12970,23 +12984,19 @@ async function carregarLancamentosServicos() {
 
   const semNenhum = !items.length;
   const totalFiltrado = filtrados.reduce((s,l) => s + (Number(l.total)||0), 0);
-  el.innerHTML = kpisHtml + dashboardBenefHtml + filtrosHtml + `
-  <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
-      <div class="card-title" style="margin:0">Lançamentos Registrados <span class="badge">${filtrados.length} itens · ${fmtBRL(totalFiltrado)}</span></div>
-      <button class="btn-secondary" onclick="exportarLancamentosServicosExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
-    </div>
-    ${semNenhum ? `
-    <div style="text-align:center;padding:40px;color:var(--text-muted)">
-      <div style="font-size:2rem;margin-bottom:12px">📋</div>
-      <div style="font-size:.88rem">Nenhum lançamento registrado ainda.</div>
-      <div style="font-size:.78rem;margin-top:6px">Use as abas acima para lançar serviços.</div>
-    </div>` : !filtrados.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado com os filtros aplicados.</div>' : `
-    <div style="overflow-x:auto">
-    <table class="data-table" style="min-width:1100px">
-      <thead><tr><th>Tipo</th><th>Serviço</th><th>Data</th><th>Qtd</th><th style="text-align:right">Unit.</th><th style="text-align:right">Total</th><th>Responsável</th><th>Beneficiário</th><th>Centro de Custo</th><th>Status</th><th>Ações</th></tr></thead>
-      <tbody>
-        ${filtrados.map(l => {
+
+  // Pendentes (tudo que ainda não foi pago) com o que espera há mais tempo no
+  // topo; Pagos ficam numa seção retrátil separada, pra não poluir a lista
+  // do que ainda precisa de atenção.
+  const pendentesServ = filtrados.filter(l => servStatusDe(l) !== 'Pago')
+    .sort((a,b) => new Date(a.dataISO||0) - new Date(b.dataISO||0));
+  const pagosServ = filtrados.filter(l => servStatusDe(l) === 'Pago')
+    .sort((a,b) => new Date(b.DataPagamento||b.dataISO||0) - new Date(a.DataPagamento||a.dataISO||0));
+  const totalPendenteServ = pendentesServ.reduce((s,l) => s + (Number(l.total)||0), 0);
+  const totalPagoServ = pagosServ.reduce((s,l) => s + (Number(l.total)||0), 0);
+
+  const theadServHtml = '<thead><tr><th>Tipo</th><th>Serviço</th><th>Data</th><th>Qtd</th><th style="text-align:right">Unit.</th><th style="text-align:right">Total</th><th>Responsável</th><th>Beneficiário</th><th>Centro de Custo</th><th>Status</th><th>Ações</th></tr></thead>';
+  const linhaServ = l => {
           const st = servStatusDe(l);
           const stCor = st==='Pago'?'green':st==='Rejeitado'?'red':st==='A Pagar'?'blue':'amber';
           return `
@@ -13006,17 +13016,46 @@ async function carregarLancamentosServicos() {
             ${st==='A Pagar'&&isDirServ?`<button class="btn-primary" style="padding:4px 8px;font-size:.68rem" onclick="servAbrirPagamento(${l.Id})">💳 Pagar</button>`:''}
             ${st!=='Pago'?`<button onclick="removerLancamento(${l.Id})" style="font-size:.68rem;padding:4px 8px;border:1px solid var(--red);border-radius:6px;background:#fce8e8;cursor:pointer;color:var(--red)">🗑️</button>`:''}
           </td>
-        </tr>`;}).join('')}
-      </tbody>
+        </tr>`;
+  };
+
+  el.innerHTML = kpisHtml + dashboardBenefHtml + filtrosHtml + `
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="margin:0">Lançamentos Registrados <span class="badge">${filtrados.length} itens · ${fmtBRL(totalFiltrado)}</span></div>
+      <button class="btn-secondary" onclick="exportarLancamentosServicosExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
+    </div>
+    ${semNenhum ? `
+    <div style="text-align:center;padding:40px;color:var(--text-muted)">
+      <div style="font-size:2rem;margin-bottom:12px">📋</div>
+      <div style="font-size:.88rem">Nenhum lançamento registrado ainda.</div>
+      <div style="font-size:.78rem;margin-top:6px">Use as abas acima para lançar serviços.</div>
+    </div>` : !filtrados.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado com os filtros aplicados.</div>' : `
+    ${!pendentesServ.length ? `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento pendente — tudo pago. ✅</div>` : `
+    <div style="overflow-x:auto">
+    <table class="data-table" style="min-width:1100px">
+      ${theadServHtml}
+      <tbody>${pendentesServ.map(linhaServ).join('')}</tbody>
       <tfoot>
         <tr style="background:var(--green-pale)">
-          <td colspan="5" style="font-weight:700;padding:10px 12px;font-size:.82rem">TOTAL (filtrado)</td>
-          <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif;font-size:1rem;color:var(--green-main);padding:10px 12px">${fmtBRL(totalFiltrado)}</td>
+          <td colspan="5" style="font-weight:700;padding:10px 12px;font-size:.82rem">TOTAL (pendente)</td>
+          <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif;font-size:1rem;color:var(--green-main);padding:10px 12px">${fmtBRL(totalPendenteServ)}</td>
           <td colspan="4"></td>
         </tr>
       </tfoot>
     </table>
     </div>`}
+    ${pagosServ.length ? `
+    <details style="margin-top:16px">
+      <summary style="cursor:pointer;font-size:.82rem;font-weight:700;color:var(--green-main);padding:8px 4px;list-style:none;display:flex;align-items:center;gap:6px">▶ ✅ Pagos <span class="badge">${pagosServ.length} · ${fmtBRL(totalPagoServ)}</span></summary>
+      <div style="overflow-x:auto;margin-top:8px">
+      <table class="data-table" style="min-width:1100px">
+        ${theadServHtml}
+        <tbody>${pagosServ.map(linhaServ).join('')}</tbody>
+      </table>
+      </div>
+    </details>` : ''}
+    `}
   </div>`;
 }
 
