@@ -2756,6 +2756,7 @@ function mudarContratoTab(id, btn) {
   btn.classList.add('ativo');
   var painel = document.getElementById('painel-'+id);
   if(painel) painel.classList.add('ativo');
+  if (id === 'res1' || id === 'res2') _syncColetaDoApp(id);
 }
 
 function diasAte(ds){ return Math.round((new Date(ds)-HOJE)/86400000); }
@@ -3318,15 +3319,18 @@ async function _syncFlashDoApp(id) {
         outraocorr: r.OutraOcorrencia || '',
         checklist: Object.assign({}, r.ckAtividades || {}, r.ckVerificacoes || {}, r.ckOcorrencias || {}),
         ckAtividades: r.ckAtividades || {}, ckVerificacoes: r.ckVerificacoes || {}, ckOcorrencias: r.ckOcorrencias || {},
-        fotos: [],
-        _origemApp: true, _origemNome: r.CriadoPorNome || ''
+        fotos: (r.fotos || []).filter(function(f){ return f && f.dataUrl; }).map(function(f){ return { src: f.dataUrl, legenda: f.desc || '' }; }),
+        _origemApp: true, _origemAppId: r.Id, _origemNome: r.CriadoPorNome || ''
       };
     });
     if (!emprObrasData[id]) return;
-    var jaTemMesmo = function(c) {
-      return emprObrasData[id].flash.some(function(f){ return f._origemApp && f.data === c.data && f.rt === c.rt && f.trecho === c.trecho; });
-    };
-    convertidos.forEach(function(c){ if (!jaTemMesmo(c)) emprObrasData[id].flash.unshift(c); });
+    // Casa pelo Id do registro no app (_origemAppId) — se o colaborador editar
+    // um Flash Report já sincronizado, atualiza no lugar em vez de duplicar.
+    convertidos.forEach(function(c){
+      var existente = emprObrasData[id].flash.find(function(f){ return f._origemApp && f._origemAppId === c._origemAppId; });
+      if (existente) { Object.assign(existente, c); }
+      else { emprObrasData[id].flash.unshift(c); }
+    });
     if (emprObrasAtual === id) renderFlashEmpr();
   } catch (e) { console.warn('[Sync APP] Falha ao buscar Flash Reports do APP:', e); }
 }
@@ -5213,6 +5217,62 @@ function salvarColeta(cid) {
   toggleForm('form-coleta-'+cid);
 }
 
+// Busca Relatórios de Coleta lançados no APP Expedian (aba Checklist >
+// Coleta de Resíduos) para esta Regional (res1 = CLM 108942/Sul, res2 =
+// CLM 108943/Centro) e mescla na lista local. Busca o resumo pela tabela
+// central (mesma origem, via iframe) e o detalhe completo (resíduos/fotos)
+// pelo arquivo JSON já salvo no OneDrive por essa coleta. Reaproveita o
+// registro existente (por _origemAppId) em vez de duplicar quando o
+// colaborador edita uma coleta já sincronizada — preserva o status
+// (Pendente/Aprovada/Medida) que a Diretoria já tiver definido aqui.
+async function _syncColetaDoApp(cid) {
+  try {
+    if (!window.parent || window.parent === window || typeof window.parent.dbLer !== 'function') return;
+    var regionalAlvo = cid === 'res1' ? 'sul' : (cid === 'res2' ? 'centro' : null);
+    if (!regionalAlvo) return;
+    var remotos = await window.parent.dbLer('ChecklistColeta');
+    if (!Array.isArray(remotos) || !remotos.length) return;
+    var doRegional = remotos.filter(function(r){ return r.regional === regionalAlvo; });
+    if (!doRegional.length) return;
+    if (!ctabData[cid]) return;
+    if (!ctabData[cid].coletas) ctabData[cid].coletas = [];
+
+    for (var i = 0; i < doRegional.length; i++) {
+      var r = doRegional[i];
+      var blob = null;
+      if (typeof window.parent.baixarArquivoCentral === 'function' && r.arquivoDados) {
+        try {
+          var texto = await window.parent.baixarArquivoCentral(r.arquivoDados);
+          if (texto) blob = JSON.parse(texto);
+        } catch (eBlob) { blob = null; }
+      }
+      var residuos = ((blob && blob.residuos) || []).map(function(x){
+        return { classe: x.classe || '', tipo: x.tipo || '', peso: parseFloat(x.peso) || 0, unid: x.unid || 'kg' };
+      });
+      var fotos = ((blob && blob.fotos) || []).filter(function(f){ return f.dataUrl; }).map(function(f){
+        return { desc: f.desc || '', url: f.dataUrl || '' };
+      });
+      var dadosAtualizados = {
+        num: r.num || '', os: '', data: r.data || '', local: r.local || '',
+        residuos: residuos, totalKg: r.totalKg || 0, c1Kg: r.c1Kg || 0, c2Kg: r.c2Kg || 0,
+        motorista: r.motorista || (blob && blob.motorista) || '',
+        placa: r.placa || (blob && blob.placa) || '',
+        reboque: (blob && blob.reboque) || '',
+        transportadora: (blob && blob.transportadora) || 'Expedian',
+        fotos: fotos, obs: (blob && blob.obs) || '',
+        _origemApp: true, _origemAppId: r.Id, _origemNome: r.CriadoPorNome || '',
+      };
+      var existente = ctabData[cid].coletas.find(function(c){ return c._origemAppId === r.Id; });
+      if (existente) {
+        Object.assign(existente, dadosAtualizados);
+      } else {
+        ctabData[cid].coletas.unshift(Object.assign({ status: 'Pendente' }, dadosAtualizados));
+      }
+    }
+    renderColetas(cid);
+  } catch (e) { console.warn('[Sync APP] Falha ao buscar Coletas do APP:', e); }
+}
+
 function renderColetas(cid) {
   var el = document.getElementById('lista-coletas-'+cid); if(!el) return;
   var lista = (ctabData[cid] && ctabData[cid].coletas) || [];
@@ -5281,6 +5341,7 @@ function renderColetas(cid) {
             (c.os?'<span class="badge badge-azul" style="font-size:10px">OS: '+c.os+'</span>':'')+
             '<span class="badge badge-cinza" style="font-size:10px">📅 '+dt+'</span>'+
             (c.local?'<span class="badge badge-energisa" style="font-size:10px">📍 '+c.local+'</span>':'')+
+            (c._origemApp?'<span class="badge badge-verde" style="font-size:10px">📱 App'+(c._origemNome?' — '+c._origemNome:'')+'</span>':'')+
           '</div>'+
           '<div style="display:flex;gap:12px;font-size:12px;margin-bottom:6px;flex-wrap:wrap">'+
             '<span style="font-weight:600;color:var(--cinza-900)">⚖️ Total: <span style="color:var(--energisa)">'+c.totalKg.toLocaleString('pt-BR',{minimumFractionDigits:2})+' kg</span></span>'+
@@ -5301,8 +5362,8 @@ function renderColetas(cid) {
           btnAprovar+
           btnMedicao+
           btnReabrir+
-          (st!=='Medida'?'<button class="btn btn-sm" style="background:var(--azul-bg);color:var(--azul);border-color:var(--azul);font-size:10px" onclick="editarColeta(\''+cid+'\','+i+')">✏️ Editar</button>':'')+
-          (st!=='Medida'?'<button class="btn btn-sm btn-danger" onclick="excluirColeta(\''+cid+'\','+i+')" style="font-size:10px">✕ Excluir</button>':'')+
+          ((st!=='Medida' && !c._origemApp)?'<button class="btn btn-sm" style="background:var(--azul-bg);color:var(--azul);border-color:var(--azul);font-size:10px" onclick="editarColeta(\''+cid+'\','+i+')">✏️ Editar</button>':'')+
+          ((st!=='Medida' && !c._origemApp)?'<button class="btn btn-sm btn-danger" onclick="excluirColeta(\''+cid+'\','+i+')" style="font-size:10px">✕ Excluir</button>':'')+
         '</div>'+
       '</div>'+
     '</div>';

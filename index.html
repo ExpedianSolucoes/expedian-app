@@ -19024,6 +19024,39 @@ function flashNovoForm() {
 }
 if (!window._flashData) flashNovoForm();
 if (window._flashHistorico === undefined) window._flashHistorico = null;
+if (window._flashMostrarForm === undefined) window._flashMostrarForm = false;
+if (window._flashRegistroAtualId === undefined) window._flashRegistroAtualId = null;
+
+function flashAbrirNovo() {
+  flashNovoForm();
+  window._flashRegistroAtualId = null;
+  window._flashMostrarForm = true;
+  navigate('checklist_flash');
+}
+
+function flashFecharForm() {
+  window._flashMostrarForm = false;
+  window._flashRegistroAtualId = null;
+  navigate('checklist_flash');
+}
+
+/* -- Carrega um Flash Report já salvo de volta no formulário pra edição. -- */
+function flashEditarRegistro(id) {
+  const f = (window._flashHistorico || []).find(r => r.Id === id);
+  if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  window._flashData = {
+    frenteId: f.FrenteId || FLASH_FRENTES[0].id, data: f.Data || '',
+    rt: f.ResponsavelTecnico || '', clima: f.Clima || 'Ensolarado', trecho: f.Trecho || '',
+    equipe: f.Equipe || '', fiscal: f.Fiscal || '',
+    ckAtividades: Object.assign({}, f.ckAtividades || {}), ckVerificacoes: Object.assign({}, f.ckVerificacoes || {}), ckOcorrencias: Object.assign({}, f.ckOcorrencias || {}),
+    outraativ: f.OutraAtividade || '', outraocorr: f.OutraOcorrencia || '',
+    atividades: f.Atividades || '', amanha: f.PrevisaoAmanha || '', obs: f.Observacoes || '',
+    fotos: (f.fotos || []).map(x => ({ ...x })),
+  };
+  window._flashRegistroAtualId = id;
+  window._flashMostrarForm = true;
+  navigate('checklist_flash');
+}
 
 function flashMarcar(grupo, id, checked) {
   if (!window._flashData[grupo]) window._flashData[grupo] = {};
@@ -19092,6 +19125,7 @@ async function flashSalvar() {
   if (!d.frenteId) { showToast('⚠️ Selecione a frente/empreiteira.'); return; }
   if (!d.data) { showToast('⚠️ Informe a data.'); return; }
   const frente = FLASH_FRENTES.find(f => f.id === d.frenteId);
+  const editandoId = window._flashRegistroAtualId;
   const registro = {
     Title: 'Flash Report — ' + (frente ? frente.nome : d.frenteId) + ' — ' + d.data,
     FrenteId: d.frenteId, FrenteNome: frente ? frente.nome : d.frenteId, Empreiteira: frente ? frente.empreiteira : '',
@@ -19101,16 +19135,21 @@ async function flashSalvar() {
     ckAtividades: d.ckAtividades || {}, ckVerificacoes: d.ckVerificacoes || {}, ckOcorrencias: d.ckOcorrencias || {},
     fotos: d.fotos || [],
     Visualizado: false,
-    CriadoPor: window._currentUser ? window._currentUser.name : '',
-    CriadoPorNome: window._currentUser ? window._currentUser.name : '',
-    CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
-    DataCriacao: new Date().toISOString(),
   };
   showSyncStatus('Salvando Flash Report...');
-  const ok = await dbInserir('FlashReportsEnergisa', registro);
+  let ok;
+  if (editandoId) {
+    ok = await dbAtualizar('FlashReportsEnergisa', editandoId, registro);
+  } else {
+    registro.CriadoPor = window._currentUser ? window._currentUser.name : '';
+    registro.CriadoPorNome = window._currentUser ? window._currentUser.name : '';
+    registro.CriadoPorEmail = window._currentUser ? window._currentUser.email : '';
+    registro.DataCriacao = new Date().toISOString();
+    ok = await dbInserir('FlashReportsEnergisa', registro);
+  }
   showToast(ok ? '✅ Flash Report salvo!' : '❌ Erro ao salvar.');
   showSyncStatus(ok ? 'Flash Report salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
-  if (ok) { flashNovoForm(); await flashCarregarHistorico(true); }
+  if (ok) { window._flashMostrarForm = false; window._flashRegistroAtualId = null; flashNovoForm(); await flashCarregarHistorico(true); }
 }
 
 /* -- Abre uma janela somente-leitura com todos os dados + fotos de um
@@ -19190,7 +19229,10 @@ function flashHtmlHistorico() {
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         ${temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Ocorrência</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ OK</span>'}
-        <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
+        <div style="display:flex;gap:4px">
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashEditarRegistro(${f.Id})">✏️ Editar</button>
+        </div>
       </div>
     </div>`;
   };
@@ -19210,13 +19252,30 @@ function flashHtmlHistorico() {
 
 function pageChecklistFlash() {
   if (window._flashHistorico === null) flashCarregarHistorico();
+
+  if (!window._flashMostrarForm) {
+    return `
+    <div class="page-header"><h1>Flash Report — Energisa</h1><p>Relatório diário de campo — Contrato 2025022101 (Gestão Ambiental de Obras)</p></div>
+
+    <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div style="font-size:.85rem;color:var(--text-muted)">Preencha um Flash Report por frente/empreiteira sempre que fizer uma inspeção de campo.</div>
+      <button class="btn-primary" onclick="flashAbrirNovo()">➕ Novo Flash Report</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Histórico de Flash Reports</div>
+      ${flashHtmlHistorico()}
+    </div>`;
+  }
+
   const d = window._flashData;
   const fotos = d.fotos || [];
+  const editando = !!window._flashRegistroAtualId;
   return `
   <div class="page-header"><h1>Flash Report — Energisa</h1><p>Relatório diário de campo — Contrato 2025022101 (Gestão Ambiental de Obras)</p></div>
 
   <div class="card" style="margin-bottom:16px">
-    <div class="card-title">Novo Flash Report</div>
+    <div class="card-title">${editando ? '✏️ Editar Flash Report' : '➕ Novo Flash Report'}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Frente / Empreiteira</label>
         <select onchange="flashCampo('frenteId', this.value); navigate('checklist_flash')">
@@ -19268,14 +19327,9 @@ function pageChecklistFlash() {
     </div>
 
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn-primary" onclick="flashSalvar()">💾 Salvar e Sincronizar com OneDrive</button>
-      <button class="btn-secondary" onclick="flashNovoForm(); navigate('checklist_flash')">🆕 Novo Relatório</button>
+      <button class="btn-primary" onclick="flashSalvar()">💾 ${editando ? 'Salvar Alterações' : 'Salvar e Sincronizar com OneDrive'}</button>
+      <button class="btn-secondary" onclick="flashFecharForm()">Cancelar</button>
     </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Histórico de Flash Reports</div>
-    ${flashHtmlHistorico()}
   </div>`;
 }
 
