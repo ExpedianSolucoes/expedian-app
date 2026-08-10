@@ -1053,6 +1053,7 @@ const menus = {
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
+    { id: 'agenda', icon: '📅', label: 'Agenda' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
       { id: 'servicos', icon: '💼', label: 'Catálogo de Serviços' },
       { id: 'custos', icon: '🗂️', label: 'Centros de Custo' },
@@ -1101,7 +1102,7 @@ const menus = {
     ]},
     { group: 'equipe', icon: '👥', label: 'Equipe', children: [
       // { id: 'rh', icon: '👥', label: 'Minha Equipe' },  // DESABILITADO TEMPORARIAMENTE
-      // { id: 'agenda', icon: '📅', label: 'Agenda' },     // DESABILITADO TEMPORARIAMENTE
+      { id: 'agenda', icon: '📅', label: 'Agenda' },
     ]},
     { group: 'sistema', icon: '⚡', label: 'Sistema', children: [
       { id: 'aprovacoes', icon: '✅', label: 'Aprovações Pendentes' },
@@ -1114,7 +1115,7 @@ const menus = {
   colaborador: [
     { group: 'minha_area_grp', icon: '👤', label: 'Minha Área', children: [
       { id: 'minha_area', icon: '👤', label: 'Meus Dados' },
-      // { id: 'agenda', icon: '📅', label: 'Minha Agenda' }, // DESABILITADO TEMPORARIAMENTE
+      { id: 'agenda', icon: '📅', label: 'Minha Agenda' },
       { id: 'documentos', icon: '📂', label: 'Documentos' },
       { id: 'solicitacoes', icon: '📝', label: 'Solicitações' },
     ]},
@@ -1719,6 +1720,14 @@ function backToAPRList() {
   navigate('apr');
 }
 
+/* -- Preenche automaticamente Modelo a partir do veículo da frota escolhido
+   na APR de Coleta de Resíduos (mesma lista usada no Checklist Veicular). -- */
+function aprSelecionarFrota(id, placa) {
+  const v = CV_FROTA.find(f => f.placa === placa);
+  const modeloEl = document.getElementById('apr_veiculo_modelo_' + id);
+  if (modeloEl) modeloEl.value = v ? (v.modelo + (v.tipo ? ' (' + v.tipo + ')' : '')) : '';
+}
+
 function classifColor(val) {
   if (val === 'CRÍTICO') return 'red';
   if (val === 'ALTO') return 'red';
@@ -2071,6 +2080,18 @@ function renderAPRForm(id) {
     <div style="font-size:.75rem;font-weight:700;color:var(--red);margin-bottom:10px;padding:8px;background:#fce8e8;border-radius:6px">
       ⚠️ ATROPELAMENTO · COLISÃO · CAPOTAMENTO · ATROPELAMENTO DE FAUNA
     </div>
+    ${id === '001' ? `
+    <div style="display:grid;grid-template-columns:1.2fr 1.4fr 1.2fr .8fr;gap:10px;margin-bottom:14px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+      <div class="form-group" style="margin:0"><label>Motorista</label><input id="apr_motorista_${id}" placeholder="Nome do motorista"></div>
+      <div class="form-group" style="margin:0"><label>Veículo da Frota</label>
+        <select id="apr_veiculo_frota_${id}" onchange="aprSelecionarFrota('${id}',this.value)">
+          <option value="">-- Selecione o veículo --</option>
+          ${CV_FROTA.map(v => `<option value="${v.placa}">${v.display}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Modelo</label><input id="apr_veiculo_modelo_${id}" readonly placeholder="Preenchido automaticamente" style="background:var(--surface)"></div>
+      <div class="form-group" style="margin:0"><label>Odômetro (km)</label><input type="number" id="apr_odometro_${id}" placeholder="000000"></div>
+    </div>` : ''}
     <div style="display:flex;flex-direction:column;gap:5px">
       ${veiculoItems.map((v,i) => `
       <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
@@ -5637,6 +5658,43 @@ async function adtEnviarSolicitacao() {
 
 function adtFiltrarKpi(tipo) { ADT_FILTRO_KPI = (ADT_FILTRO_KPI === tipo) ? '' : tipo; carregarAdiantamentos(); }
 
+/* -- Modal de visualização de uma Solicitação de Adiantamento (usado tanto na
+   própria tela de Adiantamento quanto no botão "Visualizar" de Aprovações). -- */
+async function adtVisualizar(id) {
+  const existente = document.getElementById('adt-view-modal'); if (existente) existente.remove();
+  const todos = await dbLer('Adiantamentos');
+  const r = todos.find(x => x.Id === id);
+  if (!r) { showToast('⚠️ Solicitação não encontrada.'); return; }
+  const statusCor = s => s === 'Pago' ? 'green' : s === 'Reprovado' ? 'red' : s === 'Aprovado — Aguardando Pagamento' ? 'blue' : 'amber';
+  const linha = (label, valor) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
+    <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>`;
+  const modal = document.createElement('div');
+  modal.id = 'adt-view-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:22px;max-width:480px;width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-weight:800;font-size:1rem">👁️ Solicitação de Adiantamento</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('adt-view-modal').remove()">✕</div>
+      </div>
+      <div style="margin-bottom:10px"><span class="status-pill ${statusCor(r.Status)}">${r.Status || '—'}</span></div>
+      ${linha('Solicitante', r.Solicitante || '—')}
+      ${linha('Período', r.Periodo || '—')}
+      ${linha('Contrato(s)', (r.Contratos || []).map(c => c.label).join('<br>') || '—')}
+      ${linha('Colaborador(es)', (r.Colaboradores || []).map(c => c.nome + ' — R$ ' + Number(c.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })).join('<br>') || '—')}
+      ${linha('Valor Total', 'R$ ' + (r.ValorTotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }))}
+      ${r.AprovadoPor ? linha('Aprovado por', r.AprovadoPor + (r.DataAprovacao ? ' em ' + new Date(r.DataAprovacao+'T00:00:00').toLocaleDateString('pt-BR') : '')) : ''}
+      ${r.BancoAprovado ? linha('Banco (aprovação)', r.BancoAprovado) : ''}
+      ${r.Status === 'Pago' ? linha('Pagamento', (r.BancoPagamento || '—') + (r.DataPagamento ? ' em ' + new Date(r.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR') : '')) : ''}
+      ${r.MotivoReprovacao ? linha('Motivo da reprovação', r.MotivoReprovacao) : ''}
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
+        ${r.Status === 'Aguardando Aprovação' && currentProfile === 'diretoria' ? `<button class="btn-primary" onclick="document.getElementById('adt-view-modal').remove();aprovarAdiantamento(${r.Id})">✅ Aprovar</button><button class="btn-secondary" onclick="document.getElementById('adt-view-modal').remove();reprovarAdiantamento(${r.Id})">↩️ Reprovar</button>` : ''}
+        <button class="btn-secondary" onclick="document.getElementById('adt-view-modal').remove()">Fechar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
 async function aprovarAdiantamento(id) {
   if (currentProfile !== 'diretoria') { showToast('⛔ Acesso restrito à Diretoria.'); return; }
   const banco = prompt('Banco para pagamento (ex: Bradesco, Itaú, Sicoob):', '');
@@ -5705,6 +5763,7 @@ async function carregarAdiantamentos() {
         <td><strong>R$ ${(r.ValorTotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong></td>
         <td><span class="status-pill ${statusCor(r.Status)}">${r.Status}</span>${r.Status === 'Reprovado' && r.MotivoReprovacao ? `<div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${r.MotivoReprovacao}</div>` : ''}</td>
         <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
+          <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="adtVisualizar(${r.Id})">👁️ Visualizar</button>
           ${r.Status === 'Aguardando Aprovação' && podeAprovar ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarAdiantamento(${r.Id})">✅ Aprovar</button><button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarAdiantamento(${r.Id})">↩️ Reprovar</button>` : ''}
           ${r.Status === 'Aprovado — Aguardando Pagamento' && podeAprovar ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="registrarPagamentoAdiantamento(${r.Id})">💳 Pagar</button>` : ''}
         </td>
@@ -9279,6 +9338,7 @@ async function carregarAprovacoes() {
           <td style="font-size:.75rem;color:var(--text-muted)">${i.Gestor || '—'}</td>
           <td style="font-size:.75rem">${i.Created ? new Date(i.Created).toLocaleDateString('pt-BR') : '—'}</td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
+            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="aprVerPDF(${i.Id})">👁️ Visualizar</button>
             <button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarAPR(${i.Id})">✅ Aprovar</button>
             <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarAPR(${i.Id})">↩️ Reprovar</button>
           </td>
@@ -9303,6 +9363,7 @@ async function carregarAprovacoes() {
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td><span class="status-pill amber">* ${i.Status}</span></td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
+            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="pcAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
             ${legado
               ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar</button>
                  <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Reprovar</button>`
@@ -9329,6 +9390,7 @@ async function carregarAprovacoes() {
           <td style="font-size:.75rem">${i.Periodo || '—'}</td>
           <td><strong>R$ ${(i.ValorTotal||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
+            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="adtVisualizar(${i.Id})">👁️ Visualizar</button>
             <button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarAdiantamento(${i.Id})">✅ Aprovar</button>
             <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarAdiantamento(${i.Id})">↩️ Reprovar</button>
           </td>
@@ -9350,32 +9412,298 @@ async function reprovarPrestacao(id) {
 }
 
 /* -- AGENDA -- */
+/* ===============================
+   AGENDA CORPORATIVA
+   Eventos gravados na tabela "Agenda" (OneDrive), com participantes
+   marcáveis (lista de todos os e-mails Expedian em `users`) e sincronização
+   opcional com o Calendário do Outlook (Microsoft Graph — cria a reunião na
+   agenda de quem lança, com os participantes marcados como convidados, que
+   recebem o convite automaticamente por e-mail/Outlook).
+=============================== */
+let AGENDA_DADOS = [];
+let AGENDA_FILTRO = 'todos'; // 'todos' | 'meus'
+
+/* -- Lista de todas as pessoas da Expedian disponíveis para marcar como
+   participante — reaproveita o cadastro de login (`users`), já com nome,
+   e-mail e cargo de cada um. -- */
+function agendaListaPessoas() {
+  return Object.entries(users).map(([email, u]) => ({ email, nome: u.name, role: u.role || '' }))
+    .sort((a, b) => a.nome.localeCompare(b.nome));
+}
+
+function agendaTipoInfo(tipo) {
+  const map = {
+    reuniao:     { label: 'Reunião',      cor: 'blue',  emoji: '👥' },
+    treinamento: { label: 'Treinamento',  cor: 'green', emoji: '🎓' },
+    vistoria:    { label: 'Vistoria',     cor: 'amber', emoji: '🔍' },
+    prazo:       { label: 'Prazo/Entrega',cor: 'red',   emoji: '⏰' },
+    outro:       { label: 'Outro',        cor: 'blue',  emoji: '📌' },
+  };
+  return map[tipo] || map.outro;
+}
+
+async function agendaCarregar() {
+  try { AGENDA_DADOS = await dbLer('Agenda') || []; } catch (e) { AGENDA_DADOS = []; }
+  agendaRenderizarLista();
+}
+
+function agendaFiltrar(modo) {
+  AGENDA_FILTRO = modo;
+  agendaRenderizarLista();
+}
+
+function agendaRenderizarLista() {
+  const el = document.getElementById('agenda-lista');
+  if (!el) return;
+  const emailAtual = (window._currentUser && window._currentUser.email || '').toLowerCase();
+  let items = AGENDA_DADOS.slice();
+  if (AGENDA_FILTRO === 'meus') {
+    items = items.filter(e =>
+      (e.CriadoPorEmail || '').toLowerCase() === emailAtual ||
+      (e.Participantes || []).some(p => (p.email || '').toLowerCase() === emailAtual)
+    );
+  }
+  items.sort((a, b) => (a.Data + ' ' + (a.HoraIni || '')).localeCompare(b.Data + ' ' + (b.HoraIni || '')));
+  const hoje = new Date().toISOString().slice(0, 10);
+  const futuros = items.filter(e => e.Data >= hoje);
+  const passados = items.filter(e => e.Data < hoje).reverse();
+
+  const linha = e => {
+    const info = agendaTipoInfo(e.Tipo);
+    const dataObj = e.Data ? new Date(e.Data + 'T00:00:00') : null;
+    const dia = dataObj ? String(dataObj.getDate()).padStart(2, '0') : '—';
+    const mes = dataObj ? dataObj.toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '') : '';
+    const souParticipante = (e.Participantes || []).some(p => (p.email || '').toLowerCase() === emailAtual);
+    const souCriador = (e.CriadoPorEmail || '').toLowerCase() === emailAtual;
+    const podeEditar = souCriador || currentProfile === 'diretoria';
+    return `
+    <div class="alert-item" style="gap:14px;align-items:flex-start;cursor:pointer" onclick="agendaVerDetalhe(${e.Id})">
+      <div style="text-align:center;min-width:40px">
+        <div style="font-family:'Mont',sans-serif;font-size:1.2rem;font-weight:800;line-height:1">${dia}</div>
+        <div style="font-size:.65rem;color:var(--text-muted);text-transform:capitalize">${mes}</div>
+      </div>
+      <div class="dot ${info.cor}"></div>
+      <div style="flex:1;min-width:0">
+        <div class="name">${info.emoji} ${e.Titulo || '—'}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">
+          ${e.HoraIni || '—'}${e.HoraFim ? '–' + e.HoraFim : ''} ${e.Local ? '· 📍 ' + e.Local : ''} · por ${e.CriadoPorNome || '—'}
+          ${e.SincronizarOutlook ? (e.OutlookEventId ? ' · <span style="color:var(--green-main)">📆 Outlook</span>' : ' · <span style="color:var(--red)">⚠️ Outlook falhou</span>') : ''}
+        </div>
+        ${(e.Participantes || []).length ? `<div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">👤 ${e.Participantes.map(p => p.nome).join(', ')}</div>` : ''}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+        <span class="status-pill ${info.cor}" style="font-size:.62rem">${info.label}</span>
+        ${souParticipante && !souCriador ? '<span style="font-size:.62rem;color:var(--green-main);font-weight:700">✔ Convidado</span>' : ''}
+      </div>
+    </div>`;
+  };
+
+  el.innerHTML = !items.length
+    ? '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum evento encontrado.</div>'
+    : `
+    ${futuros.length ? `<div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin:4px 0 6px">Próximos</div><div class="alert-list">${futuros.map(linha).join('')}</div>` : '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum evento futuro.</div>'}
+    ${passados.length ? `<details style="margin-top:16px"><summary style="cursor:pointer;font-size:.78rem;font-weight:700;color:var(--text-muted);padding:6px 0">▶ Eventos passados <span class="badge">${passados.length}</span></summary><div class="alert-list" style="margin-top:8px">${passados.map(linha).join('')}</div></details>` : ''}
+  `;
+}
+
 function pageAgenda() {
-  const events = [
-    { day: '31', month: 'Mai', title: 'Reunião Semanal de Obras', time: '09:00', type: 'blue' },
-    { day: '02', month: 'Jun', title: 'Treinamento NR-35 – Altura', time: '08:00', type: 'green' },
-    { day: '05', month: 'Jun', title: 'Vistoria IBAMA – Condicionante 07', time: '14:00', type: 'amber' },
-    { day: '10', month: 'Jun', title: 'Reunião de Planejamento Operacional', time: '10:30', type: 'blue' },
-    { day: '12', month: 'Jun', title: 'Vencimento Documentos – Verificar RH', time: '09:00', type: 'red' },
-    { day: '15', month: 'Jun', title: 'Entrega Relatório Mensal Ambiental', time: '23:59', type: 'green' },
-  ];
+  setTimeout(() => agendaCarregar(), 100);
   return `
-  <div class="page-header"><h1>Agenda Corporativa</h1><p>Reuniões, treinamentos e compromissos</p></div>
-  <div class="card">
-    <div class="card-title">Próximos Eventos</div>
-    <div class="alert-list">
-      ${events.map(e => `
-        <div class="alert-item" style="gap:14px">
-          <div style="text-align:center;min-width:40px">
-            <div style="font-family:'Mont',sans-serif;font-size:1.2rem;font-weight:800;line-height:1">${e.day}</div>
-            <div style="font-size:.65rem;color:var(--text-muted)">${e.month}</div>
-          </div>
-          <div class="dot ${e.type}"></div>
-          <div class="name">${e.title}</div>
-          <div class="meta">${e.time}</div>
-        </div>`).join('')}
+  <div class="page-header"><h1>Agenda Corporativa</h1><p>Reuniões, treinamentos, vistorias e compromissos — visível para toda a Expedian</p></div>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+    <div style="display:flex;gap:6px">
+      <button class="btn-secondary" style="${AGENDA_FILTRO === 'todos' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaFiltrar('todos')">📋 Todos</button>
+      <button class="btn-secondary" style="${AGENDA_FILTRO === 'meus' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaFiltrar('meus')">👤 Meus Eventos</button>
     </div>
+    <button class="btn-primary" onclick="agendaAbrirModal()">➕ Novo Evento</button>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Eventos</div>
+    <div id="agenda-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
+}
+
+/* -- Modal de criação/edição -- */
+function agendaAbrirModal(id) {
+  const existente = id ? AGENDA_DADOS.find(e => e.Id === id) : null;
+  window._agendaEditandoId = existente ? id : null;
+  const pessoas = agendaListaPessoas();
+  const participantesSel = new Set((existente && existente.Participantes || []).map(p => p.email));
+  const emailAtual = (window._currentUser && window._currentUser.email || '').toLowerCase();
+  // Só quem criou o evento (ou Diretoria) pode editar/excluir; os demais
+  // participantes/colaboradores só visualizam os detalhes.
+  const podeEditar = !existente || (existente.CriadoPorEmail || '').toLowerCase() === emailAtual || currentProfile === 'diretoria';
+  const dis = podeEditar ? '' : 'disabled';
+
+  const modal = document.createElement('div');
+  modal.id = 'agenda-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:22px;max-width:560px;width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div style="font-weight:800;font-size:1rem">${existente ? (podeEditar ? '✏️ Editar Evento' : '👁️ Detalhes do Evento') : '➕ Novo Evento'}</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="agendaFecharModal()">✕</div>
+      </div>
+      ${!podeEditar ? `<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:12px">Criado por ${existente.CriadoPorNome || '—'} — só quem criou (ou a Diretoria) pode editar.</div>` : ''}
+      <div class="form-group" style="margin-bottom:10px"><label>Título</label><input id="ag_titulo" ${dis} value="${(existente && existente.Titulo || '').replace(/"/g,'&quot;')}" placeholder="Ex: Reunião de Planejamento"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+        <div class="form-group" style="margin:0"><label>Data</label><input type="date" id="ag_data" ${dis} value="${existente ? existente.Data || '' : ''}"></div>
+        <div class="form-group" style="margin:0"><label>Hora Início</label><input type="time" id="ag_hora_ini" ${dis} value="${existente ? existente.HoraIni || '' : ''}"></div>
+        <div class="form-group" style="margin:0"><label>Hora Fim</label><input type="time" id="ag_hora_fim" ${dis} value="${existente ? existente.HoraFim || '' : ''}"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div class="form-group" style="margin:0"><label>Tipo</label>
+          <select id="ag_tipo" ${dis}>
+            <option value="reuniao" ${existente && existente.Tipo === 'reuniao' ? 'selected' : ''}>👥 Reunião</option>
+            <option value="treinamento" ${existente && existente.Tipo === 'treinamento' ? 'selected' : ''}>🎓 Treinamento</option>
+            <option value="vistoria" ${existente && existente.Tipo === 'vistoria' ? 'selected' : ''}>🔍 Vistoria</option>
+            <option value="prazo" ${existente && existente.Tipo === 'prazo' ? 'selected' : ''}>⏰ Prazo/Entrega</option>
+            <option value="outro" ${existente && existente.Tipo === 'outro' ? 'selected' : ''}>📌 Outro</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin:0"><label>Local</label><input id="ag_local" ${dis} value="${(existente && existente.Local || '').replace(/"/g,'&quot;')}" placeholder="Ex: Escritório / Google Meet"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:10px"><label>Descrição</label><textarea id="ag_desc" ${dis} rows="3" placeholder="Detalhes, pauta, observações...">${existente && existente.Descricao || ''}</textarea></div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label>Participantes — marque quem vai fazer parte deste evento</label>
+        <div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;display:grid;grid-template-columns:1fr 1fr;gap:4px">
+          ${pessoas.map(p => `
+          <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;padding:3px 4px;cursor:pointer">
+            <input type="checkbox" class="ag-participante" ${dis} value="${p.email}" data-nome="${p.nome.replace(/"/g,'&quot;')}" ${participantesSel.has(p.email) ? 'checked' : ''}>
+            ${p.nome} <span style="color:var(--text-muted)">${p.role ? '· ' + p.role : ''}</span>
+          </label>`).join('')}
+        </div>
+      </div>
+      <div style="margin-bottom:16px;padding:10px 12px;background:var(--surface2);border-radius:8px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:.8rem;cursor:pointer">
+          <input type="checkbox" id="ag_sync_outlook" ${dis} ${!existente || existente.SincronizarOutlook !== false ? 'checked' : ''}>
+          📆 Criar também no Calendário Outlook (convida os participantes marcados por e-mail)
+        </label>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between">
+        <div>${(existente && podeEditar) ? `<button class="btn-secondary" style="color:var(--red)" onclick="agendaExcluir(${existente.Id})">🗑️ Excluir</button>` : ''}</div>
+        <div style="display:flex;gap:10px">
+          <button class="btn-secondary" onclick="agendaFecharModal()">${podeEditar ? 'Cancelar' : 'Fechar'}</button>
+          ${podeEditar ? `<button class="btn-primary" onclick="agendaSalvar()">💾 Salvar Evento</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function agendaFecharModal() {
+  const m = document.getElementById('agenda-modal');
+  if (m) m.remove();
+}
+
+function agendaVerDetalhe(id) {
+  agendaAbrirModal(id);
+}
+
+async function agendaSalvar() {
+  const titulo = (document.getElementById('ag_titulo') || {}).value || '';
+  const data = (document.getElementById('ag_data') || {}).value || '';
+  const horaIni = (document.getElementById('ag_hora_ini') || {}).value || '';
+  const horaFim = (document.getElementById('ag_hora_fim') || {}).value || '';
+  const tipo = (document.getElementById('ag_tipo') || {}).value || 'reuniao';
+  const local = (document.getElementById('ag_local') || {}).value || '';
+  const descricao = (document.getElementById('ag_desc') || {}).value || '';
+  const sincronizarOutlook = !!(document.getElementById('ag_sync_outlook') || {}).checked;
+  const participantes = Array.from(document.querySelectorAll('.ag-participante:checked'))
+    .map(el => ({ email: el.value, nome: el.dataset.nome }));
+
+  if (!titulo.trim()) { showToast('⚠️ Informe o título do evento.'); return; }
+  if (!data) { showToast('⚠️ Informe a data.'); return; }
+
+  const editandoId = window._agendaEditandoId;
+  const existente = editandoId ? AGENDA_DADOS.find(e => e.Id === editandoId) : null;
+
+  const dados = {
+    Titulo: titulo, Data: data, HoraIni: horaIni, HoraFim: horaFim, Tipo: tipo,
+    Local: local, Descricao: descricao, Participantes: participantes,
+    SincronizarOutlook: sincronizarOutlook,
+    CriadoPorNome: (existente && existente.CriadoPorNome) || (window._currentUser ? window._currentUser.name : '—'),
+    CriadoPorEmail: (existente && existente.CriadoPorEmail) || (window._currentUser ? window._currentUser.email : ''),
+    OutlookEventId: existente ? existente.OutlookEventId : null,
+  };
+
+  showToast('💾 Salvando evento...');
+  let registroId = editandoId;
+  if (editandoId) {
+    await dbAtualizar('Agenda', editandoId, dados);
+  } else {
+    const novo = await dbInserir('Agenda', dados);
+    registroId = novo && novo.Id;
+  }
+
+  if (sincronizarOutlook && registroId) {
+    showToast('📆 Criando no Outlook...');
+    const outlookId = await agendaCriarEventoOutlook(dados, existente ? existente.OutlookEventId : null);
+    await dbAtualizar('Agenda', registroId, { OutlookEventId: outlookId || null });
+    showToast(outlookId ? '✅ Evento salvo e sincronizado com o Outlook!' : '✅ Evento salvo (Outlook não sincronizou — confira o login Microsoft).');
+  } else {
+    showToast('✅ Evento salvo!');
+  }
+
+  agendaFecharModal();
+  await agendaCarregar();
+}
+
+async function agendaExcluir(id) {
+  if (!confirm('Tem certeza que deseja excluir este evento?')) return;
+  const lista = await dbLer('Agenda');
+  const idx = lista.findIndex(e => e.Id === id);
+  if (idx === -1) { showToast('❌ Evento não encontrado.'); return; }
+  lista.splice(idx, 1);
+  const ok = await dbSalvar('Agenda', lista);
+  showToast(ok ? '🗑️ Evento excluído.' : '❌ Erro ao excluir.');
+  agendaFecharModal();
+  await agendaCarregar();
+}
+
+/* -- Cria (ou atualiza, se já existir outlookEventId) o compromisso no
+   Calendário Outlook de quem está logado, via Microsoft Graph, marcando os
+   participantes como convidados — cada um recebe o convite automaticamente
+   por e-mail/Outlook. Retorna o id do evento no Outlook, ou null se falhar
+   (nesse caso o evento continua salvo normalmente dentro do app). -- */
+async function agendaCriarEventoOutlook(dados, outlookEventIdExistente) {
+  try {
+    const token = await getOneDriveToken();
+    if (!token) { console.warn('[Agenda] Sem token Microsoft — Outlook não sincronizado.'); return null; }
+    const horaIni = dados.HoraIni || '09:00';
+    const horaFim = dados.HoraFim || (function() {
+      const [h, m] = horaIni.split(':').map(Number);
+      const d = new Date(2000, 0, 1, (h || 9) + 1, m || 0);
+      return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+    })();
+    const body = {
+      subject: dados.Titulo,
+      body: { contentType: 'HTML', content: (dados.Descricao || '').replace(/\n/g, '<br>') },
+      start: { dateTime: dados.Data + 'T' + horaIni + ':00', timeZone: 'America/Porto_Velho' },
+      end:   { dateTime: dados.Data + 'T' + horaFim + ':00', timeZone: 'America/Porto_Velho' },
+      location: { displayName: dados.Local || '' },
+      attendees: (dados.Participantes || []).map(p => ({
+        emailAddress: { address: p.email, name: p.nome },
+        type: 'required',
+      })),
+    };
+    const url = outlookEventIdExistente
+      ? 'https://graph.microsoft.com/v1.0/me/events/' + outlookEventIdExistente
+      : 'https://graph.microsoft.com/v1.0/me/events';
+    const resp = await fetch(url, {
+      method: outlookEventIdExistente ? 'PATCH' : 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) { console.warn('[Agenda] Falha ao criar evento no Outlook:', resp.status, await resp.text()); return outlookEventIdExistente || null; }
+    const criado = await resp.json();
+    return criado.id || outlookEventIdExistente || null;
+  } catch (e) {
+    console.warn('[Agenda] Erro ao sincronizar com Outlook:', e);
+    return outlookEventIdExistente || null;
+  }
 }
 
 /* ===============================
@@ -12177,12 +12505,10 @@ function applyLogin(user) {
   } else {
     switcher.style.display = 'block';
   }
-  currentPage = 'dashboard';
+  currentPage = 'agenda';
   renderNav(user.profile);
-  renderPage('dashboard');
-  if (user.profile !== 'colaborador') {
-    document.getElementById('headerTitle').textContent = 'Dashboard Geral';
-  }
+  renderPage('agenda');
+  document.getElementById('headerTitle').textContent = user.profile === 'colaborador' ? 'Minha Agenda' : 'Agenda Corporativa';
   document.getElementById('logoutBtn').style.display = 'flex';
 
   // Registrar login/presença online
@@ -19256,7 +19582,7 @@ function coletarDadosAPRForm(id) {
   const saudeSelects = document.querySelectorAll(`#pageContent select`);
   const respostasGerais = [];
   saudeSelects.forEach(sel => {
-    if (sel.id && (sel.id.startsWith('lss_') || sel.id.includes('encerramento'))) return; // pular outros
+    if (sel.id && (sel.id.startsWith('lss_') || sel.id.includes('encerramento') || sel.id.startsWith('apr_veiculo_frota_'))) return; // pular outros
     respostasGerais.push(sel.value);
   });
   dados.respostasGerais = respostasGerais;
@@ -19281,6 +19607,13 @@ function coletarDadosAPRForm(id) {
   dados.lssEncerrou = g('lss_encerrou_' + id);
   dados.lssHorarioRetorno = g('lss_horario_retorno_' + id);
   dados.lssOperadorRetorno = g('lss_operador_retorno_' + id);
+
+  // Motorista/veículo (só existe na APR de Coleta de Resíduos — g() retorna
+  // '' com segurança se o campo não existir nos outros tipos de APR)
+  dados.motorista = g('apr_motorista_' + id);
+  dados.veiculoPlaca = g('apr_veiculo_frota_' + id);
+  dados.veiculoModelo = g('apr_veiculo_modelo_' + id);
+  dados.odometro = g('apr_odometro_' + id);
 
   // Participantes (inputs de nome e assinatura)
   const partInputs = document.querySelectorAll('[id^="part_nome_"], [id^="part_cargo_"]');
@@ -19440,12 +19773,17 @@ async function aprReabrirRascunho(id) {
     s('lss_encerrou_' + tipoId, d.lssEncerrou);
     s('lss_horario_retorno_' + tipoId, d.lssHorarioRetorno);
     s('lss_operador_retorno_' + tipoId, d.lssOperadorRetorno);
+    // Restaurar Motorista/Veículo (APR de Coleta de Resíduos)
+    s('apr_motorista_' + tipoId, d.motorista);
+    s('apr_veiculo_frota_' + tipoId, d.veiculoPlaca);
+    s('apr_veiculo_modelo_' + tipoId, d.veiculoModelo);
+    s('apr_odometro_' + tipoId, d.odometro);
     // Restaurar Seção 2 — Saúde e Segurança (selects genéricos, mesma ordem usada na coleta)
     if (Array.isArray(d.respostasGerais)) {
       const saudeSelects = document.querySelectorAll('#pageContent select');
       let si = 0;
       saudeSelects.forEach(sel => {
-        if (sel.id && (sel.id.startsWith('lss_') || sel.id.includes('encerramento'))) return;
+        if (sel.id && (sel.id.startsWith('lss_') || sel.id.includes('encerramento') || sel.id.startsWith('apr_veiculo_frota_'))) return;
         if (d.respostasGerais[si] !== undefined) sel.value = d.respostasGerais[si];
         si++;
       });
@@ -20429,7 +20767,7 @@ function initMsal() {
     await _msalAcquireLock();
     try {
       const result = await msalInstance.loginPopup({
-        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All'],
+        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All', 'Calendars.ReadWrite'],
         prompt: 'select_account',
       });
       _msalReleaseLock();
@@ -20690,7 +21028,7 @@ async function getOneDriveToken() {
     // 1. Silent
     try {
       const r = await window._msalInstance.acquireTokenSilent({
-        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All'],
+        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All', 'Calendars.ReadWrite'],
         account: accounts[0],
       });
       if (r && r.accessToken) { return r.accessToken; }
@@ -20707,7 +21045,7 @@ async function getOneDriveToken() {
     await _msalAcquireLock();
     try {
       const r2 = await window._msalInstance.acquireTokenPopup({
-        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All'],
+        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All', 'Calendars.ReadWrite'],
         account: accounts[0],
       });
       _msalReleaseLock();
@@ -20719,7 +21057,7 @@ async function getOneDriveToken() {
         await new Promise(r => setTimeout(r, 1500));
         try {
           const r3 = await window._msalInstance.acquireTokenSilent({
-            scopes: ['Files.ReadWrite.All', 'User.Read'],
+            scopes: ['Files.ReadWrite.All', 'User.Read', 'Calendars.ReadWrite'],
             account: accounts[0],
           });
           return r3 ? r3.accessToken : null;
@@ -24311,23 +24649,48 @@ async function gerarPDFapr(id, tipoAPR) {
       </div>`;
     }
 
+    // Identificação do motorista/veículo (só preenchida na APR de Coleta de Resíduos)
+    const identVeiculoHTML = (d.motorista || d.veiculoPlaca || d.veiculoModelo || d.odometro) ? `
+      <table style="margin-bottom:6px">
+        <tbody>
+          <tr>
+            <td style="font-weight:700;width:16%">Motorista</td><td style="width:34%">${d.motorista || '—'}</td>
+            <td style="font-weight:700;width:16%">Placa</td><td style="width:34%">${d.veiculoPlaca || '—'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight:700">Modelo</td><td>${d.veiculoModelo || '—'}</td>
+            <td style="font-weight:700">Odômetro</td><td>${d.odometro ? d.odometro + ' km' : '—'}</td>
+          </tr>
+        </tbody>
+      </table>` : '';
+
     let veiculoHTML = '';
     if (tipoData) {
       const linhasV = veiculoItemsList.map((v, i) => `<tr><td>${v}</td><td style="width:95px;text-align:center;font-weight:700">${respLabel(rg[26 + i])}</td></tr>`).join('');
       veiculoHTML = `
       <div class="section" style="margin-bottom:10px">
         <div class="section-title">5. Movimentação de Veículos</div>
+        ${identVeiculoHTML}
         <table><tbody>${linhasV}</tbody></table>
       </div>`;
     }
 
     let episHTML = '';
     if (tipoData && Array.isArray(tipoData.epis) && tipoData.epis.length) {
-      const linhasEpis = tipoData.epis.map(e => `<tr><td>☐ ${e}</td></tr>`).join('');
+      const itensEpi = tipoData.epis;
+      const colsEpi = 4;
+      const linhasEpisArr = [];
+      for (let i = 0; i < itensEpi.length; i += colsEpi) {
+        const grupo = itensEpi.slice(i, i + colsEpi);
+        const tds = grupo.map(e => `<td style="width:${100 / colsEpi}%">☐ ${e}</td>`).join('');
+        const vazio = colsEpi - grupo.length;
+        const tdsVazio = vazio > 0 ? Array(vazio).fill('<td></td>').join('') : '';
+        linhasEpisArr.push(`<tr>${tds}${tdsVazio}</tr>`);
+      }
       episHTML = `
       <div class="section" style="margin-bottom:10px">
         <div class="section-title">6. Checklist — Equipamentos de Proteção Individual / Coletiva</div>
-        <table><tbody>${linhasEpis}</tbody></table>
+        <table><tbody>${linhasEpisArr.join('')}</tbody></table>
       </div>`;
     }
 
