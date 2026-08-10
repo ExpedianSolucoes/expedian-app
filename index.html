@@ -9490,6 +9490,7 @@ function agendaRenderizarLista() {
           ${e.SincronizarOutlook ? (e.OutlookEventId ? ' · <span style="color:var(--green-main)">📆 Outlook</span>' : ' · <span style="color:var(--red)">⚠️ Outlook falhou</span>') : ''}
         </div>
         ${(e.Participantes || []).length ? `<div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">👤 ${e.Participantes.map(p => p.nome).join(', ')}</div>` : ''}
+        ${e.TeamsLink ? `<a href="${e.TeamsLink}" target="_blank" onclick="event.stopPropagation()" style="display:inline-block;margin-top:4px;font-size:.68rem;font-weight:700;color:#5b5fc7;text-decoration:none">🎥 Entrar na reunião do Teams</a>` : ''}
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         <span class="status-pill ${info.cor}" style="font-size:.62rem">${info.label}</span>
@@ -9583,15 +9584,24 @@ function agendaAbrirModal(id) {
           ${pessoas.map(p => `
           <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;padding:3px 4px;cursor:pointer">
             <input type="checkbox" class="ag-participante" ${dis} value="${p.email}" data-nome="${p.nome.replace(/"/g,'&quot;')}" ${participantesSel.has(p.email) ? 'checked' : ''}>
-            ${p.nome} <span style="color:var(--text-muted)">${p.role ? '· ' + p.role : ''}</span>
+            ${p.nome}
           </label>`).join('')}
         </div>
       </div>
       <div style="margin-bottom:16px;padding:10px 12px;background:var(--surface2);border-radius:8px">
         <label style="display:flex;align-items:center;gap:8px;font-size:.8rem;cursor:pointer">
-          <input type="checkbox" id="ag_sync_outlook" ${dis} ${!existente || existente.SincronizarOutlook !== false ? 'checked' : ''}>
+          <input type="checkbox" id="ag_sync_outlook" ${dis} ${!existente || existente.SincronizarOutlook !== false ? 'checked' : ''} onchange="document.getElementById('ag_teams_wrap').style.display=this.checked?'flex':'none'">
           📆 Criar também no Calendário Outlook (convida os participantes marcados por e-mail)
         </label>
+        <label id="ag_teams_wrap" style="display:${!existente || existente.SincronizarOutlook !== false ? 'flex' : 'none'};align-items:center;gap:8px;font-size:.8rem;cursor:pointer;margin-top:8px">
+          <input type="checkbox" id="ag_teams" ${dis} ${!existente || existente.TeamsLink ? 'checked' : ''}>
+          🎥 Gerar link de reunião do Microsoft Teams
+        </label>
+        ${existente && existente.TeamsLink ? `
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <a href="${existente.TeamsLink}" target="_blank" class="btn-primary" style="padding:4px 10px;font-size:.72rem;text-decoration:none">🎥 Entrar na reunião</a>
+          <button type="button" class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="navigator.clipboard.writeText('${existente.TeamsLink}');showToast('🔗 Link copiado!')">📋 Copiar link</button>
+        </div>` : ''}
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between">
         <div style="display:flex;gap:8px">${(existente && podeEditar) ? `<button class="btn-secondary" style="color:var(--red)" onclick="agendaExcluir(${existente.Id})">🗑️ Excluir</button>` : ''}${(existente && podeEditar && existente.SerieId) ? `<button class="btn-secondary" style="color:var(--red)" onclick="agendaExcluirSerie('${existente.SerieId}')">🗑️ Excluir toda a série</button>` : ''}</div>
@@ -9642,6 +9652,7 @@ async function agendaSalvar() {
   const local = (document.getElementById('ag_local') || {}).value || '';
   const descricao = (document.getElementById('ag_desc') || {}).value || '';
   const sincronizarOutlook = !!(document.getElementById('ag_sync_outlook') || {}).checked;
+  const criarTeams = sincronizarOutlook && !!(document.getElementById('ag_teams') || {}).checked;
   const participantes = Array.from(document.querySelectorAll('.ag-participante:checked'))
     .map(el => ({ email: el.value, nome: el.dataset.nome }));
 
@@ -9664,7 +9675,7 @@ async function agendaSalvar() {
   const dadosBase = {
     Titulo: titulo, HoraIni: horaIni, HoraFim: horaFim, Tipo: tipo,
     Local: local, Descricao: descricao, Participantes: participantes,
-    SincronizarOutlook: sincronizarOutlook, SerieId: serieId, Recorrencia: recorrencia,
+    SincronizarOutlook: sincronizarOutlook, CriarTeams: criarTeams, SerieId: serieId, Recorrencia: recorrencia,
     CriadoPorNome: (existente && existente.CriadoPorNome) || (window._currentUser ? window._currentUser.name : '—'),
     CriadoPorEmail: (existente && existente.CriadoPorEmail) || (window._currentUser ? window._currentUser.email : ''),
   };
@@ -9676,20 +9687,21 @@ async function agendaSalvar() {
     const dados = { ...dadosBase, Data: data, OutlookEventId: existente.OutlookEventId };
     await dbAtualizar('Agenda', editandoId, dados);
     if (sincronizarOutlook) {
-      const outlookId = await agendaCriarEventoOutlook(dados, existente.OutlookEventId);
-      await dbAtualizar('Agenda', editandoId, { OutlookEventId: outlookId || null });
+      const r = await agendaCriarEventoOutlook(dados, existente.OutlookEventId);
+      await dbAtualizar('Agenda', editandoId, { OutlookEventId: r.id || null, TeamsLink: r.teamsLink || existente.TeamsLink || null });
     }
     showToast('✅ Evento salvo!');
   } else if (datasOcorrencias.length > 1) {
     // Série nova: 1 reunião recorrente de verdade no Outlook (evita disparar N convites
-    // separados) + 1 registro por ocorrência dentro do app, todos com o mesmo OutlookEventId.
-    let outlookIdSerie = null;
+    // separados) + 1 registro por ocorrência dentro do app, todos com o mesmo OutlookEventId/link do Teams.
+    let outlookIdSerie = null, teamsLinkSerie = null;
     if (sincronizarOutlook) {
       showToast('📆 Criando série recorrente no Outlook...');
-      outlookIdSerie = await agendaCriarEventoOutlook({ ...dadosBase, Data: data }, null, { tipo: repetir, ate: repetirAte });
+      const r = await agendaCriarEventoOutlook({ ...dadosBase, Data: data }, null, { tipo: repetir, ate: repetirAte });
+      outlookIdSerie = r.id; teamsLinkSerie = r.teamsLink;
     }
     for (const dt of datasOcorrencias) {
-      await dbInserir('Agenda', { ...dadosBase, Data: dt, OutlookEventId: outlookIdSerie });
+      await dbInserir('Agenda', { ...dadosBase, Data: dt, OutlookEventId: outlookIdSerie, TeamsLink: teamsLinkSerie });
     }
     showToast(outlookIdSerie || !sincronizarOutlook
       ? `✅ ${datasOcorrencias.length} ocorrências criadas${sincronizarOutlook ? ' e sincronizadas com o Outlook!' : '!'}`
@@ -9698,9 +9710,9 @@ async function agendaSalvar() {
     const novo = await dbInserir('Agenda', { ...dadosBase, Data: data, OutlookEventId: null });
     if (sincronizarOutlook && novo) {
       showToast('📆 Criando no Outlook...');
-      const outlookId = await agendaCriarEventoOutlook({ ...dadosBase, Data: data }, null);
-      await dbAtualizar('Agenda', novo.Id, { OutlookEventId: outlookId || null });
-      showToast(outlookId ? '✅ Evento salvo e sincronizado com o Outlook!' : '✅ Evento salvo (Outlook não sincronizou — confira o login Microsoft).');
+      const r = await agendaCriarEventoOutlook({ ...dadosBase, Data: data }, null);
+      await dbAtualizar('Agenda', novo.Id, { OutlookEventId: r.id || null, TeamsLink: r.teamsLink || null });
+      showToast(r.id ? '✅ Evento salvo e sincronizado com o Outlook!' : '✅ Evento salvo (Outlook não sincronizou — confira o login Microsoft).');
     } else {
       showToast('✅ Evento salvo!');
     }
@@ -9738,12 +9750,15 @@ async function agendaExcluirSerie(serieId) {
 /* -- Cria (ou atualiza, se já existir outlookEventId) o compromisso no
    Calendário Outlook de quem está logado, via Microsoft Graph, marcando os
    participantes como convidados — cada um recebe o convite automaticamente
-   por e-mail/Outlook. Retorna o id do evento no Outlook, ou null se falhar
-   (nesse caso o evento continua salvo normalmente dentro do app). -- */
+   por e-mail/Outlook. Se dados.CriarTeams for true, pede pro próprio Graph
+   gerar uma reunião online do Microsoft Teams junto (isOnlineMeeting +
+   onlineMeetingProvider) — o link fica em criado.onlineMeeting.joinUrl.
+   Retorna sempre { id, teamsLink }; em caso de falha, id vem do que já
+   existia (ou null) e teamsLink null (o evento continua salvo no app). -- */
 async function agendaCriarEventoOutlook(dados, outlookEventIdExistente, recorrenciaInfo) {
   try {
     const token = await getOneDriveToken();
-    if (!token) { console.warn('[Agenda] Sem token Microsoft — Outlook não sincronizado.'); return null; }
+    if (!token) { console.warn('[Agenda] Sem token Microsoft — Outlook não sincronizado.'); return { id: null, teamsLink: null }; }
     const horaIni = dados.HoraIni || '09:00';
     const horaFim = dados.HoraFim || (function() {
       const [h, m] = horaIni.split(':').map(Number);
@@ -9761,6 +9776,10 @@ async function agendaCriarEventoOutlook(dados, outlookEventIdExistente, recorren
         type: 'required',
       })),
     };
+    if (dados.CriarTeams) {
+      body.isOnlineMeeting = true;
+      body.onlineMeetingProvider = 'teamsForBusiness';
+    }
     // Série recorrente de verdade no Outlook (uma única reunião com padrão de
     // repetição), em vez de N eventos separados — evita spam de convites.
     if (recorrenciaInfo && recorrenciaInfo.tipo && recorrenciaInfo.tipo !== 'nao') {
@@ -9781,12 +9800,15 @@ async function agendaCriarEventoOutlook(dados, outlookEventIdExistente, recorren
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!resp.ok) { console.warn('[Agenda] Falha ao criar evento no Outlook:', resp.status, await resp.text()); return outlookEventIdExistente || null; }
+    if (!resp.ok) { console.warn('[Agenda] Falha ao criar evento no Outlook:', resp.status, await resp.text()); return { id: outlookEventIdExistente || null, teamsLink: null }; }
     const criado = await resp.json();
-    return criado.id || outlookEventIdExistente || null;
+    return {
+      id: criado.id || outlookEventIdExistente || null,
+      teamsLink: (criado.onlineMeeting && criado.onlineMeeting.joinUrl) || null,
+    };
   } catch (e) {
     console.warn('[Agenda] Erro ao sincronizar com Outlook:', e);
-    return outlookEventIdExistente || null;
+    return { id: outlookEventIdExistente || null, teamsLink: null };
   }
 }
 
