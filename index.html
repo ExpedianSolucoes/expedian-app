@@ -9757,8 +9757,8 @@ async function agendaExcluirSerie(serieId) {
    existia (ou null) e teamsLink null (o evento continua salvo no app). -- */
 async function agendaCriarEventoOutlook(dados, outlookEventIdExistente, recorrenciaInfo) {
   try {
-    const token = await getOneDriveToken();
-    if (!token) { console.warn('[Agenda] Sem token Microsoft — Outlook não sincronizado.'); return { id: null, teamsLink: null }; }
+    const token = await getCalendarToken();
+    if (!token) { console.warn('[Agenda] Sem token Microsoft (Calendário) — Outlook não sincronizado.'); return { id: null, teamsLink: null }; }
     const horaIni = dados.HoraIni || '09:00';
     const horaFim = dados.HoraFim || (function() {
       const [h, m] = horaIni.split(':').map(Number);
@@ -20872,7 +20872,7 @@ function initMsal() {
     await _msalAcquireLock();
     try {
       const result = await msalInstance.loginPopup({
-        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All', 'Calendars.ReadWrite'],
+        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All'],
         prompt: 'select_account',
       });
       _msalReleaseLock();
@@ -21133,7 +21133,7 @@ async function getOneDriveToken() {
     // 1. Silent
     try {
       const r = await window._msalInstance.acquireTokenSilent({
-        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All', 'Calendars.ReadWrite'],
+        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All'],
         account: accounts[0],
       });
       if (r && r.accessToken) { return r.accessToken; }
@@ -21150,7 +21150,7 @@ async function getOneDriveToken() {
     await _msalAcquireLock();
     try {
       const r2 = await window._msalInstance.acquireTokenPopup({
-        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All', 'Calendars.ReadWrite'],
+        scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All'],
         account: accounts[0],
       });
       _msalReleaseLock();
@@ -21162,7 +21162,7 @@ async function getOneDriveToken() {
         await new Promise(r => setTimeout(r, 1500));
         try {
           const r3 = await window._msalInstance.acquireTokenSilent({
-            scopes: ['Files.ReadWrite.All', 'User.Read', 'Calendars.ReadWrite'],
+            scopes: ['Files.ReadWrite.All', 'User.Read'],
             account: accounts[0],
           });
           return r3 ? r3.accessToken : null;
@@ -21171,6 +21171,52 @@ async function getOneDriveToken() {
       return null;
     }
   } catch(e) { console.warn('[OD] getOneDriveToken erro:', e); return null; }
+}
+
+/* == TOKEN CALENDÁRIO (Agenda -> Outlook) ==
+   Escopo separado de getOneDriveToken() de propósito: Calendars.ReadWrite só
+   é pedido aqui, dentro de uma ação disparada por clique direto do usuário
+   (Salvar Evento), nunca pelo polling automático de sincronização. Isso evita
+   que um popup de consentimento bloqueado pelo navegador (por não ter sido
+   aberto a partir de um gesto do usuário) trave a sincronização geral do
+   OneDrive — foi exatamente isso que aconteceu quando esse escopo estava
+   junto de getOneDriveToken(). -- */
+async function getCalendarToken() {
+  try {
+    if (!window._msalInstance) { console.warn('[Agenda] msalInstance ausente'); return null; }
+    if (!window._msalReady) {
+      let t = 0;
+      while (!window._msalReady && t < 20) { await new Promise(r => setTimeout(r, 300)); t++; }
+      if (!window._msalReady) { console.warn('[Agenda] MSAL nao inicializado'); return null; }
+    }
+    const accounts = window._msalInstance.getAllAccounts();
+    if (!accounts.length) { console.warn('[Agenda] Nenhuma conta autenticada'); return null; }
+
+    try {
+      const r = await window._msalInstance.acquireTokenSilent({
+        scopes: ['Calendars.ReadWrite'],
+        account: accounts[0],
+      });
+      if (r && r.accessToken) return r.accessToken;
+    } catch(e) {
+      // Precisa de interação (primeira vez pedindo esse escopo) — cai pro popup abaixo,
+      // que é seguro aqui porque estamos dentro do clique em "Salvar Evento".
+    }
+
+    await _msalAcquireLock();
+    try {
+      const r2 = await window._msalInstance.acquireTokenPopup({
+        scopes: ['Calendars.ReadWrite'],
+        account: accounts[0],
+      });
+      _msalReleaseLock();
+      return r2 ? r2.accessToken : null;
+    } catch(e2) {
+      _msalReleaseLock();
+      console.warn('[Agenda] Popup de Calendário falhou:', e2.errorCode, e2.message);
+      return null;
+    }
+  } catch(e) { console.warn('[Agenda] getCalendarToken erro:', e); return null; }
 }
 
 /* == RESOLVER PASTA APP EXPEDIAN CENTRAL (atendimento@expediansolucoes.com.br) == */
