@@ -2874,6 +2874,7 @@ function switchEmprTab(tipo, btn) {
 
 function abrirEmprObras(id) {
   emprObrasAtual = id;
+  _syncFlashDoApp(id);
   var e = EMPR_OBRAS[id];
   var nEl = document.getElementById('empr-obras-nome');
   var oEl = document.getElementById('empr-obras-obra');
@@ -3296,6 +3297,40 @@ function salvarFlashEmpr() {
   var prev = document.getElementById('fe-fotos-preview'); if(prev) prev.innerHTML='';
 }
 
+// Busca Flash Reports lançados no APP Expedian (aba Checklist > Flash Report
+// Energisa) para esta frente/empreiteira e mescla na lista local, só para
+// exibição — não grava nada de volta no localStorage deste arquivo. Só
+// funciona quando esta página está embutida via iframe dentro do APP
+// (mesma origem), que é como ela roda em produção.
+async function _syncFlashDoApp(id) {
+  try {
+    if (!window.parent || window.parent === window || typeof window.parent.dbLer !== 'function') return;
+    var remotos = await window.parent.dbLer('FlashReportsEnergisa');
+    if (!Array.isArray(remotos) || !remotos.length) return;
+    var doFrente = remotos.filter(function(r){ return r.FrenteId === id; });
+    if (!doFrente.length) return;
+    var convertidos = doFrente.map(function(r){
+      return {
+        data: r.Data || '', rt: r.ResponsavelTecnico || '', clima: r.Clima || '',
+        trecho: r.Trecho || '', equipe: r.Equipe || '', fiscal: r.Fiscal || '',
+        outraativ: r.OutraAtividade || '', inter: '',
+        atividades: r.Atividades || '', amanha: r.PrevisaoAmanha || '', obs: r.Observacoes || '',
+        outraocorr: r.OutraOcorrencia || '',
+        checklist: Object.assign({}, r.ckAtividades || {}, r.ckVerificacoes || {}, r.ckOcorrencias || {}),
+        ckAtividades: r.ckAtividades || {}, ckVerificacoes: r.ckVerificacoes || {}, ckOcorrencias: r.ckOcorrencias || {},
+        fotos: [],
+        _origemApp: true, _origemNome: r.CriadoPorNome || ''
+      };
+    });
+    if (!emprObrasData[id]) return;
+    var jaTemMesmo = function(c) {
+      return emprObrasData[id].flash.some(function(f){ return f._origemApp && f.data === c.data && f.rt === c.rt && f.trecho === c.trecho; });
+    };
+    convertidos.forEach(function(c){ if (!jaTemMesmo(c)) emprObrasData[id].flash.unshift(c); });
+    if (emprObrasAtual === id) renderFlashEmpr();
+  } catch (e) { console.warn('[Sync APP] Falha ao buscar Flash Reports do APP:', e); }
+}
+
 function renderFlashEmpr() {
   var el = document.getElementById('lista-fr-empr'); if(!el||!emprObrasAtual) return;
   var lista = emprObrasData[emprObrasAtual].flash;
@@ -3320,14 +3355,15 @@ function renderFlashEmpr() {
           (temOcorr?'<span class="badge badge-laranja">⚠️ NC</span>':'')+
           '<span class="badge badge-cinza">✅ '+ckOk+'/'+(ckTotal||22)+'</span>'+
           (nFotos?'<span class="badge badge-azul">📷 '+nFotos+'</span>':'')+
+          (f._origemApp?'<span class="badge badge-verde">📱 App</span>':'')+
         '</div>'+
         (f.atividades?'<div style="font-size:12px;color:var(--cinza-900);margin-top:2px">'+f.atividades.substring(0,120)+(f.atividades.length>120?'…':'')+'</div>':'')+
       '</div>'+
       '<div style="display:flex;flex-direction:column;gap:4px">'+
-        '<button class="btn btn-sm" style="background:#2980b9;color:#fff;border-color:#2980b9;font-size:10px" title="Editar" onclick="editarFlashEmpr('+i+')">✏ Editar</button>'+
+        (f._origemApp?'':'<button class="btn btn-sm" style="background:#2980b9;color:#fff;border-color:#2980b9;font-size:10px" title="Editar" onclick="editarFlashEmpr('+i+')">✏ Editar</button>')+
         (temOcorr?'<button class="btn btn-sm" style="background:#e67e22;color:#fff;border-color:#e67e22;font-size:10px" title="Gerar Notificacao" onclick="gerarNotifFromFR('+i+')">⚠ Notificar</button>':'')+
         '<button class="btn btn-sm" style="background:#c0392b;color:#fff;border-color:#c0392b;font-size:10px" title="Exportar PDF" onclick="exportarFlashEmprPDF('+i+')">📄 PDF</button>'+
-        '<button class="btn btn-sm btn-danger" onclick="remFlashEmpr('+i+')" title="Excluir">✕</button>'+
+        (f._origemApp?'':'<button class="btn btn-sm btn-danger" onclick="remFlashEmpr('+i+')" title="Excluir">✕</button>')+
       '</div>'+
     '</div>';
   }).join('');
