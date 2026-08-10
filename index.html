@@ -9422,6 +9422,8 @@ async function reprovarPrestacao(id) {
 =============================== */
 let AGENDA_DADOS = [];
 let AGENDA_FILTRO = 'todos'; // 'todos' | 'meus'
+let AGENDA_VISAO = 'lista'; // 'lista' | 'dia' | 'semana' | 'mes'
+let AGENDA_DATA_REF = new Date().toISOString().slice(0, 10); // data de referência p/ navegação do calendário
 
 /* -- Lista de todas as pessoas da Expedian disponíveis para marcar como
    participante — reaproveita o cadastro de login (`users`), já com nome,
@@ -9444,15 +9446,125 @@ function agendaTipoInfo(tipo) {
 
 async function agendaCarregar() {
   try { AGENDA_DADOS = await dbLer('Agenda') || []; } catch (e) { AGENDA_DADOS = []; }
-  agendaRenderizarLista();
+  agendaRenderTudo();
 }
 
 function agendaFiltrar(modo) {
   AGENDA_FILTRO = modo;
-  agendaRenderizarLista();
+  agendaRenderTudo();
 }
 
-function agendaRenderizarLista() {
+function agendaMudarVisao(visao) {
+  AGENDA_VISAO = visao;
+  agendaRenderTudo();
+}
+
+function agendaNavegar(direcao) {
+  const d = new Date(AGENDA_DATA_REF + 'T00:00:00');
+  if (AGENDA_VISAO === 'dia') d.setDate(d.getDate() + direcao);
+  else if (AGENDA_VISAO === 'semana') d.setDate(d.getDate() + direcao * 7);
+  else if (AGENDA_VISAO === 'mes') d.setMonth(d.getMonth() + direcao);
+  else return;
+  AGENDA_DATA_REF = d.toISOString().slice(0, 10);
+  agendaRenderTudo();
+}
+
+function agendaIrHoje() {
+  AGENDA_DATA_REF = new Date().toISOString().slice(0, 10);
+  agendaRenderTudo();
+}
+
+function agendaRenderTudo() {
+  agendaRenderToolbar();
+  agendaRenderConteudo();
+}
+
+function agendaRenderToolbar() {
+  const el = document.getElementById('agenda-toolbar');
+  if (!el) return;
+  const refDate = new Date(AGENDA_DATA_REF + 'T00:00:00');
+  let labelPeriodo = '';
+  if (AGENDA_VISAO === 'dia') {
+    labelPeriodo = refDate.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  } else if (AGENDA_VISAO === 'semana') {
+    const dom = new Date(refDate); dom.setDate(dom.getDate() - dom.getDay());
+    const sab = new Date(dom); sab.setDate(sab.getDate() + 6);
+    labelPeriodo = `${String(dom.getDate()).padStart(2, '0')}/${String(dom.getMonth() + 1).padStart(2, '0')} — ${String(sab.getDate()).padStart(2, '0')}/${String(sab.getMonth() + 1).padStart(2, '0')} de ${sab.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}`;
+  } else if (AGENDA_VISAO === 'mes') {
+    labelPeriodo = refDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  }
+  labelPeriodo = labelPeriodo.charAt(0).toUpperCase() + labelPeriodo.slice(1);
+
+  el.innerHTML = `
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn-secondary" style="${AGENDA_FILTRO === 'todos' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaFiltrar('todos')">📋 Todos</button>
+      <button class="btn-secondary" style="${AGENDA_FILTRO === 'meus' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaFiltrar('meus')">👤 Meus Eventos</button>
+    </div>
+    <button class="btn-primary" onclick="agendaAbrirModal()">➕ Novo Evento</button>
+  </div>
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+    <div style="display:flex;gap:4px">
+      <button class="btn-secondary" style="padding:6px 12px;font-size:.75rem;${AGENDA_VISAO === 'lista' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaMudarVisao('lista')">📋 Lista</button>
+      <button class="btn-secondary" style="padding:6px 12px;font-size:.75rem;${AGENDA_VISAO === 'dia' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaMudarVisao('dia')">📅 Dia</button>
+      <button class="btn-secondary" style="padding:6px 12px;font-size:.75rem;${AGENDA_VISAO === 'semana' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaMudarVisao('semana')">📅 Semana</button>
+      <button class="btn-secondary" style="padding:6px 12px;font-size:.75rem;${AGENDA_VISAO === 'mes' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaMudarVisao('mes')">📅 Mês</button>
+    </div>
+    ${AGENDA_VISAO !== 'lista' ? `
+    <div style="display:flex;align-items:center;gap:8px">
+      <button class="btn-secondary" style="padding:5px 10px" onclick="agendaNavegar(-1)">◀</button>
+      <button class="btn-secondary" style="padding:5px 10px;font-size:.72rem" onclick="agendaIrHoje()">Hoje</button>
+      <button class="btn-secondary" style="padding:5px 10px" onclick="agendaNavegar(1)">▶</button>
+      <div style="font-weight:700;font-size:.85rem;text-transform:capitalize;min-width:160px">${labelPeriodo}</div>
+    </div>` : ''}
+  </div>`;
+}
+
+/* -- Linha de evento reutilizável (visão Lista e visão Dia) -- */
+function agendaLinhaEvento(e) {
+  const emailAtual = (window._currentUser && window._currentUser.email || '').toLowerCase();
+  const info = agendaTipoInfo(e.Tipo);
+  const dataObj = e.Data ? new Date(e.Data + 'T00:00:00') : null;
+  const dia = dataObj ? String(dataObj.getDate()).padStart(2, '0') : '—';
+  const mes = dataObj ? dataObj.toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '') : '';
+  const souParticipante = (e.Participantes || []).some(p => (p.email || '').toLowerCase() === emailAtual);
+  const souCriador = (e.CriadoPorEmail || '').toLowerCase() === emailAtual;
+  return `
+  <div class="alert-item" style="gap:14px;align-items:flex-start;cursor:pointer" onclick="agendaVerDetalhe(${e.Id})">
+    <div style="text-align:center;min-width:40px">
+      <div style="font-family:'Mont',sans-serif;font-size:1.2rem;font-weight:800;line-height:1">${dia}</div>
+      <div style="font-size:.65rem;color:var(--text-muted);text-transform:capitalize">${mes}</div>
+    </div>
+    <div class="dot ${info.cor}"></div>
+    <div style="flex:1;min-width:0">
+      <div class="name">${info.emoji} ${e.Titulo || '—'}${e.SerieId ? ` <span style="font-size:.65rem;font-weight:600;color:var(--text-muted)" title="Faz parte de uma série ${e.Recorrencia === 'semanal' ? 'semanal' : 'mensal'}">🔁 ${e.Recorrencia === 'semanal' ? 'semanal' : 'mensal'}</span>` : ''}</div>
+      <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">
+        ${e.HoraIni || '—'}${e.HoraFim ? '–' + e.HoraFim : ''} ${e.Local ? '· 📍 ' + e.Local : ''} · por ${e.CriadoPorNome || '—'}
+        ${e.SincronizarOutlook ? (e.OutlookEventId ? ' · <span style="color:var(--green-main)">📆 Outlook</span>' : ' · <span style="color:var(--red)">⚠️ Outlook falhou</span>') : ''}
+      </div>
+      ${(e.Participantes || []).length ? `<div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">👤 ${e.Participantes.map(p => p.nome).join(', ')}</div>` : ''}
+      ${e.TeamsLink ? `<a href="${e.TeamsLink}" target="_blank" onclick="event.stopPropagation()" style="display:inline-block;margin-top:4px;font-size:.68rem;font-weight:700;color:#5b5fc7;text-decoration:none">🎥 Entrar na reunião do Teams</a>` : ''}
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+      <span class="status-pill ${info.cor}" style="font-size:.62rem">${info.label}</span>
+      ${souParticipante && !souCriador ? '<span style="font-size:.62rem;color:var(--green-main);font-weight:700">✔ Convidado</span>' : ''}
+    </div>
+  </div>`;
+}
+
+/* -- Chip compacto de evento (visões Semana e Mês) -- */
+function agendaCorChip(cor) {
+  const map = { blue: 'var(--blue)', green: 'var(--green-main)', amber: 'var(--amber)', red: 'var(--red)' };
+  return map[cor] || 'var(--blue)';
+}
+function agendaChipEvento(e) {
+  const info = agendaTipoInfo(e.Tipo);
+  const cor = agendaCorChip(info.cor);
+  const titulo = (e.Titulo || '—').replace(/"/g, '&quot;');
+  return `<div onclick="event.stopPropagation();agendaVerDetalhe(${e.Id})" title="${e.HoraIni || ''} ${titulo}" style="cursor:pointer;font-size:.65rem;font-weight:600;padding:2px 5px;margin-bottom:2px;border-radius:5px;background:rgba(255,255,255,.06);border-left:3px solid ${cor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.HoraIni ? e.HoraIni + ' ' : ''}${info.emoji} ${titulo}</div>`;
+}
+
+function agendaRenderConteudo() {
   const el = document.getElementById('agenda-lista');
   if (!el) return;
   const emailAtual = (window._currentUser && window._currentUser.email || '').toLowerCase();
@@ -9464,47 +9576,107 @@ function agendaRenderizarLista() {
     );
   }
   items.sort((a, b) => (a.Data + ' ' + (a.HoraIni || '')).localeCompare(b.Data + ' ' + (b.HoraIni || '')));
+
+  if (AGENDA_VISAO === 'dia') { el.innerHTML = agendaRenderDia(items); return; }
+  if (AGENDA_VISAO === 'semana') { el.innerHTML = agendaRenderSemana(items); return; }
+  if (AGENDA_VISAO === 'mes') { el.innerHTML = agendaRenderMes(items); return; }
+
   const hoje = new Date().toISOString().slice(0, 10);
   const futuros = items.filter(e => e.Data >= hoje);
   const passados = items.filter(e => e.Data < hoje).reverse();
 
-  const linha = e => {
-    const info = agendaTipoInfo(e.Tipo);
-    const dataObj = e.Data ? new Date(e.Data + 'T00:00:00') : null;
-    const dia = dataObj ? String(dataObj.getDate()).padStart(2, '0') : '—';
-    const mes = dataObj ? dataObj.toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '') : '';
-    const souParticipante = (e.Participantes || []).some(p => (p.email || '').toLowerCase() === emailAtual);
-    const souCriador = (e.CriadoPorEmail || '').toLowerCase() === emailAtual;
-    const podeEditar = souCriador || currentProfile === 'diretoria';
-    return `
-    <div class="alert-item" style="gap:14px;align-items:flex-start;cursor:pointer" onclick="agendaVerDetalhe(${e.Id})">
-      <div style="text-align:center;min-width:40px">
-        <div style="font-family:'Mont',sans-serif;font-size:1.2rem;font-weight:800;line-height:1">${dia}</div>
-        <div style="font-size:.65rem;color:var(--text-muted);text-transform:capitalize">${mes}</div>
-      </div>
-      <div class="dot ${info.cor}"></div>
-      <div style="flex:1;min-width:0">
-        <div class="name">${info.emoji} ${e.Titulo || '—'}${e.SerieId ? ` <span style="font-size:.65rem;font-weight:600;color:var(--text-muted)" title="Faz parte de uma série ${e.Recorrencia === 'semanal' ? 'semanal' : 'mensal'}">🔁 ${e.Recorrencia === 'semanal' ? 'semanal' : 'mensal'}</span>` : ''}</div>
-        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">
-          ${e.HoraIni || '—'}${e.HoraFim ? '–' + e.HoraFim : ''} ${e.Local ? '· 📍 ' + e.Local : ''} · por ${e.CriadoPorNome || '—'}
-          ${e.SincronizarOutlook ? (e.OutlookEventId ? ' · <span style="color:var(--green-main)">📆 Outlook</span>' : ' · <span style="color:var(--red)">⚠️ Outlook falhou</span>') : ''}
-        </div>
-        ${(e.Participantes || []).length ? `<div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">👤 ${e.Participantes.map(p => p.nome).join(', ')}</div>` : ''}
-        ${e.TeamsLink ? `<a href="${e.TeamsLink}" target="_blank" onclick="event.stopPropagation()" style="display:inline-block;margin-top:4px;font-size:.68rem;font-weight:700;color:#5b5fc7;text-decoration:none">🎥 Entrar na reunião do Teams</a>` : ''}
-      </div>
-      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
-        <span class="status-pill ${info.cor}" style="font-size:.62rem">${info.label}</span>
-        ${souParticipante && !souCriador ? '<span style="font-size:.62rem;color:var(--green-main);font-weight:700">✔ Convidado</span>' : ''}
-      </div>
-    </div>`;
-  };
-
   el.innerHTML = !items.length
     ? '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum evento encontrado.</div>'
     : `
-    ${futuros.length ? `<div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin:4px 0 6px">Próximos</div><div class="alert-list">${futuros.map(linha).join('')}</div>` : '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum evento futuro.</div>'}
-    ${passados.length ? `<details style="margin-top:16px"><summary style="cursor:pointer;font-size:.78rem;font-weight:700;color:var(--text-muted);padding:6px 0">▶ Eventos passados <span class="badge">${passados.length}</span></summary><div class="alert-list" style="margin-top:8px">${passados.map(linha).join('')}</div></details>` : ''}
+    ${futuros.length ? `<div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin:4px 0 6px">Próximos</div><div class="alert-list">${futuros.map(agendaLinhaEvento).join('')}</div>` : '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum evento futuro.</div>'}
+    ${passados.length ? `<details style="margin-top:16px"><summary style="cursor:pointer;font-size:.78rem;font-weight:700;color:var(--text-muted);padding:6px 0">▶ Eventos passados <span class="badge">${passados.length}</span></summary><div class="alert-list" style="margin-top:8px">${passados.map(agendaLinhaEvento).join('')}</div></details>` : ''}
   `;
+}
+
+function agendaRenderDia(items) {
+  const dataRef = AGENDA_DATA_REF;
+  const doDia = items.filter(e => e.Data === dataRef);
+  return `
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <div style="font-size:.72rem;color:var(--text-muted)">${doDia.length} evento(s) neste dia</div>
+    <button class="btn-secondary" style="padding:5px 10px;font-size:.72rem" onclick="agendaAbrirModalNaData('${dataRef}')">➕ Novo Evento neste dia</button>
+  </div>
+  ${doDia.length ? `<div class="alert-list">${doDia.map(agendaLinhaEvento).join('')}</div>` : '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum evento neste dia.</div>'}`;
+}
+
+function agendaRenderSemana(items) {
+  const refDate = new Date(AGENDA_DATA_REF + 'T00:00:00');
+  const dom = new Date(refDate); dom.setDate(dom.getDate() - dom.getDay());
+  const hoje = new Date().toISOString().slice(0, 10);
+  const dias = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(dom); d.setDate(d.getDate() + i);
+    dias.push(d);
+  }
+  const porDia = dias.map(d => {
+    const iso = d.toISOString().slice(0, 10);
+    return { iso, eventos: items.filter(e => e.Data === iso).sort((a, b) => (a.HoraIni || '').localeCompare(b.HoraIni || '')) };
+  });
+  return `
+  <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px">
+    ${porDia.map(({ iso, eventos }) => {
+      const d = new Date(iso + 'T00:00:00');
+      const ehHoje = iso === hoje;
+      return `
+      <div style="background:var(--surface2);border:1px solid ${ehHoje ? 'var(--green-main)' : 'var(--border)'};border-radius:8px;padding:8px;min-height:140px;cursor:pointer" onclick="agendaAbrirModalNaData('${iso}')">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <div style="font-size:.62rem;font-weight:700;color:var(--text-muted);text-transform:capitalize">${d.toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '')}</div>
+          <div style="font-size:.8rem;font-weight:800;${ehHoje ? 'color:var(--green-main)' : ''}">${String(d.getDate()).padStart(2, '0')}</div>
+        </div>
+        ${eventos.map(agendaChipEvento).join('') || '<div style="font-size:.6rem;color:var(--text-muted);opacity:.6">—</div>'}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function agendaRenderMes(items) {
+  const refDate = new Date(AGENDA_DATA_REF + 'T00:00:00');
+  const ano = refDate.getFullYear();
+  const mesIdx = refDate.getMonth();
+  const primeiroDia = new Date(ano, mesIdx, 1);
+  const inicioGrade = new Date(primeiroDia); inicioGrade.setDate(inicioGrade.getDate() - primeiroDia.getDay());
+  const hoje = new Date().toISOString().slice(0, 10);
+  const celulas = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(inicioGrade); d.setDate(d.getDate() + i);
+    celulas.push(d);
+  }
+  const semanas = [];
+  for (let i = 0; i < celulas.length; i += 7) semanas.push(celulas.slice(i, i + 7));
+  const nomesDias = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
+  return `
+  <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px">
+    ${nomesDias.map(n => `<div style="text-align:center;font-size:.65rem;font-weight:700;color:var(--text-muted);padding:4px">${n}</div>`).join('')}
+  </div>
+  ${semanas.map(semana => `
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px">
+      ${semana.map(d => {
+        const iso = d.toISOString().slice(0, 10);
+        const foraDoMes = d.getMonth() !== mesIdx;
+        const ehHoje = iso === hoje;
+        const eventosDia = items.filter(e => e.Data === iso).sort((a, b) => (a.HoraIni || '').localeCompare(b.HoraIni || ''));
+        const visiveis = eventosDia.slice(0, 3);
+        const resto = eventosDia.length - visiveis.length;
+        return `
+        <div style="background:var(--surface2);border:1px solid ${ehHoje ? 'var(--green-main)' : 'var(--border)'};border-radius:8px;padding:6px;min-height:88px;cursor:pointer;opacity:${foraDoMes ? '.45' : '1'}" onclick="agendaAbrirModalNaData('${iso}')">
+          <div style="font-size:.72rem;font-weight:800;margin-bottom:3px;${ehHoje ? 'color:var(--green-main)' : ''}">${String(d.getDate()).padStart(2, '0')}</div>
+          ${visiveis.map(agendaChipEvento).join('')}
+          ${resto > 0 ? `<div style="font-size:.6rem;color:var(--text-muted);margin-top:2px">+${resto} mais</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+  `).join('')}`;
+}
+
+function agendaAbrirModalNaData(iso) {
+  window._agendaDataPreenchida = iso;
+  agendaAbrirModal();
 }
 
 function pageAgenda() {
@@ -9512,13 +9684,7 @@ function pageAgenda() {
   return `
   <div class="page-header"><h1>Agenda Corporativa</h1><p>Reuniões, treinamentos, vistorias e compromissos — visível para toda a Expedian</p></div>
 
-  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">
-    <div style="display:flex;gap:6px">
-      <button class="btn-secondary" style="${AGENDA_FILTRO === 'todos' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaFiltrar('todos')">📋 Todos</button>
-      <button class="btn-secondary" style="${AGENDA_FILTRO === 'meus' ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="agendaFiltrar('meus')">👤 Meus Eventos</button>
-    </div>
-    <button class="btn-primary" onclick="agendaAbrirModal()">➕ Novo Evento</button>
-  </div>
+  <div id="agenda-toolbar"></div>
 
   <div class="card">
     <div class="card-title">Eventos</div>
@@ -9530,6 +9696,8 @@ function pageAgenda() {
 function agendaAbrirModal(id) {
   const existente = id ? AGENDA_DADOS.find(e => e.Id === id) : null;
   window._agendaEditandoId = existente ? id : null;
+  const dataPreenchida = window._agendaDataPreenchida || '';
+  window._agendaDataPreenchida = null;
   const pessoas = agendaListaPessoas();
   const participantesSel = new Set((existente && existente.Participantes || []).map(p => p.email));
   const emailAtual = (window._currentUser && window._currentUser.email || '').toLowerCase();
@@ -9550,7 +9718,7 @@ function agendaAbrirModal(id) {
       ${!podeEditar ? `<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:12px">Criado por ${existente.CriadoPorNome || '—'} — só quem criou (ou a Diretoria) pode editar.</div>` : ''}
       <div class="form-group" style="margin-bottom:10px"><label>Título</label><input id="ag_titulo" ${dis} value="${(existente && existente.Titulo || '').replace(/"/g,'&quot;')}" placeholder="Ex: Reunião de Planejamento"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
-        <div class="form-group" style="margin:0"><label>Data</label><input type="date" id="ag_data" ${dis} value="${existente ? existente.Data || '' : ''}"></div>
+        <div class="form-group" style="margin:0"><label>Data</label><input type="date" id="ag_data" ${dis} value="${existente ? existente.Data || '' : dataPreenchida}"></div>
         <div class="form-group" style="margin:0"><label>Hora Início</label><input type="time" id="ag_hora_ini" ${dis} value="${existente ? existente.HoraIni || '' : ''}"></div>
         <div class="form-group" style="margin:0"><label>Hora Fim</label><input type="time" id="ag_hora_fim" ${dis} value="${existente ? existente.HoraFim || '' : ''}"></div>
       </div>
