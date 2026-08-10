@@ -1308,6 +1308,19 @@ function renderPage(id) {
 function pageDashboard() {
   setTimeout(() => carregarDashboard(), 150);
   return `
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+      <div class="card-title" style="margin:0">📅 Calendário Mensal — <span id="dash-calendario-titulo">—</span></div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <button class="btn-secondary" style="padding:5px 10px;font-size:.75rem" onclick="dashCalNavegar(-1)">◀</button>
+        <button class="btn-secondary" style="padding:5px 10px;font-size:.75rem" onclick="dashCalIrHoje()">Hoje</button>
+        <button class="btn-secondary" style="padding:5px 10px;font-size:.75rem" onclick="dashCalNavegar(1)">▶</button>
+        <button class="btn-primary" style="padding:5px 12px;font-size:.75rem" onclick="navigate('agenda')">📆 Ver Agenda completa</button>
+      </div>
+    </div>
+    <div id="dash-calendario-grid"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando eventos...</div></div>
+  </div>
+
   <div class="section-title">Financeiro</div>
   <div class="kpi-grid">
     <div class="kpi-card green"><div class="kpi-label">Contas a Receber</div><div class="kpi-value" id="kpi-receber">—</div><div class="kpi-sub" id="kpi-receber-sub">carregando...</div><div class="kpi-icon">💰</div></div>
@@ -1352,6 +1365,42 @@ function pageDashboard() {
 }
 
 
+/* -- Calendário mensal da página inicial (dashboard) — reaproveita a mesma
+   grade de mês já usada na Agenda (agendaRenderMes), com uma data de
+   referência própria (não mexe na navegação da página Agenda). -- */
+if (!window._dashCalRef) window._dashCalRef = new Date().toISOString().slice(0, 10);
+
+function dashCalNavegar(direcao) {
+  const d = new Date(window._dashCalRef + 'T00:00:00');
+  d.setMonth(d.getMonth() + direcao);
+  window._dashCalRef = d.toISOString().slice(0, 10);
+  renderDashCalendario();
+}
+
+function dashCalIrHoje() {
+  window._dashCalRef = new Date().toISOString().slice(0, 10);
+  renderDashCalendario();
+}
+
+function renderDashCalendario() {
+  const el = document.getElementById('dash-calendario-grid');
+  if (!el) return;
+  const lbl = document.getElementById('dash-calendario-titulo');
+  const refDate = new Date(window._dashCalRef + 'T00:00:00');
+  if (lbl) {
+    const texto = refDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    lbl.textContent = texto.charAt(0).toUpperCase() + texto.slice(1);
+  }
+  const items = Array.isArray(AGENDA_DADOS) ? AGENDA_DADOS : [];
+  // agendaRenderMes lê a data de referência da variável global AGENDA_DATA_REF
+  // (usada pela página Agenda) — troca temporariamente, gera o HTML e devolve
+  // o valor original, pra não bagunçar a navegação da Agenda de verdade.
+  const backupRef = AGENDA_DATA_REF;
+  AGENDA_DATA_REF = window._dashCalRef;
+  el.innerHTML = agendaRenderMes(items);
+  AGENDA_DATA_REF = backupRef;
+}
+
 /* == INDICADOR DE SYNC == */
 function showSyncStatus(msg, state, duration) {
   const el  = document.getElementById('sync-status');
@@ -1378,6 +1427,10 @@ function iniciarDashRefresh() {
 
 async function carregarDashboard() {
   const set = (id, v) => { const e = document.getElementById(id); if(e) e.textContent = v; };
+
+  // Calendário mensal (topo da página inicial) — carrega em paralelo, não bloqueia os KPIs
+  agendaCarregar().then(() => renderDashCalendario()).catch(e => console.warn('[Dashboard] Falha ao carregar calendário mensal:', e));
+
   try {
     const [aprs, eros, prests, contas, receber] = await Promise.all([
       dbLer('APRs'), dbLer('ChecklistERO'), dbLer('PrestacaoContas'),
@@ -18979,23 +19032,45 @@ function exportarColetaPdf() {
    padrão já usado em Coleta de Resíduos, pra não inchar a tabela.
    ============================================================= */
 const FAUNA_CLIMAS = ['Ensolarado', 'Parcialmente nublado', 'Nublado', 'Chuva leve', 'Chuva forte'];
-const FAUNA_TIPOS = ['Afugentamento', 'Resgate'];
+const FAUNA_TIPOS = ['Afugentamento', 'Resgate', 'Avistamento'];
 const FAUNA_SEXOS = ['Macho', 'Fêmea', 'Indeterminado'];
 const FAUNA_GRUPOS = ['Anfíbio', 'Aves', 'Mamífero', 'Réptil', 'Outro'];
 const FAUNA_CONDICOES = ['Saudável', 'Debilitado', 'Ferido', 'Morto'];
 /* -- Profissionais cadastrados que atuam no monitoramento de fauna. -- */
 const FAUNA_PROFISSIONAIS = [
   { nome: 'Marcos Fernandes da Silva', cargo: 'Biólogo', crbio: '103393/06-D' },
-  { nome: 'Nathalia Olivio', cargo: 'Técnica Ambiental', crbio: '' },
+  { nome: 'Nathalia Olivio', cargo: 'Bióloga', crbio: '' },
 ];
-/* -- Empreendimentos onde o monitoramento de fauna é realizado. -- */
+/* -- Empreendimentos onde o monitoramento de fauna é realizado, com o
+   cliente correspondente (preenchido automaticamente ao selecionar). -- */
 const FAUNA_EMPREENDIMENTOS = [
-  'Rodovia Expresso Porto – BR 364',
-  'LT 500 kV UHE Jirau/Coletora Porto Velho C1, C2 e C3',
+  { nome: 'Rodovia Expresso Porto – BR 364', cliente: 'Concessionária Nova 364 S/A', contrato: '364/210/2026' },
+  { nome: 'LT 500 kV UHE Jirau/Coletora Porto Velho C1, C2 e C3', cliente: 'Jirau Energia S/A', contrato: '' },
 ];
+
+/* -- Slug curto do empreendimento, usado em nomes de arquivo PDF. -- */
+function faunaSlugEmpreendimento(nome) {
+  if (!nome) return 'Fauna';
+  if (/Jirau/i.test(nome)) return 'Jirau';
+  if (/364/.test(nome)) return 'Nova364';
+  return nome.replace(/[^\w]+/g, '').slice(0, 20) || 'Fauna';
+}
 
 function faunaBuscarProfissional(nome) {
   return FAUNA_PROFISSIONAIS.find(p => p.nome === nome) || null;
+}
+
+function faunaBuscarEmpreendimento(nome) {
+  return FAUNA_EMPREENDIMENTOS.find(e => e.nome === nome) || null;
+}
+
+/* -- Ao escolher o empreendimento no dropdown, preenche o cliente automaticamente
+   (continua editável, caso precise ajustar). -- */
+function faunaSelecionarEmpreendimento(nome) {
+  window._faunaData.empreendimento = nome;
+  const e = faunaBuscarEmpreendimento(nome);
+  if (e) window._faunaData.cliente = e.cliente;
+  navigate('checklist_fauna');
 }
 
 function faunaNovoForm() {
@@ -19037,9 +19112,13 @@ function faunaProximoNumero() {
   return max + 1;
 }
 
-function faunaAbrirNovo() {
+function faunaAbrirNovo(empreendimentoNome) {
   faunaNovoForm();
-  window._faunaData.numeroFicha = String(faunaProximoNumero());
+  if (empreendimentoNome) {
+    window._faunaData.empreendimento = empreendimentoNome;
+    const e = faunaBuscarEmpreendimento(empreendimentoNome);
+    if (e) window._faunaData.cliente = e.cliente;
+  }
   window._faunaRegistroAtualId = null;
   window._faunaMostrarForm = true;
   navigate('checklist_fauna');
@@ -19245,7 +19324,7 @@ function faunaImprimirFicha(dados, autoPrint) {
 
     + headerTable('Página 1 de 2')
 
-    + '<div class="title-bar">FICHA DIÁRIA DE CAMPO — REGISTRO DE ' + (d.tipoRegistro === 'Afugentamento' ? 'AFUGENTAMENTO' : 'RESGATE') + ' DE FAUNA</div>'
+    + '<div class="title-bar">FICHA DIÁRIA DE CAMPO — REGISTRO DE ' + (d.tipoRegistro ? d.tipoRegistro.toUpperCase() : 'RESGATE') + ' DE FAUNA</div>'
 
     + '<div class="section"><div class="sec-body row3">'
       + '<div class="field"><label>Nº da ficha</label><span>' + (d.numeroFicha || '—') + '</span></div>'
@@ -19435,8 +19514,10 @@ function pageFaunaFicha() {
     <div class="page-header"><h1>Ficha de Campo — Fauna Silvestre</h1><p>Registro de afugentamento/resgate de fauna silvestre em campo — EXP-SGI-FOR-MA-FAU-01</p></div>
 
     <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-      <div style="font-size:.85rem;color:var(--text-muted)">Preencha uma ficha sempre que houver afugentamento ou resgate de fauna silvestre em campo.</div>
-      <button class="btn-primary" onclick="faunaAbrirNovo()">➕ Nova Ficha de Campo</button>
+      <div style="font-size:.85rem;color:var(--text-muted)">Preencha uma ficha sempre que houver afugentamento, resgate ou avistamento de fauna silvestre em campo. Escolha o empreendimento para começar:</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${FAUNA_EMPREENDIMENTOS.map(e => `<button class="btn-primary" onclick="faunaAbrirNovo('${e.nome.replace(/'/g, "\\'")}')">➕ ${e.nome}</button>`).join('')}
+      </div>
     </div>
 
     <div class="card">
@@ -19464,9 +19545,9 @@ function pageFaunaFicha() {
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Empreendimento</label>
-        <select onchange="faunaCampo('empreendimento', this.value)">
+        <select onchange="faunaSelecionarEmpreendimento(this.value)">
           <option value="">Selecione...</option>
-          ${FAUNA_EMPREENDIMENTOS.map(e => `<option ${d.empreendimento===e?'selected':''}>${e}</option>`).join('')}
+          ${FAUNA_EMPREENDIMENTOS.map(e => `<option value="${e.nome}" ${d.empreendimento===e.nome?'selected':''}>${e.nome}</option>`).join('')}
         </select>
       </div>
       <div class="form-group" style="margin:0"><label>Cliente</label><input value="${(d.cliente||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('cliente', this.value)"></div>
@@ -19556,10 +19637,18 @@ function pageFaunaFicha() {
    ============================================================= */
 function faunaFlashNovoForm() {
   window._faunaFlashData = {
-    numero: '', data: new Date().toISOString().split('T')[0], trechoFrente: '', condicaoClimatica: 'Ensolarado',
+    numero: '', data: new Date().toISOString().split('T')[0], empreendimento: '', cliente: '', trechoFrente: '', condicaoClimatica: 'Ensolarado',
     fase: '', equipe: '', atividadesExecutadas: '', registroFauna: '', ocorrencias: '', previsaoProximoDia: '',
     responsavelNome: '', responsavelCargo: '', fotos: [],
   };
+}
+
+/* -- Ao escolher o empreendimento no dropdown, preenche o cliente automaticamente. -- */
+function faunaFlashSelecionarEmpreendimento(nome) {
+  window._faunaFlashData.empreendimento = nome;
+  const e = faunaBuscarEmpreendimento(nome);
+  if (e) window._faunaFlashData.cliente = e.cliente;
+  navigate('checklist_fauna');
 }
 if (!window._faunaFlashData) faunaFlashNovoForm();
 if (window._faunaFlashHistorico === undefined) window._faunaFlashHistorico = null;
@@ -19575,9 +19664,13 @@ function faunaFlashProximoNumero() {
   return max + 1;
 }
 
-function faunaFlashAbrirNovo() {
+function faunaFlashAbrirNovo(empreendimentoNome) {
   faunaFlashNovoForm();
-  window._faunaFlashData.numero = String(faunaFlashProximoNumero()).padStart(3, '0');
+  if (empreendimentoNome) {
+    window._faunaFlashData.empreendimento = empreendimentoNome;
+    const e = faunaBuscarEmpreendimento(empreendimentoNome);
+    if (e) window._faunaFlashData.cliente = e.cliente;
+  }
   window._faunaFlashRegistroAtualId = null;
   window._faunaFlashMostrarForm = true;
   navigate('checklist_fauna');
@@ -19639,7 +19732,7 @@ async function faunaFlashSalvar() {
   const editandoId = window._faunaFlashRegistroAtualId;
   const registro = {
     Title: 'FR-' + (d.numero || '') + ' - Flash Report Fauna - ' + d.data,
-    numero: d.numero || '', data: d.data || '', trechoFrente: d.trechoFrente || '',
+    numero: d.numero || '', data: d.data || '', empreendimento: d.empreendimento || '', cliente: d.cliente || '', trechoFrente: d.trechoFrente || '',
     condicaoClimatica: d.condicaoClimatica || '', fase: d.fase || '', equipe: d.equipe || '',
     atividadesExecutadas: d.atividadesExecutadas || '', registroFauna: d.registroFauna || '',
     ocorrencias: d.ocorrencias || '', previsaoProximoDia: d.previsaoProximoDia || '',
@@ -19665,7 +19758,7 @@ function faunaFlashEditarRegistro(id) {
   const f = (window._faunaFlashHistorico || []).find(r => r.Id === id);
   if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
   window._faunaFlashData = {
-    numero: f.numero || '', data: f.data || '', trechoFrente: f.trechoFrente || '', condicaoClimatica: f.condicaoClimatica || 'Ensolarado',
+    numero: f.numero || '', data: f.data || '', empreendimento: f.empreendimento || '', cliente: f.cliente || '', trechoFrente: f.trechoFrente || '', condicaoClimatica: f.condicaoClimatica || 'Ensolarado',
     fase: f.fase || '', equipe: f.equipe || '', atividadesExecutadas: f.atividadesExecutadas || '', registroFauna: f.registroFauna || '',
     ocorrencias: f.ocorrencias || '', previsaoProximoDia: f.previsaoProximoDia || '',
     responsavelNome: f.responsavelNome || '', responsavelCargo: f.responsavelCargo || '',
@@ -19685,7 +19778,9 @@ async function _faunaFlashGerarDoc(d) {
   const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
   const pageW = 21.0, pageH = 29.7;
   const titulo = 'FLASH REPORT DIÁRIO — FAUNA';
-  const subtitulo = 'Contrato 364/210/2026 · Nova 364 S/A · Porto Velho — RO';
+  const empInfo = faunaBuscarEmpreendimento(d.empreendimento);
+  const contratoTxt = empInfo && empInfo.contrato ? ('Contrato ' + empInfo.contrato + ' · ') : '';
+  const subtitulo = contratoTxt + (d.cliente || 'Cliente não informado') + ' · Porto Velho — RO';
   _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
   let y = 2.1;
   const ML = 1.4, CW = pageW - 2.8;
@@ -19812,7 +19907,7 @@ async function faunaFlashExportarPDF() {
   if (!d.data) { showToast('⚠️ Informe a data antes de exportar.'); return; }
   showToast('🔄 Gerando PDF... aguarde.');
   const doc = await _faunaFlashGerarDoc(d);
-  const nomeArq = 'FlashReport_FR-' + (d.numero||'') + '_Nova364_' + (d.data||'') + '.pdf';
+  const nomeArq = 'FlashReport_FR-' + (d.numero||'') + '_' + faunaSlugEmpreendimento(d.empreendimento) + '_' + (d.data||'') + '.pdf';
   doc.save(nomeArq);
 }
 
@@ -19833,7 +19928,7 @@ async function faunaFlashExportarRegistro(id) {
   showSyncStatus('Gerando PDF...');
   const doc = await _faunaFlashGerarDoc(f);
   showSyncStatus('PDF gerado!', 'ok', 2000);
-  doc.save('FlashReport_FR-' + (f.numero||'') + '_Nova364_' + (f.data||'') + '.pdf');
+  doc.save('FlashReport_FR-' + (f.numero||'') + '_' + faunaSlugEmpreendimento(f.empreendimento) + '_' + (f.data||'') + '.pdf');
 }
 
 function faunaFlashHtmlHistorico() {
@@ -19851,6 +19946,7 @@ function faunaFlashHtmlHistorico() {
       <div style="font-size:1.2rem">🚧</div>
       <div style="flex:1;min-width:0">
         <div class="name">FR-${f.numero || '—'} · ${f.fase || 'Fauna'}</div>
+        <div style="font-size:.7rem;color:var(--text-muted);margin-top:1px">${f.empreendimento || 'Empreendimento não informado'}</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${dataFmt} · ${f.trechoFrente || 'Sem trecho'} · por ${f.responsavelNome || f.CriadoPorNome || '—'}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">${(f.fotos||[]).length ? '📷 ' + f.fotos.length + ' foto(s)' : 'Sem fotos'}</div>
       </div>
@@ -19870,8 +19966,10 @@ function pageFaunaFlash() {
   if (!window._faunaFlashMostrarForm) {
     return `
     <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-      <div style="font-size:.85rem;color:var(--text-muted)">Relatório diário de acompanhamento de fauna — Contrato 364/210/2026 (Nova 364 S/A).</div>
-      <button class="btn-primary" onclick="faunaFlashAbrirNovo()">➕ Novo Flash Report</button>
+      <div style="font-size:.85rem;color:var(--text-muted)">Relatório diário de acompanhamento de fauna silvestre. Escolha o empreendimento para começar:</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${FAUNA_EMPREENDIMENTOS.map(e => `<button class="btn-primary" onclick="faunaFlashAbrirNovo('${e.nome.replace(/'/g, "\\'")}')">➕ ${e.nome}</button>`).join('')}
+      </div>
     </div>
 
     <div class="card">
@@ -19892,6 +19990,15 @@ function pageFaunaFlash() {
       <div class="form-group" style="margin:0"><label>Condição Climática</label>
         <select onchange="faunaFlashCampo('condicaoClimatica', this.value)">${FAUNA_CLIMAS.map(c => `<option ${d.condicaoClimatica===c?'selected':''}>${c}</option>`).join('')}</select>
       </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Empreendimento</label>
+        <select onchange="faunaFlashSelecionarEmpreendimento(this.value)">
+          <option value="">Selecione...</option>
+          ${FAUNA_EMPREENDIMENTOS.map(e => `<option value="${e.nome}" ${d.empreendimento===e.nome?'selected':''}>${e.nome}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Cliente</label><input value="${(d.cliente||'').replace(/"/g,'&quot;')}" oninput="faunaFlashCampo('cliente', this.value)"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Trecho / Frente</label><input value="${(d.trechoFrente||'').replace(/"/g,'&quot;')}" oninput="faunaFlashCampo('trechoFrente', this.value)" placeholder="Ex: KM 11 e KM 12"></div>
