@@ -18462,6 +18462,17 @@ function colCarregarFoto(event, idx) {
     navigate('checklist_coleta');
   });
 }
+/* -- Seleciona várias fotos de uma vez (input multiple) e adiciona todas
+   já processadas, sem precisar clicar "Adicionar foto" uma vez por imagem. -- */
+function colCarregarFotosMultiplas(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  if (!Array.isArray(window._colData.fotos)) window._colData.fotos = [];
+  showToast('📷 Processando ' + files.length + ' foto' + (files.length === 1 ? '' : 's') + '...');
+  Promise.all(files.map(file => _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => ({ desc: '', dataUrl, horizontal }))))
+    .then(novas => { window._colData.fotos.push(...novas); navigate('checklist_coleta'); });
+  event.target.value = '';
+}
 
 function colNovoChecklist() {
   const temDados = window._colData && ((window._colData.residuos||[]).length || (window._colData.fotos||[]).length || window._colData.num);
@@ -18597,7 +18608,7 @@ function renderColMiniDashboard() {
                 ${(r.totalKg||0).toLocaleString('pt-BR',{minimumFractionDigits:2})} kg
               </div>
               <div style="display:flex;gap:4px;flex-shrink:0">
-                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="${r.documentoUrl?'Ver PDF/documento gerado':'Ainda sem PDF exportado'}" onclick="colVerChecklist(${r.Id})">👁️ Ver</button>
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Visualizar relatório completo" onclick="colVerChecklist(${r.Id})">👁️ Ver</button>
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="colEditarChecklist(${r.Id})">✏️ Editar</button>
               </div>
             </div>`).join('')
@@ -18701,7 +18712,9 @@ function pageChecklistColeta() {
       <button onclick="colRemFoto(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.95rem;flex-shrink:0" title="Remover">✕</button>
     </div>
     `).join('')}
-    <button class="btn-secondary" style="font-size:.78rem" onclick="colAddFoto()">+ Adicionar foto</button>
+    <label class="btn-secondary" style="font-size:.78rem;cursor:pointer;display:inline-block">+ Adicionar Fotos (pode escolher várias)
+      <input type="file" accept="image/*" multiple style="display:none" onchange="colCarregarFotosMultiplas(event)">
+    </label>
   </div>
 
   <div class="card">
@@ -18788,13 +18801,61 @@ async function colEditarChecklist(id) {
   }
 }
 
-function colVerChecklist(id) {
-  const r = (window._colHistorico || []).find(r => r.Id === id);
-  if (r && r.documentoUrl) {
-    window.open(r.documentoUrl, '_blank');
-  } else {
-    showToast('📄 Esse relatório ainda não tem um PDF exportado. Abra-o (Editar) e clique em "Exportar PDF" primeiro.');
+/* -- Visualização somente-leitura de uma Coleta já salva. Se já existe um
+   PDF/HTML exportado (documentoUrl), abre ele direto; senão monta a
+   visualização na hora a partir do snapshot completo salvo no OneDrive
+   (resumo na tabela + arquivo com resíduos/fotos em Checklists/ColetaResiduos/dados). -- */
+async function colVerChecklist(id) {
+  const r = (window._colHistorico || []).find(x => x.Id === id);
+  if (!r) { showToast('⚠️ Registro não encontrado.'); return; }
+  if (r.documentoUrl) { window.open(r.documentoUrl, '_blank'); return; }
+
+  showSyncStatus('Carregando relatório...');
+  let dados = null;
+  if (r.arquivoDados) {
+    try {
+      const texto = await baixarArquivoCentral(r.arquivoDados);
+      if (texto) dados = JSON.parse(texto);
+    } catch (e) { dados = null; }
   }
+  if (!dados) dados = { num: r.num, regional: r.regional, local: r.local, motorista: r.motorista, placa: r.placa, data: r.data, residuos: [], fotos: [] };
+  showSyncStatus('Relatório carregado!', 'ok', 2000);
+
+  const regionalLabel = dados.regional === 'sul' ? 'Regional Sul (CLM 108942)' : dados.regional === 'centro' ? 'Regional Centro (CLM 108943)' : dados.regional === 'outro' ? 'Outro' : '—';
+  const linhasResiduos = (dados.residuos || []).filter(x => x.tipo || x.peso).map(x =>
+    `<tr><td>${x.classe === 'I' ? 'Classe I' : 'Classe II'}</td><td>${x.tipo || '—'}</td><td>${x.peso || 0} ${x.unid || 'kg'}</td></tr>`
+  ).join('') || '<tr><td colspan="3" style="color:#888">Nenhum resíduo detalhado.</td></tr>';
+  const fotosHtml = (dados.fotos || []).filter(f => f.dataUrl).map(f => `
+    <div style="display:inline-block;width:31%;margin:1%;text-align:center;vertical-align:top">
+      <img src="${f.dataUrl}" style="width:100%;border-radius:6px;border:1px solid #ddd">
+      <div style="font-size:11px;color:#555;margin-top:2px">${f.desc || ''}</div>
+    </div>`).join('');
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Coleta de Resíduos — Nº ${dados.num || ''}</title>
+  <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;max-width:820px;margin:0 auto}h1{font-size:19px;margin-bottom:14px}
+  table{border-collapse:collapse;width:100%;margin-bottom:16px}td,th{padding:5px 8px;font-size:13px;border-bottom:1px solid #eee;text-align:left}
+  .lbl{font-weight:700;width:190px;color:#555}.print-btn{margin-bottom:14px;padding:8px 16px;font-size:13px;cursor:pointer}
+  @media print{.print-btn{display:none}}</style></head><body>
+  <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>
+  <h1>🚛 Coleta de Resíduos — Nº ${dados.num || '—'}</h1>
+  <table>
+    <tr><td class="lbl">Data</td><td>${dados.data ? new Date(dados.data + 'T12:00').toLocaleDateString('pt-BR') : '—'}</td></tr>
+    <tr><td class="lbl">Regional</td><td>${regionalLabel}</td></tr>
+    <tr><td class="lbl">Local / Unidade</td><td>${dados.local || '—'}</td></tr>
+    <tr><td class="lbl">Motorista</td><td>${dados.motorista || '—'}</td></tr>
+    <tr><td class="lbl">Placa</td><td>${dados.placa || '—'}${dados.reboque ? ' / ' + dados.reboque : ''}</td></tr>
+    <tr><td class="lbl">Transportadora</td><td>${dados.transportadora || '—'}</td></tr>
+  </table>
+  <h3>Resíduos</h3>
+  <table><thead><tr><th>Classe</th><th>Tipo</th><th>Peso/Qtd.</th></tr></thead><tbody>${linhasResiduos}</tbody></table>
+  ${dados.destinacao ? `<div style="margin-bottom:8px"><strong>Destinação final:</strong><br>${dados.destinacao.replace(/\n/g, '<br>')}</div>` : ''}
+  ${dados.obs ? `<div style="margin-bottom:8px"><strong>Observações:</strong><br>${dados.obs.replace(/\n/g, '<br>')}</div>` : ''}
+  ${fotosHtml ? `<div style="margin-top:16px"><strong>📷 Fotos</strong><div style="margin-top:8px">${fotosHtml}</div></div>` : ''}
+  </body></html>`;
+
+  const w = window.open('', '_blank', 'width=880,height=740,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para visualizar o relatório.'); return; }
+  w.document.write(html); w.document.close();
 }
 
 /* -- Gera o relatório em PDF (janela de impressão) e sincroniza como HTML no OneDrive -- */
@@ -18999,6 +19060,17 @@ function flashCarregarFoto(event, idx) {
     navigate('checklist_flash');
   });
 }
+/* -- Seleciona várias fotos de uma vez (input multiple) e adiciona todas
+   já processadas, sem precisar clicar "Adicionar foto" uma vez por imagem. -- */
+function flashCarregarFotosMultiplas(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  if (!Array.isArray(window._flashData.fotos)) window._flashData.fotos = [];
+  showToast('📷 Processando ' + files.length + ' foto' + (files.length === 1 ? '' : 's') + '...');
+  Promise.all(files.map(file => _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => ({ desc: '', dataUrl, horizontal }))))
+    .then(novas => { window._flashData.fotos.push(...novas); navigate('checklist_flash'); });
+  event.target.value = '';
+}
 
 async function flashCarregarHistorico(forcar) {
   if (window._flashHistorico !== null && !forcar) return;
@@ -19041,6 +19113,54 @@ async function flashSalvar() {
   if (ok) { flashNovoForm(); await flashCarregarHistorico(true); }
 }
 
+/* -- Abre uma janela somente-leitura com todos os dados + fotos de um
+   Flash Report já salvo (o registro no OneDrive já guarda tudo, sem
+   precisar buscar arquivo à parte). -- */
+function flashVerRegistro(id) {
+  const f = (window._flashHistorico || []).find(r => r.Id === id);
+  if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  const grupoHtml = (titulo, grupo, itens) => {
+    const est = f[grupo] || {};
+    const marcados = itens.filter(it => est[it.id]);
+    return marcados.length ? `<div style="margin-bottom:8px"><strong>${titulo}:</strong> ${marcados.map(it => it.label).join(', ')}</div>` : '';
+  };
+  const fotosHtml = (f.fotos || []).filter(x => x.dataUrl).map(x => `
+    <div style="display:inline-block;width:31%;margin:1%;text-align:center;vertical-align:top">
+      <img src="${x.dataUrl}" style="width:100%;border-radius:6px;border:1px solid #ddd">
+      <div style="font-size:11px;color:#555;margin-top:2px">${x.desc || ''}</div>
+    </div>`).join('');
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Flash Report — ${f.FrenteNome || ''} — ${f.Data || ''}</title>
+  <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;max-width:820px;margin:0 auto}h1{font-size:19px;margin-bottom:14px}
+  table{border-collapse:collapse;width:100%;margin-bottom:16px}td{padding:5px 8px;font-size:13px;border-bottom:1px solid #eee}
+  .lbl{font-weight:700;width:190px;color:#555}.print-btn{margin-bottom:14px;padding:8px 16px;font-size:13px;cursor:pointer}
+  @media print{.print-btn{display:none}}</style></head><body>
+  <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>
+  <h1>🚧 Flash Report — ${f.FrenteNome || f.FrenteId || ''}</h1>
+  <table>
+    <tr><td class="lbl">Data</td><td>${f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—'}</td></tr>
+    <tr><td class="lbl">Empreiteira</td><td>${f.Empreiteira || '—'}</td></tr>
+    <tr><td class="lbl">Responsável Técnico</td><td>${f.ResponsavelTecnico || '—'}</td></tr>
+    <tr><td class="lbl">Condição climática</td><td>${f.Clima || '—'}</td></tr>
+    <tr><td class="lbl">Frente / Trecho</td><td>${f.Trecho || '—'}</td></tr>
+    <tr><td class="lbl">Equipe em campo</td><td>${f.Equipe || '—'}</td></tr>
+    <tr><td class="lbl">Fiscal Ambiental</td><td>${f.Fiscal || '—'}</td></tr>
+    <tr><td class="lbl">Enviado por</td><td>${f.CriadoPorNome || '—'}</td></tr>
+  </table>
+  ${grupoHtml('✅ Atividades acompanhadas', 'ckAtividades', FLASH_ATIVIDADES)}
+  ${f.OutraAtividade ? `<div style="margin-bottom:8px"><strong>Outras atividades:</strong> ${f.OutraAtividade}</div>` : ''}
+  ${grupoHtml('🔍 Verificações ambientais', 'ckVerificacoes', FLASH_VERIFICACOES)}
+  ${grupoHtml('⚠️ Ocorrências', 'ckOcorrencias', FLASH_OCORRENCIAS)}
+  ${f.OutraOcorrencia ? `<div style="margin-bottom:8px"><strong>Outra ocorrência:</strong> ${f.OutraOcorrencia}</div>` : ''}
+  ${f.Atividades ? `<div style="margin-bottom:8px"><strong>📝 Descrição/Ação adotada:</strong><br>${f.Atividades.replace(/\n/g, '<br>')}</div>` : ''}
+  ${f.PrevisaoAmanha ? `<div style="margin-bottom:8px"><strong>Previsão para amanhã:</strong><br>${f.PrevisaoAmanha.replace(/\n/g, '<br>')}</div>` : ''}
+  ${f.Observacoes ? `<div style="margin-bottom:8px"><strong>Observações:</strong><br>${f.Observacoes.replace(/\n/g, '<br>')}</div>` : ''}
+  ${fotosHtml ? `<div style="margin-top:16px"><strong>📷 Fotos</strong><div style="margin-top:8px">${fotosHtml}</div></div>` : ''}
+  </body></html>`;
+  const w = window.open('', '_blank', 'width=880,height=740,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para visualizar o relatório.'); return; }
+  w.document.write(html); w.document.close();
+}
+
 function flashHtmlHistorico() {
   const lista = (window._flashHistorico || []).slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || '')).slice(0, 60);
   if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado ainda.</div>';
@@ -19068,7 +19188,10 @@ function flashHtmlHistorico() {
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${f.ResponsavelTecnico || '—'} · por ${f.CriadoPorNome || '—'}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">✅ ${marcadosAtiv}/${FLASH_ATIVIDADES.length} atividades · ${marcadosVerif}/${FLASH_VERIFICACOES.length} verificações${(f.fotos||[]).length ? ' · 📷 ' + f.fotos.length : ''}</div>
       </div>
-      ${temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Ocorrência</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ OK</span>'}
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+        ${temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Ocorrência</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ OK</span>'}
+        <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
+      </div>
     </div>`;
   };
 
@@ -19131,7 +19254,9 @@ function pageChecklistFlash() {
 
     <div style="margin-bottom:14px">
       <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">📷 Registros fotográficos</label>
-      <button class="btn-secondary" style="padding:6px 12px;font-size:.75rem" onclick="flashAddFoto()">📷 Adicionar foto</button>
+      <label class="btn-secondary" style="padding:6px 12px;font-size:.75rem;cursor:pointer;display:inline-block">📷 Adicionar Fotos (pode escolher várias)
+        <input type="file" accept="image/*" multiple style="display:none" onchange="flashCarregarFotosMultiplas(event)">
+      </label>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px">
         ${fotos.map((f, i) => `
         <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px;text-align:center">
