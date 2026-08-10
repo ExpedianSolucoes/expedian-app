@@ -1053,6 +1053,7 @@ const menus = {
       { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
       { id: 'checklist_flash', icon: '🚧', label: 'Flash Report Energisa' },
+      { id: 'checklist_fauna', icon: '🐸', label: 'Fauna Silvestre' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { id: 'projetos', icon: '🗃️', label: 'Projetos' },
@@ -1096,6 +1097,7 @@ const menus = {
       { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
       { id: 'checklist_flash', icon: '🚧', label: 'Flash Report Energisa' },
+      { id: 'checklist_fauna', icon: '🐸', label: 'Fauna Silvestre' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
@@ -1131,6 +1133,7 @@ const menus = {
       { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
       { id: 'checklist_flash', icon: '🚧', label: 'Flash Report Energisa' },
+      { id: 'checklist_fauna', icon: '🐸', label: 'Fauna Silvestre' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
@@ -1283,6 +1286,7 @@ function renderPage(id) {
     checklist_mitigacao: () => pageChecklistMitigacao(),
     checklist_coleta: () => pageChecklistColeta(),
     checklist_flash: () => pageChecklistFlash(),
+    checklist_fauna: () => pageChecklistFauna(),
     equipamentos: () => pageEquipamentos(),
     docs: () => pageGestaoDocumental(),
     documentos: () => pageDocumentos(),
@@ -18969,6 +18973,512 @@ function exportarColetaPdf() {
 }
 
 /* =============================================================
+   CHECKLIST — FAUNA SILVESTRE (Ficha Diária de Campo)
+   Registro de afugentamento/resgate de fauna silvestre em campo,
+   no mesmo padrão oficial já usado manualmente (Word/PDF) em
+   03 - CLIENTES/.../Fichas de Campo/FDC-NN - DD.MM.AAAA - Espécie.docx
+   Código do formulário: EXP-SGI-FOR-MA-FAU-01.
+   Grava resumo na tabela OneDrive "ChecklistFauna" e o snapshot
+   completo (com fotos) em Checklists/Fauna/dados/{id}.json — mesmo
+   padrão já usado em Coleta de Resíduos, pra não inchar a tabela.
+   ============================================================= */
+const FAUNA_CLIMAS = ['Ensolarado', 'Parcialmente nublado', 'Nublado', 'Chuva leve', 'Chuva forte'];
+const FAUNA_TIPOS = ['Afugentamento', 'Resgate'];
+const FAUNA_SEXOS = ['Macho', 'Fêmea', 'Indeterminado'];
+const FAUNA_GRUPOS = ['Anfíbio', 'Aves', 'Mamífero', 'Réptil', 'Outro'];
+const FAUNA_CONDICOES = ['Saudável', 'Debilitado', 'Ferido', 'Morto'];
+
+function faunaNovoForm() {
+  window._faunaData = {
+    numeroFicha: '', data: new Date().toISOString().split('T')[0], horario: new Date().toTimeString().slice(0,5),
+    clima: 'Ensolarado', empreendimento: 'Rodovia Expresso Porto (Porto Velho – RO)', cliente: 'Concessionária Nova 364 S/A',
+    atividade: '', profissionalNome: window._currentUser ? window._currentUser.name : '', profissionalCargo: 'Biólogo', crbio: '',
+    utmLat: '', utmLong: '', tipoRegistro: 'Resgate', materialUtilizado: '',
+    sexoAnimal: 'Indeterminado', grupoFaunistico: '', nomeCientifico: '', nomeComum: '',
+    quantidade: '', condicaoFisica: 'Saudável', destino: '', fotos: [],
+  };
+}
+if (!window._faunaData) faunaNovoForm();
+if (window._faunaHistorico === undefined) window._faunaHistorico = null;
+if (window._faunaMostrarForm === undefined) window._faunaMostrarForm = false;
+if (window._faunaRegistroAtualId === undefined) window._faunaRegistroAtualId = null;
+
+/* -- Sugere o próximo número de ficha com base no maior já usado no histórico
+   (começando de 115, que é o último número já emitido manualmente em Word). -- */
+function faunaProximoNumero() {
+  const hist = Array.isArray(window._faunaHistorico) ? window._faunaHistorico : [];
+  let max = 115;
+  hist.forEach(r => { const n = parseInt(r.numeroFicha, 10); if (!isNaN(n) && n > max) max = n; });
+  return max + 1;
+}
+
+function faunaAbrirNovo() {
+  faunaNovoForm();
+  window._faunaData.numeroFicha = String(faunaProximoNumero());
+  window._faunaRegistroAtualId = null;
+  window._faunaMostrarForm = true;
+  navigate('checklist_fauna');
+}
+
+function faunaFecharForm() {
+  window._faunaMostrarForm = false;
+  window._faunaRegistroAtualId = null;
+  navigate('checklist_fauna');
+}
+
+function faunaCampo(campo, valor) { window._faunaData[campo] = valor; }
+
+function faunaAtualizarFotoDesc(idx, valor) {
+  if (!window._faunaData.fotos[idx]) return;
+  window._faunaData.fotos[idx].desc = valor;
+}
+
+function faunaRemFoto(idx) {
+  window._faunaData.fotos.splice(idx, 1);
+  navigate('checklist_fauna');
+}
+
+/* -- Seleciona várias fotos de uma vez (reaproveita o redimensionador 6×8 já usado no ERO/Coleta/Flash). -- */
+function faunaCarregarFotosMultiplas(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  if (!Array.isArray(window._faunaData.fotos)) window._faunaData.fotos = [];
+  showToast('📷 Processando ' + files.length + ' foto' + (files.length === 1 ? '' : 's') + '...');
+  Promise.all(files.map(file => _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => ({ desc: '', dataUrl, horizontal }))))
+    .then(novas => { window._faunaData.fotos.push(...novas); navigate('checklist_fauna'); });
+  event.target.value = '';
+}
+
+async function faunaCarregarHistorico(forcar) {
+  if (window._faunaHistorico !== null && !forcar) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('fauna_historico_cache') || '[]'); } catch(e) { cacheLocal = []; }
+  if (window._faunaHistorico === null) window._faunaHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('ChecklistFauna');
+    if (Array.isArray(lista)) {
+      window._faunaHistorico = lista;
+      try { localStorage.setItem('fauna_historico_cache', JSON.stringify(lista)); } catch(e) {}
+    }
+  } catch(e) { console.warn('[Fauna] Falha ao carregar histórico, usando cache local.', e); }
+  navigate('checklist_fauna');
+}
+
+/* -- Salva um resumo leve na tabela (pra listar/filtrar rápido) + o snapshot
+   completo com fotos em arquivo à parte, mesmo padrão da Coleta de Resíduos. -- */
+async function faunaSalvar() {
+  const d = window._faunaData || {};
+  if (!d.data) { showToast('⚠️ Informe a data do registro.'); return; }
+  if (!d.nomeComum && !d.nomeCientifico) { showToast('⚠️ Informe ao menos o nome comum ou científico do animal.'); return; }
+
+  const editando = !!window._faunaRegistroAtualId;
+  const meuId = editando ? window._faunaRegistroAtualId : Date.now();
+
+  const registro = {
+    Id: meuId,
+    Title: 'FDC-' + (d.numeroFicha || meuId) + ' - ' + (d.nomeComum || d.nomeCientifico || '') + ' - ' + d.data,
+    numeroFicha: d.numeroFicha || '',
+    data: d.data || '',
+    horario: d.horario || '',
+    tipoRegistro: d.tipoRegistro || '',
+    nomeComum: d.nomeComum || '',
+    nomeCientifico: d.nomeCientifico || '',
+    quantidade: d.quantidade || '',
+    cliente: d.cliente || '',
+    arquivoDados: 'Checklists/Fauna/dados/' + meuId + '.json',
+    CriadoPorNome: window._currentUser ? window._currentUser.name : '',
+    CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
+  };
+
+  showSyncStatus('Salvando ficha de campo...');
+
+  const novo = editando
+    ? (await dbAtualizar('ChecklistFauna', meuId, registro)) ? registro : null
+    : await dbInserir('ChecklistFauna', registro);
+
+  const blobDados = new Blob([JSON.stringify(d)], { type: 'application/json' });
+  await uploadParaOneDrive(blobDados, OD_FOLDERS.checklistsFauna + '/dados', meuId + '.json');
+
+  window._faunaRegistroAtualId = meuId;
+
+  if (!Array.isArray(window._faunaHistorico)) window._faunaHistorico = [];
+  const idxExistente = window._faunaHistorico.findIndex(r => r.Id === meuId);
+  const registroSalvo = novo || { ...registro, Created: new Date().toISOString() };
+  if (idxExistente >= 0) window._faunaHistorico[idxExistente] = registroSalvo;
+  else window._faunaHistorico.unshift(registroSalvo);
+  try { localStorage.setItem('fauna_historico_cache', JSON.stringify(window._faunaHistorico)); } catch(e) {}
+
+  if (novo) {
+    showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
+    showToast(editando ? '☁️ Ficha atualizada no OneDrive!' : '☁️ Ficha salva e sincronizada com o OneDrive!');
+  } else {
+    showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
+    showToast('⚠️ Salvo apenas neste dispositivo. Verifique o login com Microsoft e tente sincronizar de novo.');
+  }
+  window._faunaMostrarForm = false;
+  window._faunaRegistroAtualId = null;
+  navigate('checklist_fauna');
+}
+
+/* -- Carrega uma ficha já salva de volta no formulário pra edição
+   (busca o snapshot completo com fotos em Checklists/Fauna/dados). -- */
+async function faunaEditarRegistro(id) {
+  showSyncStatus('Carregando ficha para edição...');
+  const r = (window._faunaHistorico || []).find(x => x.Id === id);
+  const caminho = (r && r.arquivoDados) || ('Checklists/Fauna/dados/' + id + '.json');
+  const texto = await baixarArquivoCentral(caminho);
+  if (!texto) {
+    showSyncStatus('Não foi possível carregar', 'err', 4000);
+    showToast('⚠️ Não encontrei os dados completos dessa ficha (pode ter sido salva antes desse recurso existir).');
+    return;
+  }
+  try {
+    window._faunaData = JSON.parse(texto);
+    if (!Array.isArray(window._faunaData.fotos)) window._faunaData.fotos = [];
+    window._faunaRegistroAtualId = id;
+    window._faunaMostrarForm = true;
+    showSyncStatus('Ficha carregada!', 'ok', 3000);
+    showToast('✏️ Ficha carregada para edição. Altere o que precisar e clique em Salvar.');
+    navigate('checklist_fauna');
+  } catch(e) {
+    showToast('⚠️ Erro ao interpretar os dados salvos dessa ficha.');
+  }
+}
+
+/* -- Monta e abre a Ficha Diária de Campo oficial (2 páginas: dados +
+   registro fotográfico), no mesmo padrão visual usado nos formulários
+   EXP-SGI-FOR-xxx (ASO etc.) — código EXP-SGI-FOR-MA-FAU-01.
+   Usada tanto pra "Ver" um registro salvo quanto pra gerar/imprimir
+   a partir do formulário atual. -- */
+function faunaImprimirFicha(dados) {
+  const d = dados || {};
+  const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
+  const chkRow = (itens, valor) => itens.map(it =>
+    '<div class="chk"><div class="box">' + (valor === it ? 'X' : '') + '</div> ' + it + '</div>'
+  ).join('');
+  const fotos = (d.fotos || []).filter(f => f.dataUrl);
+  const fotosHtml = fotos.map((f, i) => (
+    '<div style="text-align:center">' +
+      '<img src="' + f.dataUrl + '" style="width:100%;aspect-ratio:' + (f.horizontal ? '4/3' : '3/4') + ';object-fit:cover;border:1px solid #ccc;border-radius:4px">' +
+      '<div style="font-size:8pt;color:#555;margin-top:3px">Foto ' + (i + 1) + (f.desc ? ' — ' + f.desc : '') + '</div>' +
+    '</div>'
+  )).join('');
+
+  const headerTable = (paginaLabel) => (
+    '<table class="doc-header-table"><tbody>' +
+    '<tr><td class="logo-cell" rowspan="5"><img src="' + (typeof ASO_LOGO_B64 !== 'undefined' ? ASO_LOGO_B64 : '') + '" style="width:100%;max-width:110px;height:auto;object-fit:contain" alt="Logo Expedian"></td>' +
+    '<td class="titulo-cell">FICHA DIÁRIA DE CAMPO<br>REGISTRO DE FAUNA SILVESTRE</td>' +
+    '<td class="codigo-cell">Código: EXP-SGI-FOR-MA-FAU-01</td></tr>' +
+    '<tr><td>Elaborado por: Departamento de Meio Ambiente</td><td>Emissão Inicial: 10/12/2025</td></tr>' +
+    '<tr><td>Aprovação: Diretoria</td><td>Revisão:</td></tr>' +
+    '<tr><td>Setor: SSMA</td><td>Data Revisão:</td></tr>' +
+    '<tr><td>' + paginaLabel + '</td><td>Próxima Revisão: 01/02/2027</td></tr>' +
+    '</tbody></table>'
+  );
+
+  const rodape = (
+    '<div class="doc-footer">' +
+      '<div class="footer-empresa">EXPEDIAN – SOLUCÕES AMBIENTAIS</div>' +
+      '<div>Rua Salgado Filho, nº 1596 – Sala 02 – Bairro Nossa Senhora das Graças, CEP 76.804-118, Porto Velho – RO</div>' +
+      '<div>E-mail: atendimento@expediansolucoes.com.br | Fone (69) 9.9964-9406</div>' +
+    '</div>'
+  );
+
+  const html = '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>FDC-' + (d.numeroFicha || '') + ' — ' + (d.nomeComum || d.nomeCientifico || 'Fauna') + '</title>'
+    + (typeof ASO_FONT_CSS !== 'undefined' ? ASO_FONT_CSS : '')
+    + '<style>'
+    + '* { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; color-adjust:exact; }'
+    + 'body { font-family:"Mont",Arial,sans-serif; font-size:11px; color:#3F261F; padding:14px 18px; max-width:800px; margin:0 auto; }'
+    + '.doc-header-table { width:100%; border-collapse:collapse; margin-bottom:10px; table-layout:fixed; }'
+    + '.doc-header-table td { border:1px solid #3F261F; padding:4px 8px; font-family:"Mont",sans-serif; font-size:7.5px; color:#3F261F; vertical-align:middle; }'
+    + '.doc-header-table .logo-cell { width:19%; text-align:center; padding:6px; }'
+    + '.doc-header-table .titulo-cell { width:52%; background:#3F261F; color:#fff; font-weight:700; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }'
+    + '.doc-header-table .codigo-cell { background:#3F261F; color:#fff; font-weight:700; }'
+    + '.title-bar { background:#3F261F; color:#fff; padding:7px 12px; font-weight:800; font-size:11.5px; text-transform:uppercase; letter-spacing:.4px; margin-bottom:8px; border-radius:2px; }'
+    + '.section { border:1.5px solid #3F261F; margin-bottom:6px; border-radius:3px; overflow:hidden; }'
+    + '.sec-body { padding:6px 10px; }'
+    + '.row2 { display:grid; grid-template-columns:1fr 1fr; }'
+    + '.row3 { display:grid; grid-template-columns:1fr 1fr 1fr; }'
+    + '.field { padding:4px 0; }'
+    + '.field label { font-size:7.5px; text-transform:uppercase; color:#6b3d33; font-weight:700; display:block; margin-bottom:1px; letter-spacing:.4px; }'
+    + '.field span { display:block; font-size:11px; padding:1px 0; color:#3F261F; }'
+    + '.grp-label { font-size:7.5px; text-transform:uppercase; color:#6b3d33; font-weight:700; display:block; margin-bottom:3px; letter-spacing:.4px; }'
+    + '.check-row { display:flex; gap:14px; padding:2px 0 5px; flex-wrap:wrap; }'
+    + '.chk { display:flex; align-items:center; gap:5px; font-size:10px; color:#3F261F; }'
+    + '.box { width:13px; height:13px; border:1.5px solid #3F261F; display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:900; flex-shrink:0; color:#3F261F; }'
+    + '.sign-area { text-align:center; margin-top:26px; }'
+    + '.sign-line { border-bottom:1.5px solid #3F261F; width:260px; margin:34px auto 4px; }'
+    + '.doc-footer { background:#fff; border-top:2px solid #3F261F; margin-top:14px; padding:6px 18px; text-align:center; font-family:"Mont",sans-serif; font-size:7px; color:#3F261F; line-height:1.5; }'
+    + '.doc-footer .footer-empresa { font-weight:700; font-size:7.5px; text-transform:uppercase; }'
+    + '.foto-page { page-break-before:always; }'
+    + '.foto-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:8px; }'
+    + '.print-btn { position:fixed; top:10px; right:10px; background:#3F261F; color:#fff; border:none; padding:8px 18px; border-radius:8px; font-size:12px; font-weight:700; cursor:pointer; font-family:"Mont",sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.2); }'
+    + '@media print { .print-btn { display:none; } body { padding:6px 10px; } }'
+    + '</style></head><body>'
+    + '<button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>'
+
+    + headerTable('Página 1 de 2')
+
+    + '<div class="title-bar">FICHA DIÁRIA DE CAMPO — REGISTRO DE ' + (d.tipoRegistro === 'Afugentamento' ? 'AFUGENTAMENTO' : 'RESGATE') + ' DE FAUNA</div>'
+
+    + '<div class="section"><div class="sec-body row3">'
+      + '<div class="field"><label>Nº da ficha</label><span>' + (d.numeroFicha || '—') + '</span></div>'
+      + '<div class="field"><label>Data</label><span>' + dataFmt + '</span></div>'
+      + '<div class="field"><label>Horário</label><span>' + (d.horario || '—') + ' h</span></div>'
+    + '</div>'
+    + '<div class="sec-body" style="padding-top:0"><span class="grp-label">Condições Climáticas</span>'
+      + '<div class="check-row">' + chkRow(FAUNA_CLIMAS, d.clima) + '</div>'
+    + '</div></div>'
+
+    + '<div class="section"><div class="sec-body">'
+      + '<div class="field"><label>Empreendimento</label><span>' + (d.empreendimento || '—') + '</span></div>'
+      + '<div class="field"><label>Cliente</label><span>' + (d.cliente || '—') + '</span></div>'
+      + '<div class="field"><label>Atividade</label><span>' + (d.atividade || '—') + '</span></div>'
+    + '</div></div>'
+
+    + '<div class="section"><div class="sec-body row2">'
+      + '<div class="field"><label>Nome do Profissional</label><span>' + (d.profissionalNome || '—') + '</span></div>'
+      + '<div class="field"><label>CRBio</label><span>' + (d.crbio || '—') + '</span></div>'
+    + '</div>'
+    + '<div class="sec-body row2" style="padding-top:0">'
+      + '<div class="field"><label>Coordenadas UTM — Latitude</label><span>' + (d.utmLat || '—') + '</span></div>'
+      + '<div class="field"><label>Coordenadas UTM — Longitude</label><span>' + (d.utmLong || '—') + '</span></div>'
+    + '</div>'
+    + '<div class="sec-body" style="padding-top:0"><span class="grp-label">Tipo de Registro</span>'
+      + '<div class="check-row">' + chkRow(FAUNA_TIPOS, d.tipoRegistro) + '</div>'
+    + '</div>'
+    + '<div class="sec-body" style="padding-top:0">'
+      + '<div class="field"><label>Material Utilizado</label><span>' + (d.materialUtilizado || '—') + '</span></div>'
+    + '</div>'
+    + '<div class="sec-body" style="padding-top:0"><span class="grp-label">Sexo do Animal</span>'
+      + '<div class="check-row">' + chkRow(FAUNA_SEXOS, d.sexoAnimal) + '</div>'
+    + '</div>'
+    + '<div class="sec-body" style="padding-top:0"><span class="grp-label">Grupo Faunístico</span>'
+      + '<div class="check-row">' + chkRow(FAUNA_GRUPOS, d.grupoFaunistico) + '</div>'
+    + '</div>'
+    + '<div class="sec-body row2" style="padding-top:0">'
+      + '<div class="field"><label>Nome Científico</label><span style="font-style:italic">' + (d.nomeCientifico || '—') + '</span></div>'
+      + '<div class="field"><label>Nome Comum</label><span>' + (d.nomeComum || '—') + '</span></div>'
+    + '</div>'
+    + '<div class="sec-body" style="padding-top:0">'
+      + '<div class="field"><label>Quantidade</label><span>' + (d.quantidade || '—') + '</span></div>'
+    + '</div>'
+    + '<div class="sec-body" style="padding-top:0"><span class="grp-label">Condição Física</span>'
+      + '<div class="check-row">' + chkRow(FAUNA_CONDICOES, d.condicaoFisica) + '</div>'
+    + '</div>'
+    + '<div class="sec-body" style="padding-top:0">'
+      + '<div class="field"><label>Destino</label><span>' + (d.destino || '—').replace(/\n/g, '<br>') + '</span></div>'
+    + '</div></div>'
+
+    + '<div class="sign-area">'
+      + '<div class="sign-line"></div>'
+      + '<div style="font-size:10px;font-weight:700">' + (d.profissionalNome || '') + '</div>'
+      + '<div style="font-size:9px">' + (d.profissionalCargo || 'Biólogo') + '</div>'
+      + '<div style="font-size:9px">' + (d.crbio ? ('CRBio ' + d.crbio) : '') + '</div>'
+    + '</div>'
+
+    + rodape
+
+    + '<div class="foto-page">'
+    + headerTable('Página 2 de 2')
+    + '<div class="title-bar">REGISTRO FOTOGRÁFICO</div>'
+    + (fotosHtml ? '<div class="foto-grid">' + fotosHtml + '</div>' : '<div style="padding:20px;text-align:center;color:#888;font-size:10px">Nenhuma foto anexada a este registro.</div>')
+    + rodape
+    + '</div>'
+
+    + '</body></html>';
+
+  const w = window.open('', '_blank', 'width=900,height=760,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para visualizar a ficha.'); return null; }
+  w.document.write(html); w.document.close();
+  return html;
+}
+
+/* -- Abre a ficha de um registro já salvo (busca o snapshot completo com fotos). -- */
+async function faunaVerRegistro(id) {
+  const r = (window._faunaHistorico || []).find(x => x.Id === id);
+  if (!r) { showToast('⚠️ Registro não encontrado.'); return; }
+  if (r.documentoUrl) { window.open(r.documentoUrl, '_blank'); return; }
+  showSyncStatus('Carregando ficha...');
+  let dadosCompletos = null;
+  if (r.arquivoDados) {
+    try { const texto = await baixarArquivoCentral(r.arquivoDados); if (texto) dadosCompletos = JSON.parse(texto); } catch(e) { dadosCompletos = null; }
+  }
+  if (!dadosCompletos) dadosCompletos = r;
+  showSyncStatus('Ficha carregada!', 'ok', 2000);
+  faunaImprimirFicha(dadosCompletos);
+}
+
+/* -- Gera/imprime a ficha a partir do formulário atual e, se já estiver
+   salva (tem Id), sincroniza o HTML gerado como documento no OneDrive. -- */
+async function faunaExportarFicha() {
+  const d = window._faunaData;
+  if (!d.data) { showToast('⚠️ Preencha ao menos a data antes de gerar a ficha.'); return; }
+  const html = faunaImprimirFicha(d);
+  if (!html) return;
+  if (!window._faunaRegistroAtualId) {
+    showToast('💡 Dica: salve a ficha primeiro para sincronizar o PDF gerado no OneDrive.');
+    return;
+  }
+  if (typeof uploadParaOneDrive !== 'function') return;
+  try {
+    const nomeBase = ('FDC-' + (d.numeroFicha || window._faunaRegistroAtualId) + '_' + (d.nomeComum || d.nomeCientifico || 'Fauna'))
+      .replace(/[^a-zA-Z0-9À-ú\s-]/g, '').trim().replace(/\s+/g, '_');
+    const blob = new Blob([html], { type: 'text/html; charset=utf-8' });
+    const url = await uploadParaOneDrive(blob, OD_FOLDERS.checklistsFauna, nomeBase + '.html');
+    if (url) {
+      await dbAtualizar('ChecklistFauna', window._faunaRegistroAtualId, { documentoUrl: url, documentoNome: nomeBase + '.html' });
+      const idx = (window._faunaHistorico || []).findIndex(r => r.Id === window._faunaRegistroAtualId);
+      if (idx >= 0) { window._faunaHistorico[idx].documentoUrl = url; window._faunaHistorico[idx].documentoNome = nomeBase + '.html'; }
+      try { localStorage.setItem('fauna_historico_cache', JSON.stringify(window._faunaHistorico)); } catch(e) {}
+      showSyncStatus('Ficha sincronizada!', 'ok', 4000);
+    }
+  } catch(e) {
+    console.warn('[OneDrive] Erro ao sincronizar Ficha de Fauna:', e);
+    showSyncStatus('Erro ao sincronizar com OneDrive', 'err', 6000);
+  }
+}
+
+function faunaHtmlHistorico() {
+  const lista = (window._faunaHistorico || []).slice().sort((a, b) => {
+    const na = parseInt(a.numeroFicha, 10) || 0, nb = parseInt(b.numeroFicha, 10) || 0;
+    if (nb !== na) return nb - na;
+    return (b.data || '').localeCompare(a.data || '');
+  }).slice(0, 80);
+  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma ficha de fauna registrada ainda.</div>';
+
+  const linha = f => {
+    const dataFmt = f.data ? new Date(f.data + 'T12:00').toLocaleDateString('pt-BR') : '—';
+    const tipoCor = f.tipoRegistro === 'Resgate' ? 'green' : 'blue';
+    return `
+    <div class="alert-item" style="gap:14px;align-items:flex-start">
+      <div style="font-size:1.2rem">🐸</div>
+      <div style="flex:1;min-width:0">
+        <div class="name">${f.nomeComum || f.nomeCientifico || 'Fauna não identificada'}${f.nomeCientifico && f.nomeComum ? ` <span style="font-weight:400;color:var(--text-muted);font-style:italic">— ${f.nomeCientifico}</span>` : ''}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">FDC-${f.numeroFicha || '—'} · ${dataFmt} · por ${f.CriadoPorNome || '—'}</div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">Qtd: ${f.quantidade || '—'}${f.cliente ? ' · ' + f.cliente : ''}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+        <span class="status-pill ${tipoCor}" style="font-size:.62rem">${f.tipoRegistro || '—'}</span>
+        <div style="display:flex;gap:4px">
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaVerRegistro(${f.Id})">👁️ Ver</button>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaEditarRegistro(${f.Id})">✏️ Editar</button>
+        </div>
+      </div>
+    </div>`;
+  };
+  return `<div class="alert-list">${lista.map(linha).join('')}</div>`;
+}
+
+function pageChecklistFauna() {
+  if (window._faunaHistorico === null) faunaCarregarHistorico();
+
+  if (!window._faunaMostrarForm) {
+    return `
+    <div class="page-header"><h1>Ficha de Campo — Fauna Silvestre</h1><p>Registro de afugentamento/resgate de fauna silvestre em campo — EXP-SGI-FOR-MA-FAU-01</p></div>
+
+    <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div style="font-size:.85rem;color:var(--text-muted)">Preencha uma ficha sempre que houver afugentamento ou resgate de fauna silvestre em campo.</div>
+      <button class="btn-primary" onclick="faunaAbrirNovo()">➕ Nova Ficha de Campo</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Histórico de Fichas</div>
+      ${faunaHtmlHistorico()}
+    </div>`;
+  }
+
+  const d = window._faunaData;
+  const fotos = d.fotos || [];
+  const editando = !!window._faunaRegistroAtualId;
+  return `
+  <div class="page-header"><h1>Ficha de Campo — Fauna Silvestre</h1><p>Registro de afugentamento/resgate de fauna silvestre em campo — EXP-SGI-FOR-MA-FAU-01</p></div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">${editando ? '✏️ Editar Ficha de Campo' : '➕ Nova Ficha de Campo'}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Nº da Ficha</label><input value="${d.numeroFicha||''}" oninput="faunaCampo('numeroFicha', this.value)" placeholder="Ex: 116"></div>
+      <div class="form-group" style="margin:0"><label>Data</label><input type="date" value="${d.data||''}" onchange="faunaCampo('data', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Horário</label><input type="time" value="${d.horario||''}" onchange="faunaCampo('horario', this.value)"></div>
+    </div>
+    <div class="form-group" style="margin-bottom:14px"><label>Condições Climáticas</label>
+      <select onchange="faunaCampo('clima', this.value)">${FAUNA_CLIMAS.map(c => `<option ${d.clima===c?'selected':''}>${c}</option>`).join('')}</select>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Empreendimento</label><input value="${(d.empreendimento||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('empreendimento', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Cliente</label><input value="${(d.cliente||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('cliente', this.value)"></div>
+    </div>
+    <div class="form-group" style="margin-bottom:14px"><label>Atividade</label><input value="${(d.atividade||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('atividade', this.value)" placeholder="Ex: Supressão Vegetal"></div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+      <div class="form-group" style="margin:0"><label>Nome do Profissional</label><input value="${(d.profissionalNome||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('profissionalNome', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Cargo</label><input value="${(d.profissionalCargo||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('profissionalCargo', this.value)" placeholder="Ex: Biólogo"></div>
+      <div class="form-group" style="margin:0"><label>CRBio</label><input value="${(d.crbio||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('crbio', this.value)" placeholder="Ex: 103393/06-D"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Dados do Registro de Fauna</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Coordenadas UTM — Latitude</label><input value="${(d.utmLat||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('utmLat', this.value)" placeholder="Ex: S8°45,782"></div>
+      <div class="form-group" style="margin:0"><label>Coordenadas UTM — Longitude</label><input value="${(d.utmLong||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('utmLong', this.value)" placeholder="Ex: W63°44,756"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Tipo de Registro</label>
+        <select onchange="faunaCampo('tipoRegistro', this.value)">${FAUNA_TIPOS.map(t => `<option ${d.tipoRegistro===t?'selected':''}>${t}</option>`).join('')}</select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Material Utilizado</label><input value="${(d.materialUtilizado||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('materialUtilizado', this.value)" placeholder="Ex: Caixa de contenção"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Sexo do Animal</label>
+        <select onchange="faunaCampo('sexoAnimal', this.value)">${FAUNA_SEXOS.map(s => `<option ${d.sexoAnimal===s?'selected':''}>${s}</option>`).join('')}</select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Grupo Faunístico</label>
+        <select onchange="faunaCampo('grupoFaunistico', this.value)">
+          <option value="">Selecione...</option>
+          ${FAUNA_GRUPOS.map(g => `<option ${d.grupoFaunistico===g?'selected':''}>${g}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Nome Científico</label><input value="${(d.nomeCientifico||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('nomeCientifico', this.value)" style="font-style:italic" placeholder="Ex: Rhinella major"></div>
+      <div class="form-group" style="margin:0"><label>Nome Comum</label><input value="${(d.nomeComum||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('nomeComum', this.value)" placeholder="Ex: Sapo"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Quantidade</label><input type="number" min="0" value="${d.quantidade||''}" oninput="faunaCampo('quantidade', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Condição Física</label>
+        <select onchange="faunaCampo('condicaoFisica', this.value)">${FAUNA_CONDICOES.map(c => `<option ${d.condicaoFisica===c?'selected':''}>${c}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:0"><label>Destino</label><textarea rows="2" oninput="faunaCampo('destino', this.value)" placeholder="Ex: Animal resgatado e solto posteriormente em boas condições físicas em áreas adjacentes.">${d.destino||''}</textarea></div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">📷 Registro Fotográfico</div>
+    ${fotos.map((f,i) => `
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+      <div style="width:56px;height:56px;border-radius:8px;overflow:hidden;flex-shrink:0;border:1px solid var(--border)">
+        <img src="${f.dataUrl}" style="width:100%;height:100%;object-fit:cover">
+      </div>
+      <input value="${(f.desc||'').replace(/"/g,'&quot;')}" oninput="faunaAtualizarFotoDesc(${i},this.value)" placeholder="Legenda da foto ${i+1}" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.78rem">
+      <button onclick="faunaRemFoto(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.95rem;flex-shrink:0" title="Remover">✕</button>
+    </div>
+    `).join('')}
+    <label class="btn-secondary" style="font-size:.78rem;cursor:pointer;display:inline-block">📷 Adicionar Fotos (pode escolher várias)
+      <input type="file" accept="image/*" multiple style="display:none" onchange="faunaCarregarFotosMultiplas(event)">
+    </label>
+  </div>
+
+  <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
+    <button class="btn-primary" onclick="faunaSalvar()">💾 Salvar e Sincronizar</button>
+    <button class="btn-primary" style="background:var(--brand-brown,#3F261F)" onclick="faunaExportarFicha()">🖨️ Gerar Ficha (PDF)</button>
+    <button class="btn-secondary" onclick="faunaFecharForm()">Cancelar</button>
+  </div>
+  `;
+}
+
+/* =============================================================
    CHECKLIST — FLASH REPORT ENERGISA (Gestão Ambiental de Obras)
    Mesmo Flash Report de campo que já existia dentro do painel
    Energisa Rondônia (Projetos > Energisa > Empreiteiras), agora também
@@ -22755,6 +23265,7 @@ const OD_FOLDERS = {
   checklistsBombeamento: 'Checklists/Bombeamento',
   checklistsMitigacao: 'Checklists/Mitigacao',
   checklistsColeta: 'Checklists/ColetaResiduos',
+  checklistsFauna: 'Checklists/Fauna',
   termosEquipamento: 'Termos/Equipamentos',
   notasFiscaisEquip: 'Equipamentos/NotasFiscais',
   certificadosCalibracao: 'Equipamentos/CertificadosCalibracao',
