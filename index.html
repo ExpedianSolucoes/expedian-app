@@ -2000,10 +2000,6 @@ function renderAPRForm(id) {
       <div class="form-group"><label>Horário Fim</label><input type="time" id="apr_hora_fim_${id}"></div>
       <div class="form-group"><label>Resp. Preenchimento</label><input id="apr_resp_${id}" placeholder="Nome do responsável" value="${window._currentUser ? window._currentUser.name : ''}"></div>
     </div>
-    <div class="form-group" style="margin-top:4px">
-      <label>Resp. Técnico / ART</label>
-      <input value="Marcelo Marafon – CREA 6470 D/RO" readonly style="background:#f8faf9;font-size:.78rem">
-    </div>
   </div>
 
   <!-- SEÇÃO 1: SAÚDE E SEGURANÇA -->
@@ -2123,9 +2119,9 @@ function renderAPRForm(id) {
   <div class="card" style="margin-bottom:14px">
     <div class="card-title" style="font-size:.88rem;margin-bottom:14px">6. Checklist — Equipamentos de Proteção Individual / Coletiva</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px;margin-bottom:10px">
-      ${d.epis.map(epi => `
+      ${d.epis.map((epi, ei) => `
       <div class="check-item" style="padding:7px 10px">
-        <input type="checkbox">
+        <input type="checkbox" id="epi_chk_${id}_${ei}">
         <span style="font-size:.78rem">${epi}</span>
       </div>`).join('')}
     </div>
@@ -22525,9 +22521,9 @@ function renderParticipantes(aprId, qtd) {
         Participante ${String(n).padStart(2,'0')}
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
-        <input style="border:none;border-bottom:1.5px solid var(--border);background:transparent;font-size:.83rem;outline:none;padding:5px 0;font-family:'Mont',sans-serif" placeholder="Nome completo">
-        <input style="border:none;border-bottom:1.5px solid var(--border);background:transparent;font-size:.83rem;outline:none;padding:5px 0;font-family:'Mont',sans-serif" placeholder="Função / Cargo">
-        <input style="border:none;border-bottom:1.5px solid var(--border);background:transparent;font-size:.83rem;outline:none;padding:5px 0;font-family:'Mont',sans-serif" placeholder="Empresa">
+        <input id="part_nome_${aprId}_${n}" style="border:none;border-bottom:1.5px solid var(--border);background:transparent;font-size:.83rem;outline:none;padding:5px 0;font-family:'Mont',sans-serif" placeholder="Nome completo">
+        <input id="part_cargo_${aprId}_${n}" style="border:none;border-bottom:1.5px solid var(--border);background:transparent;font-size:.83rem;outline:none;padding:5px 0;font-family:'Mont',sans-serif" placeholder="Função / Cargo">
+        <input id="part_empresa_${aprId}_${n}" style="border:none;border-bottom:1.5px solid var(--border);background:transparent;font-size:.83rem;outline:none;padding:5px 0;font-family:'Mont',sans-serif" placeholder="Empresa">
       </div>
       <div style="display:flex;flex-direction:column;gap:4px">
         <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)">Assinatura</div>
@@ -22694,17 +22690,54 @@ function coletarDadosAPRForm(id) {
   dados.veiculoModelo = g('apr_veiculo_modelo_' + id);
   dados.odometro = g('apr_odometro_' + id);
 
-  // Participantes (inputs de nome e assinatura)
-  const partInputs = document.querySelectorAll('[id^="part_nome_"], [id^="part_cargo_"]');
-  const participantes = {};
-  partInputs.forEach(el => { participantes[el.id] = el.value; });
-  dados.participantes = participantes;
+  // Participantes (nome + cargo + empresa + assinatura desenhada no canvas)
+  const participantesArr = [];
+  document.querySelectorAll('[id^="part_nome_"]').forEach(elNome => {
+    const suf = elNome.id.replace('part_nome_', ''); // ex: "001_2" (tipoAPR_n)
+    const cargoEl = document.getElementById('part_cargo_' + suf);
+    const empresaEl = document.getElementById('part_empresa_' + suf);
+    const canvasEl = document.getElementById('sig_' + suf);
+    let assinatura = '';
+    if (canvasEl && !_canvasEstaVazio(canvasEl)) {
+      try { assinatura = canvasEl.toDataURL('image/png'); } catch(e) { assinatura = ''; }
+    }
+    const nome = elNome.value || '', cargo = cargoEl ? cargoEl.value : '', empresa = empresaEl ? empresaEl.value : '';
+    if (nome || cargo || empresa || assinatura) {
+      participantesArr.push({ nome, cargo, empresa, assinatura });
+    }
+  });
+  dados.participantesArr = participantesArr;
+
+  // EPIs marcados no checklist principal (Seção 6)
+  const episMarcados = [];
+  document.querySelectorAll('[id^="epi_chk_"]').forEach(chk => {
+    if (chk.checked) {
+      const span = chk.nextElementSibling;
+      episMarcados.push(span ? span.textContent : chk.id);
+    }
+  });
+  // Outros EPIs/EPCs digitados manualmente (considerados marcados se preenchidos)
+  document.querySelectorAll('[id^="epi_outros_txt_"]').forEach(txt => {
+    if (txt.value && txt.value.trim()) episMarcados.push(txt.value.trim());
+  });
+  dados.episMarcados = episMarcados;
 
   // Observações gerais
   const obsEl = document.querySelector('#pageContent textarea');
   if (obsEl) dados.observacoes = obsEl.value;
 
   return dados;
+}
+
+/* -- Verifica se um canvas de assinatura está em branco (nunca foi desenhado),
+   comparando com um canvas novo em branco das mesmas dimensões. -- */
+function _canvasEstaVazio(canvas) {
+  if (!canvas) return true;
+  try {
+    const blank = document.createElement('canvas');
+    blank.width = canvas.width; blank.height = canvas.height;
+    return canvas.toDataURL() === blank.toDataURL();
+  } catch(e) { return true; }
 }
 
 /* Pausa a APR — salva progresso no OneDrive sem fechar nem gerar PDF */
@@ -22839,10 +22872,43 @@ async function aprReabrirRascunho(id) {
     s('apr_hora_ini_' + tipoId, d.horaIni);
     s('apr_hora_fim_' + tipoId, d.horaFim);
     s('apr_resp_' + tipoId, d.responsavel);
-    // Restaurar participantes
-    if (d.participantes) {
-      Object.entries(d.participantes).forEach(([elId, val]) => {
-        const el = document.getElementById(elId); if(el) el.value = val;
+    // Restaurar participantes (nome/cargo/empresa + assinatura redesenhada no canvas)
+    if (Array.isArray(d.participantesArr) && d.participantesArr.length) {
+      const qtdSel = document.getElementById('qtd_participantes_' + tipoId);
+      if (qtdSel) qtdSel.value = String(d.participantesArr.length);
+      renderParticipantes(tipoId, d.participantesArr.length);
+      d.participantesArr.forEach((p, i) => {
+        const n = i + 1;
+        s('part_nome_' + tipoId + '_' + n, p.nome);
+        s('part_cargo_' + tipoId + '_' + n, p.cargo);
+        s('part_empresa_' + tipoId + '_' + n, p.empresa);
+        if (p.assinatura) {
+          const canvas = document.getElementById('sig_' + tipoId + '_' + n);
+          if (canvas) {
+            const ctx = canvas.getContext('2d');
+            const img = new Image();
+            img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            img.src = p.assinatura;
+          }
+        }
+      });
+    }
+    // Restaurar EPIs marcados (Seção 6) e "Outros EPIs" digitados
+    if (Array.isArray(d.episMarcados) && d.episMarcados.length) {
+      document.querySelectorAll('[id^="epi_chk_"]').forEach(chk => {
+        const span = chk.nextElementSibling;
+        const label = span ? span.textContent : '';
+        if (d.episMarcados.includes(label)) chk.checked = true;
+      });
+      const tipoDataRestore = (typeof APR_DADOS !== 'undefined') ? APR_DADOS[tipoId] : null;
+      const listaPadrao = (tipoDataRestore && tipoDataRestore.epis) || [];
+      const extras = d.episMarcados.filter(m => !listaPadrao.includes(m));
+      extras.slice(0, 4).forEach((texto, i) => {
+        const n = i + 1;
+        const txtEl = document.getElementById('epi_outros_txt_' + tipoId + '_' + n);
+        const chkEl = document.getElementById('epi_outros_chk_' + tipoId + '_' + n);
+        if (txtEl) txtEl.value = texto;
+        if (chkEl) chkEl.checked = true;
       });
     }
     // Restaurar LSS
@@ -27682,16 +27748,15 @@ async function gerarPDFapr(id, tipoAPR) {
     const horaIni = d.horaIni || '—';
     const horaFim = d.horaFim || '—';
 
-    // Participantes
+    // Participantes (nome + cargo + empresa + assinatura desenhada)
     let partHTML = '';
-    if (d.participantes && Object.keys(d.participantes).length) {
-      const nomes = Object.entries(d.participantes).filter(([k]) => k.startsWith('part_nome_')).map(([,v]) => v).filter(Boolean);
-      const cargos = Object.entries(d.participantes).filter(([k]) => k.startsWith('part_cargo_')).map(([,v]) => v);
-      partHTML = nomes.map((nome, i) => `
+    if (Array.isArray(d.participantesArr) && d.participantesArr.length) {
+      partHTML = d.participantesArr.map(p => `
         <tr>
-          <td style="padding:6px 8px;border:1px solid #ddd">${nome}</td>
-          <td style="padding:6px 8px;border:1px solid #ddd">${cargos[i]||'—'}</td>
-          <td style="padding:6px 8px;border:1px solid #ddd;width:120px"></td>
+          <td style="padding:6px 8px;border:1px solid #ddd">${p.nome||'—'}</td>
+          <td style="padding:6px 8px;border:1px solid #ddd">${p.cargo||'—'}</td>
+          <td style="padding:6px 8px;border:1px solid #ddd">${p.empresa||'—'}</td>
+          <td style="padding:4px 8px;border:1px solid #ddd;width:150px;text-align:center">${p.assinatura ? `<img src="${p.assinatura}" style="max-width:140px;max-height:36px">` : '—'}</td>
         </tr>`).join('');
     }
 
@@ -27808,19 +27873,25 @@ async function gerarPDFapr(id, tipoAPR) {
     let episHTML = '';
     if (tipoData && Array.isArray(tipoData.epis) && tipoData.epis.length) {
       const itensEpi = tipoData.epis;
+      const marcados = new Set(d.episMarcados || []);
       const colsEpi = 4;
       const linhasEpisArr = [];
       for (let i = 0; i < itensEpi.length; i += colsEpi) {
         const grupo = itensEpi.slice(i, i + colsEpi);
-        const tds = grupo.map(e => `<td style="width:${100 / colsEpi}%">☐ ${e}</td>`).join('');
+        const tds = grupo.map(e => {
+          const on = marcados.has(e);
+          return `<td style="width:${100 / colsEpi}%;${on ? 'font-weight:700;color:#2d8c5a' : ''}">${on ? '☑' : '☐'} ${e}</td>`;
+        }).join('');
         const vazio = colsEpi - grupo.length;
         const tdsVazio = vazio > 0 ? Array(vazio).fill('<td></td>').join('') : '';
         linhasEpisArr.push(`<tr>${tds}${tdsVazio}</tr>`);
       }
+      const extrasEpi = (d.episMarcados || []).filter(m => !itensEpi.includes(m));
+      const extrasEpiHTML = extrasEpi.length ? `<tr><td colspan="${colsEpi}" style="font-weight:700;color:#2d8c5a">☑ Outros EPIs/EPCs: ${extrasEpi.join(', ')}</td></tr>` : '';
       episHTML = `
       <div class="section" style="margin-bottom:10px">
         <div class="section-title">6. Checklist — Equipamentos de Proteção Individual / Coletiva</div>
-        <table><tbody>${linhasEpisArr.join('')}</tbody></table>
+        <table><tbody>${linhasEpisArr.join('')}${extrasEpiHTML}</tbody></table>
       </div>`;
     }
 
@@ -27898,9 +27969,8 @@ async function gerarPDFapr(id, tipoAPR) {
         <div class="field"><div class="field-label">Hora Início</div><div class="field-value">${horaIni}</div></div>
         <div class="field"><div class="field-label">Hora Fim</div><div class="field-value">${horaFim}</div></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+      <div style="display:grid;grid-template-columns:1fr;gap:0">
         <div class="field"><div class="field-label">Responsável pelo Preenchimento</div><div class="field-value">${resp}</div></div>
-        <div class="field"><div class="field-label">Resp. Técnico / ART</div><div class="field-value">Marcelo Marafon – CREA 6470 D/RO</div></div>
       </div>
     </div>
 
@@ -27917,7 +27987,7 @@ async function gerarPDFapr(id, tipoAPR) {
     <div class="section" style="margin-bottom:10px">
       <div class="section-title">9. Relação e Assinaturas dos Envolvidos</div>
       <table>
-        <thead><tr><th>Nome</th><th>Cargo/Função</th><th>Assinatura</th></tr></thead>
+        <thead><tr><th>Nome</th><th>Cargo/Função</th><th>Empresa</th><th>Assinatura</th></tr></thead>
         <tbody>${partHTML}</tbody>
       </table>
     </div>` : ''}
