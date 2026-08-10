@@ -1075,7 +1075,6 @@ const menus = {
       { id: 'aprovacoes', icon: '✅', label: 'Aprovações' },
       { id: 'docs', icon: '📁', label: 'Gestão Documental' },
       { id: 'relatorios', icon: '🌿', label: 'Licenciamento' },
-      { id: 'bpo', icon: '💼', label: 'BPO Financeiro' },
       { id: 'config', icon: '⚙️', label: 'Configurações' },
     ]},
   ],
@@ -1217,6 +1216,9 @@ function toggleNavGroup(groupId) {
 =============================== */
 function navigate(pageId) {
   currentPage = pageId;
+  // Ao entrar em Projetos pelo menu (não navegação interna), sempre volta
+  // pro hub de linhas de projeto, em vez de manter o último projeto aberto.
+  if (pageId === 'projetos') { PROJETOS_PROJETO_ATIVO = null; }
   abrirGrupoPai(currentProfile, pageId);
   renderNav(currentProfile);
   // Buscar label considerando grupos também
@@ -10048,6 +10050,23 @@ const PROJETOS_CHECKLIST_DISPENSA = [
   'Cópia do registro do ponto de captação no CNARH',
 ];
 
+/* -- Dados necessários para o cadastro no CNARH (Cadastro Nacional de
+   Usuários de Recursos Hídricos — ANA, cnarh.ana.gov.br). O cadastro em si
+   é feito ONLINE diretamente no sistema da ANA (não é um formulário em
+   papel) — esta lista é o que precisa estar em mãos antes de logar no
+   sistema. Fonte: Resolução ANA nº 317/2003 + FAQ oficial de órgãos
+   gestores estaduais que operam o CNARH. -- */
+const PROJETOS_CHECKLIST_CNARH = [
+  'Dados administrativos — Razão Social/nome completo e CPF ou CNPJ do empreendimento',
+  'Nome do responsável legal pelo empreendimento',
+  'Endereço completo para correspondência + telefone e e-mail de contato',
+  'Finalidade/uso da água (irrigação, dessedentação animal, uso industrial, abastecimento humano etc.) e dados da atividade (ex: área irrigada e método de irrigação, nº de cabeças de gado, produção mensal, população atendida — conforme o caso)',
+  'Vazão de captação de água solicitada (e/ou de lançamento de efluentes, se aplicável)',
+  'Coordenadas geográficas do ponto de captação (DATUM SIRGAS 2000)',
+  'Tipo de manancial captado (rio/igarapé, poço tubular, poço raso/cacimba, nascente etc.)',
+  'Cadastro de usuário no sistema (nome completo, CPF e e-mail) — gera senha de acesso por e-mail em cnarh.ana.gov.br',
+];
+
 function projetosTipoInfo(tipo) {
   const map = {
     superficial: { label: 'Captação Superficial', emoji: '🏞️', cor: 'blue' },
@@ -10131,13 +10150,66 @@ function projetosRenderConteudo() {
   el.innerHTML = projetosHtmlEmpreendimentos();
 }
 
+/* -- Projetos funciona como um hub: abre numa lista de "linhas de projeto"
+   (cards); cada uma tem sua própria interface. Hoje: Outorgas (módulo
+   completo abaixo) e Energisa Rondônia (ferramenta separada, embutida via
+   iframe). Novas linhas de projeto entram só adicionando um item em
+   PROJETOS_CATALOGO + o case correspondente em pageProjetos(). -- */
+let PROJETOS_PROJETO_ATIVO = null; // null = hub | 'outorgas' | 'energisa'
+
+const PROJETOS_CATALOGO = [
+  { chave: 'outorgas', icone: '💧', titulo: 'Outorgas — Recursos Hídricos (RO)', subtitulo: 'Regularização de outorgas de água junto à SEDAM-RO: empreendimentos, checklist documental por tipo e orçamentos.' },
+  { chave: 'energisa', icone: '⚡', titulo: 'Energisa Rondônia', subtitulo: 'Gestão dos 5 contratos ativos — OS, medições, plano de ações, seguros e inspeções.' },
+];
+
+function projetosAbrirProjeto(chave) {
+  PROJETOS_PROJETO_ATIVO = chave;
+  renderPage('projetos');
+}
+function projetosVoltarHub() {
+  PROJETOS_PROJETO_ATIVO = null;
+  renderPage('projetos');
+}
+
 function pageProjetos() {
+  if (PROJETOS_PROJETO_ATIVO === 'energisa') return projetosHtmlEnergisa();
+  if (!PROJETOS_PROJETO_ATIVO) return projetosHtmlHub();
+
+  // 'outorgas' (módulo original de Empreendimentos/Outorgas/Orçamentos)
   setTimeout(() => projetosCarregar(), 100);
   return `
-  <div class="page-header"><h1>Projetos — Regularização de Outorgas</h1><p>Empreendimentos, outorgas de recursos hídricos (SEDAM-RO) e orçamentos do serviço de regularização — acesso restrito à Diretoria</p></div>
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div><h1>💧 Projetos — Outorgas</h1><p>Empreendimentos, outorgas de recursos hídricos (SEDAM-RO) e orçamentos do serviço de regularização</p></div>
+    <button class="btn-secondary" onclick="projetosVoltarHub()">← Todos os Projetos</button>
+  </div>
   <div id="projetos-toolbar"></div>
   <div id="projetos-conteudo"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   `;
+}
+
+function projetosHtmlHub() {
+  return `
+  <div class="page-header"><h1>Projetos</h1><p>Linhas de projeto/contrato geridas pela Diretoria — acesso restrito</p></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
+    ${PROJETOS_CATALOGO.map(p => `
+    <div class="card" style="cursor:pointer" onclick="projetosAbrirProjeto('${p.chave}')">
+      <div style="font-size:1.8rem;margin-bottom:8px">${p.icone}</div>
+      <div class="card-title" style="margin-bottom:6px">${p.titulo}</div>
+      <div style="font-size:.78rem;color:var(--text-muted)">${p.subtitulo}</div>
+    </div>`).join('')}
+  </div>`;
+}
+
+function projetosHtmlEnergisa() {
+  return `
+  <div style="position:fixed;top:var(--header-h);left:var(--sidebar-w);right:0;bottom:0;overflow:hidden;z-index:10">
+    <button class="btn-secondary" onclick="projetosVoltarHub()" style="position:absolute;top:10px;left:10px;z-index:11;box-shadow:0 2px 8px rgba(0,0,0,.25)">← Todos os Projetos</button>
+    <iframe
+      src="./gestao_energisa_ero.html"
+      style="width:100%;height:100%;border:none;display:block;background:#fff"
+      title="Gestão Energisa Rondônia">
+    </iframe>
+  </div>`;
 }
 
 function projetosFecharModal(idModal) {
@@ -10346,13 +10418,26 @@ function projetosAbrirModalOutorga(id) {
         <div class="form-group" style="margin:0"><label>Responsável Técnico</label><input id="po_rt" value="${(existente && existente.ResponsavelTecnico || '').replace(/"/g, '&quot;')}" placeholder="Nome do RT"></div>
         <div class="form-group" style="margin:0"><label>CREA-RO do RT</label><input id="po_rt_crea" value="${(existente && existente.ResponsavelTecnicoCREA || '').replace(/"/g, '&quot;')}" placeholder="Ex: 12345-RO"></div>
       </div>
+      <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:10px">
+        <div style="font-weight:700;font-size:.78rem;margin-bottom:8px">Dados para os formulários (Requerimento / CNARH)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div class="form-group" style="margin:0"><label>Finalidade do uso da água</label><input id="po_finalidade_uso" value="${(existente && existente.FinalidadeUso || '').replace(/"/g, '&quot;')}" placeholder="Ex: Irrigação, dessedentação animal, uso industrial..."></div>
+          <div class="form-group" style="margin:0"><label>Manancial / Identificação do poço</label><input id="po_manancial" value="${(existente && existente.Manancial || '').replace(/"/g, '&quot;')}" placeholder="Ex: Igarapé Bugio / Poço PT-01"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="form-group" style="margin:0"><label>Vazão solicitada (L/s)</label><input type="number" step="0.01" id="po_vazao" value="${existente && existente.Vazao || ''}" placeholder="Ex: 2.5"></div>
+          <div class="form-group" style="margin:0"><label>Coordenadas do ponto (SIRGAS 2000)</label><input id="po_coordenadas" value="${(existente && existente.Coordenadas || '').replace(/"/g, '&quot;')}" placeholder="Ex: -10.9472, -63.0325"></div>
+        </div>
+      </div>
       <div class="form-group" style="margin-bottom:14px"><label>Observações</label><textarea id="po_obs" rows="2">${existente && existente.Observacoes || ''}</textarea></div>
 
       <div id="po_checklist_wrap"></div>
 
-      <div style="display:flex;justify-content:space-between;gap:8px;margin-top:16px">
+      <div style="display:flex;justify-content:space-between;gap:8px;margin-top:16px;flex-wrap:wrap">
         <div>${existente ? `<button class="btn-secondary" style="color:var(--red);border-color:var(--red)" onclick="projetosExcluirOutorga(${existente.Id})">🗑️ Excluir</button>` : '<span></span>'}</div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-secondary" onclick="projetosImprimirChecklist()">🖨️ Imprimir Checklist</button>
+          <button class="btn-secondary" onclick="projetosImprimirRequerimento()">📝 Imprimir Requerimento</button>
           <button class="btn-secondary" onclick="projetosFecharModal('projetos-modal-outorga')">Cancelar</button>
           <button class="btn-primary" onclick="projetosSalvarOutorga()">💾 Salvar</button>
         </div>
@@ -10421,6 +10506,10 @@ async function projetosSalvarOutorga() {
     DataProtocolo: document.getElementById('po_data_protocolo').value,
     ResponsavelTecnico: document.getElementById('po_rt').value.trim(),
     ResponsavelTecnicoCREA: document.getElementById('po_rt_crea').value.trim(),
+    FinalidadeUso: document.getElementById('po_finalidade_uso').value.trim(),
+    Manancial: document.getElementById('po_manancial').value.trim(),
+    Vazao: document.getElementById('po_vazao').value.trim(),
+    Coordenadas: document.getElementById('po_coordenadas').value.trim(),
     Observacoes: document.getElementById('po_obs').value.trim(),
     Checklist: window._projOutorgaChecklistState || {},
     DataAtualizacao: new Date().toISOString().split('T')[0],
@@ -10451,6 +10540,132 @@ async function projetosExcluirOutorga(id) {
   const ok = await dbSalvar('Outorgas', lista);
   showToast(ok ? '🗑️ Outorga excluída.' : '❌ Erro ao excluir.');
   if (ok) { projetosFecharModal('projetos-modal-outorga'); await projetosCarregar(); }
+}
+
+/* -- Lê os dados do formulário de Outorga atualmente aberto no modal —
+   usado tanto para imprimir o checklist quanto os requerimentos. -- */
+function projetosDadosFormularioAtual() {
+  const empId = Number((document.getElementById('po_empreendimento') || {}).value);
+  const emp = PROJETOS_EMPREENDIMENTOS.find(e => e.Id === empId) || {};
+  const tipo = (document.getElementById('po_tipo') || {}).value || 'superficial';
+  const finalidade = tipo === 'cacimba' ? (document.getElementById('po_finalidade') || {}).value : '';
+  return {
+    emp, tipo, finalidade,
+    status: (document.getElementById('po_status') || {}).value || '',
+    processo: (document.getElementById('po_processo') || {}).value.trim() || '',
+    dataProtocolo: (document.getElementById('po_data_protocolo') || {}).value || '',
+    rt: (document.getElementById('po_rt') || {}).value.trim() || '',
+    rtCrea: (document.getElementById('po_rt_crea') || {}).value.trim() || '',
+    finalidadeUso: (document.getElementById('po_finalidade_uso') || {}).value.trim() || '',
+    manancial: (document.getElementById('po_manancial') || {}).value.trim() || '',
+    vazao: (document.getElementById('po_vazao') || {}).value.trim() || '',
+    coordenadas: (document.getElementById('po_coordenadas') || {}).value.trim() || '',
+    obs: (document.getElementById('po_obs') || {}).value.trim() || '',
+    checklist: window._projOutorgaChecklistState || {},
+  };
+}
+
+/* -- Checklist imprimível: itens SEDAM/COREH (conforme tipo + finalidade)
+   + itens do cadastro no CNARH — com a mesma identidade visual (letterhead)
+   usada nos demais documentos do sistema (ASO, Rescisão etc). -- */
+function projetosImprimirChecklist() {
+  const d = projetosDadosFormularioAtual();
+  if (!d.emp || !d.emp.Nome) { showToast('⚠️ Selecione o empreendimento antes de imprimir.'); return; }
+  const info = projetosTipoInfo(d.tipo);
+  const itensSedam = projetosChecklistItens(d.tipo, d.finalidade);
+  const linhaItem = (it, marcado) => `<tr><td style="width:22px;text-align:center;font-weight:800;font-size:12px">${marcado ? '√' : '☐'}</td><td style="font-size:10px">${it}</td></tr>`;
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Checklist Outorga — ${d.emp.Nome}</title>
+  ${ASO_FONT_CSS}<style>${gdDocHeaderFooterCSS()}</style></head><body>
+  <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>
+  <table class="doc-wrap">
+    <thead><tr><td>${gdDocHeaderHtml('CHECKLIST DOCUMENTAL — OUTORGA DE RECURSOS HÍDRICOS', 'EXP-PROJ-CHK-01')}</td></tr></thead>
+    <tfoot><tr><td>${gdDocFooterHtml()}</td></tr></tfoot>
+    <tbody><tr><td>
+
+    <table class="dados" style="width:100%;border-collapse:collapse;margin-bottom:10px">
+      <tr><td style="font-weight:700;width:140px">Empreendimento</td><td>${d.emp.Nome}</td></tr>
+      <tr><td style="font-weight:700">CPF/CNPJ</td><td>${d.emp.CPF_CNPJ || '—'}</td></tr>
+      <tr><td style="font-weight:700">Município</td><td>${d.emp.Municipio || '—'} / RO</td></tr>
+      <tr><td style="font-weight:700">Tipo de Outorga</td><td>${info.emoji} ${info.label}${d.finalidade ? ' — ' + (d.finalidade === 'economica' ? 'uso econômico' : 'subsistência') : ''}</td></tr>
+      <tr><td style="font-weight:700">Nº do Processo</td><td>${d.processo || '—'}</td></tr>
+      <tr><td style="font-weight:700">Responsável Técnico</td><td>${d.rt || '—'}${d.rtCrea ? ' — CREA ' + d.rtCrea : ''}</td></tr>
+    </table>
+
+    <h2>Documentação — SEDAM/COREH (Portaria GAB/SEDAM nº 081/2017)</h2>
+    <table style="width:100%;border-collapse:collapse">${itensSedam.map(it => linhaItem(it, !!d.checklist[it])).join('')}</table>
+
+    <h2>Cadastro no CNARH (ANA)</h2>
+    <table style="width:100%;border-collapse:collapse">${PROJETOS_CHECKLIST_CNARH.map(it => linhaItem(it, false)).join('')}</table>
+
+    <p style="text-align:center;font-size:8px;color:#999;margin-top:16px">Gerado pelo APP Expedian em ${new Date().toLocaleDateString('pt-BR')} — conferir sempre a versão vigente da legislação junto à SEDAM-RO/ANA.</p>
+
+    </td></tr></tbody>
+  </table>
+  </body></html>`;
+
+  const w = window.open('', '_blank', 'width=880,height=740,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para gerar o checklist.'); return; }
+  w.document.write(html); w.document.close();
+}
+
+/* -- Minuta de requerimento pré-preenchida com os dados já cadastrados do
+   empreendimento/outorga — não é o formulário oficial literal da SEDAM
+   (que é entregue em papel timbrado próprio), mas reúne tudo que precisa
+   ser transcrito, evitando digitar os mesmos dados de novo. -- */
+function projetosImprimirRequerimento() {
+  const d = projetosDadosFormularioAtual();
+  if (!d.emp || !d.emp.Nome) { showToast('⚠️ Selecione o empreendimento antes de imprimir.'); return; }
+  const info = projetosTipoInfo(d.tipo);
+  const ehDispensa = d.tipo === 'cacimba' && d.finalidade !== 'economica';
+  const tipoDoc = ehDispensa ? 'DISPENSA DE OUTORGA' : 'OUTORGA DO DIREITO DE USO DE RECURSOS HÍDRICOS';
+  const hoje = new Date().toLocaleDateString('pt-BR');
+  const docLabel = d.emp.TipoPessoa === 'PJ' ? 'CNPJ' : 'CPF';
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Requerimento — ${d.emp.Nome}</title>
+  ${ASO_FONT_CSS}<style>${gdDocHeaderFooterCSS()}</style></head><body>
+  <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>
+  <table class="doc-wrap">
+    <thead><tr><td>${gdDocHeaderHtml('MINUTA — REQUERIMENTO DE ' + tipoDoc, 'EXP-PROJ-REQ-01')}</td></tr></thead>
+    <tfoot><tr><td>${gdDocFooterHtml()}</td></tr></tfoot>
+    <tbody><tr><td>
+
+    <p style="font-size:8px;color:#b07700;background:#fffbeb;border:1px solid #f59e0b;padding:6px 10px;border-radius:4px;margin-bottom:12px">⚠️ Minuta gerada automaticamente a partir dos dados cadastrados no sistema — conferir todas as informações e transcrever para o formulário oficial vigente da SEDAM/COREH antes de protocolar.</p>
+
+    <h2>Ilmo(a). Sr(a). Coordenador(a) da COREH/SEDAM — Porto Velho/RO</h2>
+    <p>${d.emp.Nome}, inscrito(a) no ${docLabel} sob o nº ${d.emp.CPF_CNPJ || '____________________'}, com endereço em ${d.emp.Endereco || '____________________'}, município de ${d.emp.Municipio || '____________________'}/RO${d.emp.Contato && d.emp.Contato.telefone ? ', telefone ' + d.emp.Contato.telefone : ''}${d.emp.Contato && d.emp.Contato.email ? ', e-mail ' + d.emp.Contato.email : ''}, vem requerer a esta Secretaria a <strong>${tipoDoc}</strong>, para captação do tipo <strong>${info.label}</strong>, conforme dados abaixo.</p>
+
+    <h2>Dados da Captação</h2>
+    <table class="dados" style="width:100%;border-collapse:collapse">
+      <tr><td style="font-weight:700;width:200px">Finalidade do uso da água</td><td>${d.finalidadeUso || '____________________'}</td></tr>
+      <tr><td style="font-weight:700">Manancial / Poço</td><td>${d.manancial || '____________________'}</td></tr>
+      <tr><td style="font-weight:700">Vazão solicitada</td><td>${d.vazao ? d.vazao + ' L/s' : '____________________'}</td></tr>
+      <tr><td style="font-weight:700">Coordenadas (SIRGAS 2000)</td><td>${d.coordenadas || '____________________'}</td></tr>
+      ${d.finalidade ? `<tr><td style="font-weight:700">Finalidade (Res. CRH/RO nº 04/2014)</td><td>${d.finalidade === 'economica' ? 'Uso econômico' : 'Subsistência'}</td></tr>` : ''}
+    </table>
+
+    <h2>Responsável Técnico</h2>
+    <table class="dados" style="width:100%;border-collapse:collapse">
+      <tr><td style="font-weight:700;width:200px">Nome</td><td>${d.rt || '____________________'}</td></tr>
+      <tr><td style="font-weight:700">CREA-RO</td><td>${d.rtCrea || '____________________'}</td></tr>
+    </table>
+
+    ${d.obs ? `<h2>Observações</h2><p>${d.obs}</p>` : ''}
+
+    <p style="text-align:center;margin-top:24px">Porto Velho/RO, ${hoje}.</p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:36px">
+      <div style="text-align:center"><div style="border-top:1px solid #3F261F;padding-top:4px;margin-top:36px;font-size:9px">Requerente — ${d.emp.Nome}</div></div>
+      <div style="text-align:center"><div style="border-top:1px solid #3F261F;padding-top:4px;margin-top:36px;font-size:9px">Responsável Técnico — ${d.rt || ''}${d.rtCrea ? ' — CREA ' + d.rtCrea : ''}</div></div>
+    </div>
+
+    </td></tr></tbody>
+  </table>
+  </body></html>`;
+
+  const w = window.open('', '_blank', 'width=880,height=740,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para gerar o requerimento.'); return; }
+  w.document.write(html); w.document.close();
 }
 
 /* ============ ORÇAMENTOS ============ */
