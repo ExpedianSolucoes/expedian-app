@@ -1020,7 +1020,7 @@
     <img id="_headerLogoImg" src="" alt="EXPEDIAN" style="height:28px;opacity:.7;display:none" class="header-logo-desk"><script>(function(){var s=document.getElementById('_appLogoSrc');if(!s)return;var src=s.getAttribute('src');['_sidebarLogoImg','_headerLogoImg'].forEach(function(id){var el=document.getElementById(id);if(el)el.setAttribute('src',src);});})();</script>
     <div class="header-actions">
       <span class="conn-status" id="connStatus" title="Status da conexão">🟢 Conectado</span>
-      <div class="btn-icon notif-badge" title="Notificações — clique para ver pendências" onclick="navigate((currentProfile==='diretoria'||currentProfile==='coordenador')?'aprovacoes':(window._notifColabDestino||'equipamentos'))" style="cursor:pointer">🔔</div>
+      <div class="btn-icon notif-badge" title="Notificações — clique para ver pendências" onclick="navigate((currentProfile==='diretoria'||currentProfile==='coordenador')?(window._notifDiretoriaDestino||'aprovacoes'):(window._notifColabDestino||'equipamentos'))" style="cursor:pointer">🔔</div>
       <span class="pending-badge" id="pendingBadge" title="Registros pendentes de sync">^0</span>
       <div class="btn-icon" title="Pesquisar">🔍</div>
       <div class="btn-icon" title="Configurações">⚙️</div>
@@ -10166,8 +10166,37 @@ const PROJETOS_CATALOGO = [
   { chave: 'energisa', icone: '⚡', titulo: 'Energisa Rondônia', subtitulo: 'Gestão dos 5 contratos ativos — OS, medições, plano de ações, seguros e inspeções.' },
 ];
 
+let PROJETOS_FLASH_PENDENTES = 0;
+
+/* -- Flash Reports que os colaboradores preenchem no Checklist (aba fora de
+   Projetos) aparecem aqui como um badge de "novos" no card Energisa do hub,
+   e entram na contagem do sino 🔔 pra Diretoria/Coordenador. Ficam marcados
+   como vistos assim que a Diretoria abre o projeto Energisa. -- */
+async function projetosCarregarFlashPendentes() {
+  try {
+    const lista = await dbLer('FlashReportsEnergisa') || [];
+    PROJETOS_FLASH_PENDENTES = lista.filter(f => f.Visualizado === false).length;
+  } catch (e) { PROJETOS_FLASH_PENDENTES = 0; }
+  const badge = document.getElementById('projetos-hub-flash-badge');
+  if (badge) badge.outerHTML = PROJETOS_FLASH_PENDENTES > 0
+    ? `<span id="projetos-hub-flash-badge" style="position:absolute;top:10px;right:10px;background:var(--red);color:#fff;font-size:.68rem;font-weight:800;padding:2px 8px;border-radius:20px">🚧 ${PROJETOS_FLASH_PENDENTES} novo${PROJETOS_FLASH_PENDENTES === 1 ? '' : 's'}</span>`
+    : `<span id="projetos-hub-flash-badge"></span>`;
+}
+
+async function projetosMarcarFlashVisualizados() {
+  try {
+    const lista = await dbLer('FlashReportsEnergisa') || [];
+    const pendentes = lista.filter(f => f.Visualizado === false);
+    if (!pendentes.length) return;
+    await Promise.all(pendentes.map(f => dbAtualizar('FlashReportsEnergisa', f.Id, { Visualizado: true })));
+    PROJETOS_FLASH_PENDENTES = 0;
+    atualizarBadgeNotificacoes();
+  } catch (e) {}
+}
+
 function projetosAbrirProjeto(chave) {
   PROJETOS_PROJETO_ATIVO = chave;
+  if (chave === 'energisa') projetosMarcarFlashVisualizados();
   renderPage('projetos');
 }
 function projetosVoltarHub() {
@@ -10177,7 +10206,7 @@ function projetosVoltarHub() {
 
 function pageProjetos() {
   if (PROJETOS_PROJETO_ATIVO === 'energisa') return projetosHtmlEnergisa();
-  if (!PROJETOS_PROJETO_ATIVO) return projetosHtmlHub();
+  if (!PROJETOS_PROJETO_ATIVO) { setTimeout(() => projetosCarregarFlashPendentes(), 100); return projetosHtmlHub(); }
 
   // 'outorgas' (módulo original de Empreendimentos/Outorgas/Orçamentos)
   setTimeout(() => projetosCarregar(), 100);
@@ -10196,7 +10225,8 @@ function projetosHtmlHub() {
   <div class="page-header"><h1>Projetos</h1><p>Linhas de projeto/contrato geridas pela Diretoria — acesso restrito</p></div>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
     ${PROJETOS_CATALOGO.map(p => `
-    <div class="card" style="cursor:pointer" onclick="projetosAbrirProjeto('${p.chave}')">
+    <div class="card" style="cursor:pointer;position:relative" onclick="projetosAbrirProjeto('${p.chave}')">
+      ${p.chave === 'energisa' ? '<span id="projetos-hub-flash-badge"></span>' : ''}
       <div style="font-size:1.8rem;margin-bottom:8px">${p.icone}</div>
       <div class="card-title" style="margin-bottom:6px">${p.titulo}</div>
       <div style="font-size:.78rem;color:var(--text-muted)">${p.subtitulo}</div>
@@ -18954,6 +18984,7 @@ async function flashSalvar() {
     Atividades: d.atividades, PrevisaoAmanha: d.amanha, Observacoes: d.obs,
     ckAtividades: d.ckAtividades || {}, ckVerificacoes: d.ckVerificacoes || {}, ckOcorrencias: d.ckOcorrencias || {},
     fotos: d.fotos || [],
+    Visualizado: false,
     CriadoPor: window._currentUser ? window._currentUser.name : '',
     CriadoPorNome: window._currentUser ? window._currentUser.name : '',
     CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
@@ -18967,9 +18998,21 @@ async function flashSalvar() {
 }
 
 function flashHtmlHistorico() {
-  const lista = (window._flashHistorico || []).slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || '')).slice(0, 30);
+  const lista = (window._flashHistorico || []).slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || '')).slice(0, 60);
   if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado ainda.</div>';
-  return `<div class="alert-list">${lista.map(f => {
+
+  // Agrupa por data — quando há mais de uma frente lançada no mesmo dia, elas
+  // aparecem juntas sob o mesmo cabeçalho de data (cada uma é um registro
+  // independente, um por frente/empreiteira).
+  const grupos = [];
+  const porData = {};
+  lista.forEach(f => {
+    const chave = f.Data || '—';
+    if (!porData[chave]) { porData[chave] = []; grupos.push(chave); }
+    porData[chave].push(f);
+  });
+
+  const linhaF = f => {
     const marcadosAtiv = Object.values(f.ckAtividades || {}).filter(Boolean).length;
     const marcadosVerif = Object.values(f.ckVerificacoes || {}).filter(Boolean).length;
     const temOcorr = Object.entries(f.ckOcorrencias || {}).some(([k, v]) => v && k !== 'semocorr');
@@ -18978,12 +19021,24 @@ function flashHtmlHistorico() {
       <div style="font-size:1.2rem">🚧</div>
       <div style="flex:1;min-width:0">
         <div class="name">${f.FrenteNome || f.FrenteId || '—'}</div>
-        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—'} · ${f.ResponsavelTecnico || '—'} · por ${f.CriadoPorNome || '—'}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${f.ResponsavelTecnico || '—'} · por ${f.CriadoPorNome || '—'}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">✅ ${marcadosAtiv}/${FLASH_ATIVIDADES.length} atividades · ${marcadosVerif}/${FLASH_VERIFICACOES.length} verificações${(f.fotos||[]).length ? ' · 📷 ' + f.fotos.length : ''}</div>
       </div>
       ${temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Ocorrência</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ OK</span>'}
     </div>`;
-  }).join('')}</div>`;
+  };
+
+  return grupos.map(data => {
+    const itens = porData[data];
+    const dataFmt = data !== '—' ? new Date(data + 'T12:00').toLocaleDateString('pt-BR') : '—';
+    return `
+    <div style="margin-bottom:14px">
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+        📅 ${dataFmt}${itens.length > 1 ? ` <span style="background:var(--surface2);border-radius:20px;padding:1px 8px;font-weight:700;letter-spacing:0">${itens.length} frentes</span>` : ''}
+      </div>
+      <div class="alert-list">${itens.map(linhaF).join('')}</div>
+    </div>`;
+  }).join('');
 }
 
 function pageChecklistFlash() {
@@ -19033,9 +19088,9 @@ function pageChecklistFlash() {
     <div style="margin-bottom:14px">
       <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">📷 Registros fotográficos</label>
       <button class="btn-secondary" style="padding:6px 12px;font-size:.75rem" onclick="flashAddFoto()">📷 Adicionar foto</button>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px">
         ${fotos.map((f, i) => `
-        <div style="width:110px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px;text-align:center">
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px;text-align:center">
           ${f.dataUrl ? `<img src="${f.dataUrl}" style="width:100%;border-radius:5px;margin-bottom:4px">` : `<label style="display:block;cursor:pointer;font-size:.68rem;color:var(--text-muted);padding:16px 0"><input type="file" accept="image/*" capture="environment" style="display:none" onchange="flashCarregarFoto(event,${i})">📷 Tirar/anexar</label>`}
           <input value="${(f.desc || '').replace(/"/g, '&quot;')}" oninput="flashAtualizarFotoDesc(${i}, this.value)" placeholder="Descrição" style="width:100%;font-size:.65rem;padding:3px 5px;border:1px solid var(--border);border-radius:4px;margin-bottom:4px">
           <span onclick="flashRemFoto(${i})" style="cursor:pointer;color:var(--red);font-size:.65rem">✕ remover</span>
@@ -20475,6 +20530,7 @@ let _ultimaContagemNotif = null;
 let _ultimaContagemNotifDespesas = null;
 let _ultimaContagemNotifEquip = null;
 let _ultimaContagemNotifPrest = null;
+let _ultimaContagemNotifFlash = null;
 
 /* -- Despesas com vencimento próximo (ou vencidas recentemente), usada pelo badge de
       notificações e pelo card "A vencer" do Financeiro. Regras:
@@ -20570,19 +20626,37 @@ async function atualizarBadgeNotificacoes() {
   }
   const ehGestorGeral = usuario.role === 'Gestor Geral';
   try {
-    const [aprs, prests, contasPagar, despesas, adiantamentos] = await Promise.all([
-      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos')
+    const [aprs, prests, contasPagar, despesas, adiantamentos, flashReports] = await Promise.all([
+      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos'), dbLer('FlashReportsEnergisa')
     ]);
     const aprsPendentes = aprs.filter(r =>
       r.Status === 'Em Aberto' && (ehGestorGeral || r.Gestor === usuario.name)
     );
     const despesasVencendo = despesasVencendoEmBreve(despesas);
-    const total =
+    const flashPendentes = (flashReports || []).filter(f => f.Visualizado === false);
+    const totalAprovacoesPuras =
       aprsPendentes.length +
       prests.filter(r => r.Status === 'Em Aberto').length +
       contasPagar.filter(r => r.Status === 'Aguardando Aprovação').length +
       adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').length +
       despesasVencendo.length;
+    const total = totalAprovacoesPuras + flashPendentes.length;
+
+    // Se só há Flash Reports pendentes (sem nenhuma aprovação financeira/APR
+    // em aberto), o sino leva direto pra Projetos em vez de Aprovações.
+    window._notifDiretoriaDestino = (totalAprovacoesPuras === 0 && flashPendentes.length > 0) ? 'projetos' : 'aprovacoes';
+
+    // Detectar NOVOS Flash Reports desde a última checagem -> som + push
+    if (_ultimaContagemNotifFlash !== null && flashPendentes.length > _ultimaContagemNotifFlash) {
+      const novos = flashPendentes.length - _ultimaContagemNotifFlash;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '🚧 EXPEDIAN — Flash Report Energisa',
+        novos === 1 ? 'Um colaborador enviou um novo Flash Report de campo.' : `${novos} novos Flash Reports de campo foram enviados.`,
+        'projetos'
+      );
+    }
+    _ultimaContagemNotifFlash = flashPendentes.length;
 
     // Detectar NOVAS despesas entrando na janela de vencimento -> mensagem específica
     if (_ultimaContagemNotifDespesas !== null && despesasVencendo.length > _ultimaContagemNotifDespesas) {
@@ -20597,7 +20671,8 @@ async function atualizarBadgeNotificacoes() {
     _ultimaContagemNotifDespesas = despesasVencendo.length;
 
     // Detectar NOVAS pendências desde a última checagem -> som + notificação push
-    const totalAprovacoes = total - despesasVencendo.length;
+    // (exclui despesas vencendo e Flash Reports, que já têm push dedicado acima)
+    const totalAprovacoes = totalAprovacoesPuras - despesasVencendo.length;
     if (_ultimaContagemNotif !== null && totalAprovacoes > _ultimaContagemNotif) {
       const novas = totalAprovacoes - _ultimaContagemNotif;
       _notifTocarSom();
