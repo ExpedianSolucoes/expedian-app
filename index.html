@@ -9354,6 +9354,7 @@ function pageAprovacoes() {
     <div class="kpi-card amber"><div class="kpi-label">Prestações Pendentes</div><div class="kpi-value" id="aprov-kpi-prest">—</div><div class="kpi-icon">📑</div></div>
     <div class="kpi-card amber"><div class="kpi-label">C. a Pagar Pendentes</div><div class="kpi-value" id="aprov-kpi-pagar">—</div><div class="kpi-icon">💸</div></div>
     <div class="kpi-card amber"><div class="kpi-label">Adiantamentos Pendentes</div><div class="kpi-value" id="aprov-kpi-adiantamento">—</div><div class="kpi-icon">💵</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Outras Solicitações</div><div class="kpi-value" id="aprov-kpi-solic">—</div><div class="kpi-icon">📝</div></div>
   </div>
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">APRs Aguardando Aprovação</div>
@@ -9366,6 +9367,10 @@ function pageAprovacoes() {
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">Solicitações de Adiantamento Aguardando Aprovação</div>
     <div id="aprov-lista-adiantamento"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Outras Solicitações Pendentes — Veículo, Equipamento, Compras, Falta e Outras</div>
+    <div id="aprov-lista-solic"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
 }
 
@@ -9374,8 +9379,8 @@ async function carregarAprovacoes() {
   const ehGestorGeral = usuario.role === 'Gestor Geral';
 
   // Carregar KPIs
-  const [aprs, prests, contas, adiantamentos] = await Promise.all([
-    dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Adiantamentos')
+  const [aprs, prests, contas, adiantamentos, solicGerais] = await Promise.all([
+    dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Adiantamentos'), dbLer('SolicitacoesGerais')
   ]);
   const aprsDoUsuario = r => ehGestorGeral || r.Gestor === usuario.name;
 
@@ -9384,6 +9389,7 @@ async function carregarAprovacoes() {
   setPill('aprov-kpi-pagar', contas.filter(r => r.Status === 'Aguardando Aprovação').length);
   setPill('aprov-kpi-prest', prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor').length);
   setPill('aprov-kpi-adiantamento', adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').length);
+  setPill('aprov-kpi-solic', (solicGerais || []).filter(r => r.Status === 'Pendente').length);
 
   // APRs em aberto (Gestor Geral vê todas; demais gestores só as endereçadas a eles)
   const elAPR = document.getElementById('aprov-lista-apr');
@@ -9458,6 +9464,70 @@ async function carregarAprovacoes() {
         </tr>`).join('') + '</tbody></table></div>';
     }
   }
+
+  // Outras Solicitações (Veículo, Equipamento, Compras, Informação de Falta, Outra)
+  const elSolic = document.getElementById('aprov-lista-solic');
+  if (elSolic) {
+    const pendentes = (solicGerais || []).filter(r => r.Status === 'Pendente').sort((a,b) => b.Id - a.Id);
+    if (!pendentes.length) {
+      elSolic.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma solicitação pendente. ✅</div>';
+    } else {
+      elSolic.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tipo</th><th>Solicitante</th><th>Descrição</th><th>Data</th><th>Ações</th></tr></thead><tbody>' +
+        pendentes.map(i => `<tr>
+          <td><strong>${(i.TipoLabel || i.Tipo || '—')}${i.TipoOutro ? ' — ' + i.TipoOutro : ''}</strong></td>
+          <td>${i.Solicitante || '—'}</td>
+          <td style="font-size:.75rem;max-width:260px">${(i.Descricao || '—').toString().substring(0,90)}</td>
+          <td style="font-size:.75rem">${i.DataNecessaria ? new Date(i.DataNecessaria + 'T12:00').toLocaleDateString('pt-BR') : (i.Created ? new Date(i.Created).toLocaleDateString('pt-BR') : '—')}</td>
+          <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
+            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="solicVisualizar(${i.Id})">👁️ Visualizar</button>
+            <button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarSolicitacaoGeral(${i.Id})">✅ Aprovar</button>
+            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarSolicitacaoGeral(${i.Id})">↩️ Reprovar</button>
+          </td>
+        </tr>`).join('') + '</tbody></table></div>';
+    }
+  }
+}
+
+/* -- Visualiza os detalhes de uma Solicitação Geral (Veículo/Equipamento/Compras/
+   Informação de Falta/Outra), incluindo anexo e horário correto do ponto quando houver. -- */
+async function solicVisualizar(id) {
+  const existente = document.getElementById('solic-view-modal'); if (existente) existente.remove();
+  const todos = await dbLer('SolicitacoesGerais');
+  const r = todos.find(x => x.Id === id);
+  if (!r) { showToast('⚠️ Solicitação não encontrada.'); return; }
+  const linha = (label, valor) => valor ? `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
+    <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>` : '';
+  const modal = document.createElement('div');
+  modal.id = 'solic-view-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:22px;max-width:480px;width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-weight:800;font-size:1rem">👁️ ${r.TipoLabel || r.Tipo || 'Solicitação'}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('solic-view-modal').remove()">✕</div>
+      </div>
+      ${linha('Solicitante', r.Solicitante)}
+      ${linha('Data', r.DataNecessaria ? new Date(r.DataNecessaria + 'T12:00').toLocaleDateString('pt-BR') : '')}
+      ${linha('Projeto/Obra', r.Projeto)}
+      ${linha('Urgência', r.Urgencia)}
+      ${linha('Descrição', r.Descricao)}
+      ${linha('Marcação de ponto', r.ComPontoErrado ? ('Correção — ' + (r.PontoTipo||'') + ' às ' + (r.HorarioCorreto||'')) : '')}
+      ${r.AnexoUrl ? `<div style="margin-top:10px"><a href="${r.AnexoUrl}" target="_blank" class="btn-secondary" style="display:inline-block;padding:6px 12px;font-size:.78rem;text-decoration:none">📎 Ver anexo${r.AnexoNome ? ' — ' + r.AnexoNome : ''}</a></div>` : ''}
+      ${linha('Status', r.Status)}
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function aprovarSolicitacaoGeral(id) {
+  const ok = await dbAtualizar('SolicitacoesGerais', parseInt(id), { Status: 'Aprovada', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0] });
+  showToast(ok ? '✅ Solicitação aprovada!' : '❌ Erro ao aprovar');
+  setTimeout(() => { carregarAprovacoes(); if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); }, 600);
+}
+async function reprovarSolicitacaoGeral(id) {
+  const motivo = prompt('Motivo da reprovação (opcional):', '') || '';
+  const ok = await dbAtualizar('SolicitacoesGerais', parseInt(id), { Status: 'Reprovada', MotivoReprovacao: motivo, ReprovadoPor: window._currentUser ? window._currentUser.name : '' });
+  showToast(ok ? '↩️ Solicitação reprovada.' : '❌ Erro');
+  setTimeout(() => { carregarAprovacoes(); if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); }, 600);
 }
 
 async function aprovarPrestacao(id) {
@@ -13530,29 +13600,240 @@ function pageDocumentos() {
 }
 
 /* -- SOLICITAÇÕES -- */
+/* =============================================================
+   SOLICITAÇÕES (Colaborador) — formulário único com múltiplos tipos:
+   Veículo, Equipamento, Compras, Adiantamento (grava na mesma tabela/fluxo
+   usado pelos gestores, então já cai direto nas Aprovações da Diretoria),
+   Informação de Falta (com anexo de atestado/documento e opção de informar
+   o horário correto do ponto) e Outra (tipo livre, quando não está na lista).
+   ============================================================= */
+const SOLIC_TIPOS = [
+  { id: 'veiculo', icon: '🚗', label: 'Veículo' },
+  { id: 'equipamento', icon: '🔧', label: 'Equipamento' },
+  { id: 'compras', icon: '🛒', label: 'Compras' },
+  { id: 'adiantamento', icon: '💵', label: 'Adiantamento' },
+  { id: 'falta', icon: '📋', label: 'Informação de Falta' },
+  { id: 'outra', icon: '❓', label: 'Outra (não está na lista)' },
+];
+
+function solicNovoForm() {
+  window._solicData = {
+    tipo: 'veiculo', tipoOutro: '',
+    dataNecessaria: '', descricao: '', projeto: '', urgencia: 'Normal',
+    valorAdiantamento: '', periodoAdiantamento: '', justificativaAdiantamento: '',
+    dataFalta: '', motivoFalta: '', comPontoErrado: false, horarioCorreto: '', pontoTipo: 'Entrada',
+  };
+  window._solicAnexoArquivo = null;
+}
+if (!window._solicData) solicNovoForm();
+if (window._solicHistorico === undefined) window._solicHistorico = null;
+
+function solicSelecionarTipo(tipo) {
+  window._solicData.tipo = tipo;
+  navigate('solicitacoes');
+}
+function solicCampo(campo, valor) { window._solicData[campo] = valor; }
+function solicToggleComPontoErrado(checked) { window._solicData.comPontoErrado = checked; navigate('solicitacoes'); }
+function solicAnexoChange(event) {
+  const file = event.target.files && event.target.files[0];
+  window._solicAnexoArquivo = file || null;
+  if (file) showToast('📎 ' + file.name + ' selecionado.');
+}
+
+/* -- Histórico: junta as Solicitações Gerais (veículo/equip/compras/falta/outra)
+   com as Solicitações de Adiantamento do próprio usuário, num único painel. -- */
+async function solicCarregarHistorico(forcar) {
+  if (window._solicHistorico !== null && !forcar) return;
+  try {
+    const nome = window._currentUser ? window._currentUser.name : '';
+    const [gerais, adiant] = await Promise.all([dbLer('SolicitacoesGerais'), dbLer('Adiantamentos')]);
+    const minhasGerais = (gerais || []).filter(r => r.Solicitante === nome).map(r => ({ ...r, _origem: 'geral' }));
+    const meusAdiant = (adiant || []).filter(r => r.Solicitante === nome).map(r => ({ ...r, _origem: 'adiantamento' }));
+    window._solicHistorico = minhasGerais.concat(meusAdiant).sort((a, b) => (b.Id || 0) - (a.Id || 0));
+  } catch (e) {
+    console.warn('[Solicitações] Falha ao carregar histórico:', e);
+    if (window._solicHistorico === null) window._solicHistorico = [];
+  }
+  navigate('solicitacoes');
+}
+
+function solicHtmlHistorico() {
+  const lista = (window._solicHistorico || []).slice(0, 40);
+  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Você ainda não enviou nenhuma solicitação.</div>';
+  const statusCor = s => (s === 'Aprovada' || s === 'Aprovado — Aguardando Pagamento' || s === 'Pago') ? 'green' : (s === 'Reprovada' || s === 'Reprovado') ? 'red' : 'amber';
+  const linha = r => {
+    const tipoInfo = SOLIC_TIPOS.find(t => t.id === (r.Tipo || 'adiantamento')) || { icon: '📝' };
+    const label = r._origem === 'adiantamento' ? 'Adiantamento' : (r.TipoLabel || r.Tipo || 'Solicitação');
+    const dataFmt = r.Created ? new Date(r.Created).toLocaleDateString('pt-BR') : '—';
+    const status = r.Status || (r._origem === 'adiantamento' ? 'Aguardando Aprovação' : 'Pendente');
+    const detalhe = r._origem === 'adiantamento' ? ('R$ ' + (r.ValorTotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })) : (r.Descricao || '').toString().substring(0, 60);
+    return `
+    <div class="alert-item" style="gap:14px;align-items:flex-start">
+      <div style="font-size:1.2rem">${tipoInfo.icon || '📝'}</div>
+      <div style="flex:1;min-width:0">
+        <div class="name">${label}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${dataFmt}${detalhe ? ' · ' + detalhe : ''}</div>
+      </div>
+      <span class="status-pill ${statusCor(status)}" style="font-size:.65rem">${status}</span>
+    </div>`;
+  };
+  return `<div class="alert-list">${lista.map(linha).join('')}</div>`;
+}
+
 function pageSolicitacoes() {
+  setTimeout(() => solicCarregarHistorico(), 150);
+  const d = window._solicData;
+  const tipo = d.tipo;
   return `
-  <div class="page-header"><h1>Solicitações</h1><p>Veículos, equipamentos e compras</p></div>
+  <div class="page-header"><h1>Solicitações</h1><p>Veículos, equipamentos, compras, adiantamento, falta e outras solicitações</p></div>
   <div class="form-card">
     <div class="form-row">
       <div class="form-group"><label>Tipo de Solicitação</label>
-        <select><option>🚗 Veículo</option><option>🔧 Equipamento</option><option>🛒 Compras</option></select>
+        <select onchange="solicSelecionarTipo(this.value)">
+          ${SOLIC_TIPOS.map(t => `<option value="${t.id}" ${tipo === t.id ? 'selected' : ''}>${t.icon} ${t.label}</option>`).join('')}
+        </select>
       </div>
-      <div class="form-group"><label>Data Necessária</label><input type="date"></div>
+      ${tipo === 'outra' ? `<div class="form-group"><label>Qual solicitação?</label><input value="${(d.tipoOutro || '').replace(/"/g, '&quot;')}" oninput="solicCampo('tipoOutro', this.value)" placeholder="Descreva o tipo de solicitação"></div>` : ''}
+    </div>
+
+    ${tipo === 'adiantamento' ? `
+    <div class="form-row">
+      <div class="form-group"><label>Valor (R$)</label><input type="number" step="0.01" value="${d.valorAdiantamento || ''}" oninput="solicCampo('valorAdiantamento', this.value)" placeholder="0,00"></div>
+      <div class="form-group"><label>Período de Referência</label><input type="month" value="${d.periodoAdiantamento || ''}" onchange="solicCampo('periodoAdiantamento', this.value)"></div>
     </div>
     <div class="form-row full">
-      <div class="form-group"><label>Descrição</label><textarea placeholder="Detalhe a solicitação, finalidade e especificações..."></textarea></div>
+      <div class="form-group"><label>Justificativa</label><textarea oninput="solicCampo('justificativaAdiantamento', this.value)" placeholder="Motivo do adiantamento...">${d.justificativaAdiantamento || ''}</textarea></div>
     </div>
+    ` : tipo === 'falta' ? `
     <div class="form-row">
-      <div class="form-group"><label>Projeto / Obra</label><input type="text" placeholder="Vincule a um projeto"></div>
-      <div class="form-group"><label>Urgência</label>
-        <select><option>Normal</option><option>Urgente</option><option>Crítico</option></select>
+      <div class="form-group"><label>Data da Ocorrência</label><input type="date" value="${d.dataFalta || ''}" onchange="solicCampo('dataFalta', this.value)"></div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group"><label>Motivo / Descrição</label><textarea oninput="solicCampo('motivoFalta', this.value)" placeholder="Explique o motivo da falta ou ocorrência...">${d.motivoFalta || ''}</textarea></div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group"><label>Anexar Atestado ou Documento (opcional)</label>
+        <input type="file" accept="image/*,.pdf" onchange="solicAnexoChange(event)">
+        ${window._solicAnexoArquivo ? `<div style="font-size:.75rem;color:var(--green-mid);margin-top:4px">📎 ${window._solicAnexoArquivo.name}</div>` : ''}
       </div>
     </div>
-    <div class="form-actions">
-      <button class="btn-primary" onclick="showToast('Solicitação enviada!')">📤 Enviar</button>
+    <div class="form-row full">
+      <label style="display:flex;align-items:center;gap:8px;font-size:.85rem;cursor:pointer">
+        <input type="checkbox" ${d.comPontoErrado ? 'checked' : ''} onchange="solicToggleComPontoErrado(this.checked)">
+        Preciso informar o horário correto do ponto (marcação errada)
+      </label>
     </div>
+    ${d.comPontoErrado ? `
+    <div class="form-row">
+      <div class="form-group"><label>Qual registro?</label>
+        <select onchange="solicCampo('pontoTipo', this.value)">
+          <option ${d.pontoTipo === 'Entrada' ? 'selected' : ''}>Entrada</option>
+          <option ${d.pontoTipo === 'Saída' ? 'selected' : ''}>Saída</option>
+          <option ${d.pontoTipo === 'Ambos' ? 'selected' : ''}>Ambos</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Horário Correto</label><input type="time" value="${d.horarioCorreto || ''}" onchange="solicCampo('horarioCorreto', this.value)"></div>
+    </div>
+    ` : ''}
+    ` : `
+    <div class="form-row">
+      <div class="form-group"><label>Data Necessária</label><input type="date" value="${d.dataNecessaria || ''}" onchange="solicCampo('dataNecessaria', this.value)"></div>
+      <div class="form-group"><label>Urgência</label>
+        <select onchange="solicCampo('urgencia', this.value)">
+          <option ${d.urgencia === 'Normal' ? 'selected' : ''}>Normal</option>
+          <option ${d.urgencia === 'Urgente' ? 'selected' : ''}>Urgente</option>
+          <option ${d.urgencia === 'Crítico' ? 'selected' : ''}>Crítico</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group"><label>Descrição</label><textarea oninput="solicCampo('descricao', this.value)" placeholder="Detalhe a solicitação, finalidade e especificações...">${d.descricao || ''}</textarea></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Projeto / Obra</label><input value="${(d.projeto || '').replace(/"/g, '&quot;')}" oninput="solicCampo('projeto', this.value)" placeholder="Vincule a um projeto"></div>
+    </div>
+    `}
+
+    <div class="form-actions">
+      <button class="btn-primary" onclick="solicEnviar()">📤 Enviar</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="card-title">Minhas Solicitações</div>
+    <div id="solic-lista">${solicHtmlHistorico()}</div>
   </div>`;
+}
+
+async function solicEnviar() {
+  const d = window._solicData;
+  const tipoInfo = SOLIC_TIPOS.find(t => t.id === d.tipo);
+  const nome = window._currentUser ? window._currentUser.name : '';
+  const email = window._currentUser ? window._currentUser.email : '';
+
+  if (d.tipo === 'outra' && !(d.tipoOutro || '').trim()) { showToast('⚠️ Descreva qual é a solicitação.'); return; }
+
+  if (d.tipo === 'adiantamento') {
+    const valor = parseFloat(d.valorAdiantamento);
+    if (!valor || valor <= 0) { showToast('⚠️ Informe o valor do adiantamento.'); return; }
+    if (!d.periodoAdiantamento) { showToast('⚠️ Informe o período de referência.'); return; }
+    showSyncStatus('Enviando solicitação...');
+    const novo = await dbInserir('Adiantamentos', {
+      Solicitante: nome,
+      Contratos: [],
+      Colaboradores: [{ nome: nome, valor: valor }],
+      ValorTotal: valor,
+      Periodo: d.periodoAdiantamento,
+      Justificativa: d.justificativaAdiantamento || '',
+      Status: 'Aguardando Aprovação',
+    });
+    showToast(novo ? '✅ Solicitação de adiantamento enviada!' : '❌ Erro ao enviar.');
+    showSyncStatus(novo ? 'Enviado!' : 'Falha ao enviar', novo ? 'ok' : 'err', novo ? 3000 : 5000);
+    if (novo) { solicNovoForm(); if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); await solicCarregarHistorico(true); }
+    return;
+  }
+
+  if (d.tipo === 'falta') {
+    if (!d.dataFalta) { showToast('⚠️ Informe a data da ocorrência.'); return; }
+    if (!(d.motivoFalta || '').trim()) { showToast('⚠️ Descreva o motivo.'); return; }
+    if (d.comPontoErrado && !d.horarioCorreto) { showToast('⚠️ Informe o horário correto do ponto.'); return; }
+    showSyncStatus('Enviando solicitação...');
+    let anexoUrl = '', anexoNome = '';
+    const arquivo = window._solicAnexoArquivo;
+    if (arquivo && typeof uploadParaOneDrive === 'function') {
+      try {
+        const nomeArq = `Falta_${nome.replace(/[^a-zA-Z0-9À-ú]/g, '_').substring(0, 30)}_${Date.now()}${(arquivo.name.match(/\.[a-zA-Z0-9]+$/) || [''])[0]}`;
+        const url = await uploadParaOneDrive(arquivo, OD_FOLDERS.solicitacoes, nomeArq);
+        if (url) { anexoUrl = url; anexoNome = arquivo.name; }
+      } catch (e) { console.warn('[Solicitações] Falha ao enviar anexo:', e); }
+    }
+    const novo = await dbInserir('SolicitacoesGerais', {
+      Title: 'Informação de Falta — ' + nome + ' — ' + d.dataFalta,
+      Tipo: 'falta', TipoLabel: 'Informação de Falta',
+      DataNecessaria: d.dataFalta, Descricao: d.motivoFalta,
+      AnexoUrl: anexoUrl, AnexoNome: anexoNome,
+      ComPontoErrado: !!d.comPontoErrado, PontoTipo: d.comPontoErrado ? d.pontoTipo : '', HorarioCorreto: d.comPontoErrado ? d.horarioCorreto : '',
+      Solicitante: nome, SolicitanteEmail: email, Status: 'Pendente',
+    });
+    showToast(novo ? '✅ Solicitação enviada!' : '❌ Erro ao enviar.');
+    showSyncStatus(novo ? 'Enviado!' : 'Falha ao enviar', novo ? 'ok' : 'err', novo ? 3000 : 5000);
+    if (novo) { solicNovoForm(); await solicCarregarHistorico(true); }
+    return;
+  }
+
+  // Veículo / Equipamento / Compras / Outra
+  if (!(d.descricao || '').trim()) { showToast('⚠️ Descreva a solicitação.'); return; }
+  showSyncStatus('Enviando solicitação...');
+  const label = d.tipo === 'outra' ? d.tipoOutro : (tipoInfo ? tipoInfo.label : d.tipo);
+  const novo = await dbInserir('SolicitacoesGerais', {
+    Title: label + ' — ' + nome,
+    Tipo: d.tipo, TipoLabel: label, TipoOutro: d.tipo === 'outra' ? d.tipoOutro : '',
+    DataNecessaria: d.dataNecessaria, Descricao: d.descricao, Projeto: d.projeto, Urgencia: d.urgencia,
+    Solicitante: nome, SolicitanteEmail: email, Status: 'Pendente',
+  });
+  showToast(novo ? '✅ Solicitação enviada!' : '❌ Erro ao enviar.');
+  showSyncStatus(novo ? 'Enviado!' : 'Falha ao enviar', novo ? 'ok' : 'err', novo ? 3000 : 5000);
+  if (novo) { solicNovoForm(); await solicCarregarHistorico(true); }
 }
 
 /* -- MINHA ÁREA -- */
@@ -19064,6 +19345,20 @@ function faunaBuscarEmpreendimento(nome) {
   return FAUNA_EMPREENDIMENTOS.find(e => e.nome === nome) || null;
 }
 
+/* -- Filtro de empreendimento (Nova 364 / Jirau) usado para separar os
+   históricos de Ficha de Campo e Flash Report, cada um só mostrando os
+   registros do empreendimento selecionado. -- */
+if (window._faunaFiltroEmp === undefined) window._faunaFiltroEmp = FAUNA_EMPREENDIMENTOS[0].nome;
+function faunaFiltrarEmp(nome) {
+  window._faunaFiltroEmp = nome;
+  navigate('checklist_fauna');
+}
+function faunaHtmlFiltroEmp() {
+  return `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+    ${FAUNA_EMPREENDIMENTOS.map(e => `<button onclick="faunaFiltrarEmp('${e.nome.replace(/'/g, "\\'")}')" style="padding:8px 14px;border-radius:8px;border:1.5px solid var(--border);cursor:pointer;font-weight:600;font-size:.78rem;font-family:'Mont',sans-serif;background:${window._faunaFiltroEmp===e.nome?'var(--green-main,#2e7d32)':'var(--surface)'};color:${window._faunaFiltroEmp===e.nome?'#fff':'var(--text)'}">${e.nome}</button>`).join('')}
+  </div>`;
+}
+
 /* -- Ao escolher o empreendimento no dropdown, preenche o cliente automaticamente
    (continua editável, caso precise ajustar). -- */
 function faunaSelecionarEmpreendimento(nome) {
@@ -19462,12 +19757,12 @@ async function faunaExportarFicha() {
 }
 
 function faunaHtmlHistorico() {
-  const lista = (window._faunaHistorico || []).slice().sort((a, b) => {
+  const lista = (window._faunaHistorico || []).filter(r => (r.empreendimento || '') === window._faunaFiltroEmp).slice().sort((a, b) => {
     const na = parseInt(a.numeroFicha, 10) || 0, nb = parseInt(b.numeroFicha, 10) || 0;
     if (nb !== na) return nb - na;
     return (b.data || '').localeCompare(a.data || '');
   }).slice(0, 80);
-  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma ficha de fauna registrada ainda.</div>';
+  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma ficha registrada ainda para ' + window._faunaFiltroEmp + '.</div>';
 
   const linha = f => {
     const dataFmt = f.data ? new Date(f.data + 'T12:00').toLocaleDateString('pt-BR') : '—';
@@ -19522,6 +19817,7 @@ function pageFaunaFicha() {
 
     <div class="card">
       <div class="card-title">Histórico de Fichas</div>
+      ${faunaHtmlFiltroEmp()}
       ${faunaHtmlHistorico()}
     </div>`;
   }
@@ -19932,12 +20228,12 @@ async function faunaFlashExportarRegistro(id) {
 }
 
 function faunaFlashHtmlHistorico() {
-  const lista = (window._faunaFlashHistorico || []).slice().sort((a, b) => {
+  const lista = (window._faunaFlashHistorico || []).filter(r => (r.empreendimento || '') === window._faunaFiltroEmp).slice().sort((a, b) => {
     const na = parseInt(a.numero, 10) || 0, nb = parseInt(b.numero, 10) || 0;
     if (nb !== na) return nb - na;
     return (b.data || '').localeCompare(a.data || '');
   }).slice(0, 80);
-  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report de Fauna registrado ainda.</div>';
+  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado ainda para ' + window._faunaFiltroEmp + '.</div>';
 
   const linha = f => {
     const dataFmt = f.data ? new Date(f.data + 'T12:00').toLocaleDateString('pt-BR') : '—';
@@ -19974,6 +20270,7 @@ function pageFaunaFlash() {
 
     <div class="card">
       <div class="card-title">Histórico de Flash Reports — Fauna</div>
+      ${faunaHtmlFiltroEmp()}
       ${faunaFlashHtmlHistorico()}
     </div>`;
   }
@@ -20308,6 +20605,7 @@ function flashHtmlHistorico() {
         <div style="display:flex;gap:4px">
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashEditarRegistro(${f.Id})">✏️ Editar</button>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashExportarRegistro(${f.Id})">🖨️ Exportar PDF</button>
         </div>
       </div>
     </div>`;
@@ -20460,21 +20758,25 @@ function _pdfNumerarPaginas(doc, pageW, pageH) {
   }
 }
 
-/* -- Exporta o Flash Report atual (formulário) em PDF idêntico ao gerado
-   no painel Energisa (Projetos > Energisa > Empreiteiras > Flash Report). -- */
-async function flashExportarPDF() {
-  const d = window._flashData;
-  if (!d.frenteId) { showToast('⚠️ Selecione a frente/empreiteira antes de exportar.'); return; }
-  if (!d.data) { showToast('⚠️ Informe a data antes de exportar.'); return; }
-  showToast('🔄 Gerando PDF... aguarde.');
+/* -- Gera o doc jsPDF do Flash Report (idêntico ao gerado no painel Energisa
+   — Projetos > Energisa > Empreiteiras > Flash Report). Recebe os dados no
+   "formato de formulário" (frenteId, data, rt, clima, trecho, equipe, fiscal,
+   ckAtividades/ckVerificacoes/ckOcorrencias, outraativ, outraocorr,
+   atividades, amanha, obs, fotos). Se numOverride não for passado, calcula
+   a posição do registro atualmente aberto (window._flashRegistroAtualId)
+   dentro da mesma frente — usado tanto pelo formulário quanto pelo histórico. -- */
+async function _flashGerarDoc(d, numOverride) {
   await _garantirJsPDF();
 
   const frente = FLASH_FRENTES.find(fr => fr.id === d.frenteId);
-  const mesmaFrente = (window._flashHistorico || []).filter(r => r.FrenteId === d.frenteId)
-    .slice().sort((a,b) => (a.Data||'').localeCompare(b.Data||''));
-  let posicao = mesmaFrente.findIndex(r => r.Id === window._flashRegistroAtualId);
-  if (posicao < 0) posicao = mesmaFrente.length;
-  const num = String(posicao + 1).padStart(3, '0');
+  let num = numOverride;
+  if (!num) {
+    const mesmaFrente = (window._flashHistorico || []).filter(r => r.FrenteId === d.frenteId)
+      .slice().sort((a,b) => (a.Data||'').localeCompare(b.Data||''));
+    let posicao = mesmaFrente.findIndex(r => r.Id === window._flashRegistroAtualId);
+    if (posicao < 0) posicao = mesmaFrente.length;
+    num = String(posicao + 1).padStart(3, '0');
+  }
 
   const dt = new Date(d.data + 'T12:00').toLocaleDateString('pt-BR', {weekday:'long', day:'2-digit', month:'long', year:'numeric'});
   const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
@@ -20597,7 +20899,40 @@ async function flashExportarPDF() {
 
   _pdfNumerarPaginas(doc, pageW, pageH);
 
+  return { doc, num, frente };
+}
+
+/* -- Exporta o Flash Report atual (formulário) em PDF idêntico ao gerado
+   no painel Energisa (Projetos > Energisa > Empreiteiras > Flash Report). -- */
+async function flashExportarPDF() {
+  const d = window._flashData;
+  if (!d.frenteId) { showToast('⚠️ Selecione a frente/empreiteira antes de exportar.'); return; }
+  if (!d.data) { showToast('⚠️ Informe a data antes de exportar.'); return; }
+  showToast('🔄 Gerando PDF... aguarde.');
+  const { doc, num, frente } = await _flashGerarDoc(d);
   const nomeArq = 'FR-' + num + '_' + (frente ? frente.nome.replace(/\s+/g,'_') : d.frenteId) + '_' + (d.data||'').replace(/-/g,'') + '_Energisa.pdf';
+  doc.save(nomeArq);
+}
+
+/* -- Exporta em PDF (jsPDF, idêntico ao painel Energisa) um Flash Report já
+   salvo no histórico, sem precisar reabrir o formulário. -- */
+async function flashExportarRegistro(id) {
+  const f = (window._flashHistorico || []).find(r => r.Id === id);
+  if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  showSyncStatus('Gerando PDF...');
+  const mesmaFrente = (window._flashHistorico || []).filter(r => r.FrenteId === f.FrenteId)
+    .slice().sort((a,b) => (a.Data||'').localeCompare(b.Data||''));
+  let posicao = mesmaFrente.findIndex(r => r.Id === f.Id);
+  if (posicao < 0) posicao = mesmaFrente.length;
+  const num = String(posicao + 1).padStart(3, '0');
+  const dLocal = {
+    frenteId: f.FrenteId, data: f.Data, rt: f.ResponsavelTecnico, clima: f.Clima, trecho: f.Trecho, equipe: f.Equipe, fiscal: f.Fiscal,
+    ckAtividades: f.ckAtividades || {}, ckVerificacoes: f.ckVerificacoes || {}, ckOcorrencias: f.ckOcorrencias || {},
+    outraativ: f.OutraAtividade, outraocorr: f.OutraOcorrencia, atividades: f.Atividades, amanha: f.PrevisaoAmanha, obs: f.Observacoes, fotos: f.fotos || [],
+  };
+  const { doc, frente } = await _flashGerarDoc(dLocal, num);
+  showSyncStatus('PDF gerado!', 'ok', 2000);
+  const nomeArq = 'FR-' + num + '_' + (frente ? frente.nome.replace(/\s+/g,'_') : dLocal.frenteId) + '_' + (dLocal.data||'').replace(/-/g,'') + '_Energisa.pdf';
   doc.save(nomeArq);
 }
 
@@ -22117,19 +22452,21 @@ async function atualizarBadgeNotificacoes() {
   }
   const ehGestorGeral = usuario.role === 'Gestor Geral';
   try {
-    const [aprs, prests, contasPagar, despesas, adiantamentos, flashReports] = await Promise.all([
-      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos'), dbLer('FlashReportsEnergisa')
+    const [aprs, prests, contasPagar, despesas, adiantamentos, flashReports, solicitacoesGerais] = await Promise.all([
+      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos'), dbLer('FlashReportsEnergisa'), dbLer('SolicitacoesGerais')
     ]);
     const aprsPendentes = aprs.filter(r =>
       r.Status === 'Em Aberto' && (ehGestorGeral || r.Gestor === usuario.name)
     );
     const despesasVencendo = despesasVencendoEmBreve(despesas);
     const flashPendentes = (flashReports || []).filter(f => f.Visualizado === false);
+    const solicGeraisPendentes = (solicitacoesGerais || []).filter(r => r.Status === 'Pendente');
     const totalAprovacoesPuras =
       aprsPendentes.length +
       prests.filter(r => r.Status === 'Em Aberto').length +
       contasPagar.filter(r => r.Status === 'Aguardando Aprovação').length +
       adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').length +
+      solicGeraisPendentes.length +
       despesasVencendo.length;
     const total = totalAprovacoesPuras + flashPendentes.length;
 
@@ -22194,10 +22531,31 @@ async function atualizarBadgeNotificacoes() {
   } catch(e) {}
 }
 
-/* -- Som de notificação (beep curto via Web Audio, sem precisar de arquivo externo) -- */
+/* -- Som de notificação (beep curto via Web Audio, sem precisar de arquivo externo).
+   Reaproveita um único AudioContext (em vez de criar um novo a cada aviso) e garante
+   que ele seja "destravado" no primeiro clique/toque do usuário — os navegadores
+   bloqueiam áudio automático até haver um gesto do usuário na página, então se o
+   sino tocasse ANTES de qualquer clique (ex: logo após o app carregar sozinho),
+   o beep ficava mudo silenciosamente, sem erro nenhum. -- */
+window._notifAudioCtx = null;
+function _notifGetAudioCtx() {
+  if (!window._notifAudioCtx) {
+    try { window._notifAudioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return null; }
+  }
+  return window._notifAudioCtx;
+}
+function _notifDesbloquearAudio() {
+  const ctx = _notifGetAudioCtx();
+  if (ctx && ctx.state === 'suspended') { ctx.resume().catch(() => {}); }
+}
+document.addEventListener('click', _notifDesbloquearAudio, { once: true });
+document.addEventListener('touchstart', _notifDesbloquearAudio, { once: true });
+
 function _notifTocarSom() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _notifGetAudioCtx();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') { ctx.resume().catch(() => {}); }
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain); gain.connect(ctx.destination);
@@ -22207,7 +22565,7 @@ function _notifTocarSom() {
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
     osc.start();
     osc.stop(ctx.currentTime + 0.45);
-  } catch(e) {}
+  } catch(e) { console.warn('[Notificação] Falha ao tocar som:', e); }
 }
 
 /* -- Pede permissão de notificação do navegador/sistema (uma vez, após o login) -- */
@@ -24104,6 +24462,7 @@ const OD_FOLDERS = {
   contasPagar: 'ContasPagar',
   despesas:    'Despesas',
   receitas:    'Receitas',
+  solicitacoes: 'Solicitacoes/Anexos',
 };
 
 /* Monta "pastaBase/AAAA-MM" (subpasta do mês corrente) — usado por todos os
