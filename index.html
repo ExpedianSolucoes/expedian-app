@@ -9496,20 +9496,22 @@ async function carregarAprovacoes() {
     if (!pendentes.length) {
       elSolic.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma solicitação pendente. ✅</div>';
     } else {
-      elSolic.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tipo</th><th>Solicitante</th><th>Descrição</th><th>Data</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
+      elSolic.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tipo</th><th>Solicitante</th><th>Gestor</th><th>Descrição</th><th>Data</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
         pendentes.map(i => {
           const aguardandoGG = i.Status === 'Aguardando Gestor Geral';
           const podeAgir = !aguardandoGG || ehGestorGeral;
           return `<tr>
           <td><strong>${(i.TipoLabel || i.Tipo || '—')}${i.TipoOutro ? ' — ' + i.TipoOutro : ''}</strong></td>
           <td>${i.Solicitante || '—'}</td>
+          <td style="font-size:.75rem">${i.GestorDestino || '—'}</td>
           <td style="font-size:.75rem;max-width:260px">${(i.Descricao || '—').toString().substring(0,90)}</td>
           <td style="font-size:.75rem">${i.DataNecessaria ? new Date(i.DataNecessaria + 'T12:00').toLocaleDateString('pt-BR') : (i.Created ? new Date(i.Created).toLocaleDateString('pt-BR') : '—')}</td>
           <td><span class="status-pill amber" style="font-size:.65rem">${aguardandoGG ? 'Ag. Gestor Geral' : 'Pendente'}</span></td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
             <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="solicVisualizar(${i.Id})">👁️ Visualizar</button>
             ${podeAgir ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarSolicitacaoGeral(${i.Id})">✅ ${aguardandoGG ? 'Aprovar (Final)' : 'Aprovar'}</button>
-            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarSolicitacaoGeral(${i.Id})">↩️ Reprovar</button>` : `<span style="font-size:.7rem;color:var(--text-muted)">Aguardando o Gestor Geral</span>`}
+            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarSolicitacaoGeral(${i.Id})">↩️ Devolver/Indeferir</button>` : `<span style="font-size:.7rem;color:var(--text-muted)">Aguardando o Gestor Geral</span>`}
+            ${ehGestorGeral ? `<button class="btn-secondary" style="padding:4px 10px;font-size:.72rem;color:var(--red)" onclick="solicExcluirHistorico(${i.Id},'geral')">🗑️ Excluir</button>` : ''}
           </td>
         </tr>`;
         }).join('') + '</tbody></table></div>';
@@ -9536,6 +9538,7 @@ async function solicVisualizar(id) {
         <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('solic-view-modal').remove()">✕</div>
       </div>
       ${linha('Solicitante', r.Solicitante)}
+      ${linha('Direcionado ao Gestor', r.GestorDestino)}
       ${linha('Data', r.DataNecessaria ? new Date(r.DataNecessaria + 'T12:00').toLocaleDateString('pt-BR') : '')}
       ${linha('Projeto/Obra', r.Projeto)}
       ${linha('Urgência', r.Urgencia)}
@@ -13667,7 +13670,7 @@ const SOLIC_TIPOS = [
 
 function solicNovoForm() {
   window._solicData = {
-    tipo: 'veiculo', tipoOutro: '',
+    tipo: 'veiculo', tipoOutro: '', gestorDestino: '',
     dataNecessaria: '', descricao: '', projeto: '', urgencia: 'Normal',
     valorAdiantamento: '', periodoAdiantamento: '', justificativaAdiantamento: '',
     foiFalta: '', dataOcorrencia: '', motivoPonto: '', horarioEntradaCorreto: '', horarioSaidaCorreto: '',
@@ -13676,6 +13679,18 @@ function solicNovoForm() {
 }
 if (!window._solicData) solicNovoForm();
 if (window._solicHistorico === undefined) window._solicHistorico = null;
+
+/* -- Lista de possíveis gestores para direcionar a solicitação (Coordenador(es) +
+   Diretoria, que são quem consegue aprovar em Aprovações) — lida do cadastro de
+   login (`users`), sem precisar de uma tabela nova. -- */
+function solicListaGestores() {
+  try {
+    const nomes = Object.values(users)
+      .filter(u => u.profile === 'coordenador' || u.profile === 'diretoria')
+      .map(u => u.name);
+    return [...new Set(nomes)];
+  } catch (e) { return []; }
+}
 
 function solicSelecionarTipo(tipo) {
   window._solicData.tipo = tipo;
@@ -13735,6 +13750,7 @@ function solicHtmlHistorico() {
       <div style="flex:1;min-width:0">
         <div class="name">${label}${r.SubTipo ? ' — ' + r.SubTipo : ''}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${verTudo ? '<strong>' + (r.Solicitante || '—') + '</strong> · ' : ''}${dataFmt}${detalhe ? ' · ' + detalhe : ''}</div>
+        ${r.GestorDestino ? `<div style="font-size:.7rem;color:var(--text-muted);margin-top:2px">👤 Direcionado a: ${r.GestorDestino}</div>` : ''}
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         <span class="status-pill ${statusCor(status)}" style="font-size:.65rem">${status}</span>
@@ -13759,7 +13775,8 @@ async function solicExcluirHistorico(id, origem) {
   const ok = await dbSalvar(tabela, lista);
   showToast(ok ? '🗑️ Solicitação excluída.' : '❌ Erro ao excluir.');
   showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
-  await solicCarregarHistorico(true);
+  if (window._solicHistorico !== null) await solicCarregarHistorico(true);
+  if (typeof carregarAprovacoes === 'function') carregarAprovacoes();
   if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes();
 }
 
@@ -13843,6 +13860,15 @@ function pageSolicitacoes() {
     </div>
     `}
 
+    <div class="form-row">
+      <div class="form-group"><label>Direcionar para o Gestor</label>
+        <select onchange="solicCampo('gestorDestino', this.value)">
+          <option value="" ${!d.gestorDestino ? 'selected' : ''}>— Selecione o gestor —</option>
+          ${solicListaGestores().map(nome => `<option value="${nome}" ${d.gestorDestino === nome ? 'selected' : ''}>${nome}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
     <div class="form-actions">
       <button class="btn-primary" onclick="solicEnviar()">📤 Enviar ao Gestor</button>
     </div>
@@ -13883,6 +13909,7 @@ async function solicEnviar() {
   const email = window._currentUser ? window._currentUser.email : '';
 
   if (d.tipo === 'outra' && !(d.tipoOutro || '').trim()) { showToast('⚠️ Descreva qual é a solicitação.'); return; }
+  if (!(d.gestorDestino || '').trim()) { showToast('⚠️ Selecione para qual gestor esta solicitação vai.'); return; }
 
   if (d.tipo === 'adiantamento') {
     const valor = parseFloat(d.valorAdiantamento);
@@ -13891,6 +13918,7 @@ async function solicEnviar() {
     showSyncStatus('Enviando solicitação...');
     const novo = await dbInserir('Adiantamentos', {
       Solicitante: nome,
+      GestorDestino: d.gestorDestino,
       Contratos: [],
       Colaboradores: [{ nome: nome, valor: valor }],
       ValorTotal: valor,
@@ -13929,7 +13957,7 @@ async function solicEnviar() {
       AnexoUrl: anexoUrl, AnexoNome: anexoNome,
       HorarioEntradaCorreto: d.foiFalta === 'nao' ? d.horarioEntradaCorreto : '',
       HorarioSaidaCorreto: d.foiFalta === 'nao' ? d.horarioSaidaCorreto : '',
-      Solicitante: nome, SolicitanteEmail: email, Status: 'Pendente',
+      Solicitante: nome, SolicitanteEmail: email, GestorDestino: d.gestorDestino, Status: 'Pendente',
     });
     showToast(novo ? '✅ Solicitação enviada!' : '❌ Erro ao enviar.');
     showSyncStatus(novo ? 'Enviado!' : 'Falha ao enviar', novo ? 'ok' : 'err', novo ? 3000 : 5000);
@@ -13945,7 +13973,7 @@ async function solicEnviar() {
     Title: label + ' — ' + nome,
     Tipo: d.tipo, TipoLabel: label, TipoOutro: d.tipo === 'outra' ? d.tipoOutro : '',
     DataNecessaria: d.dataNecessaria, Descricao: d.descricao, Projeto: d.projeto, Urgencia: d.urgencia,
-    Solicitante: nome, SolicitanteEmail: email, Status: 'Pendente',
+    Solicitante: nome, SolicitanteEmail: email, GestorDestino: d.gestorDestino, Status: 'Pendente',
   });
   showToast(novo ? '✅ Solicitação enviada!' : '❌ Erro ao enviar.');
   showSyncStatus(novo ? 'Enviado!' : 'Falha ao enviar', novo ? 'ok' : 'err', novo ? 3000 : 5000);
