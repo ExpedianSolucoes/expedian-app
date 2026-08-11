@@ -20506,6 +20506,23 @@ async function flashCarregarHistorico(forcar) {
   navigate('checklist_flash');
 }
 
+/* -- Exclui um Flash Report Energisa já salvo (fotos ficam gravadas inline no
+   próprio registro, então basta remover a linha da tabela — sem arquivo à
+   parte no OneDrive pra apagar). -- */
+async function flashExcluirRegistro(id) {
+  if (!confirm('Tem certeza que deseja excluir este Flash Report?\n\nEssa ação não pode ser desfeita.')) return;
+  showSyncStatus('Excluindo Flash Report...');
+  const lista = await dbLer('FlashReportsEnergisa');
+  const idx = lista.findIndex(r => r.Id === id);
+  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
+  lista.splice(idx, 1);
+  const ok = await dbSalvar('FlashReportsEnergisa', lista);
+  showToast(ok ? '🗑️ Flash Report excluído.' : '❌ Erro ao excluir.');
+  showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) { try { localStorage.setItem('flash_historico_cache', JSON.stringify(lista)); } catch (e) {} }
+  await flashCarregarHistorico(true);
+}
+
 async function flashSalvar() {
   const d = window._flashData;
   if (!d.frenteId) { showToast('⚠️ Selecione a frente/empreiteira.'); return; }
@@ -20619,6 +20636,7 @@ function flashHtmlHistorico() {
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashEditarRegistro(${f.Id})">✏️ Editar</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashExportarRegistro(${f.Id})">🖨️ Exportar PDF</button>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="flashExcluirRegistro(${f.Id})">🗑️ Excluir</button>
         </div>
       </div>
     </div>`;
@@ -23445,8 +23463,14 @@ async function aprVerPDF(id) {
   if (reg.documentoUrl) {
     window.open(reg.documentoUrl, '_blank');
   } else {
-    // PDF não foi salvo como link — regenerar na hora
+    // PDF não foi salvo como link — regenerar na hora. gerarPDFapr lê os dados de
+    // window._aprFormData (não recebe o registro por parâmetro), então é PRECISO
+    // carregar o DadosFormulario salvo deste registro nessa variável antes de
+    // chamar — senão a regeneração usa dados vazios ou de outra APR (sem
+    // participantes/assinatura), que era exatamente o motivo do PDF sair sem
+    // assinatura ao "Visualizar" uma APR de outra pessoa/sessão.
     showToast('📄 PDF não arquivado. Gerando visualização...');
+    try { window._aprFormData = JSON.parse(reg.DadosFormulario || '{}'); } catch (e) { window._aprFormData = {}; }
     await gerarPDFapr(reg.NumeroAPR || id, reg.TipoAPR);
   }
 }
