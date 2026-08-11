@@ -1042,6 +1042,7 @@ const menus = {
     { group: 'minha_area_grp', icon: '👤', label: 'Minha Área', children: [
       { id: 'minha_area', icon: '👤', label: 'Meus Dados' },
       { id: 'agenda', icon: '📅', label: 'Agenda' },
+      { id: 'solicitacoes', icon: '📝', label: 'Solicitações' },
     ]},
     { group: 'operacional', icon: '⚙️', label: 'Operacional', children: [
       { id: 'apr', icon: '📋', label: 'APRs' },
@@ -1086,6 +1087,7 @@ const menus = {
     { group: 'minha_area_grp', icon: '👤', label: 'Minha Área', children: [
       { id: 'minha_area', icon: '👤', label: 'Meus Dados' },
       { id: 'agenda', icon: '📅', label: 'Agenda' },
+      { id: 'solicitacoes', icon: '📝', label: 'Solicitações' },
     ]},
     { group: 'operacional', icon: '⚙️', label: 'Operacional', children: [
       { id: 'apr', icon: '📋', label: 'APRs' },
@@ -13642,15 +13644,27 @@ function solicAnexoChange(event) {
   if (file) showToast('📎 ' + file.name + ' selecionado.');
 }
 
+/* -- Solicitações fica disponível para colaborador, coordenador e diretoria — cada um
+   só vê e envia as suas próprias. Só o Gestor Geral (Tiago) vê TODAS as solicitações
+   de todo mundo nessa mesma tela, e é o único que pode excluir uma solicitação. -- */
+function solicEhGestorGeral() {
+  const u = window._currentUser || {};
+  return u.role === 'Gestor Geral';
+}
+
 /* -- Histórico: junta as Solicitações Gerais (veículo/equip/compras/ajuste de ponto/outra)
-   com as Solicitações de Adiantamento do próprio usuário, num único painel. -- */
+   com as Solicitações de Adiantamento, num único painel — do próprio usuário, ou de
+   todo mundo se for o Gestor Geral. -- */
 async function solicCarregarHistorico(forcar) {
   if (window._solicHistorico !== null && !forcar) return;
   try {
     const nome = window._currentUser ? window._currentUser.name : '';
+    const verTudo = solicEhGestorGeral();
     const [gerais, adiant] = await Promise.all([dbLer('SolicitacoesGerais'), dbLer('Adiantamentos')]);
-    const minhasGerais = (gerais || []).filter(r => r.Solicitante === nome).map(r => ({ ...r, _origem: 'geral' }));
-    const meusAdiant = (adiant || []).filter(r => r.Solicitante === nome).map(r => ({ ...r, _origem: 'adiantamento' }));
+    const filtroGerais = verTudo ? (gerais || []) : (gerais || []).filter(r => r.Solicitante === nome);
+    const filtroAdiant = verTudo ? (adiant || []) : (adiant || []).filter(r => r.Solicitante === nome);
+    const minhasGerais = filtroGerais.map(r => ({ ...r, _origem: 'geral' }));
+    const meusAdiant = filtroAdiant.map(r => ({ ...r, _origem: 'adiantamento' }));
     window._solicHistorico = minhasGerais.concat(meusAdiant).sort((a, b) => (b.Id || 0) - (a.Id || 0));
   } catch (e) {
     console.warn('[Solicitações] Falha ao carregar histórico:', e);
@@ -13660,8 +13674,9 @@ async function solicCarregarHistorico(forcar) {
 }
 
 function solicHtmlHistorico() {
-  const lista = (window._solicHistorico || []).slice(0, 40);
-  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Você ainda não enviou nenhuma solicitação.</div>';
+  const lista = (window._solicHistorico || []).slice(0, 60);
+  const verTudo = solicEhGestorGeral();
+  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">' + (verTudo ? 'Nenhuma solicitação enviada ainda.' : 'Você ainda não enviou nenhuma solicitação.') + '</div>';
   const statusCor = s => (s === 'Aprovada' || s === 'Aprovado — Aguardando Pagamento' || s === 'Pago') ? 'green' : (s === 'Reprovada' || s === 'Reprovado') ? 'red' : 'amber';
   const linha = r => {
     const tipoInfo = SOLIC_TIPOS.find(t => t.id === (r.Tipo || 'adiantamento')) || { icon: '📝' };
@@ -13674,12 +13689,33 @@ function solicHtmlHistorico() {
       <div style="font-size:1.2rem">${tipoInfo.icon || '📝'}</div>
       <div style="flex:1;min-width:0">
         <div class="name">${label}${r.SubTipo ? ' — ' + r.SubTipo : ''}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
-        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${dataFmt}${detalhe ? ' · ' + detalhe : ''}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${verTudo ? '<strong>' + (r.Solicitante || '—') + '</strong> · ' : ''}${dataFmt}${detalhe ? ' · ' + detalhe : ''}</div>
       </div>
-      <span class="status-pill ${statusCor(status)}" style="font-size:.65rem">${status}</span>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+        <span class="status-pill ${statusCor(status)}" style="font-size:.65rem">${status}</span>
+        ${verTudo ? `<button class="btn-secondary" style="padding:2px 8px;font-size:.62rem;color:var(--red)" onclick="solicExcluirHistorico(${r.Id},'${r._origem}')">🗑️ Excluir</button>` : ''}
+      </div>
     </div>`;
   };
   return `<div class="alert-list">${lista.map(linha).join('')}</div>`;
+}
+
+/* -- Só o Gestor Geral pode excluir uma solicitação (de qualquer pessoa), direto
+   pela lista da tela de Solicitações. -- */
+async function solicExcluirHistorico(id, origem) {
+  if (!solicEhGestorGeral()) { showToast('⛔ Apenas o Gestor Geral pode excluir solicitações.'); return; }
+  if (!confirm('Tem certeza que deseja excluir esta solicitação?\n\nEssa ação não pode ser desfeita.')) return;
+  const tabela = origem === 'adiantamento' ? 'Adiantamentos' : 'SolicitacoesGerais';
+  showSyncStatus('Excluindo solicitação...');
+  const lista = await dbLer(tabela);
+  const idx = lista.findIndex(r => r.Id === id);
+  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
+  lista.splice(idx, 1);
+  const ok = await dbSalvar(tabela, lista);
+  showToast(ok ? '🗑️ Solicitação excluída.' : '❌ Erro ao excluir.');
+  showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  await solicCarregarHistorico(true);
+  if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes();
 }
 
 function pageSolicitacoes() {
@@ -13768,7 +13804,7 @@ function pageSolicitacoes() {
   </div>
 
   <div class="card" style="margin-top:16px">
-    <div class="card-title">Minhas Solicitações</div>
+    <div class="card-title">${solicEhGestorGeral() ? 'Todas as Solicitações' : 'Minhas Solicitações'}</div>
     <div id="solic-lista">${solicHtmlHistorico()}</div>
   </div>`;
 }
