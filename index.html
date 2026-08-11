@@ -9369,7 +9369,7 @@ function pageAprovacoes() {
     <div id="aprov-lista-adiantamento"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>
   <div class="card" style="margin-bottom:16px">
-    <div class="card-title">Outras Solicitações Pendentes — Veículo, Equipamento, Compras, Falta e Outras</div>
+    <div class="card-title">Outras Solicitações Pendentes — Veículo, Equipamento, Compras, Ajuste de Ponto e Outras</div>
     <div id="aprov-lista-solic"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
 }
@@ -9489,7 +9489,7 @@ async function carregarAprovacoes() {
 }
 
 /* -- Visualiza os detalhes de uma Solicitação Geral (Veículo/Equipamento/Compras/
-   Informação de Falta/Outra), incluindo anexo e horário correto do ponto quando houver. -- */
+   Ajuste de Ponto/Outra), incluindo anexo e horários corretos quando houver. -- */
 async function solicVisualizar(id) {
   const existente = document.getElementById('solic-view-modal'); if (existente) existente.remove();
   const todos = await dbLer('SolicitacoesGerais');
@@ -9503,7 +9503,7 @@ async function solicVisualizar(id) {
   modal.innerHTML = `
     <div style="background:var(--surface);border-radius:14px;padding:22px;max-width:480px;width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-        <div style="font-weight:800;font-size:1rem">👁️ ${r.TipoLabel || r.Tipo || 'Solicitação'}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
+        <div style="font-weight:800;font-size:1rem">👁️ ${r.TipoLabel || r.Tipo || 'Solicitação'}${r.SubTipo ? ' — ' + r.SubTipo : ''}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
         <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('solic-view-modal').remove()">✕</div>
       </div>
       ${linha('Solicitante', r.Solicitante)}
@@ -9511,7 +9511,8 @@ async function solicVisualizar(id) {
       ${linha('Projeto/Obra', r.Projeto)}
       ${linha('Urgência', r.Urgencia)}
       ${linha('Descrição', r.Descricao)}
-      ${linha('Marcação de ponto', r.ComPontoErrado ? ('Correção — ' + (r.PontoTipo||'') + ' às ' + (r.HorarioCorreto||'')) : '')}
+      ${linha('Horário de Entrada Correto', r.HorarioEntradaCorreto)}
+      ${linha('Horário de Saída Correto', r.HorarioSaidaCorreto)}
       ${r.AnexoUrl ? `<div style="margin-top:10px"><a href="${r.AnexoUrl}" target="_blank" class="btn-secondary" style="display:inline-block;padding:6px 12px;font-size:.78rem;text-decoration:none">📎 Ver anexo${r.AnexoNome ? ' — ' + r.AnexoNome : ''}</a></div>` : ''}
       ${linha('Status', r.Status)}
     </div>`;
@@ -13604,15 +13605,16 @@ function pageDocumentos() {
    SOLICITAÇÕES (Colaborador) — formulário único com múltiplos tipos:
    Veículo, Equipamento, Compras, Adiantamento (grava na mesma tabela/fluxo
    usado pelos gestores, então já cai direto nas Aprovações da Diretoria),
-   Informação de Falta (com anexo de atestado/documento e opção de informar
-   o horário correto do ponto) e Outra (tipo livre, quando não está na lista).
+   Ajuste de Ponto (primeiro pergunta se foi falta — abre motivo + anexo de
+   atestado/documento — ou se é ajuste de horário — abre data da ocorrência,
+   horários corretos e motivo) e Outra (tipo livre, quando não está na lista).
    ============================================================= */
 const SOLIC_TIPOS = [
   { id: 'veiculo', icon: '🚗', label: 'Veículo' },
   { id: 'equipamento', icon: '🔧', label: 'Equipamento' },
   { id: 'compras', icon: '🛒', label: 'Compras' },
   { id: 'adiantamento', icon: '💵', label: 'Adiantamento' },
-  { id: 'falta', icon: '📋', label: 'Informação de Falta' },
+  { id: 'ajuste_ponto', icon: '🕐', label: 'Ajuste de Ponto' },
   { id: 'outra', icon: '❓', label: 'Outra (não está na lista)' },
 ];
 
@@ -13621,7 +13623,7 @@ function solicNovoForm() {
     tipo: 'veiculo', tipoOutro: '',
     dataNecessaria: '', descricao: '', projeto: '', urgencia: 'Normal',
     valorAdiantamento: '', periodoAdiantamento: '', justificativaAdiantamento: '',
-    dataFalta: '', motivoFalta: '', comPontoErrado: false, horarioCorreto: '', pontoTipo: 'Entrada',
+    foiFalta: '', dataOcorrencia: '', motivoPonto: '', horarioEntradaCorreto: '', horarioSaidaCorreto: '',
   };
   window._solicAnexoArquivo = null;
 }
@@ -13633,14 +13635,14 @@ function solicSelecionarTipo(tipo) {
   navigate('solicitacoes');
 }
 function solicCampo(campo, valor) { window._solicData[campo] = valor; }
-function solicToggleComPontoErrado(checked) { window._solicData.comPontoErrado = checked; navigate('solicitacoes'); }
+function solicSelecionarFoiFalta(valor) { window._solicData.foiFalta = valor; navigate('solicitacoes'); }
 function solicAnexoChange(event) {
   const file = event.target.files && event.target.files[0];
   window._solicAnexoArquivo = file || null;
   if (file) showToast('📎 ' + file.name + ' selecionado.');
 }
 
-/* -- Histórico: junta as Solicitações Gerais (veículo/equip/compras/falta/outra)
+/* -- Histórico: junta as Solicitações Gerais (veículo/equip/compras/ajuste de ponto/outra)
    com as Solicitações de Adiantamento do próprio usuário, num único painel. -- */
 async function solicCarregarHistorico(forcar) {
   if (window._solicHistorico !== null && !forcar) return;
@@ -13671,7 +13673,7 @@ function solicHtmlHistorico() {
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">${tipoInfo.icon || '📝'}</div>
       <div style="flex:1;min-width:0">
-        <div class="name">${label}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
+        <div class="name">${label}${r.SubTipo ? ' — ' + r.SubTipo : ''}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${dataFmt}${detalhe ? ' · ' + detalhe : ''}</div>
       </div>
       <span class="status-pill ${statusCor(status)}" style="font-size:.65rem">${status}</span>
@@ -13685,7 +13687,7 @@ function pageSolicitacoes() {
   const d = window._solicData;
   const tipo = d.tipo;
   return `
-  <div class="page-header"><h1>Solicitações</h1><p>Veículos, equipamentos, compras, adiantamento, falta e outras solicitações</p></div>
+  <div class="page-header"><h1>Solicitações</h1><p>Veículos, equipamentos, compras, adiantamento, ajuste de ponto e outras solicitações</p></div>
   <div class="form-card">
     <div class="form-row">
       <div class="form-group"><label>Tipo de Solicitação</label>
@@ -13704,12 +13706,26 @@ function pageSolicitacoes() {
     <div class="form-row full">
       <div class="form-group"><label>Justificativa</label><textarea oninput="solicCampo('justificativaAdiantamento', this.value)" placeholder="Motivo do adiantamento...">${d.justificativaAdiantamento || ''}</textarea></div>
     </div>
-    ` : tipo === 'falta' ? `
-    <div class="form-row">
-      <div class="form-group"><label>Data da Ocorrência</label><input type="date" value="${d.dataFalta || ''}" onchange="solicCampo('dataFalta', this.value)"></div>
-    </div>
+    ` : tipo === 'ajuste_ponto' ? `
     <div class="form-row full">
-      <div class="form-group"><label>Motivo / Descrição</label><textarea oninput="solicCampo('motivoFalta', this.value)" placeholder="Explique o motivo da falta ou ocorrência...">${d.motivoFalta || ''}</textarea></div>
+      <div class="form-group"><label>Foi uma falta (ausência)?</label>
+        <div style="display:flex;gap:20px;margin-top:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer">
+            <input type="radio" name="solic_foi_falta" ${d.foiFalta === 'sim' ? 'checked' : ''} onchange="solicSelecionarFoiFalta('sim')"> Sim, foi falta
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer">
+            <input type="radio" name="solic_foi_falta" ${d.foiFalta === 'nao' ? 'checked' : ''} onchange="solicSelecionarFoiFalta('nao')"> Não, é ajuste de horário do ponto
+          </label>
+        </div>
+      </div>
+    </div>
+    ${d.foiFalta ? `
+    <div class="form-row">
+      <div class="form-group"><label>Data da Ocorrência</label><input type="date" value="${d.dataOcorrencia || ''}" onchange="solicCampo('dataOcorrencia', this.value)"></div>
+    </div>
+    ${d.foiFalta === 'sim' ? `
+    <div class="form-row full">
+      <div class="form-group"><label>Motivo</label><textarea oninput="solicCampo('motivoPonto', this.value)" placeholder="Explique o motivo da falta...">${d.motivoPonto || ''}</textarea></div>
     </div>
     <div class="form-row full">
       <div class="form-group"><label>Anexar Atestado ou Documento (opcional)</label>
@@ -13717,23 +13733,15 @@ function pageSolicitacoes() {
         ${window._solicAnexoArquivo ? `<div style="font-size:.75rem;color:var(--green-mid);margin-top:4px">📎 ${window._solicAnexoArquivo.name}</div>` : ''}
       </div>
     </div>
-    <div class="form-row full">
-      <label style="display:flex;align-items:center;gap:8px;font-size:.85rem;cursor:pointer">
-        <input type="checkbox" ${d.comPontoErrado ? 'checked' : ''} onchange="solicToggleComPontoErrado(this.checked)">
-        Preciso informar o horário correto do ponto (marcação errada)
-      </label>
-    </div>
-    ${d.comPontoErrado ? `
+    ` : `
     <div class="form-row">
-      <div class="form-group"><label>Qual registro?</label>
-        <select onchange="solicCampo('pontoTipo', this.value)">
-          <option ${d.pontoTipo === 'Entrada' ? 'selected' : ''}>Entrada</option>
-          <option ${d.pontoTipo === 'Saída' ? 'selected' : ''}>Saída</option>
-          <option ${d.pontoTipo === 'Ambos' ? 'selected' : ''}>Ambos</option>
-        </select>
-      </div>
-      <div class="form-group"><label>Horário Correto</label><input type="time" value="${d.horarioCorreto || ''}" onchange="solicCampo('horarioCorreto', this.value)"></div>
+      <div class="form-group"><label>Horário de Entrada Correto</label><input type="time" value="${d.horarioEntradaCorreto || ''}" onchange="solicCampo('horarioEntradaCorreto', this.value)"></div>
+      <div class="form-group"><label>Horário de Saída Correto</label><input type="time" value="${d.horarioSaidaCorreto || ''}" onchange="solicCampo('horarioSaidaCorreto', this.value)"></div>
     </div>
+    <div class="form-row full">
+      <div class="form-group"><label>Motivo</label><textarea oninput="solicCampo('motivoPonto', this.value)" placeholder="Explique o motivo do ajuste de horário...">${d.motivoPonto || ''}</textarea></div>
+    </div>
+    `}
     ` : ''}
     ` : `
     <div class="form-row">
@@ -13793,26 +13801,31 @@ async function solicEnviar() {
     return;
   }
 
-  if (d.tipo === 'falta') {
-    if (!d.dataFalta) { showToast('⚠️ Informe a data da ocorrência.'); return; }
-    if (!(d.motivoFalta || '').trim()) { showToast('⚠️ Descreva o motivo.'); return; }
-    if (d.comPontoErrado && !d.horarioCorreto) { showToast('⚠️ Informe o horário correto do ponto.'); return; }
+  if (d.tipo === 'ajuste_ponto') {
+    if (!d.foiFalta) { showToast('⚠️ Informe se foi falta ou ajuste de horário.'); return; }
+    if (!d.dataOcorrencia) { showToast('⚠️ Informe a data da ocorrência.'); return; }
+    if (!(d.motivoPonto || '').trim()) { showToast('⚠️ Descreva o motivo.'); return; }
+    if (d.foiFalta === 'nao' && !d.horarioEntradaCorreto && !d.horarioSaidaCorreto) { showToast('⚠️ Informe ao menos um horário correto (entrada ou saída).'); return; }
     showSyncStatus('Enviando solicitação...');
     let anexoUrl = '', anexoNome = '';
-    const arquivo = window._solicAnexoArquivo;
-    if (arquivo && typeof uploadParaOneDrive === 'function') {
-      try {
-        const nomeArq = `Falta_${nome.replace(/[^a-zA-Z0-9À-ú]/g, '_').substring(0, 30)}_${Date.now()}${(arquivo.name.match(/\.[a-zA-Z0-9]+$/) || [''])[0]}`;
-        const url = await uploadParaOneDrive(arquivo, OD_FOLDERS.solicitacoes, nomeArq);
-        if (url) { anexoUrl = url; anexoNome = arquivo.name; }
-      } catch (e) { console.warn('[Solicitações] Falha ao enviar anexo:', e); }
+    if (d.foiFalta === 'sim') {
+      const arquivo = window._solicAnexoArquivo;
+      if (arquivo && typeof uploadParaOneDrive === 'function') {
+        try {
+          const nomeArq = `AjustePonto_${nome.replace(/[^a-zA-Z0-9À-ú]/g, '_').substring(0, 30)}_${Date.now()}${(arquivo.name.match(/\.[a-zA-Z0-9]+$/) || [''])[0]}`;
+          const url = await uploadParaOneDrive(arquivo, OD_FOLDERS.solicitacoes, nomeArq);
+          if (url) { anexoUrl = url; anexoNome = arquivo.name; }
+        } catch (e) { console.warn('[Solicitações] Falha ao enviar anexo:', e); }
+      }
     }
+    const subTipoLabel = d.foiFalta === 'sim' ? 'Falta' : 'Ajuste de Horário';
     const novo = await dbInserir('SolicitacoesGerais', {
-      Title: 'Informação de Falta — ' + nome + ' — ' + d.dataFalta,
-      Tipo: 'falta', TipoLabel: 'Informação de Falta',
-      DataNecessaria: d.dataFalta, Descricao: d.motivoFalta,
+      Title: 'Ajuste de Ponto (' + subTipoLabel + ') — ' + nome + ' — ' + d.dataOcorrencia,
+      Tipo: 'ajuste_ponto', TipoLabel: 'Ajuste de Ponto', SubTipo: subTipoLabel,
+      DataNecessaria: d.dataOcorrencia, Descricao: d.motivoPonto,
       AnexoUrl: anexoUrl, AnexoNome: anexoNome,
-      ComPontoErrado: !!d.comPontoErrado, PontoTipo: d.comPontoErrado ? d.pontoTipo : '', HorarioCorreto: d.comPontoErrado ? d.horarioCorreto : '',
+      HorarioEntradaCorreto: d.foiFalta === 'nao' ? d.horarioEntradaCorreto : '',
+      HorarioSaidaCorreto: d.foiFalta === 'nao' ? d.horarioSaidaCorreto : '',
       Solicitante: nome, SolicitanteEmail: email, Status: 'Pendente',
     });
     showToast(novo ? '✅ Solicitação enviada!' : '❌ Erro ao enviar.');
