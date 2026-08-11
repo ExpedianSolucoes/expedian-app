@@ -1066,7 +1066,6 @@ const menus = {
       { id: 'receitas_despesas', icon: '💵', label: 'Receitas e Despesas' },
       { id: 'prestacao', icon: '📑', label: 'Prestação de Contas' },
       { id: 'contratos', icon: '📜', label: 'Gestão de Contratos' },
-      { id: 'adiantamento', icon: '💵', label: 'Solicitação de Adiantamento' },
     ]},
     // { group: 'gestao', icon: '🏢', label: 'Gestão', children: [
       // { id: 'rh', icon: '👥', label: 'RH' },             // DESABILITADO TEMPORARIAMENTE
@@ -1105,7 +1104,6 @@ const menus = {
     { group: 'financeiro', icon: '💰', label: 'Financeiro', children: [
       { id: 'servicos', icon: '💼', label: 'Catálogo de Serviços' },
       { id: 'prestacao', icon: '📑', label: 'Prestação de Contas' },
-      { id: 'adiantamento', icon: '💵', label: 'Solicitação de Adiantamento' },
     ]},
     // { group: 'equipe', icon: '👥', label: 'Equipe', children: [
     //   { id: 'rh', icon: '👥', label: 'Minha Equipe' },  // DESABILITADO TEMPORARIAMENTE
@@ -9356,7 +9354,8 @@ function pageAprovacoes() {
     <div class="kpi-card amber"><div class="kpi-label">Prestações Pendentes</div><div class="kpi-value" id="aprov-kpi-prest">—</div><div class="kpi-icon">📑</div></div>
     <div class="kpi-card amber"><div class="kpi-label">C. a Pagar Pendentes</div><div class="kpi-value" id="aprov-kpi-pagar">—</div><div class="kpi-icon">💸</div></div>
     <div class="kpi-card amber"><div class="kpi-label">Adiantamentos Pendentes</div><div class="kpi-value" id="aprov-kpi-adiantamento">—</div><div class="kpi-icon">💵</div></div>
-    <div class="kpi-card amber"><div class="kpi-label">Outras Solicitações</div><div class="kpi-value" id="aprov-kpi-solic">—</div><div class="kpi-icon">📝</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Solicitações Pendentes</div><div class="kpi-value" id="aprov-kpi-solic">—</div><div class="kpi-icon">📝</div></div>
+    <div class="kpi-card red"><div class="kpi-label">Solicitações Indeferidas</div><div class="kpi-value" id="aprov-kpi-solic-indef">—</div><div class="kpi-icon">🚫</div></div>
   </div>
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">APRs Aguardando Aprovação</div>
@@ -9371,9 +9370,29 @@ function pageAprovacoes() {
     <div id="aprov-lista-adiantamento"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>
   <div class="card" style="margin-bottom:16px">
-    <div class="card-title">Outras Solicitações Pendentes — Veículo, Equipamento, Compras, Ajuste de Ponto e Outras</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <div class="card-title" style="margin:0">Outras Solicitações Pendentes — Veículo, Equipamento, Compras, Ajuste de Ponto e Outras</div>
+      <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="aprovExportarSolicitacoesExcel()">📊 Exportar Excel</button>
+    </div>
     <div id="aprov-lista-solic"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
+}
+
+async function aprovExportarSolicitacoesExcel() {
+  const solicGerais = await dbLer('SolicitacoesGerais');
+  if (!solicGerais || !solicGerais.length) { showToast('⚠️ Nenhuma solicitação para exportar.'); return; }
+  const rows = solicGerais.map(r => ({
+    Tipo: r.TipoLabel || r.Tipo || '',
+    'Sub-tipo': r.SubTipo || r.TipoOutro || '',
+    Solicitante: r.Solicitante || '',
+    Data: r.Created ? new Date(r.Created).toLocaleDateString('pt-BR') : '',
+    Descricao: r.Descricao || '',
+    Status: r.Status || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Solicitações');
+  XLSX.writeFile(wb, 'Solicitacoes_Todas_' + new Date().toISOString().slice(0, 10) + '.xlsx');
 }
 
 async function carregarAprovacoes() {
@@ -9391,7 +9410,8 @@ async function carregarAprovacoes() {
   setPill('aprov-kpi-pagar', contas.filter(r => r.Status === 'Aguardando Aprovação').length);
   setPill('aprov-kpi-prest', prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor').length);
   setPill('aprov-kpi-adiantamento', adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').length);
-  setPill('aprov-kpi-solic', (solicGerais || []).filter(r => r.Status === 'Pendente').length);
+  setPill('aprov-kpi-solic', (solicGerais || []).filter(r => r.Status === 'Pendente' || (ehGestorGeral && r.Status === 'Aguardando Gestor Geral')).length);
+  setPill('aprov-kpi-solic-indef', (solicGerais || []).filter(r => r.Status === 'Reprovada').length);
 
   // APRs em aberto (Gestor Geral vê todas; demais gestores só as endereçadas a eles)
   const elAPR = document.getElementById('aprov-lista-apr');
@@ -9467,25 +9487,32 @@ async function carregarAprovacoes() {
     }
   }
 
-  // Outras Solicitações (Veículo, Equipamento, Compras, Informação de Falta, Outra)
+  // Outras Solicitações (Veículo, Equipamento, Compras, Ajuste de Ponto, Outra).
+  // Ajuste de Ponto tem 2 estágios: 'Pendente' (Gestor aprova) -> 'Aguardando Gestor Geral'
+  // (só o Gestor Geral finaliza). Os demais tipos seguem direto 'Pendente' -> 'Aprovada'.
   const elSolic = document.getElementById('aprov-lista-solic');
   if (elSolic) {
-    const pendentes = (solicGerais || []).filter(r => r.Status === 'Pendente').sort((a,b) => b.Id - a.Id);
+    const pendentes = (solicGerais || []).filter(r => r.Status === 'Pendente' || r.Status === 'Aguardando Gestor Geral').sort((a,b) => b.Id - a.Id);
     if (!pendentes.length) {
       elSolic.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma solicitação pendente. ✅</div>';
     } else {
-      elSolic.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tipo</th><th>Solicitante</th><th>Descrição</th><th>Data</th><th>Ações</th></tr></thead><tbody>' +
-        pendentes.map(i => `<tr>
+      elSolic.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tipo</th><th>Solicitante</th><th>Descrição</th><th>Data</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
+        pendentes.map(i => {
+          const aguardandoGG = i.Status === 'Aguardando Gestor Geral';
+          const podeAgir = !aguardandoGG || ehGestorGeral;
+          return `<tr>
           <td><strong>${(i.TipoLabel || i.Tipo || '—')}${i.TipoOutro ? ' — ' + i.TipoOutro : ''}</strong></td>
           <td>${i.Solicitante || '—'}</td>
           <td style="font-size:.75rem;max-width:260px">${(i.Descricao || '—').toString().substring(0,90)}</td>
           <td style="font-size:.75rem">${i.DataNecessaria ? new Date(i.DataNecessaria + 'T12:00').toLocaleDateString('pt-BR') : (i.Created ? new Date(i.Created).toLocaleDateString('pt-BR') : '—')}</td>
+          <td><span class="status-pill amber" style="font-size:.65rem">${aguardandoGG ? 'Ag. Gestor Geral' : 'Pendente'}</span></td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
             <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="solicVisualizar(${i.Id})">👁️ Visualizar</button>
-            <button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarSolicitacaoGeral(${i.Id})">✅ Aprovar</button>
-            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarSolicitacaoGeral(${i.Id})">↩️ Reprovar</button>
+            ${podeAgir ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarSolicitacaoGeral(${i.Id})">✅ ${aguardandoGG ? 'Aprovar (Final)' : 'Aprovar'}</button>
+            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarSolicitacaoGeral(${i.Id})">↩️ Reprovar</button>` : `<span style="font-size:.7rem;color:var(--text-muted)">Aguardando o Gestor Geral</span>`}
           </td>
-        </tr>`).join('') + '</tbody></table></div>';
+        </tr>`;
+        }).join('') + '</tbody></table></div>';
     }
   }
 }
@@ -9521,9 +9548,27 @@ async function solicVisualizar(id) {
   document.body.appendChild(modal);
 }
 
+/* -- Ajuste de Ponto tem fluxo em 2 estágios: o Gestor (coordenador ou diretoria)
+   dá a 1ª aprovação, que move para 'Aguardando Gestor Geral'; só o Gestor Geral
+   (Tiago) pode dar a aprovação final. Os demais tipos de solicitação continuam
+   com aprovação direta em 1 estágio, como já funcionava. -- */
 async function aprovarSolicitacaoGeral(id) {
-  const ok = await dbAtualizar('SolicitacoesGerais', parseInt(id), { Status: 'Aprovada', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0] });
-  showToast(ok ? '✅ Solicitação aprovada!' : '❌ Erro ao aprovar');
+  const todos = await dbLer('SolicitacoesGerais');
+  const r = todos.find(x => x.Id === parseInt(id));
+  if (!r) { showToast('❌ Solicitação não encontrada.'); return; }
+  const ehGestorGeral = solicEhGestorGeral();
+  let novoStatus = 'Aprovada';
+  let msgOk = '✅ Solicitação aprovada!';
+  if (r.Tipo === 'ajuste_ponto' && r.Status === 'Pendente') {
+    novoStatus = 'Aguardando Gestor Geral';
+    msgOk = '✅ Aprovado pelo gestor — enviado ao Gestor Geral.';
+  } else if (r.Tipo === 'ajuste_ponto' && r.Status === 'Aguardando Gestor Geral') {
+    if (!ehGestorGeral) { showToast('⛔ Apenas o Gestor Geral pode dar a aprovação final.'); return; }
+    novoStatus = 'Aprovada';
+  }
+  const campos = { Status: novoStatus, AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0] };
+  const ok = await dbAtualizar('SolicitacoesGerais', parseInt(id), campos);
+  showToast(ok ? msgOk : '❌ Erro ao aprovar');
   setTimeout(() => { carregarAprovacoes(); if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); }, 600);
 }
 async function reprovarSolicitacaoGeral(id) {
@@ -13745,11 +13790,11 @@ function pageSolicitacoes() {
     ` : tipo === 'ajuste_ponto' ? `
     <div class="form-row full">
       <div class="form-group"><label>Foi uma falta (ausência)?</label>
-        <div style="display:flex;gap:20px;margin-top:8px">
-          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer">
+        <div style="display:flex;flex-direction:column;gap:10px;margin-top:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer;white-space:nowrap">
             <input type="radio" name="solic_foi_falta" ${d.foiFalta === 'sim' ? 'checked' : ''} onchange="solicSelecionarFoiFalta('sim')"> Sim, foi falta
           </label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer;white-space:nowrap">
             <input type="radio" name="solic_foi_falta" ${d.foiFalta === 'nao' ? 'checked' : ''} onchange="solicSelecionarFoiFalta('nao')"> Não, é ajuste de horário do ponto
           </label>
         </div>
@@ -13799,14 +13844,36 @@ function pageSolicitacoes() {
     `}
 
     <div class="form-actions">
-      <button class="btn-primary" onclick="solicEnviar()">📤 Enviar</button>
+      <button class="btn-primary" onclick="solicEnviar()">📤 Enviar ao Gestor</button>
     </div>
   </div>
 
   <div class="card" style="margin-top:16px">
-    <div class="card-title">${solicEhGestorGeral() ? 'Todas as Solicitações' : 'Minhas Solicitações'}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <div class="card-title" style="margin:0">${solicEhGestorGeral() ? 'Todas as Solicitações' : 'Minhas Solicitações'}</div>
+      <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="solicExportarExcel()">📊 Exportar Excel</button>
+    </div>
     <div id="solic-lista">${solicHtmlHistorico()}</div>
   </div>`;
+}
+
+function solicExportarExcel() {
+  const lista = window._solicHistorico || [];
+  if (!lista.length) { showToast('⚠️ Nenhuma solicitação para exportar.'); return; }
+  const rows = lista.map(r => ({
+    Tipo: r._origem === 'adiantamento' ? 'Adiantamento' : (r.TipoLabel || r.Tipo || ''),
+    'Sub-tipo': r.SubTipo || r.TipoOutro || '',
+    Solicitante: r.Solicitante || '',
+    Data: r.Created ? new Date(r.Created).toLocaleDateString('pt-BR') : '',
+    Detalhe: r._origem === 'adiantamento'
+      ? ('R$ ' + (r.ValorTotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) + ' — ' + (r.Periodo || ''))
+      : (r.Descricao || ''),
+    Status: r.Status || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Solicitações');
+  XLSX.writeFile(wb, 'Solicitacoes_' + new Date().toISOString().slice(0, 10) + '.xlsx');
 }
 
 async function solicEnviar() {
@@ -14354,10 +14421,10 @@ function applyLogin(user) {
   } else {
     switcher.style.display = 'block';
   }
-  currentPage = 'agenda';
+  currentPage = 'dashboard';
   renderNav(user.profile);
-  renderPage('agenda');
-  document.getElementById('headerTitle').textContent = user.profile === 'colaborador' ? 'Minha Agenda' : 'Agenda Corporativa';
+  renderPage('dashboard');
+  document.getElementById('headerTitle').textContent = 'Dashboard Geral';
   document.getElementById('logoutBtn').style.display = 'flex';
 
   // Registrar login/presença online
@@ -22527,7 +22594,7 @@ async function atualizarBadgeNotificacoes() {
     );
     const despesasVencendo = despesasVencendoEmBreve(despesas);
     const flashPendentes = (flashReports || []).filter(f => f.Visualizado === false);
-    const solicGeraisPendentes = (solicitacoesGerais || []).filter(r => r.Status === 'Pendente');
+    const solicGeraisPendentes = (solicitacoesGerais || []).filter(r => r.Status === 'Pendente' || (ehGestorGeral && r.Status === 'Aguardando Gestor Geral'));
     const totalAprovacoesPuras =
       aprsPendentes.length +
       prests.filter(r => r.Status === 'Em Aberto').length +
@@ -24325,10 +24392,10 @@ window.applyLogin = function(user) {
   _origApplyLogin(user);
   saveSession(user);
   if (user.profile === 'colaborador') {
-    currentPage = 'agenda';
+    currentPage = 'dashboard';
     renderNav('colaborador');
-    renderPage('agenda');
-    document.getElementById('headerTitle').textContent = 'Minha Agenda';
+    renderPage('dashboard');
+    document.getElementById('headerTitle').textContent = 'Dashboard Geral';
   }
 };
 
