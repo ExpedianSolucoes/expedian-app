@@ -20828,30 +20828,28 @@ function flashVerRegistro(id) {
   w.document.write(html); w.document.close();
 }
 
+// Cada FLASH_FRENTES.id representa um Circuito Elétrico (obra/subestação/linha),
+// espelhando a organização já usada na aba Projetos > Energisa (gestão por
+// empreiteira/circuito). O dashboard abaixo agrupa os Flash Reports por
+// circuito elétrico, e cada circuito tem sua própria numeração sequencial
+// (FR-001, FR-002... calculada isoladamente por FrenteId — ver _flashGerarDoc).
 function flashHtmlHistorico() {
-  const lista = (window._flashHistorico || []).slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || '')).slice(0, 60);
-  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado ainda.</div>';
+  const todos = window._flashHistorico || [];
+  if (!todos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado ainda.</div>';
 
-  // Agrupa por data — quando há mais de uma frente lançada no mesmo dia, elas
-  // aparecem juntas sob o mesmo cabeçalho de data (cada uma é um registro
-  // independente, um por frente/empreiteira).
-  const grupos = [];
-  const porData = {};
-  lista.forEach(f => {
-    const chave = f.Data || '—';
-    if (!porData[chave]) { porData[chave] = []; grupos.push(chave); }
-    porData[chave].push(f);
-  });
+  const filtro = window._flashCircuitoFiltro || null;
+  const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
 
-  const linhaF = f => {
+  const linhaF = (f, numFR) => {
     const marcadosAtiv = Object.values(f.ckAtividades || {}).filter(Boolean).length;
     const marcadosVerif = Object.values(f.ckVerificacoes || {}).filter(Boolean).length;
     const temOcorr = Object.entries(f.ckOcorrencias || {}).some(([k, v]) => v && k !== 'semocorr');
+    const dataFmt = f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—';
     return `
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">🚧</div>
       <div style="flex:1;min-width:0">
-        <div class="name">${f.FrenteNome || f.FrenteId || '—'}</div>
+        <div class="name">FR-${numFR} · ${dataFmt}</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${f.ResponsavelTecnico || '—'} · por ${f.CriadoPorNome || '—'}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">✅ ${marcadosAtiv}/${FLASH_ATIVIDADES.length} atividades · ${marcadosVerif}/${FLASH_VERIFICACOES.length} verificações${(f.fotos||[]).length ? ' · 📷 ' + f.fotos.length : ''}</div>
       </div>
@@ -20867,17 +20865,28 @@ function flashHtmlHistorico() {
     </div>`;
   };
 
-  return grupos.map(data => {
-    const itens = porData[data];
-    const dataFmt = data !== '—' ? new Date(data + 'T12:00').toLocaleDateString('pt-BR') : '—';
+  const blocos = frentes.map(fr => {
+    const itens = todos.filter(f => f.FrenteId === fr.id).slice().sort((a, b) => (a.Data || '').localeCompare(b.Data || ''));
+    if (!itens.length) return '';
+    const comNumero = itens.map((f, i) => ({ f, num: String(i + 1).padStart(3, '0') })).reverse().slice(0, 30);
     return `
-    <div style="margin-bottom:14px">
-      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:6px;display:flex;align-items:center;gap:6px">
-        📅 ${dataFmt}${itens.length > 1 ? ` <span style="background:var(--surface2);border-radius:20px;padding:1px 8px;font-weight:700;letter-spacing:0">${itens.length} frentes</span>` : ''}
+    <div style="margin-bottom:18px">
+      <div style="font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--brown-dark,#3F261F);margin-bottom:6px;display:flex;align-items:center;gap:6px;cursor:pointer" onclick="flashFiltrarCircuito('${filtro ? '' : fr.id}')">
+        ⚡ ${fr.nome} <span style="font-weight:400;color:var(--text-muted)">— ${fr.empreiteira}</span>
+        <span style="background:var(--surface2);border-radius:20px;padding:1px 8px;font-weight:700;letter-spacing:0">${itens.length} registro${itens.length > 1 ? 's' : ''}</span>
+        ${filtro ? '<span style="font-weight:400;color:var(--text-muted);text-transform:none">← todos os circuitos</span>' : ''}
       </div>
-      <div class="alert-list">${itens.map(linhaF).join('')}</div>
+      <div class="alert-list">${comNumero.map(x => linhaF(x.f, x.num)).join('')}</div>
     </div>`;
-  }).join('');
+  }).filter(Boolean);
+
+  if (!blocos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado para este circuito.</div>';
+  return blocos.join('');
+}
+
+function flashFiltrarCircuito(frenteId) {
+  window._flashCircuitoFiltro = frenteId || null;
+  navigate('checklist_flash');
 }
 
 function pageChecklistFlash() {
@@ -20893,7 +20902,7 @@ function pageChecklistFlash() {
     </div>
 
     <div class="card">
-      <div class="card-title">Histórico de Flash Reports</div>
+      <div class="card-title">⚡ Histórico de Flash Reports por Circuito Elétrico</div>
       ${flashHtmlHistorico()}
     </div>`;
   }
@@ -21043,21 +21052,35 @@ async function _flashGerarDoc(d, numOverride) {
   let y = 2.1;
   const ML = 1.4, CW = pageW - 2.8;
 
-  const linObra = doc.splitTextToSize(frente ? (frente.empreiteira + ' - ' + frente.nome) : d.frenteId, CW - 0.6);
-  const linTrecho = doc.splitTextToSize('Frente/Trecho: ' + (d.trecho || '--'), CW - 0.6);
-  const linEquipe = doc.splitTextToSize('RT: ' + (d.rt||'') + '  |  Equipe: ' + (d.equipe || '--'), CW - 0.6);
-  const idBoxH = 0.95 + (2 + linObra.length + linTrecho.length + linEquipe.length) * 0.4 + 0.35;
+  // Cabeçalho de identificação em colunas: linha 1 = Data / Empresa / Clima,
+  // linha 2 = Frente de Serviço / Equipe. RT removido — não aparece mais aqui.
+  const empresaTxt = 'Empresa: ' + (frente ? frente.empreiteira : (d.frenteId || '--'));
+  const dataTxt = 'Data: ' + dt;
+  const climaTxt = 'Clima: ' + (d.clima || '--');
+  const frenteTxt = 'Frente de Serviço: ' + (frente ? frente.nome : '--') + (d.trecho ? ' — ' + d.trecho : '');
+  const equipeTxt = 'Equipe: ' + (d.equipe || '--');
+  const col3W = (CW - 0.6) / 3;
+  const col2W = (CW - 0.6) / 2;
+  const linhasRow1 = [dataTxt, empresaTxt, climaTxt].map(t => doc.splitTextToSize(t, col3W - 0.25));
+  const linhasRow2 = [frenteTxt, equipeTxt].map(t => doc.splitTextToSize(t, col2W - 0.25));
+  const alturaRow1 = Math.max.apply(null, linhasRow1.map(l => l.length)) * 0.4;
+  const alturaRow2 = Math.max.apply(null, linhasRow2.map(l => l.length)) * 0.4;
+  const idBoxH = 0.95 + alturaRow1 + alturaRow2 + 0.45;
   doc.setFillColor(245,240,237);
   doc.roundedRect(ML, y, CW, idBoxH, 0.2, 0.2, 'F');
   doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(63,38,31);
   doc.text('FR-' + num + ' · Flash Report Diário — Obras', ML+0.3, y+0.55);
   doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(80,60,50);
   let idY = y + 0.95;
-  doc.text('Data: ' + dt, ML+0.3, idY); idY += 0.4;
-  linObra.forEach(l => { doc.text(l, ML+0.3, idY); idY += 0.4; });
-  doc.text('Condicao climatica: ' + (d.clima||''), ML+0.3, idY); idY += 0.4;
-  linTrecho.forEach(l => { doc.text(l, ML+0.3, idY); idY += 0.4; });
-  linEquipe.forEach(l => { doc.text(l, ML+0.3, idY); idY += 0.4; });
+  linhasRow1.forEach((linhas, i) => {
+    let ly = idY;
+    linhas.forEach(l => { doc.text(l, ML+0.3 + i*col3W, ly); ly += 0.4; });
+  });
+  idY += alturaRow1 + 0.15;
+  linhasRow2.forEach((linhas, i) => {
+    let ly = idY;
+    linhas.forEach(l => { doc.text(l, ML+0.3 + i*col2W, ly); ly += 0.4; });
+  });
   y += idBoxH + 0.3;
 
   function sectionTitle(t) {
@@ -21138,20 +21161,24 @@ async function _flashGerarDoc(d, numOverride) {
     y += 0.2;
   }
 
-  if (d.fiscal) {
-    if (y > pageH - 3.5) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-    y += 0.3;
-    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(63,38,31);
-    doc.text('Fiscal Ambiental: ' + d.fiscal, ML, y); y += 0.5;
-  }
-
-  if (y > pageH - 3.5) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-  y += 0.4;
-  doc.setDrawColor(200,200,200); doc.line(ML, y, ML+6, y); y += 0.5;
+  // Assinaturas (Fiscal Ambiental + Gestor do Contrato)
+  if (y > pageH - 4) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  y += 0.5;
+  const assinX2f = ML + CW/2 + 0.3;
+  doc.setDrawColor(200,200,200);
+  doc.line(ML, y, ML + CW/2 - 0.5, y);
+  doc.line(assinX2f, y, assinX2f + CW/2 - 0.5, y);
+  y += 0.5;
   doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(63,38,31);
-  doc.text(d.rt || 'Gestor do Contrato', ML, y); y += 0.38;
+  doc.text(d.fiscal || 'Fiscal Ambiental', ML, y);
+  doc.text(d.rt || 'Gestor do Contrato', assinX2f, y);
+  y += 0.38;
   doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(100,100,100);
-  doc.text('Gestão Ambiental de Obras — Energisa RO · Contrato 2025022101', ML, y);
+  doc.text('Fiscal Ambiental', ML, y);
+  doc.text('Gestor do Contrato', assinX2f, y);
+  y += 0.38;
+  doc.text('Contrato 2025022101 — Energisa RO', ML, y);
+  doc.text('Contrato 2025022101 — Energisa RO', assinX2f, y);
 
   _pdfNumerarPaginas(doc, pageW, pageH);
 
