@@ -13676,9 +13676,33 @@ function solicNovoForm() {
     foiFalta: '', dataOcorrencia: '', motivoPonto: '', horarioEntradaCorreto: '', horarioSaidaCorreto: '',
   };
   window._solicAnexoArquivo = null;
+  window._solicEditId = null;
+  window._solicEditOrigem = null;
 }
 if (!window._solicData) solicNovoForm();
 if (window._solicHistorico === undefined) window._solicHistorico = null;
+
+/* -- Permissões de edição/exclusão: cada um mexe no que é seu (Excluir/Editar/
+   Visualizar aparecem para todos); o Gestor Geral pode tudo, sempre. Depois que
+   uma solicitação é aprovada (ou paga, no caso do adiantamento), ninguém além do
+   Gestor Geral consegue mais editar — fica travada. -- */
+function solicEhDono(r) {
+  const nome = window._currentUser ? window._currentUser.name : '';
+  return !!nome && r.Solicitante === nome;
+}
+const SOLIC_STATUS_TRAVADOS = ['Aprovada', 'Aprovado — Aguardando Pagamento', 'Pago'];
+function solicPodeEditar(r) {
+  if (solicEhGestorGeral()) return true;
+  if (!solicEhDono(r)) return false;
+  const status = r.Status || (r._origem === 'adiantamento' ? 'Aguardando Aprovação' : 'Pendente');
+  return !SOLIC_STATUS_TRAVADOS.includes(status);
+}
+function solicPodeExcluir(r) {
+  return solicEhGestorGeral() || solicEhDono(r);
+}
+function solicVisualizarQualquer(id, origem) {
+  if (origem === 'adiantamento') { adtVisualizar(id); } else { solicVisualizar(id); }
+}
 
 /* -- Lista de possíveis gestores para direcionar a solicitação (Coordenador(es) +
    Diretoria, que são quem consegue aprovar em Aprovações) — lida do cadastro de
@@ -13744,6 +13768,8 @@ function solicHtmlHistorico() {
     const dataFmt = r.Created ? new Date(r.Created).toLocaleDateString('pt-BR') : '—';
     const status = r.Status || (r._origem === 'adiantamento' ? 'Aguardando Aprovação' : 'Pendente');
     const detalhe = r._origem === 'adiantamento' ? ('R$ ' + (r.ValorTotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })) : (r.Descricao || '').toString().substring(0, 60);
+    const podeEditar = solicPodeEditar(r);
+    const podeExcluir = solicPodeExcluir(r);
     return `
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">${tipoInfo.icon || '📝'}</div>
@@ -13754,7 +13780,11 @@ function solicHtmlHistorico() {
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         <span class="status-pill ${statusCor(status)}" style="font-size:.65rem">${status}</span>
-        ${verTudo ? `<button class="btn-secondary" style="padding:2px 8px;font-size:.62rem;color:var(--red)" onclick="solicExcluirHistorico(${r.Id},'${r._origem}')">🗑️ Excluir</button>` : ''}
+        <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn-secondary" style="padding:2px 8px;font-size:.62rem" onclick="solicVisualizarQualquer(${r.Id},'${r._origem}')">👁️</button>
+          ${podeEditar ? `<button class="btn-secondary" style="padding:2px 8px;font-size:.62rem" onclick="solicEditarHistorico(${r.Id},'${r._origem}')">✏️</button>` : ''}
+          ${podeExcluir ? `<button class="btn-secondary" style="padding:2px 8px;font-size:.62rem;color:var(--red)" onclick="solicExcluirHistorico(${r.Id},'${r._origem}')">🗑️</button>` : ''}
+        </div>
       </div>
     </div>`;
   };
@@ -13764,20 +13794,61 @@ function solicHtmlHistorico() {
 /* -- Só o Gestor Geral pode excluir uma solicitação (de qualquer pessoa), direto
    pela lista da tela de Solicitações. -- */
 async function solicExcluirHistorico(id, origem) {
-  if (!solicEhGestorGeral()) { showToast('⛔ Apenas o Gestor Geral pode excluir solicitações.'); return; }
-  if (!confirm('Tem certeza que deseja excluir esta solicitação?\n\nEssa ação não pode ser desfeita.')) return;
   const tabela = origem === 'adiantamento' ? 'Adiantamentos' : 'SolicitacoesGerais';
+  const listaAtual = await dbLer(tabela);
+  const registro = listaAtual.find(r => r.Id === id);
+  if (!registro) { showToast('❌ Registro não encontrado.'); return; }
+  registro._origem = origem;
+  if (!solicPodeExcluir(registro)) { showToast('⛔ Você só pode excluir suas próprias solicitações.'); return; }
+  if (!confirm('Tem certeza que deseja excluir esta solicitação?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo solicitação...');
-  const lista = await dbLer(tabela);
-  const idx = lista.findIndex(r => r.Id === id);
-  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
-  lista.splice(idx, 1);
-  const ok = await dbSalvar(tabela, lista);
+  const idx = listaAtual.findIndex(r => r.Id === id);
+  listaAtual.splice(idx, 1);
+  const ok = await dbSalvar(tabela, listaAtual);
   showToast(ok ? '🗑️ Solicitação excluída.' : '❌ Erro ao excluir.');
   showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
   if (window._solicHistorico !== null) await solicCarregarHistorico(true);
   if (typeof carregarAprovacoes === 'function') carregarAprovacoes();
   if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes();
+}
+
+/* -- Carrega uma solicitação já enviada de volta pro formulário pra edição.
+   Bloqueada assim que a solicitação já foi aprovada (ou paga) — nesse ponto só o
+   Gestor Geral consegue reabrir pra editar. -- */
+async function solicEditarHistorico(id, origem) {
+  const tabela = origem === 'adiantamento' ? 'Adiantamentos' : 'SolicitacoesGerais';
+  const lista = await dbLer(tabela);
+  const r = lista.find(x => x.Id === id);
+  if (!r) { showToast('⚠️ Registro não encontrado.'); return; }
+  r._origem = origem;
+  if (!solicPodeEditar(r)) { showToast('⛔ Esta solicitação já foi aprovada — só o Gestor Geral pode editar.'); return; }
+  if (origem === 'adiantamento') {
+    window._solicData = {
+      tipo: 'adiantamento', tipoOutro: '', gestorDestino: r.GestorDestino || '',
+      dataNecessaria: '', descricao: '', projeto: '', urgencia: 'Normal',
+      valorAdiantamento: r.ValorTotal || '', periodoAdiantamento: r.Periodo || '', justificativaAdiantamento: r.Justificativa || '',
+      foiFalta: '', dataOcorrencia: '', motivoPonto: '', horarioEntradaCorreto: '', horarioSaidaCorreto: '',
+    };
+  } else if (r.Tipo === 'ajuste_ponto') {
+    window._solicData = {
+      tipo: 'ajuste_ponto', tipoOutro: '', gestorDestino: r.GestorDestino || '',
+      dataNecessaria: '', descricao: '', projeto: '', urgencia: 'Normal',
+      valorAdiantamento: '', periodoAdiantamento: '', justificativaAdiantamento: '',
+      foiFalta: r.SubTipo === 'Falta' ? 'sim' : 'nao', dataOcorrencia: r.DataNecessaria || '', motivoPonto: r.Descricao || '',
+      horarioEntradaCorreto: r.HorarioEntradaCorreto || '', horarioSaidaCorreto: r.HorarioSaidaCorreto || '',
+    };
+  } else {
+    window._solicData = {
+      tipo: r.Tipo || 'veiculo', tipoOutro: r.TipoOutro || '', gestorDestino: r.GestorDestino || '',
+      dataNecessaria: r.DataNecessaria || '', descricao: r.Descricao || '', projeto: r.Projeto || '', urgencia: r.Urgencia || 'Normal',
+      valorAdiantamento: '', periodoAdiantamento: '', justificativaAdiantamento: '',
+      foiFalta: '', dataOcorrencia: '', motivoPonto: '', horarioEntradaCorreto: '', horarioSaidaCorreto: '',
+    };
+  }
+  window._solicAnexoArquivo = null;
+  window._solicEditId = id;
+  window._solicEditOrigem = origem;
+  navigate('solicitacoes');
 }
 
 function pageSolicitacoes() {
@@ -13787,6 +13858,13 @@ function pageSolicitacoes() {
   return `
   <div class="page-header"><h1>Solicitações</h1><p>Veículos, equipamentos, compras, adiantamento, ajuste de ponto e outras solicitações</p></div>
   <div class="form-card">
+    ${window._solicEditId ? `
+    <div class="form-row full" style="margin-bottom:6px">
+      <div style="background:var(--amber-pale,#fff3cd);border:1px solid var(--amber,#f0c040);color:#856404;border-radius:8px;padding:8px 12px;font-size:.8rem;display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <span>✏️ Editando solicitação existente</span>
+        <button class="btn-secondary" style="padding:2px 10px;font-size:.72rem" onclick="solicNovoForm();navigate('solicitacoes')">Cancelar edição</button>
+      </div>
+    </div>` : ''}
     <div class="form-row">
       <div class="form-group"><label>Tipo de Solicitação</label>
         <select onchange="solicSelecionarTipo(this.value)">
@@ -13870,7 +13948,7 @@ function pageSolicitacoes() {
     </div>
 
     <div class="form-actions">
-      <button class="btn-primary" onclick="solicEnviar()">📤 Enviar ao Gestor</button>
+      <button class="btn-primary" onclick="solicEnviar()">${window._solicEditId ? '💾 Salvar alterações' : '📤 Enviar ao Gestor'}</button>
     </div>
   </div>
 
@@ -13902,11 +13980,22 @@ function solicExportarExcel() {
   XLSX.writeFile(wb, 'Solicitacoes_' + new Date().toISOString().slice(0, 10) + '.xlsx');
 }
 
+/* -- Grava um registro de Solicitações: cria novo (dbInserir) ou, se estiver em
+   modo de edição (window._solicEditId setado por solicEditarHistorico), atualiza
+   o registro existente (dbAtualizar) sem mexer no Status atual. -- */
+async function solicGravar(tabela, campos) {
+  if (window._solicEditId) {
+    return await dbAtualizar(tabela, window._solicEditId, campos);
+  }
+  return await dbInserir(tabela, campos);
+}
+
 async function solicEnviar() {
   const d = window._solicData;
   const tipoInfo = SOLIC_TIPOS.find(t => t.id === d.tipo);
   const nome = window._currentUser ? window._currentUser.name : '';
   const email = window._currentUser ? window._currentUser.email : '';
+  const editando = !!window._solicEditId;
 
   if (d.tipo === 'outra' && !(d.tipoOutro || '').trim()) { showToast('⚠️ Descreva qual é a solicitação.'); return; }
   if (!(d.gestorDestino || '').trim()) { showToast('⚠️ Selecione para qual gestor esta solicitação vai.'); return; }
@@ -13915,8 +14004,8 @@ async function solicEnviar() {
     const valor = parseFloat(d.valorAdiantamento);
     if (!valor || valor <= 0) { showToast('⚠️ Informe o valor do adiantamento.'); return; }
     if (!d.periodoAdiantamento) { showToast('⚠️ Informe o período de referência.'); return; }
-    showSyncStatus('Enviando solicitação...');
-    const novo = await dbInserir('Adiantamentos', {
+    showSyncStatus(editando ? 'Salvando alterações...' : 'Enviando solicitação...');
+    const campos = {
       Solicitante: nome,
       GestorDestino: d.gestorDestino,
       Contratos: [],
@@ -13924,11 +14013,12 @@ async function solicEnviar() {
       ValorTotal: valor,
       Periodo: d.periodoAdiantamento,
       Justificativa: d.justificativaAdiantamento || '',
-      Status: 'Aguardando Aprovação',
-    });
-    showToast(novo ? '✅ Solicitação de adiantamento enviada!' : '❌ Erro ao enviar.');
-    showSyncStatus(novo ? 'Enviado!' : 'Falha ao enviar', novo ? 'ok' : 'err', novo ? 3000 : 5000);
-    if (novo) { solicNovoForm(); if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); await solicCarregarHistorico(true); }
+    };
+    if (!editando) campos.Status = 'Aguardando Aprovação';
+    const ok = await solicGravar('Adiantamentos', campos);
+    showToast(ok ? (editando ? '✅ Solicitação atualizada!' : '✅ Solicitação de adiantamento enviada!') : '❌ Erro ao salvar.');
+    showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+    if (ok) { solicNovoForm(); if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); await solicCarregarHistorico(true); if (typeof carregarAprovacoes === 'function') carregarAprovacoes(); }
     return;
   }
 
@@ -13937,7 +14027,7 @@ async function solicEnviar() {
     if (!d.dataOcorrencia) { showToast('⚠️ Informe a data da ocorrência.'); return; }
     if (!(d.motivoPonto || '').trim()) { showToast('⚠️ Descreva o motivo.'); return; }
     if (d.foiFalta === 'nao' && !d.horarioEntradaCorreto && !d.horarioSaidaCorreto) { showToast('⚠️ Informe ao menos um horário correto (entrada ou saída).'); return; }
-    showSyncStatus('Enviando solicitação...');
+    showSyncStatus(editando ? 'Salvando alterações...' : 'Enviando solicitação...');
     let anexoUrl = '', anexoNome = '';
     if (d.foiFalta === 'sim') {
       const arquivo = window._solicAnexoArquivo;
@@ -13950,34 +14040,38 @@ async function solicEnviar() {
       }
     }
     const subTipoLabel = d.foiFalta === 'sim' ? 'Falta' : 'Ajuste de Horário';
-    const novo = await dbInserir('SolicitacoesGerais', {
+    const campos = {
       Title: 'Ajuste de Ponto (' + subTipoLabel + ') — ' + nome + ' — ' + d.dataOcorrencia,
       Tipo: 'ajuste_ponto', TipoLabel: 'Ajuste de Ponto', SubTipo: subTipoLabel,
       DataNecessaria: d.dataOcorrencia, Descricao: d.motivoPonto,
-      AnexoUrl: anexoUrl, AnexoNome: anexoNome,
       HorarioEntradaCorreto: d.foiFalta === 'nao' ? d.horarioEntradaCorreto : '',
       HorarioSaidaCorreto: d.foiFalta === 'nao' ? d.horarioSaidaCorreto : '',
-      Solicitante: nome, SolicitanteEmail: email, GestorDestino: d.gestorDestino, Status: 'Pendente',
-    });
-    showToast(novo ? '✅ Solicitação enviada!' : '❌ Erro ao enviar.');
-    showSyncStatus(novo ? 'Enviado!' : 'Falha ao enviar', novo ? 'ok' : 'err', novo ? 3000 : 5000);
-    if (novo) { solicNovoForm(); await solicCarregarHistorico(true); }
+      Solicitante: nome, SolicitanteEmail: email, GestorDestino: d.gestorDestino,
+    };
+    if (anexoUrl) { campos.AnexoUrl = anexoUrl; campos.AnexoNome = anexoNome; }
+    if (!editando) { campos.Status = 'Pendente'; campos.AnexoUrl = anexoUrl; campos.AnexoNome = anexoNome; }
+    const ok = await solicGravar('SolicitacoesGerais', campos);
+    showToast(ok ? (editando ? '✅ Solicitação atualizada!' : '✅ Solicitação enviada!') : '❌ Erro ao salvar.');
+    showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+    if (ok) { solicNovoForm(); await solicCarregarHistorico(true); if (typeof carregarAprovacoes === 'function') carregarAprovacoes(); }
     return;
   }
 
   // Veículo / Equipamento / Compras / Outra
   if (!(d.descricao || '').trim()) { showToast('⚠️ Descreva a solicitação.'); return; }
-  showSyncStatus('Enviando solicitação...');
+  showSyncStatus(editando ? 'Salvando alterações...' : 'Enviando solicitação...');
   const label = d.tipo === 'outra' ? d.tipoOutro : (tipoInfo ? tipoInfo.label : d.tipo);
-  const novo = await dbInserir('SolicitacoesGerais', {
+  const campos = {
     Title: label + ' — ' + nome,
     Tipo: d.tipo, TipoLabel: label, TipoOutro: d.tipo === 'outra' ? d.tipoOutro : '',
     DataNecessaria: d.dataNecessaria, Descricao: d.descricao, Projeto: d.projeto, Urgencia: d.urgencia,
-    Solicitante: nome, SolicitanteEmail: email, GestorDestino: d.gestorDestino, Status: 'Pendente',
-  });
-  showToast(novo ? '✅ Solicitação enviada!' : '❌ Erro ao enviar.');
-  showSyncStatus(novo ? 'Enviado!' : 'Falha ao enviar', novo ? 'ok' : 'err', novo ? 3000 : 5000);
-  if (novo) { solicNovoForm(); await solicCarregarHistorico(true); }
+    Solicitante: nome, SolicitanteEmail: email, GestorDestino: d.gestorDestino,
+  };
+  if (!editando) campos.Status = 'Pendente';
+  const ok = await solicGravar('SolicitacoesGerais', campos);
+  showToast(ok ? (editando ? '✅ Solicitação atualizada!' : '✅ Solicitação enviada!') : '❌ Erro ao salvar.');
+  showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) { solicNovoForm(); await solicCarregarHistorico(true); if (typeof carregarAprovacoes === 'function') carregarAprovacoes(); }
 }
 
 /* -- MINHA ÁREA -- */
@@ -19756,7 +19850,7 @@ function faunaImprimirFicha(dados, autoPrint) {
     + '.doc-footer .footer-empresa { font-weight:700; font-size:7.5px; text-transform:uppercase; }'
     + '.foto-page { page-break-before:always; }'
     + '.foto-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:8px; }'
-    + '.print-btn { position:fixed; top:10px; right:10px; background:#3F261F; color:#fff; border:none; padding:8px 18px; border-radius:8px; font-size:12px; font-weight:700; cursor:pointer; font-family:"Mont",sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.2); }'
+    + '.print-btn { position:fixed; top:10px; right:10px; z-index:9999; background:#fff; color:#3F261F; border:2px solid #3F261F; padding:8px 18px; border-radius:8px; font-size:13px; font-weight:800; cursor:pointer; font-family:"Mont",Arial,sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.25); }'
     + '@media print { .print-btn { display:none; } body { padding:6px 10px; } }'
     + '</style></head><body>'
     + '<button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>'
@@ -20503,7 +20597,7 @@ const FLASH_FRENTES = [
   { id: 'engm3',    nome: 'SE Presidente Médici',                      empreiteira: 'ENGM' },
   { id: 'enermais', nome: 'LDAT 69 kV Porto Velho / Guaporé',          empreiteira: 'Enermais' },
 ];
-const FLASH_RTS = ['Tiago Tavares — Gestor de Contratos', 'Marcelo Marafon — Engenheiro Ambiental', 'Luiz Evaristo — Engenheiro Florestal'];
+const FLASH_RTS = ['Tiago Tavares', 'Marcelo Marafon', 'Luiz Evaristo'];
 const FLASH_CLIMAS = ['Ensolarado', 'Parcialmente nublado', 'Nublado', 'Chuva leve', 'Chuva forte'];
 const FLASH_ATIVIDADES = [
   { id: 'supressao', label: 'Supressão vegetal' }, { id: 'movsolo', label: 'Movimentação de solo' },
@@ -20712,7 +20806,7 @@ function flashVerRegistro(id) {
   <table>
     <tr><td class="lbl">Data</td><td>${f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—'}</td></tr>
     <tr><td class="lbl">Empreiteira</td><td>${f.Empreiteira || '—'}</td></tr>
-    <tr><td class="lbl">Responsável Técnico</td><td>${f.ResponsavelTecnico || '—'}</td></tr>
+    <tr><td class="lbl">Gestor do Contrato</td><td>${f.ResponsavelTecnico || '—'}</td></tr>
     <tr><td class="lbl">Condição climática</td><td>${f.Clima || '—'}</td></tr>
     <tr><td class="lbl">Frente / Trecho</td><td>${f.Trecho || '—'}</td></tr>
     <tr><td class="lbl">Equipe em campo</td><td>${f.Equipe || '—'}</td></tr>
@@ -20821,8 +20915,8 @@ function pageChecklistFlash() {
       <div class="form-group" style="margin:0"><label>Data</label><input type="date" value="${d.data || ''}" onchange="flashCampo('data', this.value)"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
-      <div class="form-group" style="margin:0"><label>Responsável Técnico</label>
-        <input list="flash_rt_dl" value="${(d.rt || '').replace(/"/g, '&quot;')}" oninput="flashCampo('rt', this.value)" placeholder="Nome do RT">
+      <div class="form-group" style="margin:0"><label>Gestor do Contrato</label>
+        <input list="flash_rt_dl" value="${(d.rt || '').replace(/"/g, '&quot;')}" oninput="flashCampo('rt', this.value)" placeholder="Nome do gestor">
         <datalist id="flash_rt_dl">${FLASH_RTS.map(r => `<option value="${r}">`).join('')}</datalist>
       </div>
       <div class="form-group" style="margin:0"><label>Condição climática</label>
@@ -21055,7 +21149,7 @@ async function _flashGerarDoc(d, numOverride) {
   y += 0.4;
   doc.setDrawColor(200,200,200); doc.line(ML, y, ML+6, y); y += 0.5;
   doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(63,38,31);
-  doc.text(d.rt || 'Responsável Técnico', ML, y); y += 0.38;
+  doc.text(d.rt || 'Gestor do Contrato', ML, y); y += 0.38;
   doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(100,100,100);
   doc.text('Gestão Ambiental de Obras — Energisa RO · Contrato 2025022101', ML, y);
 
