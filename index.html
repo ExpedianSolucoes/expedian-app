@@ -1060,6 +1060,7 @@ const menus = {
       { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
       { id: 'checklist_flash', icon: '🚧', label: 'Flash Report Energisa' },
+      { id: 'checklist_notif', icon: '⚠️', label: 'Notificação de NC' },
       { id: 'checklist_fauna', icon: '🐸', label: 'Fauna Silvestre' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
@@ -1103,6 +1104,7 @@ const menus = {
       { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
       { id: 'checklist_flash', icon: '🚧', label: 'Flash Report Energisa' },
+      { id: 'checklist_notif', icon: '⚠️', label: 'Notificação de NC' },
       { id: 'checklist_fauna', icon: '🐸', label: 'Fauna Silvestre' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
@@ -1138,6 +1140,7 @@ const menus = {
       { id: 'checklist_mitigacao', icon: '🧯', label: 'Kit de Mitigação Ambiental' },
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
       { id: 'checklist_flash', icon: '🚧', label: 'Flash Report Energisa' },
+      { id: 'checklist_notif', icon: '⚠️', label: 'Notificação de NC' },
       { id: 'checklist_fauna', icon: '🐸', label: 'Fauna Silvestre' },
     ]},
     { id: 'equipamentos', icon: '🎒', label: 'Equipamentos' },
@@ -1291,6 +1294,7 @@ function renderPage(id) {
     checklist_mitigacao: () => pageChecklistMitigacao(),
     checklist_coleta: () => pageChecklistColeta(),
     checklist_flash: () => pageChecklistFlash(),
+    checklist_notif: () => pageChecklistNotif(),
     checklist_fauna: () => pageChecklistFauna(),
     equipamentos: () => pageEquipamentos(),
     docs: () => pageGestaoDocumental(),
@@ -9772,26 +9776,19 @@ async function coletarPrazosDocumentos() {
   } catch (e) { console.warn('[Prazos] Falha ao ler Checklist de Mitigação Ambiental.', e); }
 
   try {
-    const ifr = document.getElementById('iframe-energisa-ero');
-    const win = ifr && ifr.contentWindow;
-    if (win && win.emprObrasData && win.EMPR_OBRAS) {
-      Object.keys(win.emprObrasData).forEach(k => {
-        const obra = win.EMPR_OBRAS[k] || {};
-        const notifs = (win.emprObrasData[k] && win.emprObrasData[k].notificacoes) || [];
-        notifs.forEach(n => {
-          const resolvido = n.status === 'Fechada' || n.atendimentoStatus === 'Encerrado' || n.atendimentoStatus === 'Atendido';
-          if (n.prazo && !resolvido) {
-            itens.push({
-              origem: 'nc', id: n.numero || (k + '-' + n.data),
-              titulo: (n.numero || 'NCA') + ' — ' + (obra.nome || '') + (obra.obra ? ' (' + obra.obra + ')' : ''),
-              descricao: 'Prazo para correção da Notificação de Não Conformidade ' + (n.numero || '') + '.',
-              prazo: n.prazo,
-              criadoPorNome: n.criadoPorNome || n.fiscal || '', criadoPorEmail: n.criadoPorEmail || '',
-            });
-          }
+    const notifs = await dbLer('NotificacoesEnergisa') || [];
+    notifs.forEach(n => {
+      const resolvido = n.Status === 'Fechada' || n.AtendimentoStatus === 'Encerrado' || n.AtendimentoStatus === 'Atendido';
+      if (n.Prazo && !resolvido) {
+        itens.push({
+          origem: 'nc', id: n.Id,
+          titulo: (n.Numero || 'NCA') + ' — ' + (n.FrenteNome || '') + (n.Empreiteira ? ' (' + n.Empreiteira + ')' : ''),
+          descricao: 'Prazo para correção da Notificação de Não Conformidade ' + (n.Numero || '') + '.',
+          prazo: n.Prazo,
+          criadoPorNome: n.CriadoPorNome || n.Fiscal || '', criadoPorEmail: n.CriadoPorEmail || '',
         });
-      });
-    }
+      }
+    });
   } catch (e) { console.warn('[Prazos] Falha ao ler Notificações Energisa.', e); }
 
   return itens;
@@ -10228,7 +10225,7 @@ function agendaAbrirPrazoDocumento(id) {
   const destinos = { flash: 'checklist_flash', mitigacao: 'checklist_mitigacao' };
   const msg = e.Titulo + '\n\n' + (e.Descricao || '') + '\nPrazo: ' + dt + '\nResponsável: ' + (e.CriadoPorNome || '—') + '\n\nAbrir o módulo de origem?';
   if (confirm(msg)) {
-    if (e._prazoOrigem === 'nc') { projetosAbrirProjeto('energisa'); }
+    if (e._prazoOrigem === 'nc') { navigate('checklist_notif'); if (typeof ncEditarRegistro === 'function' && e._prazoId != null) ncEditarRegistro(e._prazoId); }
     else if (destinos[e._prazoOrigem]) { navigate(destinos[e._prazoOrigem]); }
   }
 }
@@ -21165,6 +21162,7 @@ function flashHtmlHistorico() {
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashEditarRegistro(${f.Id})">✏️ Editar</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashExportarRegistro(${f.Id})">🖨️ Exportar PDF</button>
+          ${temOcorr ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;background:#e67e22;color:#fff;border-color:#e67e22" onclick="ncAbrirNovo('${f.FrenteId}', ${f.Id})">⚠️ Notificar</button>` : ''}
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="flashExcluirRegistro(${f.Id})">🗑️ Excluir</button>
         </div>
       </div>
@@ -21571,6 +21569,883 @@ async function flashExportarRegistro(id) {
   const { doc, frente } = await _flashGerarDoc(dLocal, num);
   showSyncStatus('PDF gerado!', 'ok', 2000);
   doc.save(_flashNomeArquivo(num, frente, dLocal.frenteId, dLocal.data));
+}
+
+/* =============================================================
+   NOTIFICAÇÃO DE NÃO CONFORMIDADE — ENERGISA (nativa)
+   Mesma notificação de NC que já existia dentro do painel Energisa
+   Rondônia (Projetos > Energisa > Empreiteiras > Notificações), agora
+   nativa aqui — mesmo padrão da migração do Flash Report (ver acima).
+   Grava na tabela OneDrive "NotificacoesEnergisa" (sem limite de 5MB
+   do localStorage do navegador, que era a causa do "não salva" quando
+   isso ainda vivia só dentro do iframe). O painel antigo (iframe) só lê
+   esses registros pra exibição — ver _syncNotifDoApp lá.
+   ============================================================= */
+const NC_PROGRAMA_OPCOES = ['00 - Docs Empreendimento','01 - Docs Legal Canteiro','02 - PEA','03 - PGRS','04 - PP Efluentes','05 - Prog Emissões Atmosférica','06 - Prog Ruído Ambiental','07 - Supressão Vegetal','08 - Prog Resgate de Fauna','09 - Áreas Degradadas','10 - Material Particulado','11 - Comunicação Social','12 - Gestão Fornecedores','13 - Contingência Ambiental'];
+
+const NC_PROGRAMAS_KEYWORDS = {
+  '03 - PGRS': ['resíduo','residuo','lixo','coleta seletiva','destinação','aterro','caçamba','cacamba','classe I','classe II','PGRS'],
+  '04 - PP Efluentes': ['efluente','esgoto','fossa','biodigestor','lançamento','agua','água','drenagem','caixa de gordura'],
+  '05 - Prog Emissões Atmosférica': ['emissão','emissao','fumaça','fumaca','poluente','ar','atmosfér','atmosfer','queimada','chaminé'],
+  '06 - Prog Ruído Ambiental': ['ruído','ruido','barulho','decibel','som','vibração','vibracao'],
+  '07 - Supressão Vegetal': ['supressão','supressao','vegetal','árvore','arvore','desmatamento','vegetação','vegetacao','APP','corte'],
+  '08 - Prog Resgate de Fauna': ['fauna','animal','ave','réptil','reptil','mamífero','mamifero','resgate','afugentamento','ninho'],
+  '09 - Áreas Degradadas': ['erosão','erosao','degradad','recuperação','recuperacao','PRAD','solo exposto','assoreamento','voçoroca','ravina'],
+  '10 - Material Particulado': ['poeira','particulado','aspersão','aspersao','umectação','umectacao','terra','pó '],
+  '13 - Contingência Ambiental': ['vazamento','óleo','oleo','combustível','combustivel','derramamento','contaminação','contaminacao','emergência','emergencia','incêndio','incendio','kit mitigação','kit mitigacao'],
+  '01 - Docs Legal Canteiro': ['licença','licenca','alvará','alvara','autorização','autorizacao','documentação','documentacao','ART','condicionante','canteiro'],
+  '02 - PEA': ['educação ambiental','educacao ambiental','PEA','capacitação','capacitacao','treinamento','conscientização','conscientizacao'],
+  '11 - Comunicação Social': ['comunidade','comunicação','comunicacao','reclamação','reclamacao','vizinhança','vizinhanca','social'],
+  '12 - Gestão Fornecedores': ['fornecedor','EPI','equipamento','proteção','protecao','DDS','segurança','seguranca','sinalização','sinalizacao','terceiriz'],
+};
+
+const NC_PROGRAMA_LEGISLACAO = {
+  '00 - Docs Empreendimento': 'Lei 6.938/1981 (Política Nacional do Meio Ambiente); Resolução CONAMA 237/1997 (licenciamento ambiental); condicionantes da Licença Ambiental vigente (LP/LI/LO) emitida pela SEDAM-RO.',
+  '01 - Docs Legal Canteiro': 'Resolução CONAMA 307/2002 (gestão de resíduos da construção civil); condicionantes de licença referentes à instalação do canteiro de obras; documentação fundiária e ambiental da área.',
+  '02 - PEA': 'Lei 9.795/1999 (Política Nacional de Educação Ambiental); Decreto 4.281/2002; condicionante de licença referente ao Programa de Educação Ambiental.',
+  '03 - PGRS': 'Lei 12.305/2010 (Política Nacional de Resíduos Sólidos); Decreto 7.404/2010; NBR 10.004/ABNT (classificação de resíduos sólidos).',
+  '04 - PP Efluentes': 'Resolução CONAMA 430/2011 (altera a Resolução CONAMA 357/2005) — condições e padrões de lançamento de efluentes.',
+  '05 - Prog Emissões Atmosférica': 'Resolução CONAMA 382/2006 (limites de emissão de poluentes atmosféricos); Resolução CONAMA 491/2018 (padrões de qualidade do ar).',
+  '06 - Prog Ruído Ambiental': 'Resolução CONAMA nº 01/1990 (padrões de emissão de ruído); NBR 10.151/ABNT (avaliação de ruído em áreas habitadas).',
+  '07 - Supressão Vegetal': 'Lei 12.651/2012 (Código Florestal), arts. 26 a 30; exigência de Autorização de Supressão de Vegetação (ASV) junto à SEDAM-RO.',
+  '08 - Prog Resgate de Fauna': 'Lei 9.605/1998 (crimes contra a fauna); Instrução Normativa IBAMA nº 07/2015 e nº 146/2007 (manejo, resgate e destinação de fauna silvestre).',
+  '09 - Áreas Degradadas': 'Lei 12.651/2012, art. 66 (recuperação de áreas degradadas); Plano de Recuperação de Área Degradada (PRAD) previsto na Licença Ambiental.',
+  '10 - Material Particulado': 'Resolução CONAMA 491/2018 (padrões de qualidade do ar); condicionante de licença referente ao controle de material particulado (umectação de vias, aspersão etc.).',
+  '11 - Comunicação Social': 'Condicionante da Licença Ambiental referente ao Programa de Comunicação Social e relacionamento com comunidades afetadas.',
+  '12 - Gestão Fornecedores': 'Condicionante contratual e ambiental de qualificação e monitoramento de fornecedores/subcontratados quanto ao cumprimento da legislação ambiental aplicável.',
+  '13 - Contingência Ambiental': 'Lei 6.938/1981 (Política Nacional do Meio Ambiente); Plano de Atendimento a Emergências Ambientais previsto na Licença Ambiental do empreendimento.',
+};
+
+function ncNovoForm(frenteIdPreSelecionado, frOrigemIdPreSelecionado) {
+  window._ncData = {
+    frenteId: (frenteIdPreSelecionado && FLASH_FRENTES.some(f => f.id === frenteIdPreSelecionado)) ? frenteIdPreSelecionado : FLASH_FRENTES[0].id,
+    numero: '', data: new Date().toISOString().split('T')[0],
+    destinatario: '', emailEmpr: '', emailEnergisa: '',
+    frOrigemId: frOrigemIdPreSelecionado || '',
+    descricao: '', programa: '', programasExtras: [],
+    fundamentacao: '', acao: '', prazo: '', severidade: 'Moderada', status: 'Aberta',
+    fiscal: '', gestor: '',
+    ncsExtras: [],
+    fotos: [],
+    atendimentoData: '', atendimentoStatus: '', atendimentoFotos: [],
+  };
+}
+if (!window._ncData) ncNovoForm();
+if (window._ncHistorico === undefined) window._ncHistorico = null;
+if (window._ncMostrarForm === undefined) window._ncMostrarForm = false;
+if (window._ncRegistroAtualId === undefined) window._ncRegistroAtualId = null;
+if (window._ncCircuitoFiltro === undefined) window._ncCircuitoFiltro = null;
+
+function ncCampo(campo, valor) { window._ncData[campo] = valor; }
+
+function ncPreviewNumero() {
+  if (window._ncData.numero) return window._ncData.numero;
+  const mesmoCircuito = (window._ncHistorico || []).filter(r => r.FrenteId === window._ncData.frenteId);
+  return 'NCA-' + String(mesmoCircuito.length + 1).padStart(3, '0');
+}
+
+async function ncCarregarHistorico(forcar) {
+  if (window._ncHistorico !== null && !forcar) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('notif_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
+  if (window._ncHistorico === null) window._ncHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('NotificacoesEnergisa');
+    if (Array.isArray(lista)) {
+      window._ncHistorico = lista;
+      try { localStorage.setItem('notif_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    }
+  } catch (e) { console.warn('[Notificação NC] Falha ao carregar histórico, usando cache local.', e); }
+  navigate('checklist_notif');
+}
+
+function ncAbrirNovo(frenteIdPreSelecionado, frOrigemIdPreSelecionado) {
+  ncNovoForm(frenteIdPreSelecionado, frOrigemIdPreSelecionado);
+  window._ncRegistroAtualId = null;
+  window._ncMostrarForm = true;
+  navigate('checklist_notif');
+  if (frOrigemIdPreSelecionado) {
+    (window._flashHistorico === null ? flashCarregarHistorico() : Promise.resolve()).then(() => {
+      ncIncluirFotosFR(frOrigemIdPreSelecionado);
+      ncCarregarNCsDoFR();
+      navigate('checklist_notif');
+    });
+  }
+}
+
+function ncFecharForm() {
+  window._ncMostrarForm = false;
+  window._ncRegistroAtualId = null;
+  navigate('checklist_notif');
+}
+
+function ncEditarRegistro(id) {
+  const n = (window._ncHistorico || []).find(r => r.Id === id);
+  if (!n) { showToast('⚠️ Registro não encontrado.'); return; }
+  window._ncData = {
+    frenteId: n.FrenteId || FLASH_FRENTES[0].id,
+    numero: n.Numero || '', data: n.Data || '',
+    destinatario: n.Destinatario || '', emailEmpr: n.EmailEmpr || '', emailEnergisa: n.EmailEnergisa || '',
+    frOrigemId: n.FrOrigemId || '',
+    descricao: n.Descricao || '', programa: n.Programa || '', programasExtras: (n.ProgramasExtras || []).slice(),
+    fundamentacao: n.Fundamentacao || '', acao: n.Acao || '', prazo: n.Prazo || '', severidade: n.Severidade || 'Moderada', status: n.Status || 'Aberta',
+    fiscal: n.Fiscal || '', gestor: n.Gestor || '',
+    ncsExtras: (n.NcsExtras || []).map(nc => ({ descricao: nc.descricao || '', programa: nc.programa || '', acao: nc.acao || '' })),
+    fotos: (n.Fotos || []).map(f => ({ ...f })),
+    atendimentoData: n.AtendimentoData || '', atendimentoStatus: n.AtendimentoStatus || '',
+    atendimentoFotos: (n.AtendimentoFotos || []).map(f => ({ ...f })),
+  };
+  window._ncRegistroAtualId = id;
+  window._ncMostrarForm = true;
+  navigate('checklist_notif');
+}
+
+async function ncExcluirRegistro(id) {
+  if (!confirm('Tem certeza que deseja excluir esta notificação?\n\nEssa ação não pode ser desfeita.')) return;
+  showSyncStatus('Excluindo notificação...');
+  const lista = await dbLer('NotificacoesEnergisa');
+  const idx = lista.findIndex(r => r.Id === id);
+  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
+  lista.splice(idx, 1);
+  const ok = await dbSalvar('NotificacoesEnergisa', lista);
+  showToast(ok ? '🗑️ Notificação excluída.' : '❌ Erro ao excluir.');
+  showSyncStatus(ok ? 'Excluída!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) { try { localStorage.setItem('notif_historico_cache', JSON.stringify(lista)); } catch (e) {} }
+  await ncCarregarHistorico(true);
+}
+
+function ncFiltrarCircuito(frenteId) {
+  window._ncCircuitoFiltro = frenteId || null;
+  navigate('checklist_notif');
+}
+
+/* -- Resolve o src de uma foto da notificação: upload direto (dataUrl) ou
+   referência a uma foto de um Flash Report já sincronizado (_refFrId/
+   _refFoto) — nesse caso busca o base64 no histórico de Flash Reports na
+   hora, sem nunca duplicar o dado salvo na tabela de Notificações. -- */
+function ncFotoSrc(f) {
+  if (!f) return '';
+  if (f.dataUrl) return f.dataUrl;
+  if (f._refFrId !== undefined && f._refFoto !== undefined) {
+    const fr = (window._flashHistorico || []).find(r => r.Id === f._refFrId);
+    const foto = fr && fr.fotos && fr.fotos[f._refFoto];
+    return foto ? foto.dataUrl : '';
+  }
+  return '';
+}
+
+/* -- Ao selecionar o Flash Report de Origem, todas as fotos já tiradas nele
+   entram automaticamente na notificação — como referência, não como cópia
+   (ver ncFotoSrc). Excluir aqui só tira da notificação, nunca apaga a foto
+   do Flash Report original. -- */
+function ncIncluirFotosFR(frId) {
+  if (!frId) return;
+  const fr = (window._flashHistorico || []).find(r => r.Id === Number(frId) || r.Id === frId);
+  if (!fr || !fr.fotos || !fr.fotos.length) return;
+  if (!Array.isArray(window._ncData.fotos)) window._ncData.fotos = [];
+  fr.fotos.forEach((f, fotoIdx) => {
+    if (!f.dataUrl) return;
+    const jaTem = window._ncData.fotos.some(s => s._refFrId === fr.Id && s._refFoto === fotoIdx);
+    if (!jaTem) window._ncData.fotos.push({ _refFrId: fr.Id, _refFoto: fotoIdx, desc: f.desc || '' });
+  });
+}
+
+function ncCarregarNCsDoFR() {
+  const autoDiv = document.getElementById('nc-ncs-auto');
+  if (!autoDiv) return;
+  const frId = window._ncData.frOrigemId;
+  if (!frId) { autoDiv.innerHTML = ''; return; }
+  const fr = (window._flashHistorico || []).find(r => r.Id === Number(frId) || r.Id === frId);
+  if (!fr) { autoDiv.innerHTML = ''; return; }
+  const ocMap = {
+    vazoleo: 'Vazamento de óleo/combustível', residuoinadeq: 'Resíduo disposto inadequadamente',
+    falhasinalizacao: 'Falha em sinalização', erosao: 'Processo erosivo', intervnaoaut: 'Intervenção não autorizada',
+    supressnaoaut: 'Supressão vegetal não autorizada', faunaameac: 'Fauna silvestre encontrada/ameaçada',
+    efluenteirreg: 'Disposição irregular de efluentes', kitausente: 'Kit de mitigação incompleto/ausente',
+    poeirasctrl: 'Emissão de poeira sem controle', contamsolo: 'Contaminação do solo',
+    danoapp: 'Dano a APP / corpo hídrico', semdds: 'Ausência de DDS Ambiental',
+  };
+  const ck = fr.ckOcorrencias || {};
+  const ncs = Object.keys(ocMap).filter(k => ck[k]).map(k => ocMap[k]);
+  if (fr.OutraOcorrencia) ncs.push(fr.OutraOcorrencia);
+  if (ncs.length) {
+    autoDiv.innerHTML = '<div style="background:#fef3f0;border:1px solid var(--red);border-radius:6px;padding:8px;margin-bottom:8px">' +
+      '<div style="font-weight:700;color:var(--red);margin-bottom:4px">NCs do Flash Report selecionado (' + (fr.Data || '') + '):</div>' +
+      ncs.map(nc => '<div style="margin:2px 0">• ' + nc + '</div>').join('') + '</div>';
+    if (!window._ncData.descricao) window._ncData.descricao = ncs.join('; ');
+  } else {
+    autoDiv.innerHTML = '<div style="color:var(--text-muted);font-style:italic">Nenhuma NC registrada neste Flash Report.</div>';
+  }
+}
+
+function ncProgramasEnvolvidos() {
+  const lista = [window._ncData.programa].concat(window._ncData.programasExtras || []);
+  const vistos = {}; const out = [];
+  lista.forEach(p => { p = (p || '').trim(); if (p && !vistos[p]) { vistos[p] = true; out.push(p); } });
+  return out;
+}
+
+function ncSugerirLegislacao() {
+  const el = document.getElementById('nc-legislacao-sugestao');
+  if (!el) return;
+  const progs = ncProgramasEnvolvidos().filter(p => !!NC_PROGRAMA_LEGISLACAO[p]);
+  if (!progs.length) { el.innerHTML = ''; return; }
+  if (progs.length === 1) {
+    el.innerHTML = '⚖️ Legislação sugerida: ' + NC_PROGRAMA_LEGISLACAO[progs[0]] + ' <a href="#" onclick="ncAplicarLegislacaoSugerida();return false" style="color:#2980b9;font-weight:700">[aplicar]</a>';
+  } else {
+    el.innerHTML = '⚖️ Legislação sugerida (' + progs.length + ' programas envolvidos):<br>' +
+      progs.map(p => '• <strong>' + p + '</strong> — ' + NC_PROGRAMA_LEGISLACAO[p]).join('<br>') +
+      ' <a href="#" onclick="ncAplicarLegislacaoSugerida();return false" style="color:#2980b9;font-weight:700">[aplicar tudo]</a>';
+  }
+}
+
+function ncAplicarLegislacaoSugerida() {
+  const progs = ncProgramasEnvolvidos().filter(p => !!NC_PROGRAMA_LEGISLACAO[p]);
+  if (!progs.length) return;
+  const campo = document.getElementById('nc-fundamentacao');
+  if (!campo) return;
+  progs.forEach(p => {
+    const leg = NC_PROGRAMA_LEGISLACAO[p];
+    if (!campo.value.trim()) campo.value = leg;
+    else if (campo.value.indexOf(leg) < 0) campo.value += (campo.value.endsWith('.') ? ' ' : '. ') + leg;
+  });
+  window._ncData.fundamentacao = campo.value;
+}
+
+function ncAplicarSugestaoPrograma(prog) {
+  window._ncData.programa = prog;
+  const sel = document.getElementById('nc-programa');
+  if (sel) sel.value = prog;
+  ncSugerirLegislacao();
+}
+
+function ncSugerirPrograma() {
+  const txt = (window._ncData.descricao || '').toLowerCase();
+  const el = document.getElementById('nc-programa-sugestao');
+  if (!el) return;
+  if (txt.length < 3) { el.textContent = ''; return; }
+  const sugestoes = [];
+  Object.keys(NC_PROGRAMAS_KEYWORDS).forEach(prog => {
+    const kws = NC_PROGRAMAS_KEYWORDS[prog];
+    if (kws.some(kw => txt.indexOf(kw.toLowerCase()) >= 0)) sugestoes.push(prog);
+  });
+  if (sugestoes.length) {
+    el.innerHTML = '💡 Sugestão: <strong>' + sugestoes.join('</strong>, <strong>') + '</strong> <a href="#" onclick="ncAplicarSugestaoPrograma(\'' + sugestoes[0].replace(/'/g, "\\'") + '\');return false" style="color:#2980b9;font-size:.68rem">[aplicar]</a>';
+    if (!window._ncData.programa) { window._ncData.programa = sugestoes[0]; const sel = document.getElementById('nc-programa'); if (sel) sel.value = sugestoes[0]; ncSugerirLegislacao(); }
+  } else {
+    el.textContent = '';
+  }
+}
+
+function ncAdicionarProgramaExtra() {
+  if (!Array.isArray(window._ncData.programasExtras)) window._ncData.programasExtras = [];
+  window._ncData.programasExtras.push('');
+  ncRenderProgramasExtras();
+}
+function ncRemoverProgramaExtra(i) { window._ncData.programasExtras.splice(i, 1); ncRenderProgramasExtras(); ncSugerirLegislacao(); }
+function ncAtualizarProgramaExtra(i, valor) { window._ncData.programasExtras[i] = valor; ncSugerirLegislacao(); }
+function ncRenderProgramasExtras() {
+  const el = document.getElementById('nc-programas-extra');
+  if (!el) return;
+  const progOpts = '<option value="">-- Programa --</option>' + NC_PROGRAMA_OPCOES.map(p => `<option value="${p}">${p}</option>`).join('');
+  el.innerHTML = (window._ncData.programasExtras || []).map((p, i) => `
+    <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+      <select style="font-size:.72rem" onchange="ncAtualizarProgramaExtra(${i},this.value)">
+        ${progOpts.replace('value="' + p + '"', 'value="' + p + '" selected')}
+      </select>
+      <button type="button" onclick="ncRemoverProgramaExtra(${i})" style="background:var(--red);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;flex-shrink:0" title="Remover programa">✕</button>
+    </div>`).join('');
+}
+
+function ncAdicionarNCExtra() {
+  if (!Array.isArray(window._ncData.ncsExtras)) window._ncData.ncsExtras = [];
+  window._ncData.ncsExtras.push({ descricao: '', programa: '', acao: '' });
+  ncRenderNCsExtras();
+}
+function ncRemoverNCExtra(i) { window._ncData.ncsExtras.splice(i, 1); ncRenderNCsExtras(); }
+function ncAtualizarNCExtra(i, campo, valor) { window._ncData.ncsExtras[i][campo] = valor; }
+function ncRenderNCsExtras() {
+  const el = document.getElementById('nc-ncs-extras');
+  if (!el) return;
+  const lista = window._ncData.ncsExtras || [];
+  if (!lista.length) { el.innerHTML = '<div style="font-size:.72rem;color:var(--text-muted);font-style:italic">Nenhuma NC adicional. Clique em "+ Nova NC" para adicionar.</div>'; return; }
+  const progOpts = '<option value="">-- Programa --</option>' + NC_PROGRAMA_OPCOES.map(p => `<option value="${p}">${p}</option>`).join('');
+  el.innerHTML = lista.map((nc, i) => `
+    <div style="background:var(--surface2);border:1px solid #e67e22;border-radius:8px;padding:10px;margin-bottom:8px;position:relative">
+      <button onclick="ncRemoverNCExtra(${i})" style="position:absolute;top:6px;right:8px;background:var(--red);color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;cursor:pointer;line-height:20px;padding:0" title="Remover">✕</button>
+      <div style="font-size:.68rem;font-weight:700;color:#e67e22;margin-bottom:6px">NC Adicional #${i + 1}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+        <div><label style="font-size:.65rem;color:var(--text-muted)">Descrição da NC</label>
+        <textarea style="min-height:50px;font-size:.72rem;width:100%" placeholder="Descreva a não conformidade..." onchange="ncAtualizarNCExtra(${i},'descricao',this.value)">${(nc.descricao || '').replace(/</g, '&lt;')}</textarea></div>
+        <div><label style="font-size:.65rem;color:var(--text-muted)">Ação corretiva</label>
+        <textarea style="min-height:50px;font-size:.72rem;width:100%" placeholder="Ação requerida..." onchange="ncAtualizarNCExtra(${i},'acao',this.value)">${(nc.acao || '').replace(/</g, '&lt;')}</textarea></div>
+      </div>
+      <div><label style="font-size:.65rem;color:var(--text-muted)">Programa Ambiental</label>
+      <select style="font-size:.72rem;width:100%" onchange="ncAtualizarNCExtra(${i},'programa',this.value)">
+        ${progOpts.replace('value="' + (nc.programa || '') + '"', 'value="' + (nc.programa || '') + '" selected')}
+      </select></div>
+    </div>`).join('');
+}
+
+function ncCalcularStatusPrazoAtendimento(prazo, atendData) {
+  if (!prazo || !atendData) return '';
+  const dPrazo = new Date(prazo + 'T12:00');
+  const dAtend = new Date(atendData + 'T12:00');
+  return dAtend.getTime() <= dPrazo.getTime() ? 'Dentro do Prazo' : 'Fora do Prazo';
+}
+function ncAtualizarStatusPrazoAtendimento() {
+  const info = document.getElementById('nc-atend-prazo-info');
+  if (!info) return;
+  const st = ncCalcularStatusPrazoAtendimento(window._ncData.prazo, window._ncData.atendimentoData);
+  if (!st) { info.textContent = ''; return; }
+  if (st === 'Dentro do Prazo') {
+    info.innerHTML = '🟢 Dentro do Prazo (prazo: ' + new Date(window._ncData.prazo + 'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = 'var(--green-main)';
+  } else {
+    info.innerHTML = '🔴 Fora do Prazo (prazo: ' + new Date(window._ncData.prazo + 'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = 'var(--red)';
+  }
+}
+
+function ncCarregarFotosMultiplas(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  if (!Array.isArray(window._ncData.fotos)) window._ncData.fotos = [];
+  showToast('📷 Processando ' + files.length + ' foto' + (files.length === 1 ? '' : 's') + '...');
+  Promise.all(files.map(file => _eroRedimensionarFoto(file).then(({ dataUrl }) => ({ desc: '', dataUrl }))))
+    .then(novas => { window._ncData.fotos.push(...novas); navigate('checklist_notif'); });
+  event.target.value = '';
+}
+function ncRemFoto(idx) { window._ncData.fotos.splice(idx, 1); navigate('checklist_notif'); }
+function ncAtualizarFotoDesc(idx, valor) { if (window._ncData.fotos[idx]) window._ncData.fotos[idx].desc = valor; }
+
+function ncAtendCarregarFotosMultiplas(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  if (!Array.isArray(window._ncData.atendimentoFotos)) window._ncData.atendimentoFotos = [];
+  showToast('📷 Processando ' + files.length + ' foto' + (files.length === 1 ? '' : 's') + '...');
+  Promise.all(files.map(file => _eroRedimensionarFoto(file).then(({ dataUrl }) => ({ desc: '', dataUrl }))))
+    .then(novas => { window._ncData.atendimentoFotos.push(...novas); navigate('checklist_notif'); });
+  event.target.value = '';
+}
+function ncAtendRemFoto(idx) { window._ncData.atendimentoFotos.splice(idx, 1); navigate('checklist_notif'); }
+function ncAtendAtualizarFotoDesc(idx, valor) { if (window._ncData.atendimentoFotos[idx]) window._ncData.atendimentoFotos[idx].desc = valor; }
+
+async function ncSalvar(manterFormAberto) {
+  const d = window._ncData;
+  if (!d.frenteId) { showToast('⚠️ Selecione o circuito/frente.'); return null; }
+  if (!d.data) { showToast('⚠️ Informe a data.'); return null; }
+  if (!d.descricao) { showToast('⚠️ Descreva a não conformidade.'); return null; }
+  if (!d.numero) d.numero = ncPreviewNumero();
+  const frente = FLASH_FRENTES.find(f => f.id === d.frenteId);
+  const editandoId = window._ncRegistroAtualId;
+  const registro = {
+    Title: d.numero + ' — ' + (frente ? frente.nome : d.frenteId),
+    FrenteId: d.frenteId, FrenteNome: frente ? frente.nome : d.frenteId, Empreiteira: frente ? frente.empreiteira : '',
+    Numero: d.numero, Data: d.data,
+    Destinatario: d.destinatario, EmailEmpr: d.emailEmpr, EmailEnergisa: d.emailEnergisa,
+    FrOrigemId: d.frOrigemId || '',
+    Descricao: d.descricao, Programa: d.programa, ProgramasExtras: d.programasExtras || [],
+    Fundamentacao: d.fundamentacao, Acao: d.acao, Prazo: d.prazo, Severidade: d.severidade, Status: d.status,
+    Fiscal: d.fiscal, Gestor: d.gestor,
+    NcsExtras: (d.ncsExtras || []).map(nc => ({ descricao: nc.descricao, programa: nc.programa, acao: nc.acao })),
+    Fotos: d.fotos || [],
+    AtendimentoData: d.atendimentoData, AtendimentoStatus: d.atendimentoStatus,
+    AtendimentoPrazoStatus: ncCalcularStatusPrazoAtendimento(d.prazo, d.atendimentoData),
+    AtendimentoFotos: d.atendimentoFotos || [],
+  };
+  showSyncStatus('Salvando notificação...');
+  let ok;
+  if (editandoId) {
+    const anterior = (window._ncHistorico || []).find(r => r.Id === editandoId);
+    registro.CriadoPorNome = anterior ? anterior.CriadoPorNome : '';
+    registro.CriadoPorEmail = anterior ? anterior.CriadoPorEmail : '';
+    registro.DataCriacao = anterior ? anterior.DataCriacao : new Date().toISOString();
+    ok = await dbAtualizar('NotificacoesEnergisa', editandoId, registro);
+    if (ok) registro.Id = editandoId;
+  } else {
+    registro.CriadoPorNome = window._currentUser ? window._currentUser.name : '';
+    registro.CriadoPorEmail = window._currentUser ? window._currentUser.email : '';
+    registro.DataCriacao = new Date().toISOString();
+    const inserido = await dbInserir('NotificacoesEnergisa', registro);
+    ok = !!inserido;
+    if (inserido) Object.assign(registro, inserido);
+  }
+  showToast(ok ? '✅ Notificação salva!' : '❌ Erro ao salvar.');
+  showSyncStatus(ok ? 'Notificação salva!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (!ok) return null;
+  await ncCarregarHistorico(true);
+  if (!manterFormAberto) {
+    window._ncMostrarForm = false; window._ncRegistroAtualId = null; ncNovoForm();
+    navigate('checklist_notif');
+  }
+  return registro;
+}
+
+function _ncRegistroParaPdf(n) {
+  return {
+    numero: n.Numero, data: n.Data, frenteId: n.FrenteId,
+    destinatario: n.Destinatario, descricao: n.Descricao,
+    programa: n.Programa, programasExtras: n.ProgramasExtras,
+    fundamentacao: n.Fundamentacao, acao: n.Acao, prazo: n.Prazo,
+    severidade: n.Severidade, status: n.Status, fiscal: n.Fiscal, gestor: n.Gestor,
+    ncsExtras: n.NcsExtras, fotos: n.Fotos,
+    atendimentoData: n.AtendimentoData, atendimentoStatus: n.AtendimentoStatus,
+    atendimentoPrazoStatus: n.AtendimentoPrazoStatus, atendimentoFotos: n.AtendimentoFotos,
+  };
+}
+
+/* -- Monta o nome do arquivo do PDF da notificação: nº, nome do circuito e
+   data (formato "NCA-001_Nome_do_Circuito - DD.MM.YYYY.pdf"). -- */
+function ncNomeArquivo(numero, frente, frenteId, data) {
+  const obraSlug = (frente ? frente.nome : frenteId || '').replace(/\s+/g, '_');
+  const dataFmt = (data || '').split('-').reverse().join('.');
+  return (numero || 'NCA').replace(/\s+/g, '_') + '_' + obraSlug + ' - ' + dataFmt + '.pdf';
+}
+
+/* -- Gera o doc jsPDF da Notificação de NC, reaproveitando o mesmo cabeçalho/
+   rodapé/paginação do Flash Report nativo (_pdfCabecalhoRodape/_pdfNovaPagina/
+   _pdfNumerarPaginas), pra manter consistência visual entre os PDFs do app. -- */
+async function ncGerarDoc(n) {
+  await _garantirJsPDF();
+  const frente = FLASH_FRENTES.find(fr => fr.id === n.frenteId);
+  const dt = n.data ? new Date(n.data + 'T12:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }) : '--';
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'NOTIFICAÇÃO DE NÃO CONFORMIDADE';
+  const subtitulo = 'Contrato 2025022101 · Gestão Ambiental de Obras · Energisa RO';
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.4, CW = pageW - 2.8;
+
+  const progsPdf = [n.programa].concat(n.programasExtras || []).filter(p => !!p);
+  const progLinha = progsPdf.length ? ((progsPdf.length > 1 ? 'Programas Ambientais: ' : 'Programa Ambiental: ') + progsPdf.join('; ')) : '';
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  const progLinhas = progLinha ? doc.splitTextToSize(progLinha, CW - 0.6) : [];
+  const boxH = 3.2 + Math.max(0, progLinhas.length - 1) * 0.4;
+  doc.setFillColor(254, 243, 240);
+  doc.roundedRect(ML, y, CW, boxH, 0.2, 0.2, 'F');
+  doc.setDrawColor(200, 60, 40); doc.setLineWidth(0.04);
+  doc.roundedRect(ML, y, CW, boxH, 0.2, 0.2, 'S');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.setTextColor(192, 57, 43);
+  doc.text((n.numero || 'NCA-???') + ' - Notificação de Não Conformidade', ML + 0.3, y + 0.55);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80, 60, 50);
+  let iy = y + 1.0;
+  doc.text('Data: ' + dt, ML + 0.3, iy); iy += 0.4;
+  doc.text('Circuito/Frente: ' + (frente ? frente.nome + ' — ' + frente.empreiteira : (n.frenteId || '--')), ML + 0.3, iy); iy += 0.4;
+  doc.text('Destinatário: ' + (n.destinatario || '--'), ML + 0.3, iy); iy += 0.4;
+  doc.text('Severidade: ' + (n.severidade || '--') + '    |    Status: ' + (n.status || 'Aberta'), ML + 0.3, iy); iy += 0.4;
+  progLinhas.forEach(ln => { doc.text(ln, ML + 0.3, iy); iy += 0.4; });
+  y += boxH + 0.3;
+
+  function nSectionTitle(t) {
+    if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    doc.setFillColor(192, 57, 43);
+    doc.roundedRect(ML, y, CW, 0.55, 0.1, 0.1, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
+    doc.text(t, ML + 0.3, y + 0.37);
+    y += 0.75;
+  }
+  function nTextBlock(txt) {
+    if (!txt) return;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(40, 40, 40);
+    const lines = doc.splitTextToSize(txt, CW - 0.6);
+    lines.forEach(ln => {
+      if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+      doc.text(ln, ML + 0.3, y); y += 0.45;
+    });
+    y += 0.3;
+  }
+
+  nSectionTitle('DESCRIÇÃO DA NÃO CONFORMIDADE');
+  nTextBlock(n.descricao || 'Não informado.');
+
+  if (n.ncsExtras && n.ncsExtras.length) {
+    nSectionTitle('SOLICITAÇÕES / NCs ADICIONAIS');
+    n.ncsExtras.forEach((nc, idx) => {
+      if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(230, 126, 34);
+      doc.text('NC Adicional #' + (idx + 1) + (nc.programa ? '  |  ' + nc.programa : ''), ML + 0.3, y); y += 0.5;
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(40, 40, 40);
+      const descLines = doc.splitTextToSize(nc.descricao || '', CW - 0.6);
+      descLines.forEach(ln => { doc.text(ln, ML + 0.3, y); y += 0.45; });
+      if (nc.acao) {
+        doc.setFont('helvetica', 'italic'); doc.setFontSize(8.5); doc.setTextColor(80, 80, 80);
+        doc.text('Ação: ' + nc.acao, ML + 0.3, y); y += 0.45;
+      }
+      y += 0.3;
+    });
+  }
+
+  if (n.fundamentacao) { nSectionTitle('FUNDAMENTAÇÃO LEGAL / CONDICIONANTE'); nTextBlock(n.fundamentacao); }
+
+  nSectionTitle('AÇÃO CORRETIVA REQUERIDA');
+  nTextBlock(n.acao || 'Não informado.');
+
+  if (n.prazo) {
+    const prazoDt = new Date(n.prazo + 'T12:00').toLocaleDateString('pt-BR');
+    if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(192, 57, 43);
+    doc.text('Prazo para correção: ' + prazoDt, ML + 0.3, y); y += 0.6;
+  }
+
+  function nGaleriaFotos(fotos) {
+    const COLS = 3, gapX = 0.25, gapY = 0.3;
+    const fW = (CW - gapX * (COLS - 1)) / COLS;
+    const fH = fW * 0.75;
+    const legH = 0.7;
+    const blocoH = fH + legH + gapY;
+    let col2 = 0;
+    fotos.forEach((foto, fi) => {
+      if (col2 >= COLS) { col2 = 0; y += blocoH; }
+      if (y + fH + legH > pageH - 1.8) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); col2 = 0; }
+      const xf = ML + col2 * (fW + gapX);
+      doc.setDrawColor(180, 180, 180); doc.setLineWidth(0.02);
+      doc.rect(xf, y, fW, fH);
+      try { doc.addImage(foto.src, 'JPEG', xf + 0.02, y + 0.02, fW - 0.04, fH - 0.04); } catch (ex) {}
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(7); doc.setTextColor(80, 80, 80);
+      const leg = foto.legenda || 'Foto ' + (fi + 1);
+      const legLines = doc.splitTextToSize(leg, fW - 0.2);
+      for (let li = 0; li < Math.min(legLines.length, 2); li++) {
+        doc.text(legLines[li], xf + fW / 2, y + fH + 0.25 + li * 0.28, { align: 'center' });
+      }
+      col2++;
+    });
+    if (col2 > 0) y += blocoH;
+    y += 0.3;
+  }
+
+  if (n.fotos && n.fotos.length) {
+    const fotosResolvidas = n.fotos.map(f => ({ src: ncFotoSrc(f), legenda: f.desc || f.legenda || '' })).filter(f => f.src);
+    if (fotosResolvidas.length) {
+      if (y > pageH - 6) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+      nSectionTitle('EVIDÊNCIAS FOTOGRÁFICAS');
+      nGaleriaFotos(fotosResolvidas);
+    }
+  }
+
+  if (n.atendimentoData || n.atendimentoStatus || (n.atendimentoFotos && n.atendimentoFotos.length)) {
+    if (y > pageH - 5) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    nSectionTitle('ATENDIMENTO DA NCA');
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(40, 40, 40);
+    if (n.atendimentoData) {
+      const atendDt = new Date(n.atendimentoData + 'T12:00').toLocaleDateString('pt-BR');
+      doc.text('Data de atendimento: ' + atendDt, ML + 0.3, y); y += 0.45;
+    }
+    if (n.atendimentoPrazoStatus) {
+      doc.setFont('helvetica', 'bold');
+      const okPrazo = n.atendimentoPrazoStatus === 'Dentro do Prazo';
+      doc.setTextColor(okPrazo ? 39 : 192, okPrazo ? 174 : 57, okPrazo ? 96 : 43);
+      doc.text('Situação: ' + n.atendimentoPrazoStatus, ML + 0.3, y); y += 0.45;
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(40, 40, 40);
+    }
+    if (n.atendimentoStatus) { doc.text('Status: ' + n.atendimentoStatus, ML + 0.3, y); y += 0.45; }
+    y += 0.2;
+    const atendFotos = (n.atendimentoFotos || []).filter(f => f.dataUrl).map(f => ({ src: f.dataUrl, legenda: f.desc || '' }));
+    if (atendFotos.length) {
+      if (y > pageH - 6) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(63, 38, 31);
+      doc.text('Evidência fotográfica do atendimento:', ML + 0.3, y); y += 0.4;
+      nGaleriaFotos(atendFotos);
+    }
+  }
+
+  if (y > pageH - 4) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  y += 0.6;
+  const assinX2 = ML + CW / 2 + 0.3;
+  doc.setDrawColor(200, 200, 200);
+  doc.line(ML, y, ML + CW / 2 - 0.5, y);
+  doc.line(assinX2, y, assinX2 + CW / 2 - 0.5, y);
+  y += 0.5;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
+  doc.text(n.fiscal || 'Fiscal Ambiental', ML, y);
+  doc.text(n.gestor || 'Gestor do Contrato', assinX2, y);
+  y += 0.38;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(100, 100, 100);
+  doc.text('Fiscal Ambiental', ML, y);
+  doc.text('Gestor do Contrato', assinX2, y);
+  y += 0.38;
+  doc.text('Contrato 2025022101 - Energisa RO', ML, y);
+  doc.text('Contrato 2025022101 - Energisa RO', assinX2, y);
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  return { doc, frente };
+}
+
+async function ncSalvarEExportarPDF() {
+  const registroSalvo = await ncSalvar(true);
+  if (!registroSalvo) return;
+  showToast('🔄 Gerando PDF...');
+  const frente = FLASH_FRENTES.find(f => f.id === registroSalvo.FrenteId);
+  const { doc } = await ncGerarDoc(_ncRegistroParaPdf(registroSalvo));
+  doc.save(ncNomeArquivo(registroSalvo.Numero, frente, registroSalvo.FrenteId, registroSalvo.Data));
+  window._ncMostrarForm = false; window._ncRegistroAtualId = null; ncNovoForm();
+  navigate('checklist_notif');
+}
+
+async function ncExportarRegistro(id) {
+  const n = (window._ncHistorico || []).find(r => r.Id === id);
+  if (!n) { showToast('⚠️ Registro não encontrado.'); return; }
+  showSyncStatus('Gerando PDF...');
+  const frente = FLASH_FRENTES.find(f => f.id === n.FrenteId);
+  const { doc } = await ncGerarDoc(_ncRegistroParaPdf(n));
+  showSyncStatus('PDF gerado!', 'ok', 2000);
+  doc.save(ncNomeArquivo(n.Numero, frente, n.FrenteId, n.Data));
+}
+
+function ncHtmlHistorico() {
+  const todos = window._ncHistorico || [];
+  if (!todos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma notificação registrada ainda.</div>';
+  const filtro = window._ncCircuitoFiltro || null;
+  const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
+  const sevCor = { Leve: '#f39c12', Moderada: '#e67e22', Grave: 'var(--red)', 'Gravíssima': '#8e44ad' };
+  const statCor = { Aberta: 'var(--red)', Respondida: '#f39c12', Fechada: 'var(--green-main)' };
+  const atendCor = { Encerrado: 'var(--green-main)', Atendido: '#2980b9', Outras: '#7f8c8d' };
+  const prazoCor = { 'Dentro do Prazo': 'var(--green-main)', 'Fora do Prazo': 'var(--red)' };
+  const linhaN = (n) => {
+    const dt = n.Data ? new Date(n.Data + 'T12:00').toLocaleDateString('pt-BR') : '—';
+    const nFotos = (n.Fotos || []).length;
+    return `
+    <div class="alert-item" style="gap:14px;align-items:flex-start">
+      <div style="font-size:1.2rem">⚠️</div>
+      <div style="flex:1;min-width:0">
+        <div class="name">${n.Numero || 'NCA'} · ${dt}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${n.Fiscal || '—'} · por ${n.CriadoPorNome || '—'}</div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
+          <span class="badge" style="font-size:.62rem;background:${statCor[n.Status] || 'var(--red)'};color:#fff">${n.Status || 'Aberta'}</span>
+          ${n.AtendimentoStatus ? `<span class="badge" style="font-size:.62rem;background:${atendCor[n.AtendimentoStatus] || '#7f8c8d'};color:#fff">${n.AtendimentoStatus}</span>` : ''}
+          ${n.AtendimentoPrazoStatus ? `<span class="badge" style="font-size:.62rem;background:${prazoCor[n.AtendimentoPrazoStatus] || '#7f8c8d'};color:#fff">${n.AtendimentoPrazoStatus}</span>` : ''}
+          <span class="badge" style="font-size:.62rem;background:${sevCor[n.Severidade] || '#e67e22'};color:#fff">${n.Severidade || '—'}</span>
+          ${nFotos ? `<span class="badge badge-cinza" style="font-size:.62rem">📷 ${nFotos}</span>` : ''}
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+        <div style="display:flex;gap:4px">
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="ncEditarRegistro(${n.Id})">✏️ Editar</button>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="ncExportarRegistro(${n.Id})">🖨️ PDF</button>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="ncExcluirRegistro(${n.Id})">🗑️ Excluir</button>
+        </div>
+      </div>
+    </div>`;
+  };
+  const blocos = frentes.map(fr => {
+    const doCircuito = todos.filter(n => n.FrenteId === fr.id).sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
+    if (!doCircuito.length) return '';
+    return `
+    <div style="margin-bottom:14px">
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">⚡ ${fr.nome} — ${fr.empreiteira} <span style="font-weight:400">(${doCircuito.length})</span></div>
+      ${doCircuito.map(linhaN).join('')}
+    </div>`;
+  }).join('');
+  return blocos || '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma notificação para este circuito.</div>';
+}
+
+/* -- Importa (uma única vez, sem duplicar) as notificações de NC que ainda
+   estão só no painel antigo (iframe Projetos > Energisa), de antes desta
+   migração pra tabela nativa. Casa por FrenteId+Numero+Data pra não
+   duplicar se for clicado mais de uma vez. -- */
+async function ncMigrarHistoricoIframe() {
+  const ifr = document.getElementById('iframe-energisa-ero');
+  const win = ifr && ifr.contentWindow;
+  if (!win || !win.emprObrasData) {
+    showToast('⚠️ Abra Projetos > Energisa Rondônia pelo menos uma vez nesta sessão antes de importar.');
+    return;
+  }
+  if (!confirm('Isso vai importar para o novo sistema (OneDrive) as notificações de NC que ainda estão salvas apenas no painel antigo (Projetos > Energisa), sem duplicar as que já foram importadas. Continuar?')) return;
+  showSyncStatus('Importando notificações antigas...');
+  await ncCarregarHistorico(true);
+  const jaImportadas = window._ncHistorico || [];
+  const existe = (frenteId, numero, data) => jaImportadas.some(r => r.FrenteId === frenteId && r.Numero === numero && r.Data === data);
+  let importadas = 0, falhas = 0;
+  for (const frenteId of Object.keys(win.emprObrasData)) {
+    const lista = (win.emprObrasData[frenteId] && win.emprObrasData[frenteId].notificacoes) || [];
+    const frente = FLASH_FRENTES.find(f => f.id === frenteId);
+    const resolveFotoSrc = (f) => {
+      if (f.src) return f.src;
+      if (f._refFR !== undefined && f._refFoto !== undefined) {
+        const fr = win.emprObrasData[frenteId] && win.emprObrasData[frenteId].flash[f._refFR];
+        const foto = fr && fr.fotos && fr.fotos[f._refFoto];
+        return foto ? foto.src : '';
+      }
+      return '';
+    };
+    for (const n of lista) {
+      if (existe(frenteId, n.numero, n.data)) continue;
+      const registro = {
+        Title: (n.numero || 'NCA') + ' — ' + (frente ? frente.nome : frenteId),
+        FrenteId: frenteId, FrenteNome: frente ? frente.nome : frenteId, Empreiteira: frente ? frente.empreiteira : '',
+        Numero: n.numero || '', Data: n.data || '',
+        Destinatario: n.destinatario || '', EmailEmpr: n.emailEmpr || '', EmailEnergisa: n.emailEnergisa || '',
+        FrOrigemId: '',
+        Descricao: n.descricao || '', Programa: n.programa || '', ProgramasExtras: n.programasExtras || [],
+        Fundamentacao: n.fundamentacao || '', Acao: n.acao || '', Prazo: n.prazo || '', Severidade: n.severidade || 'Moderada', Status: n.status || 'Aberta',
+        Fiscal: n.fiscal || '', Gestor: n.gestor || '',
+        NcsExtras: n.ncsExtras || [],
+        Fotos: (n.fotos || []).map(f => ({ dataUrl: resolveFotoSrc(f), desc: f.legenda || '' })).filter(f => f.dataUrl),
+        AtendimentoData: n.atendimentoData || '', AtendimentoStatus: n.atendimentoStatus || '',
+        AtendimentoPrazoStatus: n.atendimentoPrazoStatus || '',
+        AtendimentoFotos: (n.atendimentoFotos || []).filter(f => f.src).map(f => ({ dataUrl: f.src, desc: f.legenda || '' })),
+        CriadoPorNome: n.criadoPorNome || '', CriadoPorEmail: n.criadoPorEmail || '',
+        DataCriacao: new Date().toISOString(),
+      };
+      const ok = await dbInserir('NotificacoesEnergisa', registro);
+      if (ok) importadas++; else falhas++;
+    }
+  }
+  await ncCarregarHistorico(true);
+  showSyncStatus(importadas ? 'Importação concluída!' : 'Nada novo para importar', 'ok', 3000);
+  showToast('📥 ' + importadas + ' notificação(ões) importada(s)' + (falhas ? ', ' + falhas + ' falha(s)' : '') + '.');
+  navigate('checklist_notif');
+}
+
+function pageChecklistNotif() {
+  if (window._ncHistorico === null) ncCarregarHistorico();
+  if (window._flashHistorico === null) flashCarregarHistorico();
+
+  if (!window._ncMostrarForm) {
+    return `
+    <div class="page-header"><h1>Notificação de Não Conformidade — Energisa</h1><p>Notificações de NC ambiental por circuito elétrico — Contrato 2025022101</p></div>
+    <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div style="font-size:.85rem;color:var(--text-muted)">Emita uma notificação sempre que uma não conformidade ambiental for identificada em campo.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-secondary" style="font-size:.75rem" onclick="ncMigrarHistoricoIframe()">📥 Importar notificações antigas</button>
+        <button class="btn-primary" onclick="ncAbrirNovo()">➕ Nova Notificação</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">⚠️ Histórico de Notificações por Circuito Elétrico</div>
+      ${ncHtmlHistorico()}
+    </div>`;
+  }
+
+  const d = window._ncData;
+  const editando = !!window._ncRegistroAtualId;
+  const fotosResolvidas = (d.fotos || []).map(f => ({ ...f, _srcResolvido: ncFotoSrc(f) }));
+
+  setTimeout(() => {
+    ncRenderProgramasExtras();
+    ncRenderNCsExtras();
+    ncSugerirLegislacao();
+    ncAtualizarStatusPrazoAtendimento();
+    if (d.frOrigemId) ncCarregarNCsDoFR();
+  }, 50);
+
+  return `
+  <div class="page-header"><h1>Notificação de Não Conformidade — Energisa</h1><p>Contrato 2025022101 · Gestão Ambiental de Obras</p></div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">${editando ? '✏️ Editar Notificação' : '➕ Nova Notificação'} — ${d.numero || ncPreviewNumero()}</div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Circuito Elétrico / Frente</label>
+        <select onchange="ncCampo('frenteId', this.value); navigate('checklist_notif')">
+          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Data de Emissão</label><input type="date" value="${d.data || ''}" onchange="ncCampo('data', this.value)"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Destinatário (Empreiteira)</label><input value="${(d.destinatario || '').replace(/"/g, '&quot;')}" oninput="ncCampo('destinatario', this.value)" placeholder="Nome do responsável"></div>
+      <div class="form-group" style="margin:0"><label>Email Empreiteira</label><input type="email" value="${(d.emailEmpr || '').replace(/"/g, '&quot;')}" oninput="ncCampo('emailEmpr', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Email Energisa (cópia)</label><input type="email" value="${(d.emailEnergisa || '').replace(/"/g, '&quot;')}" oninput="ncCampo('emailEnergisa', this.value)"></div>
+    </div>
+
+    <div class="form-group" style="margin-bottom:10px"><label>Flash Report de Origem</label>
+      <select onchange="ncCampo('frOrigemId', this.value ? Number(this.value) : ''); ncCarregarNCsDoFR(); if(this.value) ncIncluirFotosFR(Number(this.value)); navigate('checklist_notif')">
+        <option value="">-- Selecione (opcional) --</option>
+        ${(window._flashHistorico || []).filter(f => f.FrenteId === d.frenteId).sort((a, b) => (a.Data || '').localeCompare(b.Data || '')).map(f => `<option value="${f.Id}" ${String(d.frOrigemId) === String(f.Id) ? 'selected' : ''}>${f.Data || 'sem data'} — ${f.ResponsavelTecnico || ''}</option>`).join('')}
+      </select>
+    </div>
+
+    <div style="margin:10px 0 6px;font-size:.78rem;font-weight:700;color:var(--red)">⚠️ Não Conformidades Identificadas</div>
+    <div id="nc-ncs-auto" style="margin-bottom:8px;font-size:.72rem;color:var(--text-muted)"></div>
+    <div class="form-group"><label>Descrição da Não Conformidade</label>
+      <textarea style="min-height:80px" placeholder="Descreva detalhadamente a não conformidade encontrada..." oninput="ncCampo('descricao', this.value); ncSugerirPrograma()">${d.descricao || ''}</textarea>
+    </div>
+    <div class="form-group"><label>Programa Ambiental Relacionado</label>
+      <select id="nc-programa" onchange="ncCampo('programa', this.value); ncSugerirLegislacao()">
+        <option value="">-- Selecione --</option>
+        ${NC_PROGRAMA_OPCOES.map(p => `<option value="${p}" ${d.programa === p ? 'selected' : ''}>${p}</option>`).join('')}
+      </select>
+      <div id="nc-programa-sugestao" style="font-size:.68rem;color:var(--green-main);margin-top:3px"></div>
+      <div id="nc-programas-extra"></div>
+      <div style="margin-top:6px"><button type="button" class="btn-secondary" style="font-size:.68rem;padding:4px 10px" onclick="ncAdicionarProgramaExtra()">+ Outro programa envolvido</button></div>
+    </div>
+    <div id="nc-legislacao-sugestao" style="font-size:.68rem;color:var(--text-muted);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;margin:-2px 0 10px"></div>
+
+    <div style="margin:14px 0 6px;display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:.78rem;font-weight:700;color:#e67e22">📋 Solicitações / NCs Adicionais</span>
+      <button type="button" class="btn-secondary" style="font-size:.68rem;padding:4px 10px" onclick="ncAdicionarNCExtra()">+ Nova NC</button>
+    </div>
+    <div id="nc-ncs-extras" style="margin-bottom:12px"></div>
+
+    <div class="form-group"><label>Fundamentação Legal / Condicionante</label><textarea id="nc-fundamentacao" style="min-height:50px" placeholder="Base legal, licença ambiental, condicionante violada..." oninput="ncCampo('fundamentacao', this.value)">${d.fundamentacao || ''}</textarea></div>
+    <div class="form-group"><label>Ação Corretiva Requerida</label><textarea style="min-height:60px" placeholder="Descreva a ação corretiva que deve ser executada..." oninput="ncCampo('acao', this.value)">${d.acao || ''}</textarea></div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Prazo para Correção</label><input type="date" value="${d.prazo || ''}" onchange="ncCampo('prazo', this.value); navigate('checklist_notif')"></div>
+      <div class="form-group" style="margin:0"><label>Severidade</label>
+        <select onchange="ncCampo('severidade', this.value)">
+          ${['Leve', 'Moderada', 'Grave', 'Gravíssima'].map(s => `<option ${d.severidade === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Status</label>
+        <select onchange="ncCampo('status', this.value)">
+          ${['Aberta', 'Respondida', 'Fechada'].map(s => `<option ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Fiscal Ambiental</label><input value="${(d.fiscal || '').replace(/"/g, '&quot;')}" oninput="ncCampo('fiscal', this.value)"></div>
+    </div>
+    <div class="form-group" style="margin-bottom:14px"><label>Gestor do Contrato</label><input value="${(d.gestor || '').replace(/"/g, '&quot;')}" oninput="ncCampo('gestor', this.value)"></div>
+
+    <div style="margin-bottom:14px">
+      <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">📷 Evidências Fotográficas</label>
+      <label class="btn-secondary" style="padding:6px 12px;font-size:.75rem;cursor:pointer;display:inline-block">📷 Adicionar Fotos
+        <input type="file" accept="image/*" multiple style="display:none" onchange="ncCarregarFotosMultiplas(event)">
+      </label>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px">
+        ${fotosResolvidas.map((f, i) => `
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px;text-align:center">
+          ${f._srcResolvido ? `<img src="${f._srcResolvido}" style="width:100%;border-radius:5px;margin-bottom:4px">` : '<div style="font-size:.65rem;color:var(--text-muted);padding:16px 0">Foto não encontrada</div>'}
+          <input value="${(f.desc || '').replace(/"/g, '&quot;')}" oninput="ncAtualizarFotoDesc(${i}, this.value)" placeholder="Legenda" style="width:100%;font-size:.65rem;padding:3px 5px;border:1px solid var(--border);border-radius:4px;margin-bottom:4px">
+          <span onclick="ncRemFoto(${i})" style="cursor:pointer;color:var(--red);font-size:.65rem">✕ remover</span>
+        </div>`).join('')}
+      </div>
+    </div>
+
+    <div style="border-top:2px dashed var(--border);padding-top:14px;margin-top:14px">
+      <label style="font-weight:700;color:var(--green-main);font-size:.85rem">✅ Atendimento da NCA</label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0">
+      <div class="form-group" style="margin:0"><label>Data de atendimento</label><input type="date" value="${d.atendimentoData || ''}" onchange="ncCampo('atendimentoData', this.value); ncAtualizarStatusPrazoAtendimento()"></div>
+      <div class="form-group" style="margin:0"><label>Status do atendimento</label>
+        <select onchange="ncCampo('atendimentoStatus', this.value)">
+          <option value="">-- Selecione --</option>
+          ${['Encerrado', 'Atendido', 'Outras'].map(s => `<option ${d.atendimentoStatus === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div id="nc-atend-prazo-info" style="font-size:.78rem;font-weight:700;margin:-4px 0 10px"></div>
+    <div style="margin-bottom:14px">
+      <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">📷 Evidência do Atendimento</label>
+      <label class="btn-secondary" style="padding:6px 12px;font-size:.75rem;cursor:pointer;display:inline-block">📷 Adicionar Fotos
+        <input type="file" accept="image/*" multiple style="display:none" onchange="ncAtendCarregarFotosMultiplas(event)">
+      </label>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px">
+        ${(d.atendimentoFotos || []).map((f, i) => `
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px;text-align:center">
+          ${f.dataUrl ? `<img src="${f.dataUrl}" style="width:100%;border-radius:5px;margin-bottom:4px">` : ''}
+          <input value="${(f.desc || '').replace(/"/g, '&quot;')}" oninput="ncAtendAtualizarFotoDesc(${i}, this.value)" placeholder="Legenda" style="width:100%;font-size:.65rem;padding:3px 5px;border:1px solid var(--border);border-radius:4px;margin-bottom:4px">
+          <span onclick="ncAtendRemFoto(${i})" style="cursor:pointer;color:var(--red);font-size:.65rem">✕ remover</span>
+        </div>`).join('')}
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-primary" onclick="ncSalvar()">💾 ${editando ? 'Salvar Alterações' : 'Salvar e Sincronizar com OneDrive'}</button>
+      <button class="btn-primary" style="background:var(--brand-brown,#3F261F);color:#fff" onclick="ncSalvarEExportarPDF()">🖨️ Salvar + Exportar PDF</button>
+      <button class="btn-secondary" onclick="ncFecharForm()">Cancelar</button>
+    </div>
+  </div>`;
 }
 
 /* =============================================================
@@ -23347,7 +24222,7 @@ function _notifAbrirPrazoItem(p) {
   const dt = p.prazo ? new Date(p.prazo + 'T12:00').toLocaleDateString('pt-BR') : '—';
   const msg = p.titulo + '\n\n' + (p.descricao || '') + '\nPrazo: ' + dt + '\nResponsável: ' + (p.criadoPorNome || '—') + '\n\nAbrir o módulo de origem?';
   if (confirm(msg)) {
-    if (p.origem === 'nc') { projetosAbrirProjeto('energisa'); }
+    if (p.origem === 'nc') { navigate('checklist_notif'); if (typeof ncEditarRegistro === 'function' && p.id != null) ncEditarRegistro(p.id); }
     else if (p.origem === 'flash') { navigate('checklist_flash'); }
     else if (p.origem === 'mitigacao') { navigate('checklist_mitigacao'); }
   }
