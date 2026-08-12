@@ -4858,6 +4858,17 @@ function calcularStatusVencimento(vencimento) {
   return 'Pendente';
 }
 
+/* -- Abre/fecha o formulário de novo lançamento (Contas a Pagar). Fica
+   colapsado por padrão pra não poluir a tela — só aparece ao clicar no
+   botão "➕ Novo Lançamento". -- */
+function pagToggleFormNovo(forcar) {
+  const atual = !!window._pagFormAberto;
+  const abrir = typeof forcar === 'boolean' ? forcar : !atual;
+  window._pagFormAberto = abrir;
+  const c = document.getElementById('pag-form-container');
+  if (c) c.style.display = abrir ? 'block' : 'none';
+}
+
 function pagePagar() {
   // Dados financeiros da empresa inteira (todos os fornecedores/valores) — restrito à Diretoria,
   // não só escondido do menu: mesmo navegando direto pro id 'pagar', quem não é Diretoria vê este aviso.
@@ -4873,8 +4884,11 @@ function pagePagar() {
   return `
   <div class="page-header"><h1>Contas a Pagar</h1><p>Gestão de fornecedores e pagamentos</p></div>
 
-  <!-- Formulário de lançamento -->
-  <div class="form-card" style="margin-bottom:24px">
+  <!-- Formulário de lançamento (colapsável — só abre ao clicar no botão) -->
+  <div style="margin-bottom:24px">
+    <button id="pag-form-toggle" class="btn-primary" onclick="pagToggleFormNovo()">➕ Novo Lançamento</button>
+    <div id="pag-form-container" style="display:${window._pagFormAberto ? 'block' : 'none'};margin-top:14px">
+    <div class="form-card">
     <div style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:700;color:var(--green-main);margin-bottom:14px;text-transform:uppercase;letter-spacing:.07em">➕ Novo Lançamento</div>
 
     <!-- Linha 1: Empresa + Fornecedor -->
@@ -4921,19 +4935,24 @@ function pagePagar() {
       </div>
     </div>
 
-    <!-- Linha 2b: Categoria + Subcategoria (mesma taxonomia usada em Despesas) -->
+    <!-- Linha 2b: Subcategoria + Categoria (mesma taxonomia usada em Despesas).
+         Ordem invertida de propósito: o colaborador escolhe a Subcategoria
+         (ex: "Combustível - campo") e a Categoria é preenchida automaticamente
+         a partir dela — mais rápido do que navegar a categoria genérica primeiro.
+         A Categoria continua editável manualmente, caso precise ajustar. -->
     <div class="form-row">
       <div class="form-group">
-        <label>Categoria</label>
-        <select id="pag_categoria" onchange="pagAtualizarSubcategorias()">
+        <label>Subcategoria</label>
+        <select id="pag_subcategoria" onchange="pagAtualizarCategoriaPorSubcategoria()">
           <option value="">Selecione...</option>
-          ${RD_CATEGORIAS.map(c => `<option>${c}</option>`).join('')}
+          ${RD_CATEGORIAS.map(c => `<optgroup label="${c}">${(rdSubcategoriasDe(c)).map(s => `<option>${s}</option>`).join('')}</optgroup>`).join('')}
         </select>
       </div>
       <div class="form-group">
-        <label>Subcategoria</label>
-        <select id="pag_subcategoria">
-          <option value="">Selecione a categoria primeiro...</option>
+        <label>Categoria <span style="font-size:.7rem;color:var(--text-muted)">(automática pela subcategoria)</span></label>
+        <select id="pag_categoria">
+          <option value="">—</option>
+          ${RD_CATEGORIAS.map(c => `<option>${c}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -5020,6 +5039,8 @@ function pagePagar() {
     <div class="form-actions" style="gap:10px">
       <button class="btn-primary" onclick="salvarContaPagar()">💾 Salvar Lançamento</button>
       <button class="btn-secondary" onclick="salvarEnviarFinanceiro()">📤 Salvar e Enviar ao Financeiro</button>
+    </div>
+    </div>
     </div>
   </div>
 
@@ -5312,14 +5333,14 @@ function pagAtualizarParcela(i, campo, valor) {
   window._pagParcelas[i][campo] = campo === 'valor' ? (parseFloat(valor) || 0) : valor;
 }
 
-function pagAtualizarSubcategorias() {
-  const categoria = (document.getElementById('pag_categoria')||{}).value || '';
-  const sel = document.getElementById('pag_subcategoria');
-  if (!sel) return;
-  const subs = rdSubcategoriasDe(categoria);
-  sel.innerHTML = subs.length
-    ? '<option value="">Selecione...</option>' + subs.map(s => `<option>${s}</option>`).join('')
-    : '<option value="">Selecione a categoria primeiro...</option>';
+/* -- Ao escolher a Subcategoria, preenche a Categoria automaticamente
+   (mapa reverso RD_CATEGORIA_DE_SUBCATEGORIA). -- */
+function pagAtualizarCategoriaPorSubcategoria() {
+  const sub = (document.getElementById('pag_subcategoria')||{}).value || '';
+  const catSel = document.getElementById('pag_categoria');
+  if (!catSel) return;
+  const cat = rdCategoriaDeSubcategoria(sub);
+  if (cat) catSel.value = cat;
 }
 
 async function salvarContaPagar(enviarFinanceiro=false) {
@@ -5387,7 +5408,7 @@ async function salvarContaPagar(enviarFinanceiro=false) {
   ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_vencimento','pag_valor','pag_obs','pag_num_parcelas','pag_venc_1parcela'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   ['pag_fornecedor_input','pag_fornecedor_sel'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const pagCatSel=document.getElementById('pag_categoria');if(pagCatSel)pagCatSel.selectedIndex=0;
-  const pagSubcatSel=document.getElementById('pag_subcategoria');if(pagSubcatSel)pagSubcatSel.innerHTML='<option value="">Selecione a categoria primeiro...</option>';
+  const pagSubcatSel=document.getElementById('pag_subcategoria');if(pagSubcatSel)pagSubcatSel.selectedIndex=0;
   const formaSel=document.getElementById('pag_forma_pgto');if(formaSel)formaSel.selectedIndex=0;
   const parcSel=document.getElementById('pag_parcelamento');if(parcSel){parcSel.selectedIndex=0;pagToggleParcelas();}
   window._pagParcelas = null;
@@ -5395,6 +5416,7 @@ async function salvarContaPagar(enviarFinanceiro=false) {
   window._pagComprovanteId = null; window._pagComprovanteDriveId = null;
   const pagAnexoEl = document.getElementById('pag_anexo'); if (pagAnexoEl) pagAnexoEl.value = '';
   const pagAnexoNomeEl = document.getElementById('pag_anexo_nome'); if (pagAnexoNomeEl) pagAnexoNomeEl.textContent = '';
+  if (ok) pagToggleFormNovo(false);
   setTimeout(()=>carregarContasPagar(),900);
 }
 
@@ -6015,6 +6037,15 @@ const RD_SUBCATEGORIAS = {
   'Outras Saídas': ['Doações a Entidades/Institucionais','Compra de Produtos para Revenda','Outros (Outras Saídas)'],
 };
 function rdSubcategoriasDe(categoria) { return RD_SUBCATEGORIAS[categoria] || []; }
+
+// Mapa reverso subcategoria -> categoria (construído uma vez a partir de
+// RD_SUBCATEGORIAS), usado em telas onde o colaborador escolhe a subcategoria
+// primeiro e a categoria é preenchida automaticamente (ex: Contas a Pagar).
+const RD_CATEGORIA_DE_SUBCATEGORIA = Object.entries(RD_SUBCATEGORIAS).reduce((map, [cat, subs]) => {
+  subs.forEach(s => { map[s] = cat; });
+  return map;
+}, {});
+function rdCategoriaDeSubcategoria(subcategoria) { return RD_CATEGORIA_DE_SUBCATEGORIA[subcategoria] || ''; }
 
 // Natureza Econômica de cada subcategoria (Operacional / Não Operacional / Patrimônio / Aporte
 // Patrimonial / etc.) — vem da mesma planilha oficial. Classifica automaticamente o lançamento
@@ -9622,6 +9653,7 @@ function agendaTipoInfo(tipo) {
     vistoria:    { label: 'Vistoria',     cor: 'amber', emoji: '🔍' },
     prazo:       { label: 'Prazo/Entrega',cor: 'red',   emoji: '⏰' },
     outro:       { label: 'Outro',        cor: 'blue',  emoji: '📌' },
+    contapagar:  { label: 'Conta a Pagar',cor: 'amber', emoji: '💰' },
   };
   return map[tipo] || map.outro;
 }
@@ -9638,6 +9670,36 @@ async function agendaCarregar() {
       (e.Participantes || []).some(p => (p.email || '').toLowerCase() === emailAtual)
     );
     AGENDA_FILTRO = 'meus';
+  }
+  // Sincroniza Contas a Pagar na agenda — só para o Gestor Geral (Tiago), que
+  // acompanha os vencimentos financeiros da empresa. Não grava nada na tabela
+  // Agenda: os itens são montados na hora, direto da tabela ContasPagar, então
+  // aparecem automaticamente assim que a equipe lançar/atualizar uma conta —
+  // sem precisar de nenhuma ação manual de sincronização.
+  const nomeAtual = (window._currentUser && window._currentUser.name || '').toLowerCase();
+  if (nomeAtual.includes('tiago')) {
+    try {
+      const contas = await dbLer('ContasPagar') || [];
+      const emailAtual = window._currentUser ? window._currentUser.email : '';
+      const virtuais = contas
+        .filter(c => c.Vencimento && c.Status !== 'Pago')
+        .map(c => {
+          const status = (c.Status === 'Aguardando Aprovação' || c.Status === 'Aprovado — Aguardando Pagamento')
+            ? c.Status : calcularStatusVencimento(c.Vencimento);
+          const cor = status === 'Em atraso' ? 'red' : (status === 'Vence hoje' || status === 'Vence em breve') ? 'amber' : 'blue';
+          const valorFmt = (c.Valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+          return {
+            Id: -1000000 - c.Id,
+            Data: c.Vencimento, HoraIni: '', HoraFim: '',
+            Titulo: (c.Fornecedor || c.Descricao || 'Fornecedor') + ' — ' + valorFmt,
+            Local: '', CriadoPorNome: 'Financeiro (Contas a Pagar)', CriadoPorEmail: emailAtual,
+            Participantes: [],
+            Tipo: 'contapagar',
+            _contaPagarId: c.Id, _statusConta: status, _corConta: cor,
+          };
+        });
+      AGENDA_DADOS = AGENDA_DADOS.concat(virtuais);
+    } catch (e) { console.warn('[Agenda] Falha ao sincronizar Contas a Pagar.', e); }
   }
   agendaRenderTudo();
 }
@@ -9718,14 +9780,16 @@ function agendaRenderToolbar() {
 /* -- Linha de evento reutilizável (visão Lista e visão Dia) -- */
 function agendaLinhaEvento(e) {
   const emailAtual = (window._currentUser && window._currentUser.email || '').toLowerCase();
-  const info = agendaTipoInfo(e.Tipo);
+  const ehContaPagar = !!e._contaPagarId;
+  const info = ehContaPagar ? { label: e._statusConta || 'Conta a Pagar', cor: e._corConta || 'amber', emoji: '💰' } : agendaTipoInfo(e.Tipo);
   const dataObj = e.Data ? new Date(e.Data + 'T00:00:00') : null;
   const dia = dataObj ? String(dataObj.getDate()).padStart(2, '0') : '—';
   const mes = dataObj ? dataObj.toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '') : '';
   const souParticipante = (e.Participantes || []).some(p => (p.email || '').toLowerCase() === emailAtual);
   const souCriador = (e.CriadoPorEmail || '').toLowerCase() === emailAtual;
+  const onclickAttr = ehContaPagar ? `pagAbrirVisualizar(${e._contaPagarId})` : `agendaVerDetalhe(${e.Id})`;
   return `
-  <div class="alert-item" style="gap:14px;align-items:flex-start;cursor:pointer" onclick="agendaVerDetalhe(${e.Id})">
+  <div class="alert-item" style="gap:14px;align-items:flex-start;cursor:pointer" onclick="${onclickAttr}">
     <div style="text-align:center;min-width:40px">
       <div style="font-family:'Mont',sans-serif;font-size:1.2rem;font-weight:800;line-height:1">${dia}</div>
       <div style="font-size:.65rem;color:var(--text-muted);text-transform:capitalize">${mes}</div>
@@ -9734,7 +9798,7 @@ function agendaLinhaEvento(e) {
     <div style="flex:1;min-width:0">
       <div class="name">${info.emoji} ${e.Titulo || '—'}${e.SerieId ? ` <span style="font-size:.65rem;font-weight:600;color:var(--text-muted)" title="Faz parte de uma série ${e.Recorrencia === 'semanal' ? 'semanal' : 'mensal'}">🔁 ${e.Recorrencia === 'semanal' ? 'semanal' : 'mensal'}</span>` : ''}</div>
       <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">
-        ${e.HoraIni || '—'}${e.HoraFim ? '–' + e.HoraFim : ''} ${e.Local ? '· 📍 ' + e.Local : ''} · por ${e.CriadoPorNome || '—'}
+        ${ehContaPagar ? 'Vencimento' : (e.HoraIni || '—') + (e.HoraFim ? '–' + e.HoraFim : '')} ${e.Local ? '· 📍 ' + e.Local : ''} · por ${e.CriadoPorNome || '—'}
         ${e.SincronizarOutlook ? (e.OutlookEventId ? ' · <span style="color:var(--green-main)">📆 Outlook</span>' : ' · <span style="color:var(--red)">⚠️ Outlook falhou</span>') : ''}
       </div>
       ${(e.Participantes || []).length ? `<div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">👤 ${e.Participantes.map(p => p.nome).join(', ')}</div>` : ''}
@@ -9753,10 +9817,12 @@ function agendaCorChip(cor) {
   return map[cor] || 'var(--blue)';
 }
 function agendaChipEvento(e) {
-  const info = agendaTipoInfo(e.Tipo);
+  const ehContaPagar = !!e._contaPagarId;
+  const info = ehContaPagar ? { label: e._statusConta || 'Conta a Pagar', cor: e._corConta || 'amber', emoji: '💰' } : agendaTipoInfo(e.Tipo);
   const cor = agendaCorChip(info.cor);
   const titulo = (e.Titulo || '—').replace(/"/g, '&quot;');
-  return `<div onclick="event.stopPropagation();agendaVerDetalhe(${e.Id})" title="${e.HoraIni || ''} ${titulo}" style="cursor:pointer;font-size:.65rem;font-weight:600;padding:2px 5px;margin-bottom:2px;border-radius:5px;background:rgba(255,255,255,.06);border-left:3px solid ${cor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.HoraIni ? e.HoraIni + ' ' : ''}${info.emoji} ${titulo}</div>`;
+  const onclickAttr = ehContaPagar ? `pagAbrirVisualizar(${e._contaPagarId})` : `agendaVerDetalhe(${e.Id})`;
+  return `<div onclick="event.stopPropagation();${onclickAttr}" title="${e.HoraIni || ''} ${titulo}" style="cursor:pointer;font-size:.65rem;font-weight:600;padding:2px 5px;margin-bottom:2px;border-radius:5px;background:rgba(255,255,255,.06);border-left:3px solid ${cor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.HoraIni ? e.HoraIni + ' ' : ''}${info.emoji} ${titulo}</div>`;
 }
 
 function agendaRenderConteudo() {
@@ -20665,6 +20731,7 @@ function flashNovoForm(frenteIdPreSelecionado) {
     rt: '', clima: 'Ensolarado', trecho: '', equipe: '', fiscal: '',
     ckAtividades: {}, ckVerificacoes: {}, ckOcorrencias: {},
     outraativ: '', outraocorr: '', atividades: '', amanha: '', obs: '', fotos: [],
+    orientacaoVerbal: false, orientacaoPara: '', orientacaoPrazo: '',
   };
 }
 if (!window._flashData) flashNovoForm();
@@ -20697,6 +20764,7 @@ function flashEditarRegistro(id) {
     outraativ: f.OutraAtividade || '', outraocorr: f.OutraOcorrencia || '',
     atividades: f.Atividades || '', amanha: f.PrevisaoAmanha || '', obs: f.Observacoes || '',
     fotos: (f.fotos || []).map(x => ({ ...x })),
+    orientacaoVerbal: !!f.OrientacaoVerbal, orientacaoPara: f.OrientacaoPara || '', orientacaoPrazo: f.OrientacaoPrazo || '',
   };
   window._flashRegistroAtualId = id;
   window._flashMostrarForm = true;
@@ -20794,6 +20862,7 @@ async function flashSalvar() {
     Data: d.data, ResponsavelTecnico: d.rt, Clima: d.clima, Trecho: d.trecho, Equipe: d.equipe, Fiscal: d.fiscal,
     OutraAtividade: d.outraativ, OutraOcorrencia: d.outraocorr,
     Atividades: d.atividades, PrevisaoAmanha: d.amanha, Observacoes: d.obs,
+    OrientacaoVerbal: !!d.orientacaoVerbal, OrientacaoPara: d.orientacaoPara || '', OrientacaoPrazo: d.orientacaoPrazo || '',
     ckAtividades: d.ckAtividades || {}, ckVerificacoes: d.ckVerificacoes || {}, ckOcorrencias: d.ckOcorrencias || {},
     fotos: d.fotos || [],
     Visualizado: false,
@@ -20852,6 +20921,7 @@ function flashVerRegistro(id) {
   ${grupoHtml('🔍 Verificações ambientais', 'ckVerificacoes', FLASH_VERIFICACOES)}
   ${grupoHtml('⚠️ Ocorrências', 'ckOcorrencias', FLASH_OCORRENCIAS)}
   ${f.OutraOcorrencia ? `<div style="margin-bottom:8px"><strong>Outra ocorrência:</strong> ${f.OutraOcorrencia}</div>` : ''}
+  ${f.OrientacaoVerbal ? `<div style="margin-bottom:8px;padding:8px 10px;background:#fffbeb;border:1px solid #f59e0b;border-radius:6px"><strong>🗣️ Orientação verbal:</strong> Sim<br>Para: ${f.OrientacaoPara || '—'} &nbsp;|&nbsp; Prazo para atendimento: ${f.OrientacaoPrazo ? new Date(f.OrientacaoPrazo + 'T12:00').toLocaleDateString('pt-BR') : '—'}</div>` : ''}
   ${f.Atividades ? `<div style="margin-bottom:8px"><strong>📝 Descrição/Ação adotada:</strong><br>${f.Atividades.replace(/\n/g, '<br>')}</div>` : ''}
   ${f.PrevisaoAmanha ? `<div style="margin-bottom:8px"><strong>Previsão para amanhã:</strong><br>${f.PrevisaoAmanha.replace(/\n/g, '<br>')}</div>` : ''}
   ${f.Observacoes ? `<div style="margin-bottom:8px"><strong>Observações:</strong><br>${f.Observacoes.replace(/\n/g, '<br>')}</div>` : ''}
@@ -20980,6 +21050,17 @@ function pageChecklistFlash() {
     ${flashGrupoCheckboxesHtml('⚠️ Ocorrências / Não Conformidades', FLASH_OCORRENCIAS, 'ckOcorrencias')}
     <div class="form-group" style="margin-bottom:10px"><label>Outra ocorrência</label><input value="${(d.outraocorr || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraocorr', this.value)" placeholder="Descreva se houver outra ocorrência..."></div>
 
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:.8rem;font-weight:700;cursor:pointer;margin-bottom:${d.orientacaoVerbal ? '10px' : '0'}">
+        <input type="checkbox" ${d.orientacaoVerbal ? 'checked' : ''} onchange="flashCampo('orientacaoVerbal', this.checked); navigate('checklist_flash')"> 🗣️ Foi passada orientação verbal em campo?
+      </label>
+      ${d.orientacaoVerbal ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="form-group" style="margin:0"><label>Para quem foi orientado</label><input value="${(d.orientacaoPara || '').replace(/"/g, '&quot;')}" oninput="flashCampo('orientacaoPara', this.value)" placeholder="Nome / função / empresa"></div>
+        <div class="form-group" style="margin:0"><label>Prazo para atendimento</label><input type="date" value="${d.orientacaoPrazo || ''}" oninput="flashCampo('orientacaoPrazo', this.value)"></div>
+      </div>` : ''}
+    </div>
+
     <div class="form-group" style="margin-bottom:10px"><label>📝 Descrição / Ação adotada</label><textarea rows="3" oninput="flashCampo('atividades', this.value)">${d.atividades || ''}</textarea></div>
     <div class="form-group" style="margin-bottom:10px"><label>Previsão para amanhã</label><textarea rows="2" oninput="flashCampo('amanha', this.value)">${d.amanha || ''}</textarea></div>
     <div class="form-group" style="margin-bottom:14px"><label>Observações gerais</label><textarea rows="2" oninput="flashCampo('obs', this.value)">${d.obs || ''}</textarea></div>
@@ -21078,6 +21159,8 @@ async function _flashGerarDoc(d, numOverride) {
   }
 
   const dt = new Date(d.data + 'T12:00').toLocaleDateString('pt-BR', {weekday:'long', day:'2-digit', month:'long', year:'numeric'});
+  const dtCurta = new Date(d.data + 'T12:00').toLocaleDateString('pt-BR');
+  const obraTxt = frente ? frente.nome : (d.frenteId || '--');
   const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
   const pageW = 21.0, pageH = 29.7;
   const titulo = 'FLASH REPORT DIÁRIO — OBRAS';
@@ -21101,13 +21184,21 @@ async function _flashGerarDoc(d, numOverride) {
   const linhasEquipe = doc.splitTextToSize(equipeTxt, CW - 0.6);
   const alturaRow1 = Math.max.apply(null, linhasRow1.map(l => l.length)) * 0.4;
   const alturaRow2 = (linhasFrente.length + linhasEquipe.length) * 0.4;
-  const idBoxH = 0.95 + alturaRow1 + alturaRow2 + 0.45;
+  // Título principal deixa nº, data e obra bem visíveis logo no topo do documento
+  // (era só "FR-xxx · Flash Report Diário — Obras", sem data/obra destacadas).
+  const tituloLinhaTxt = 'FR-' + num + ' · ' + dtCurta + ' · ' + obraTxt;
+  const linhasTitulo = doc.splitTextToSize(tituloLinhaTxt, CW - 0.6);
+  const alturaTitulo = linhasTitulo.length * 0.5;
+  const idBoxH = 0.55 + alturaTitulo + 0.4 + alturaRow1 + alturaRow2 + 0.45;
   doc.setFillColor(245,240,237);
   doc.roundedRect(ML, y, CW, idBoxH, 0.2, 0.2, 'F');
   doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(63,38,31);
-  doc.text('FR-' + num + ' · Flash Report Diário — Obras', ML+0.3, y+0.55);
+  let tituloY = y + 0.55;
+  linhasTitulo.forEach(l => { doc.text(l, ML+0.3, tituloY); tituloY += 0.5; });
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(120,100,90);
+  doc.text('Flash Report Diário — Obras', ML+0.3, tituloY);
   doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(80,60,50);
-  let idY = y + 0.95;
+  let idY = tituloY + 0.4;
   linhasRow1.forEach((linhas, i) => {
     let ly = idY;
     linhas.forEach(l => { doc.text(l, ML+0.3 + i*col3W, ly); ly += 0.4; });
@@ -21159,6 +21250,18 @@ async function _flashGerarDoc(d, numOverride) {
 
   checklistGrid('OCORRENCIAS / NAO CONFORMIDADES', FLASH_OCORRENCIAS, d.ckOcorrencias || {}, false);
   if (d.outraocorr) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outra: ' + d.outraocorr, ML+0.3, y); y += 0.5; }
+
+  if (d.orientacaoVerbal) {
+    if (y > pageH - 2.5) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    const prazoFmt = d.orientacaoPrazo ? new Date(d.orientacaoPrazo + 'T12:00').toLocaleDateString('pt-BR') : '--';
+    doc.setFillColor(255,251,235); doc.setDrawColor(245,158,11); doc.setLineWidth(0.02);
+    doc.roundedRect(ML, y, CW, 0.85, 0.15, 0.15, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(120,80,10);
+    doc.text('ORIENTACAO VERBAL EM CAMPO', ML+0.3, y+0.35);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,70,20);
+    doc.text('Para: ' + (d.orientacaoPara || '--') + '   |   Prazo para atendimento: ' + prazoFmt, ML+0.3, y+0.65);
+    y += 1.15;
+  }
 
   sectionTitle('DESCRICAO / ACAO ADOTADA');
   textBlock(d.atividades || 'Não informado.');
@@ -21246,6 +21349,7 @@ async function flashExportarRegistro(id) {
     frenteId: f.FrenteId, data: f.Data, rt: f.ResponsavelTecnico, clima: f.Clima, trecho: f.Trecho, equipe: f.Equipe, fiscal: f.Fiscal,
     ckAtividades: f.ckAtividades || {}, ckVerificacoes: f.ckVerificacoes || {}, ckOcorrencias: f.ckOcorrencias || {},
     outraativ: f.OutraAtividade, outraocorr: f.OutraOcorrencia, atividades: f.Atividades, amanha: f.PrevisaoAmanha, obs: f.Observacoes, fotos: f.fotos || [],
+    orientacaoVerbal: !!f.OrientacaoVerbal, orientacaoPara: f.OrientacaoPara || '', orientacaoPrazo: f.OrientacaoPrazo || '',
   };
   const { doc, frente } = await _flashGerarDoc(dLocal, num);
   showSyncStatus('PDF gerado!', 'ok', 2000);
