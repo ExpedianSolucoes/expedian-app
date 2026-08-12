@@ -1754,7 +1754,8 @@ async function carregarAPRDashboard() {
             ` : ''}
             ${(i.Status==='Encerrada') && (currentProfile==='diretoria'||currentProfile==='coordenador') ? `
               <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem;color:var(--amber);border-color:var(--amber)" onclick="aprReabrirEncerrada(${i.Id})">🔓 Reabrir</button>
-            ` : ''}` ;
+            ` : ''}
+            ${aprExcluirPermitido(i.Status) ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem;color:var(--red);border-color:var(--red)" onclick="aprExcluir(${i.Id})">🗑️ Excluir</button>` : ''}` ;
           return `<tr>
             <td><strong>${i.NumeroAPR||i.Title||'—'}</strong></td>
             <td>${i.Responsavel||'—'}</td>
@@ -23510,6 +23511,38 @@ async function aprReabrirEncerrada(id) {
   });
   showToast(ok ? '🔓 APR reaberta — Em Aberto.' : '❌ Erro ao reabrir');
   setTimeout(() => carregarAPRDashboard(), 600);
+}
+
+/* -- Excluir uma APR. Enquanto não está Encerrada (Rascunho/Em Andamento/Em
+   Aberto/Suspensa), Diretoria e Coordenação podem excluir. Depois de
+   Encerrada, só o Gestor Geral (Tiago) pode excluir — mesma regra aplicada
+   no botão (aprExcluirPermitido), checada de novo aqui pra não depender só
+   do que foi renderizado na tela. -- */
+function aprExcluirPermitido(status) {
+  if (status === 'Encerrada') {
+    return (window._currentUser && window._currentUser.name || '').toLowerCase().includes('tiago');
+  }
+  return currentProfile === 'diretoria' || currentProfile === 'coordenador';
+}
+async function aprExcluir(id) {
+  const lista = await dbLer('APRs');
+  const reg = (lista || []).find(r => r.Id === id);
+  if (!reg) { showToast('⚠️ APR não encontrada.'); return; }
+  if (!aprExcluirPermitido(reg.Status)) {
+    showToast(reg.Status === 'Encerrada' ? '🔒 Só o Gestor Geral pode excluir uma APR já encerrada.' : '🔒 Sem permissão para excluir.');
+    return;
+  }
+  const aviso = reg.Status === 'Encerrada'
+    ? `Excluir definitivamente a APR ${reg.NumeroAPR || reg.Title || ''} (ENCERRADA)?\n\nEssa ação não pode ser desfeita.`
+    : `Excluir esta APR (${reg.NumeroAPR || reg.Title || 'sem número'})?\n\nEssa ação não pode ser desfeita.`;
+  if (!confirm(aviso)) return;
+  showSyncStatus('Excluindo APR...');
+  const idx = lista.findIndex(r => r.Id === id);
+  lista.splice(idx, 1);
+  const ok = await dbSalvar('APRs', lista);
+  showToast(ok ? '🗑️ APR excluída.' : '❌ Erro ao excluir.');
+  showSyncStatus(ok ? 'Excluída!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  setTimeout(() => { carregarAPRDashboard(); carregarAprovacoes(); }, 400);
 }
 
 async function reprovarAPR(id) {
