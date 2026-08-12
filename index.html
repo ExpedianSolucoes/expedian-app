@@ -9721,6 +9721,76 @@ function agendaTipoInfo(tipo) {
   return map[tipo] || map.outro;
 }
 
+function _resolverEmailPorNome(nome) {
+  if (!nome) return '';
+  const alvo = nome.trim().toLowerCase();
+  const found = Object.entries(users || {}).find(([email, u]) => (u.name || '').trim().toLowerCase() === alvo);
+  return found ? found[0] : '';
+}
+
+/* -- Reúne todos os prazos para atendimento aplicados nos documentos de campo
+   (Flash Report — orientação verbal, Checklist de Mitigação Ambiental — ação
+   necessária, e Notificação de Não Conformidade — Energisa) que ainda não
+   foram resolvidos, pra vincular na Agenda de quem criou o documento e
+   alimentar o sino de notificações. -- */
+async function coletarPrazosDocumentos() {
+  const itens = [];
+  try {
+    const flashs = await dbLer('FlashReportsEnergisa') || [];
+    flashs.forEach(f => {
+      if (f.OrientacaoVerbal && f.OrientacaoPrazo) {
+        itens.push({
+          origem: 'flash', id: f.Id,
+          titulo: 'Orientação verbal em campo — ' + (f.FrenteNome || ''),
+          descricao: 'Prazo para atendimento da orientação verbal registrada no Flash Report de ' + (f.FrenteNome || '') + ' (' + (f.Data || '') + ').' + (f.OrientacaoPara ? ' Orientado a: ' + f.OrientacaoPara + '.' : ''),
+          prazo: f.OrientacaoPrazo,
+          criadoPorNome: f.CriadoPorNome || '', criadoPorEmail: f.CriadoPorEmail || '',
+        });
+      }
+    });
+  } catch (e) { console.warn('[Prazos] Falha ao ler Flash Reports.', e); }
+
+  try {
+    const mits = await dbLer('ChecklistMitigacao') || [];
+    mits.forEach(m => {
+      if (m.acaoNecessaria === 'sim' && m.prazo && m.acaoStatus !== 'concluida') {
+        itens.push({
+          origem: 'mitigacao', id: m.Id,
+          titulo: 'Ação de mitigação ambiental — ' + (m.local || ''),
+          descricao: 'Prazo para atendimento da ação necessária apontada no Checklist de Mitigação Ambiental de ' + (m.local || '') + '.',
+          prazo: m.prazo,
+          criadoPorNome: m.responsavel || '', criadoPorEmail: _resolverEmailPorNome(m.responsavel),
+        });
+      }
+    });
+  } catch (e) { console.warn('[Prazos] Falha ao ler Checklist de Mitigação Ambiental.', e); }
+
+  try {
+    const ifr = document.getElementById('iframe-energisa-ero');
+    const win = ifr && ifr.contentWindow;
+    if (win && win.emprObrasData && win.EMPR_OBRAS) {
+      Object.keys(win.emprObrasData).forEach(k => {
+        const obra = win.EMPR_OBRAS[k] || {};
+        const notifs = (win.emprObrasData[k] && win.emprObrasData[k].notificacoes) || [];
+        notifs.forEach(n => {
+          const resolvido = n.status === 'Fechada' || n.atendimentoStatus === 'Encerrado' || n.atendimentoStatus === 'Atendido';
+          if (n.prazo && !resolvido) {
+            itens.push({
+              origem: 'nc', id: n.numero || (k + '-' + n.data),
+              titulo: (n.numero || 'NCA') + ' — ' + (obra.nome || '') + (obra.obra ? ' (' + obra.obra + ')' : ''),
+              descricao: 'Prazo para correção da Notificação de Não Conformidade ' + (n.numero || '') + '.',
+              prazo: n.prazo,
+              criadoPorNome: n.criadoPorNome || n.fiscal || '', criadoPorEmail: n.criadoPorEmail || '',
+            });
+          }
+        });
+      });
+    }
+  } catch (e) { console.warn('[Prazos] Falha ao ler Notificações Energisa.', e); }
+
+  return itens;
+}
+
 async function agendaCarregar() {
   try { AGENDA_DADOS = await dbLer('Agenda') || []; } catch (e) { AGENDA_DADOS = []; }
   // Colaborador só enxerga a própria agenda: eventos que ele criou ou em que
@@ -9764,6 +9834,29 @@ async function agendaCarregar() {
       AGENDA_DADOS = AGENDA_DADOS.concat(virtuais);
     } catch (e) { console.warn('[Agenda] Falha ao sincronizar Contas a Pagar.', e); }
   }
+  // Vincula prazos para atendimento (Flash Report, Mitigação Ambiental, Notificação
+  // de Não Conformidade Energisa) à agenda de quem criou o documento. Diretoria/
+  // Coordenação enxergam o panorama completo da empresa; colaborador só os seus.
+  try {
+    let prazos = await coletarPrazosDocumentos();
+    if (currentProfile === 'colaborador') {
+      const emailAtualP = (window._currentUser && window._currentUser.email || '').toLowerCase();
+      const nomeAtualP = (window._currentUser && window._currentUser.name || '').toLowerCase();
+      prazos = prazos.filter(p =>
+        (p.criadoPorEmail || '').toLowerCase() === emailAtualP ||
+        (p.criadoPorNome || '').toLowerCase() === nomeAtualP
+      );
+    }
+    const virtuaisPrazo = prazos.map((p, idx) => ({
+      Id: -2000000 - idx,
+      Data: p.prazo, HoraIni: '', HoraFim: '',
+      Titulo: p.titulo, Local: '', Descricao: p.descricao,
+      CriadoPorNome: p.criadoPorNome, CriadoPorEmail: p.criadoPorEmail,
+      Participantes: [], Tipo: 'prazo',
+      _prazoOrigem: p.origem, _prazoId: p.id,
+    }));
+    AGENDA_DADOS = AGENDA_DADOS.concat(virtuaisPrazo);
+  } catch (e) { console.warn('[Agenda] Falha ao vincular prazos de documentos.', e); }
   agendaRenderTudo();
 }
 
@@ -9850,7 +9943,7 @@ function agendaLinhaEvento(e) {
   const mes = dataObj ? dataObj.toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '') : '';
   const souParticipante = (e.Participantes || []).some(p => (p.email || '').toLowerCase() === emailAtual);
   const souCriador = (e.CriadoPorEmail || '').toLowerCase() === emailAtual;
-  const onclickAttr = ehContaPagar ? `pagAbrirVisualizar(${e._contaPagarId})` : `agendaVerDetalhe(${e.Id})`;
+  const onclickAttr = ehContaPagar ? `pagAbrirVisualizar(${e._contaPagarId})` : (e._prazoOrigem ? `agendaAbrirPrazoDocumento(${e.Id})` : `agendaVerDetalhe(${e.Id})`);
   return `
   <div class="alert-item" style="gap:14px;align-items:flex-start;cursor:pointer" onclick="${onclickAttr}">
     <div style="text-align:center;min-width:40px">
@@ -9884,7 +9977,7 @@ function agendaChipEvento(e) {
   const info = ehContaPagar ? { label: e._statusConta || 'Conta a Pagar', cor: e._corConta || 'amber', emoji: '💰' } : agendaTipoInfo(e.Tipo);
   const cor = agendaCorChip(info.cor);
   const titulo = (e.Titulo || '—').replace(/"/g, '&quot;');
-  const onclickAttr = ehContaPagar ? `pagAbrirVisualizar(${e._contaPagarId})` : `agendaVerDetalhe(${e.Id})`;
+  const onclickAttr = ehContaPagar ? `pagAbrirVisualizar(${e._contaPagarId})` : (e._prazoOrigem ? `agendaAbrirPrazoDocumento(${e.Id})` : `agendaVerDetalhe(${e.Id})`);
   return `<div onclick="event.stopPropagation();${onclickAttr}" title="${e.HoraIni || ''} ${titulo}" style="cursor:pointer;font-size:.65rem;font-weight:600;padding:2px 5px;margin-bottom:2px;border-radius:5px;background:rgba(255,255,255,.06);border-left:3px solid ${cor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.HoraIni ? e.HoraIni + ' ' : ''}${info.emoji} ${titulo}</div>`;
 }
 
@@ -10117,6 +10210,21 @@ function agendaFecharModal() {
 
 function agendaVerDetalhe(id) {
   agendaAbrirModal(id);
+}
+
+/* -- Eventos de prazo vinculados automaticamente (Flash Report, Mitigação
+   Ambiental, Notificação Energisa) não são editáveis na Agenda — são só um
+   espelho do prazo aplicado no documento de origem. Clicar leva pro módulo. -- */
+function agendaAbrirPrazoDocumento(id) {
+  const e = AGENDA_DADOS.find(x => x.Id === id);
+  if (!e) return;
+  const dt = e.Data ? new Date(e.Data + 'T12:00').toLocaleDateString('pt-BR') : '--';
+  const destinos = { flash: 'checklist_flash', mitigacao: 'checklist_mitigacao' };
+  const msg = e.Titulo + '\n\n' + (e.Descricao || '') + '\nPrazo: ' + dt + '\nResponsável: ' + (e.CriadoPorNome || '—') + '\n\nAbrir o módulo de origem?';
+  if (confirm(msg)) {
+    if (e._prazoOrigem === 'nc') { projetosAbrirProjeto('energisa'); }
+    else if (destinos[e._prazoOrigem]) { navigate(destinos[e._prazoOrigem]); }
+  }
 }
 
 /* -- Gera as datas de todas as ocorrências de uma série (semanal ou mensal)
@@ -10542,6 +10650,7 @@ function projetosHtmlEnergisa() {
   <div style="position:fixed;top:var(--header-h);left:var(--sidebar-w);right:0;bottom:0;overflow:hidden;z-index:10">
     <button class="btn-secondary" onclick="projetosVoltarHub()" style="position:absolute;top:10px;left:10px;z-index:11;box-shadow:0 2px 8px rgba(0,0,0,.25)">← Todos os Projetos</button>
     <iframe
+      id="iframe-energisa-ero"
       src="./gestao_energisa_ero.html"
       style="width:100%;height:100%;border:none;display:block;background:#fff"
       title="Gestão Energisa Rondônia">
@@ -22879,6 +22988,23 @@ let _ultimaContagemNotifDespesas = null;
 let _ultimaContagemNotifEquip = null;
 let _ultimaContagemNotifPrest = null;
 let _ultimaContagemNotifFlash = null;
+let _ultimaContagemNotifPrazos = null;
+
+/* -- Filtra os prazos de documentos (coletarPrazosDocumentos) que estão
+   vencendo em breve, vencendo hoje ou em atraso há até 30 dias — mesma
+   janela usada para despesas a pagar, pra não poluir o sino com prazos
+   já muito antigos. -- */
+function prazosDocumentosVencendoEmBreve(itens) {
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const MS_DIA = 86400000;
+  return (itens || []).filter(p => {
+    if (!p.prazo) return false;
+    const v = new Date(p.prazo + 'T00:00:00');
+    if (isNaN(v)) return false;
+    const dias = Math.round((v - hoje) / MS_DIA);
+    return dias >= -30 && dias <= 3;
+  });
+}
 
 /* -- Despesas com vencimento próximo (ou vencidas recentemente), usada pelo badge de
       notificações e pelo card "A vencer" do Financeiro. Regras:
@@ -22922,7 +23048,16 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
       ['Suspensa', 'Devolvida'].includes(r.Status) && norm(r.Responsavel) === norm(nomeAtual)
     );
 
-    const total = equipPendentes.length + prestPendentes.length;
+    // Prazos para atendimento (Flash Report, Mitigação, NC) aplicados em documentos
+    // criados por este colaborador, vencendo em breve ou em atraso.
+    const emailAtualColab = (window._currentUser && window._currentUser.email || '').toLowerCase();
+    const prazosDocumentos = await coletarPrazosDocumentos();
+    const meusPrazos = prazosDocumentos.filter(p =>
+      (p.criadoPorEmail || '').toLowerCase() === emailAtualColab || norm(p.criadoPorNome) === norm(nomeAtual)
+    );
+    const prazosVencendo = prazosDocumentosVencendoEmBreve(meusPrazos);
+
+    const total = equipPendentes.length + prestPendentes.length + prazosVencendo.length;
 
     if (_ultimaContagemNotifEquip !== null && equipPendentes.length > _ultimaContagemNotifEquip) {
       const novas = equipPendentes.length - _ultimaContagemNotifEquip;
@@ -22946,7 +23081,18 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
     }
     _ultimaContagemNotifPrest = prestPendentes.length;
 
-    window._notifColabDestino = equipPendentes.length > 0 ? 'equipamentos' : (prestPendentes.length > 0 ? 'prestacao' : 'equipamentos');
+    if (_ultimaContagemNotifPrazos !== null && prazosVencendo.length > _ultimaContagemNotifPrazos) {
+      const novos = prazosVencendo.length - _ultimaContagemNotifPrazos;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '⏰ EXPEDIAN — Prazo para atendimento',
+        novos === 1 ? 'Um prazo para atendimento seu está vencendo (hoje, nos próximos 3 dias, ou em atraso).' : `${novos} prazos para atendimento seus estão vencendo (hoje, nos próximos 3 dias, ou em atraso).`,
+        'agenda'
+      );
+    }
+    _ultimaContagemNotifPrazos = prazosVencendo.length;
+
+    window._notifColabDestino = equipPendentes.length > 0 ? 'equipamentos' : (prestPendentes.length > 0 ? 'prestacao' : (prazosVencendo.length > 0 ? 'agenda' : 'equipamentos'));
 
     badge.dataset.notifCount = total > 0 ? total : '';
     let styleEl = document.getElementById('notif-badge-style');
@@ -22983,13 +23129,16 @@ async function atualizarBadgeNotificacoes() {
     const despesasVencendo = despesasVencendoEmBreve(despesas);
     const flashPendentes = (flashReports || []).filter(f => f.Visualizado === false);
     const solicGeraisPendentes = (solicitacoesGerais || []).filter(r => r.Status === 'Pendente' || (ehGestorGeral && r.Status === 'Aguardando Gestor Geral'));
+    const prazosDocumentos = await coletarPrazosDocumentos();
+    const prazosVencendo = prazosDocumentosVencendoEmBreve(prazosDocumentos);
     const totalAprovacoesPuras =
       aprsPendentes.length +
       prests.filter(r => r.Status === 'Em Aberto').length +
       contasPagar.filter(r => r.Status === 'Aguardando Aprovação').length +
       adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').length +
       solicGeraisPendentes.length +
-      despesasVencendo.length;
+      despesasVencendo.length +
+      prazosVencendo.length;
     const total = totalAprovacoesPuras + flashPendentes.length;
 
     // Se só há Flash Reports pendentes (sem nenhuma aprovação financeira/APR
@@ -23020,9 +23169,22 @@ async function atualizarBadgeNotificacoes() {
     }
     _ultimaContagemNotifDespesas = despesasVencendo.length;
 
+    // Detectar NOVOS prazos de documentos (Flash Report, Mitigação, NC) entrando
+    // na janela de vencimento -> mensagem específica
+    if (_ultimaContagemNotifPrazos !== null && prazosVencendo.length > _ultimaContagemNotifPrazos) {
+      const novos = prazosVencendo.length - _ultimaContagemNotifPrazos;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '⏰ EXPEDIAN — Prazo para atendimento',
+        novos === 1 ? 'Um prazo para atendimento está vencendo (hoje, nos próximos 3 dias, ou em atraso).' : `${novos} prazos para atendimento estão vencendo (hoje, nos próximos 3 dias, ou em atraso).`,
+        'agenda'
+      );
+    }
+    _ultimaContagemNotifPrazos = prazosVencendo.length;
+
     // Detectar NOVAS pendências desde a última checagem -> som + notificação push
-    // (exclui despesas vencendo e Flash Reports, que já têm push dedicado acima)
-    const totalAprovacoes = totalAprovacoesPuras - despesasVencendo.length;
+    // (exclui despesas vencendo, prazos de documentos e Flash Reports, que já têm push dedicado acima)
+    const totalAprovacoes = totalAprovacoesPuras - despesasVencendo.length - prazosVencendo.length;
     if (_ultimaContagemNotif !== null && totalAprovacoes > _ultimaContagemNotif) {
       const novas = totalAprovacoes - _ultimaContagemNotif;
       _notifTocarSom();
