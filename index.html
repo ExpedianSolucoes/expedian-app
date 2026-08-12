@@ -18850,7 +18850,7 @@ async function mitVerChecklist(id) {
   }
   try {
     const dados = JSON.parse(texto);
-    const htmlContent = mitConstruirHtml(dados);
+    const htmlContent = mitConstruirHtml(dados, id);
     const win = window.open('', '_blank');
     win.document.write(htmlContent);
     win.document.close();
@@ -18867,13 +18867,34 @@ function exportarMitigacaoPdf() {
   }, 300);
 }
 
+/* -- Nº sequencial do checklist de Mitigação, calculado por "Local / Frente de
+   Serviço" (mesmo padrão já usado no Flash Report Energisa: posição do
+   registro dentro do histórico do mesmo local, ordenado por data). -- */
+function mitNumeroDoRegistro(local, registroId) {
+  const hist = (window._mitHistorico || []).filter(r => (r.local || '') === (local || ''))
+    .slice().sort((a, b) => (a.data || '').localeCompare(b.data || ''));
+  let pos = hist.findIndex(r => r.Id === registroId);
+  if (pos < 0) pos = hist.length;
+  return String(pos + 1).padStart(3, '0');
+}
+
+/* -- Monta o nome de arquivo/título do checklist: nº, empreendimento (local)
+   e data — "MIT-001_Nome_do_Local - DD.MM.YYYY". -- */
+function mitNomeArquivo(num, local, data) {
+  const localSlug = (local || 'Sem_local').replace(/\s+/g, '_');
+  const dataFmt = (data || '').split('-').reverse().join('.'); // YYYY-MM-DD -> DD.MM.YYYY
+  return 'MIT-' + num + '_' + localSlug + ' - ' + dataFmt;
+}
+
 /* -- Monta o HTML do relatório impresso a partir de um objeto de dados `d` qualquer
       (não depende de window._mitData — permite reimprimir um checklist já concluído
       sem precisar carregá-lo no formulário em edição). -- */
-function mitConstruirHtml(d) {
+function mitConstruirHtml(d, registroId) {
     const pontuacao = mitCalcularPontuacaoDe(d);
     const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
     const pctTxt = pontuacao.pct === null ? '—' : pontuacao.pct.toFixed(0) + '%';
+    const mitNum = mitNumeroDoRegistro(d.local, registroId);
+    const mitNomeBase = mitNomeArquivo(mitNum, d.local, d.data);
 
     const linhasItens = MIT_ITENS.map((item, i) => {
       const v = d['item_'+i];
@@ -18894,7 +18915,7 @@ function mitConstruirHtml(d) {
 
     const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
     <meta charset="UTF-8">
-    <title>Checklist de Kit de Mitigação Ambiental</title>
+    <title>${mitNomeBase}</title>
     <style>
       :root{--b-green:#80C476;--b-green-deep:#3a7030;--b-brown:#3F261F;--b-pale:#eef7ec;}
       @page { size: A4; margin: 15mm 12mm; }
@@ -18921,6 +18942,7 @@ function mitConstruirHtml(d) {
       <img src="${(typeof ASO_LOGO_B64!=='undefined'?ASO_LOGO_B64:'')}" alt="Logo Expedian" style="height:44px;object-fit:contain">
       <div class="header-info">
         <strong style="font-size:10pt">CHECKLIST — KIT DE MITIGAÇÃO AMBIENTAL</strong><br>
+        <strong style="color:var(--b-green-deep)">MIT-${mitNum}</strong> · ${d.local || '—'} · ${dataFmt}<br>
         EXPEDIAN Soluções Ambientais
       </div>
     </div>
@@ -18981,7 +19003,7 @@ function mitConstruirHtml(d) {
       gerado com o OneDrive, associando ao `registroId` informado (não depende de
       qual checklist está carregado no formulário no momento). -- */
 async function mitAbrirEExportar(d, registroId) {
-    const htmlContent = mitConstruirHtml(d);
+    const htmlContent = mitConstruirHtml(d, registroId);
 
     const win = window.open('', '_blank');
     win.document.write(htmlContent);
@@ -18989,14 +19011,8 @@ async function mitAbrirEExportar(d, registroId) {
 
     if (typeof uploadParaOneDrive === 'function') {
       try {
-        const dataFmtOD = d.data
-          ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR').replace(/\//g, '-')
-          : new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
-        const localOD = (d.local || 'Mitigacao')
-          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 40);
-        const respOD = (d.responsavel || '')
-          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 20);
-        const nomeBase = `KitMitigacaoAmbiental_${localOD}_${respOD}_${dataFmtOD}`;
+        // Nomenclatura: nº, empreendimento (local) e data — mesmo padrão do Flash Report.
+        const nomeBase = mitNomeArquivo(mitNumeroDoRegistro(d.local, registroId), d.local, d.data);
         const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
         const url = await uploadParaOneDrive(blob, OD_FOLDERS.checklistsMitigacao, nomeBase + '.html');
         if (url && registroId) {

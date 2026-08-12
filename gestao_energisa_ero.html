@@ -1792,6 +1792,21 @@ textarea.form-control{resize:vertical;min-height:70px}
               <div id="nf-fotos-preview" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
             </div>
 
+            <div class="form-group" style="border-top:2px dashed #ddd;padding-top:14px;margin-top:14px">
+              <label class="form-label" style="font-weight:700;color:#27ae60;font-size:13px">✅ Atendimento da NCA</label>
+            </div>
+            <div class="g2">
+              <div class="form-group"><label class="form-label">Data de atendimento</label><input class="form-control" type="date" id="nf-atend-data" onchange="atualizarStatusPrazoAtendimento()"></div>
+              <div class="form-group"><label class="form-label">Status do atendimento</label><select class="form-control" id="nf-atend-status"><option value="">-- Selecione --</option><option value="Encerrado">Encerrado</option><option value="Atendido">Atendido</option><option value="Outras">Outras</option></select></div>
+            </div>
+            <div id="nf-atend-prazo-info" style="font-size:12px;font-weight:600;margin:-4px 0 10px"></div>
+            <div class="form-group">
+              <label class="form-label">📷 Evidência do Atendimento</label>
+              <input type="file" id="nf-atend-fotos" accept="image/*" multiple style="display:none" onchange="adicionarFotosAtendNotif(this)">
+              <button type="button" class="btn btn-sm" onclick="document.getElementById('nf-atend-fotos').click()" style="margin-bottom:8px">📷 Adicionar fotos</button>
+              <div id="nf-atend-fotos-preview" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
+            </div>
+
             <div class="form-actions">
               <button class="btn btn-primary" onclick="salvarNotifEmpr()">💾 Salvar</button>
               <button class="btn" style="background:#c0392b;color:#fff;border-color:#c0392b" onclick="salvarEExportarNotifPDF()">💾 Salvar + Exportar PDF</button>
@@ -3131,6 +3146,7 @@ function remFlashEmpr(i){
 // NOTIFICAÇÕES DE NÃO CONFORMIDADE AMBIENTAL
 // =============================================
 var _notifFotosNovo = [];
+var _notifAtendFotosNovo = [];
 var _editandoNotifIdx = -1;
 
 var PROGRAMAS_KEYWORDS = {
@@ -3434,6 +3450,61 @@ function renderFotosPreviewNotif() {
   }).join('');
 }
 
+// Atendimento da NCA — evidência fotográfica
+function adicionarFotosAtendNotif(input) {
+  var files = input.files;
+  if(!files || !files.length) return;
+  var pending = files.length;
+  Array.from(files).forEach(function(file) {
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      comprimirImagem(ev.target.result, 1200, 1600, 0.7, function(compressed) {
+        _notifAtendFotosNovo.push({src: compressed, legenda: ''});
+        pending--;
+        if(pending <= 0) renderFotosPreviewAtendNotif();
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+  input.value = '';
+}
+
+function renderFotosPreviewAtendNotif() {
+  var el = document.getElementById('nf-atend-fotos-preview');
+  if(!el) return;
+  el.innerHTML = _notifAtendFotosNovo.map(function(f, i) {
+    return '<div style="position:relative;display:inline-block">' +
+      '<img src="' + f.src + '" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid #ddd">' +
+      '<button onclick="_notifAtendFotosNovo.splice('+i+',1);renderFotosPreviewAtendNotif()" style="position:absolute;top:-4px;right:-4px;background:#e74c3c;color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;line-height:18px;padding:0">✕</button>' +
+      '<div><input placeholder="Legenda" value="' + (f.legenda||'').replace(/"/g,'&quot;') + '" onchange="_notifAtendFotosNovo['+i+'].legenda=this.value" style="width:80px;font-size:9px;margin-top:2px;padding:2px 4px;border:1px solid #ddd;border-radius:3px"></div>' +
+    '</div>';
+  }).join('');
+}
+
+// Calcula se o atendimento ocorreu dentro ou fora do prazo aplicado
+function calcularStatusPrazoAtendimento(prazo, atendData) {
+  if(!prazo || !atendData) return '';
+  var dPrazo = new Date(prazo+'T12:00');
+  var dAtend = new Date(atendData+'T12:00');
+  return dAtend.getTime() <= dPrazo.getTime() ? 'Dentro do Prazo' : 'Fora do Prazo';
+}
+
+function atualizarStatusPrazoAtendimento() {
+  var info = document.getElementById('nf-atend-prazo-info');
+  if(!info) return;
+  var prazo = (document.getElementById('nf-prazo')||{}).value;
+  var atendData = (document.getElementById('nf-atend-data')||{}).value;
+  var st = calcularStatusPrazoAtendimento(prazo, atendData);
+  if(!st) { info.textContent = ''; return; }
+  if(st === 'Dentro do Prazo') {
+    info.innerHTML = '🟢 Dentro do Prazo (prazo: ' + new Date(prazo+'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = '#27ae60';
+  } else {
+    info.innerHTML = '🔴 Fora do Prazo (prazo: ' + new Date(prazo+'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = '#e74c3c';
+  }
+}
+
 function coletarNotifEmpr() {
   return {
     numero: document.getElementById('nf-numero').value,
@@ -3453,7 +3524,11 @@ function coletarNotifEmpr() {
     fiscal: document.getElementById('nf-fiscal').value,
     gestor: document.getElementById('nf-gestor').value,
     ncsExtras: (_ncsExtras||[]).map(function(nc){return{descricao:nc.descricao,programa:nc.programa,acao:nc.acao};}),
-    fotos: (_notifFotosNovo||[]).slice()
+    fotos: (_notifFotosNovo||[]).slice(),
+    atendimentoData: document.getElementById('nf-atend-data').value,
+    atendimentoStatus: document.getElementById('nf-atend-status').value,
+    atendimentoPrazoStatus: calcularStatusPrazoAtendimento(document.getElementById('nf-prazo').value, document.getElementById('nf-atend-data').value),
+    atendimentoFotos: (_notifAtendFotosNovo||[]).slice()
   };
 }
 
@@ -3471,6 +3546,7 @@ function salvarNotifEmpr() {
     emprObrasData[emprObrasAtual].notificacoes.unshift(n);
   }
   _notifFotosNovo = [];
+  _notifAtendFotosNovo = [];
   _ncsExtras = [];
   _programasExtras = [];
   agendarSalvar(); mostrarSalvo();
@@ -3478,16 +3554,19 @@ function salvarNotifEmpr() {
   renderNotifEmpr();
   toggleForm('form-notif-empr');
   // Limpar campos
-  ['nf-numero','nf-data','nf-destinatario','nf-emailempr','nf-emailenergisa','nf-descricao','nf-fundamentacao','nf-acao','nf-prazo','nf-fiscal','nf-gestor'].forEach(function(id){
+  ['nf-numero','nf-data','nf-destinatario','nf-emailempr','nf-emailenergisa','nf-descricao','nf-fundamentacao','nf-acao','nf-prazo','nf-fiscal','nf-gestor','nf-atend-data'].forEach(function(id){
     var el=document.getElementById(id); if(el) el.value='';
   });
   document.getElementById('nf-frorigem').value = '';
   document.getElementById('nf-programa').value = '';
+  document.getElementById('nf-atend-status').value = '';
   document.getElementById('nf-ncs-auto').innerHTML = '';
   document.getElementById('nf-programa-sugestao').textContent = '';
   var legSug = document.getElementById('nf-legislacao-sugestao'); if(legSug) legSug.innerHTML='';
   renderProgramasExtras();
   var prev = document.getElementById('nf-fotos-preview'); if(prev) prev.innerHTML='';
+  var prevAtend = document.getElementById('nf-atend-fotos-preview'); if(prevAtend) prevAtend.innerHTML='';
+  var infoAtend = document.getElementById('nf-atend-prazo-info'); if(infoAtend) infoAtend.textContent='';
 }
 
 function salvarEExportarNotifPDF() {
@@ -3526,10 +3605,15 @@ function editarNotifEmpr(i) {
   setVal('nf-status', n.status);
   setVal('nf-fiscal', n.fiscal);
   setVal('nf-gestor', n.gestor);
+  setVal('nf-atend-data', n.atendimentoData);
+  setVal('nf-atend-status', n.atendimentoStatus);
   _notifFotosNovo = (n.fotos || []).slice();
+  _notifAtendFotosNovo = (n.atendimentoFotos || []).slice();
   _ncsExtras = (n.ncsExtras || []).map(function(nc){return{descricao:nc.descricao||'',programa:nc.programa||'',acao:nc.acao||''};});
   _programasExtras = (n.programasExtras || []).slice();
   renderFotosPreviewNotif();
+  renderFotosPreviewAtendNotif();
+  atualizarStatusPrazoAtendimento();
   renderNCsExtras();
   renderProgramasExtras();
   if(n.frOrigem) carregarNCsDoFR();
@@ -3554,12 +3638,17 @@ function renderNotifEmpr() {
     var dt = n.data ? new Date(n.data+'T12:00').toLocaleDateString('pt-BR') : '--';
     var sevCor = {Leve:'#f39c12',Moderada:'#e67e22',Grave:'#e74c3c','Gravíssima':'#8e44ad'};
     var statCor = {Aberta:'#e74c3c',Respondida:'#f39c12',Fechada:'#27ae60'};
+    var atendCor = {Encerrado:'#27ae60',Atendido:'#2980b9',Outras:'#7f8c8d'};
+    var prazoCor = {'Dentro do Prazo':'#27ae60','Fora do Prazo':'#e74c3c'};
     var nFotos = n.fotos ? n.fotos.length : 0;
+    var nFotosAtend = n.atendimentoFotos ? n.atendimentoFotos.length : 0;
     return '<div class="flash-box" style="border-left:4px solid '+(sevCor[n.severidade]||'#e67e22')+'">'+
       '<div class="flash-data">'+
         '<div style="font-size:11px;font-weight:700;color:#c0392b">'+(n.numero||'NCA-'+String(i+1).padStart(3,'0'))+'</div>'+
         '<div style="font-size:11px;font-weight:600;margin-top:2px">'+dt+'</div>'+
         '<span class="badge" style="margin-top:4px;font-size:9px;background:'+(statCor[n.status]||'#e74c3c')+';color:#fff">'+n.status+'</span>'+
+        (n.atendimentoStatus?'<span class="badge" style="margin-top:4px;font-size:9px;background:'+(atendCor[n.atendimentoStatus]||'#7f8c8d')+';color:#fff">'+n.atendimentoStatus+'</span>':'')+
+        (n.atendimentoPrazoStatus?'<span class="badge" style="margin-top:4px;font-size:9px;background:'+(prazoCor[n.atendimentoPrazoStatus]||'#7f8c8d')+';color:#fff">'+n.atendimentoPrazoStatus+'</span>':'')+
       '</div>'+
       '<div style="flex:1">'+
         '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:4px">'+
@@ -3567,6 +3656,7 @@ function renderNotifEmpr() {
           [n.programa].concat(n.programasExtras||[]).filter(function(p){return !!p;}).map(function(p){return '<span class="badge badge-cinza" style="font-size:9px">'+p+'</span>';}).join('')+
           (n.frOrigem!==''&&n.frOrigem!==undefined?'<span class="badge badge-azul" style="font-size:9px">FR-'+String(parseInt(n.frOrigem)+1).padStart(3,'0')+'</span>':'')+
           (nFotos?'<span class="badge badge-cinza" style="font-size:9px">📷 '+nFotos+'</span>':'')+
+          (nFotosAtend?'<span class="badge badge-cinza" style="font-size:9px">✅📷 '+nFotosAtend+'</span>':'')+
         '</div>'+
         '<div style="font-size:12px;color:var(--cinza-900);margin-top:2px">'+(n.descricao||'').substring(0,140)+((n.descricao||'').length>140?'…':'')+'</div>'+
         (n.destinatario?'<div style="font-size:10px;color:#888;margin-top:2px">Para: '+n.destinatario+'</div>':'')+
@@ -3689,17 +3779,14 @@ function exportarNotifPDF(idx) {
     doc.text('Prazo para correcao: ' + prazoDt, ML+0.3, y); y += 0.6;
   }
 
-  // Fotos
-  if(n.fotos && n.fotos.length) {
-    if(y > pageH - 6) { doc.addPage(); y = 1.5; }
-    nSectionTitle('EVIDENCIAS FOTOGRAFICAS');
+  function nGaleriaFotos(fotos) {
     var COLS = 3, gapX = 0.25, gapY = 0.3;
     var fW = (CW - gapX*(COLS-1)) / COLS;
     var fH = fW * 0.75;
     var legH = 0.7;
     var blocoH = fH + legH + gapY;
     var col2 = 0;
-    n.fotos.forEach(function(foto, fi) {
+    fotos.forEach(function(foto, fi) {
       if(col2 >= COLS) { col2=0; y += blocoH; }
       if(y + fH + legH > pageH - 1.8) { doc.addPage(); y = 1.5; col2 = 0; }
       var xf = ML + col2 * (fW + gapX);
@@ -3716,6 +3803,40 @@ function exportarNotifPDF(idx) {
     });
     if(col2 > 0) y += blocoH;
     y += 0.3;
+  }
+
+  // Fotos
+  if(n.fotos && n.fotos.length) {
+    if(y > pageH - 6) { doc.addPage(); y = 1.5; }
+    nSectionTitle('EVIDENCIAS FOTOGRAFICAS');
+    nGaleriaFotos(n.fotos);
+  }
+
+  // Atendimento da NCA
+  if(n.atendimentoData || n.atendimentoStatus || (n.atendimentoFotos && n.atendimentoFotos.length)) {
+    if(y > pageH - 5) { doc.addPage(); y = 1.5; }
+    nSectionTitle('ATENDIMENTO DA NCA');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(40,40,40);
+    if(n.atendimentoData) {
+      var atendDt = new Date(n.atendimentoData+'T12:00').toLocaleDateString('pt-BR');
+      doc.text('Data de atendimento: ' + atendDt, ML+0.3, y); y += 0.45;
+    }
+    if(n.atendimentoPrazoStatus) {
+      doc.setFont('helvetica','bold');
+      doc.setTextColor(n.atendimentoPrazoStatus === 'Dentro do Prazo' ? 39 : 192, n.atendimentoPrazoStatus === 'Dentro do Prazo' ? 174 : 57, n.atendimentoPrazoStatus === 'Dentro do Prazo' ? 96 : 43);
+      doc.text('Situacao: ' + n.atendimentoPrazoStatus, ML+0.3, y); y += 0.45;
+      doc.setFont('helvetica','normal'); doc.setTextColor(40,40,40);
+    }
+    if(n.atendimentoStatus) {
+      doc.text('Status: ' + n.atendimentoStatus, ML+0.3, y); y += 0.45;
+    }
+    y += 0.2;
+    if(n.atendimentoFotos && n.atendimentoFotos.length) {
+      if(y > pageH - 6) { doc.addPage(); y = 1.5; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(63,38,31);
+      doc.text('Evidencia fotografica do atendimento:', ML+0.3, y); y += 0.4;
+      nGaleriaFotos(n.atendimentoFotos);
+    }
   }
 
   // Assinaturas (Fiscal Ambiental + Gestor do Contrato)
@@ -3763,6 +3884,10 @@ function enviarNotifEmail(idx) {
     '\n--- ACAO CORRETIVA REQUERIDA ---\n' +
     (n.acao||'A definir') + '\n' +
     '\nPrazo para correcao: ' + prazoDt + '\n' +
+    (n.atendimentoData || n.atendimentoStatus ? '\n--- ATENDIMENTO DA NCA ---\n' +
+      (n.atendimentoData ? 'Data de atendimento: ' + new Date(n.atendimentoData+'T12:00').toLocaleDateString('pt-BR') + '\n' : '') +
+      (n.atendimentoPrazoStatus ? 'Situacao: ' + n.atendimentoPrazoStatus + '\n' : '') +
+      (n.atendimentoStatus ? 'Status: ' + n.atendimentoStatus + '\n' : '') : '') +
     '\nSolicitamos ciencia e providencias dentro do prazo estabelecido.\n' +
     'O PDF com detalhes e evidencias fotograficas segue em anexo.\n\n' +
     'Atenciosamente,\n' +
