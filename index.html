@@ -18381,6 +18381,7 @@ if (typeof window._mitHistorico === 'undefined') window._mitHistorico = null; //
 if (typeof window._mitRegistroAtualId === 'undefined') window._mitRegistroAtualId = null;
 if (typeof window._mitDashFiltroMes === 'undefined') window._mitDashFiltroMes = '';
 if (typeof window._mitDashFiltroAno === 'undefined') window._mitDashFiltroAno = '';
+if (typeof window._mitCircuitoFiltro === 'undefined') window._mitCircuitoFiltro = null;
 
 const MIT_MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
@@ -18545,6 +18546,7 @@ async function carregarMitigacaoHistorico(forcar) {
 
 function mitDashFiltrarMes(v) { window._mitDashFiltroMes = v; navigate('checklist_mitigacao'); }
 function mitDashFiltrarAno(v) { window._mitDashFiltroAno = v; navigate('checklist_mitigacao'); }
+function mitFiltrarCircuito(local) { window._mitCircuitoFiltro = local || null; navigate('checklist_mitigacao'); }
 
 /* -- Limpa TODO o histórico de checklists de Mitigação Ambiental (local + OneDrive central). Ação destrutiva. -- */
 async function mitLimparHistorico() {
@@ -18588,8 +18590,13 @@ function renderMitMiniDashboard() {
 
   const filtrados = comData.filter(r =>
     (!window._mitDashFiltroAno || r._ano === window._mitDashFiltroAno) &&
-    (!window._mitDashFiltroMes || r._mes === window._mitDashFiltroMes)
+    (!window._mitDashFiltroMes || r._mes === window._mitDashFiltroMes) &&
+    (!window._mitCircuitoFiltro || (r.local || '').trim() === window._mitCircuitoFiltro)
   ).sort((a,b) => (b.Id||0)-(a.Id||0));
+
+  const locaisContagem = {};
+  comData.forEach(r => { const l = (r.local || '').trim(); if (l) locaisContagem[l] = (locaisContagem[l] || 0) + 1; });
+  const locaisOrdenados = Object.keys(locaisContagem).sort();
 
   const locaisUnicos = new Set(filtrados.map(r => (r.local||'Sem local').trim()).filter(Boolean));
   const comPontuacao = filtrados.filter(r => typeof r.pontuacaoPct === 'number');
@@ -18638,6 +18645,12 @@ function renderMitMiniDashboard() {
       </div>
     </div>
 
+    ${locaisOrdenados.length ? `
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+      <button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${!window._mitCircuitoFiltro?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="mitFiltrarCircuito('')">🧯 Todos os locais</button>
+      ${locaisOrdenados.map(nome => `<button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${window._mitCircuitoFiltro===nome?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="mitFiltrarCircuito('${nome.replace(/'/g, "\\'")}')">${nome} (${locaisContagem[nome]})</button>`).join('')}
+    </div>` : ''}
+
     <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
       Locais / Frentes de Serviço Vistoriados (${locaisUnicos.size} distintos no filtro)
     </div>
@@ -18666,6 +18679,7 @@ function renderMitMiniDashboard() {
               <div style="display:flex;gap:4px;flex-shrink:0">
                 ${r.acaoNecessaria==='sim' && r.acaoStatus!=='concluida' ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:var(--green-pale);color:var(--green-main)" title="Marcar ação corretiva como concluída" onclick="mitConcluirAcao(${r.Id})">✅ Concluir</button>` : ''}
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="${r.documentoUrl?'Ver PDF/documento gerado':'Ainda sem PDF exportado'}" onclick="mitVerChecklist(${r.Id})">👁️ Ver</button>
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Exportar PDF deste checklist" onclick="mitExportarPdfRegistro(${r.Id})">📄 PDF</button>
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="mitEditarChecklist(${r.Id})">✏️ Editar</button>
               </div>
             </div>`).join('')
@@ -19050,6 +19064,24 @@ function exportarMitigacaoPdf() {
   setTimeout(async () => {
     await mitAbrirEExportar(window._mitData, window._mitRegistroAtualId);
   }, 300);
+}
+
+/* -- Exporta o PDF de um checklist já salvo no histórico (não precisa estar aberto no formulário) -- */
+async function mitExportarPdfRegistro(id) {
+  showToast('🔄 Gerando relatório... aguarde.');
+  const texto = await baixarArquivoCentral('Checklists/Mitigacao/dados/' + id + '.json');
+  let dados = null;
+  if (texto) {
+    try { dados = JSON.parse(texto); } catch(e) {}
+  }
+  if (!dados) {
+    dados = (window._mitHistorico || []).find(r => r.Id === id);
+  }
+  if (!dados) {
+    showToast('⚠️ Não encontrei os dados completos desse checklist para exportar.');
+    return;
+  }
+  await mitAbrirEExportar(dados, id);
 }
 
 /* -- Nº sequencial do checklist de Mitigação, calculado por "Local / Frente de
@@ -21349,6 +21381,19 @@ function flashFiltrarCircuito(frenteId) {
   navigate('checklist_flash');
 }
 
+/* -- Fileira de botões (chips), um por circuito elétrico, pra abrir o
+   dashboard/histórico filtrado só daquele circuito com um clique. -- */
+function flashHtmlChipsCircuitos() {
+  const filtro = window._flashCircuitoFiltro || null;
+  const contagem = {};
+  (window._flashHistorico || []).forEach(f => { contagem[f.FrenteId] = (contagem[f.FrenteId] || 0) + 1; });
+  return `
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+    <button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${!filtro?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="flashFiltrarCircuito('')">⚡ Todos os circuitos</button>
+    ${FLASH_FRENTES.map(fr => `<button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${filtro===fr.id?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="flashFiltrarCircuito('${fr.id}')">${fr.nome}${contagem[fr.id]?' ('+contagem[fr.id]+')':''}</button>`).join('')}
+  </div>`;
+}
+
 function pageChecklistFlash() {
   if (window._flashHistorico === null) flashCarregarHistorico();
 
@@ -21366,6 +21411,8 @@ function pageChecklistFlash() {
         <button class="btn-primary" onclick="flashAbrirNovo()">➕ Novo Flash Report</button>
       </div>
     </div>
+
+    ${flashHtmlChipsCircuitos()}
 
     <div class="card">
       <div class="card-title">⚡ Histórico de Flash Reports por Circuito Elétrico</div>
@@ -22395,11 +22442,24 @@ function ncHtmlHistorico() {
     if (!doCircuito.length) return '';
     return `
     <div style="margin-bottom:14px">
-      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">⚡ ${fr.nome} — ${fr.empreiteira} <span style="font-weight:400">(${doCircuito.length})</span></div>
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;display:flex;align-items:center;gap:6px;cursor:pointer" onclick="ncFiltrarCircuito('${filtro ? '' : fr.id}')">⚡ ${fr.nome} — ${fr.empreiteira} <span style="font-weight:400">(${doCircuito.length})</span>${filtro ? '<span style="font-weight:400;color:var(--text-muted)">← todos os circuitos</span>' : ''}</div>
       ${doCircuito.map(linhaN).join('')}
     </div>`;
   }).join('');
   return blocos || '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma notificação para este circuito.</div>';
+}
+
+/* -- Fileira de botões (chips), um por circuito elétrico, pra abrir o
+   dashboard/histórico de notificações filtrado só daquele circuito. -- */
+function ncHtmlChipsCircuitos() {
+  const filtro = window._ncCircuitoFiltro || null;
+  const contagem = {};
+  (window._ncHistorico || []).forEach(n => { contagem[n.FrenteId] = (contagem[n.FrenteId] || 0) + 1; });
+  return `
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+    <button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${!filtro?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="ncFiltrarCircuito('')">⚠️ Todos os circuitos</button>
+    ${FLASH_FRENTES.map(fr => `<button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${filtro===fr.id?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="ncFiltrarCircuito('${fr.id}')">${fr.nome}${contagem[fr.id]?' ('+contagem[fr.id]+')':''}</button>`).join('')}
+  </div>`;
 }
 
 /* -- Importa (uma única vez, sem duplicar) as notificações de NC que ainda
@@ -22477,6 +22537,8 @@ function pageChecklistNotif() {
         <button class="btn-primary" onclick="ncAbrirNovo()">➕ Nova Notificação</button>
       </div>
     </div>
+    ${ncHtmlChipsCircuitos()}
+
     <div class="card">
       <div class="card-title">⚠️ Histórico de Notificações por Circuito Elétrico</div>
       ${ncHtmlHistorico()}
