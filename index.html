@@ -18382,6 +18382,7 @@ if (typeof window._mitRegistroAtualId === 'undefined') window._mitRegistroAtualI
 if (typeof window._mitDashFiltroMes === 'undefined') window._mitDashFiltroMes = '';
 if (typeof window._mitDashFiltroAno === 'undefined') window._mitDashFiltroAno = '';
 if (typeof window._mitCircuitoFiltro === 'undefined') window._mitCircuitoFiltro = null;
+if (typeof window._mitStatusFiltro === 'undefined') window._mitStatusFiltro = null;
 
 const MIT_MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
@@ -18547,6 +18548,7 @@ async function carregarMitigacaoHistorico(forcar) {
 function mitDashFiltrarMes(v) { window._mitDashFiltroMes = v; navigate('checklist_mitigacao'); }
 function mitDashFiltrarAno(v) { window._mitDashFiltroAno = v; navigate('checklist_mitigacao'); }
 function mitFiltrarCircuito(local) { window._mitCircuitoFiltro = local || null; navigate('checklist_mitigacao'); }
+function mitFiltrarStatus(tipo) { window._mitStatusFiltro = tipo || null; navigate('checklist_mitigacao'); }
 
 /* -- Limpa TODO o histórico de checklists de Mitigação Ambiental (local + OneDrive central). Ação destrutiva. -- */
 async function mitLimparHistorico() {
@@ -18588,15 +18590,27 @@ function renderMitMiniDashboard() {
 
   const anosDisponiveis = [...new Set(comData.map(r => r._ano).filter(Boolean))].sort().reverse();
 
-  const filtrados = comData.filter(r =>
+  const porPeriodo = comData.filter(r =>
     (!window._mitDashFiltroAno || r._ano === window._mitDashFiltroAno) &&
-    (!window._mitDashFiltroMes || r._mes === window._mitDashFiltroMes) &&
-    (!window._mitCircuitoFiltro || (r.local || '').trim() === window._mitCircuitoFiltro)
+    (!window._mitDashFiltroMes || r._mes === window._mitDashFiltroMes)
+  );
+
+  const filtrados = porPeriodo.filter(r =>
+    (!window._mitCircuitoFiltro || (r.local || '').trim() === window._mitCircuitoFiltro) &&
+    (!window._mitStatusFiltro || (window._mitStatusFiltro === 'naoaceitavel' && r.pontuacaoLabel === 'Não Aceitável') ||
+      (window._mitStatusFiltro === 'pendente' && r.acaoNecessaria === 'sim' && r.acaoStatus !== 'concluida'))
   ).sort((a,b) => (b.Id||0)-(a.Id||0));
 
-  const locaisContagem = {};
-  comData.forEach(r => { const l = (r.local || '').trim(); if (l) locaisContagem[l] = (locaisContagem[l] || 0) + 1; });
-  const locaisOrdenados = Object.keys(locaisContagem).sort();
+  const statsPorLocal = {};
+  porPeriodo.forEach(r => {
+    const l = (r.local || '').trim(); if (!l) return;
+    if (!statsPorLocal[l]) statsPorLocal[l] = { total: 0, somaPct: 0, comPct: 0, naoAceitavel: 0 };
+    const s = statsPorLocal[l];
+    s.total++;
+    if (typeof r.pontuacaoPct === 'number') { s.somaPct += r.pontuacaoPct; s.comPct++; }
+    if (r.pontuacaoLabel === 'Não Aceitável') s.naoAceitavel++;
+  });
+  const locaisOrdenados = Object.keys(statsPorLocal).sort();
 
   const locaisUnicos = new Set(filtrados.map(r => (r.local||'Sem local').trim()).filter(Boolean));
   const comPontuacao = filtrados.filter(r => typeof r.pontuacaoPct === 'number');
@@ -18623,11 +18637,11 @@ function renderMitMiniDashboard() {
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px">
-      <div class="kpi-card green" style="padding:12px">
+      <div class="kpi-card green" style="padding:12px;cursor:pointer;${!window._mitStatusFiltro?'border-color:var(--green-main)':''}" title="Ver todos (limpar filtro de status)" onclick="mitFiltrarStatus('')">
         <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Checklists no Filtro</div>
         <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${filtrados.length}</div>
       </div>
-      <div class="kpi-card" style="padding:12px">
+      <div class="kpi-card" style="padding:12px;cursor:pointer" title="Ver todos (limpar filtro de status)" onclick="mitFiltrarStatus('')">
         <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Total Geral (todos os períodos)</div>
         <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${historico.length}</div>
       </div>
@@ -18635,20 +18649,39 @@ function renderMitMiniDashboard() {
         <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Pontuação Média (no filtro)</div>
         <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${mediaPct===null?'—':mediaPct.toFixed(0)+'%'}</div>
       </div>
-      <div class="kpi-card" style="padding:12px${naoAceitaveis>0?';border-color:var(--red)':''}">
+      <div class="kpi-card" style="padding:12px;cursor:pointer${naoAceitaveis>0?';border-color:var(--red)':''}${window._mitStatusFiltro==='naoaceitavel'?';background:var(--surface2)':''}" title="Ver só os Não Aceitável" onclick="mitFiltrarStatus('naoaceitavel')">
         <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🔴 Não Aceitável (no filtro)</div>
         <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${naoAceitaveis>0?'var(--red)':'inherit'}">${naoAceitaveis}</div>
       </div>
-      <div class="kpi-card" style="padding:12px${acoesPendentes>0?';border-color:#d97706':''}">
+      <div class="kpi-card" style="padding:12px;cursor:pointer${acoesPendentes>0?';border-color:#d97706':''}${window._mitStatusFiltro==='pendente'?';background:var(--surface2)':''}" title="Ver só as Ações Pendentes" onclick="mitFiltrarStatus('pendente')">
         <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">⏳ Ações Corretivas Pendentes</div>
         <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${acoesPendentes>0?'#d97706':'inherit'}">${acoesPendentes}</div>
       </div>
     </div>
 
     ${locaisOrdenados.length ? `
-    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
-      <button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${!window._mitCircuitoFiltro?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="mitFiltrarCircuito('')">🧯 Todos os locais</button>
-      ${locaisOrdenados.map(nome => `<button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${window._mitCircuitoFiltro===nome?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="mitFiltrarCircuito('${nome.replace(/'/g, "\\'")}')">${nome} (${locaisContagem[nome]})</button>`).join('')}
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
+      📊 Mini Dashboard por Local / Circuito (clique para filtrar)
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin-bottom:16px">
+      <div class="kpi-card${!window._mitCircuitoFiltro?' green':''}" style="padding:10px;cursor:pointer;${!window._mitCircuitoFiltro?'border-color:var(--brand-brown,#3F261F)':''}" onclick="mitFiltrarCircuito('')">
+        <div style="font-size:.72rem;font-weight:700">🧯 Todos os locais</div>
+        <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">${porPeriodo.length} checklist${porPeriodo.length!==1?'s':''}</div>
+      </div>
+      ${locaisOrdenados.map(nome => {
+        const s = statsPorLocal[nome];
+        const media = s.comPct ? (s.somaPct / s.comPct) : null;
+        const ativo = window._mitCircuitoFiltro === nome;
+        return `
+        <div class="kpi-card" style="padding:10px;cursor:pointer;${ativo?'background:var(--surface2);border-color:var(--brand-brown,#3F261F)':''}${s.naoAceitavel>0?';border-color:var(--red)':''}" onclick="mitFiltrarCircuito('${nome.replace(/'/g, "\\'")}')">
+          <div style="font-size:.72rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${nome}">${ativo?'📍 ':''}${nome}</div>
+          <div style="display:flex;justify-content:space-between;gap:6px;margin-top:6px">
+            <div><div style="font-size:.58rem;color:var(--text-muted)">Total</div><div style="font-size:.85rem;font-weight:800">${s.total}</div></div>
+            <div><div style="font-size:.58rem;color:var(--text-muted)">Pontuação</div><div style="font-size:.85rem;font-weight:800">${media===null?'—':media.toFixed(0)+'%'}</div></div>
+            <div><div style="font-size:.58rem;color:var(--text-muted)">🔴 N.Aceit.</div><div style="font-size:.85rem;font-weight:800;color:${s.naoAceitavel>0?'var(--red)':'inherit'}">${s.naoAceitavel}</div></div>
+          </div>
+        </div>`;
+      }).join('')}
     </div>` : ''}
 
     <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
@@ -21319,6 +21352,18 @@ function flashVerRegistro(id) {
   w.document.write(html); w.document.close();
 }
 
+/* -- Pontuação (%) = % de itens de atividades+verificações marcados no relatório.
+   Conforme/Não Conforme: qualquer ocorrência registrada em campo já reprova o
+   relatório, independente da pontuação (mesma lógica do Kit de Mitigação). -- */
+function flashCalcularPontuacao(f) {
+  const totalItens = FLASH_ATIVIDADES.length + FLASH_VERIFICACOES.length;
+  const marcadosAtiv = Object.values(f.ckAtividades || {}).filter(Boolean).length;
+  const marcadosVerif = Object.values(f.ckVerificacoes || {}).filter(Boolean).length;
+  const pct = totalItens ? ((marcadosAtiv + marcadosVerif) / totalItens) * 100 : null;
+  const temOcorr = Object.entries(f.ckOcorrencias || {}).some(([k, v]) => v && k !== 'semocorr');
+  return { pct, temOcorr, conforme: !temOcorr };
+}
+
 // Cada FLASH_FRENTES.id representa um Circuito Elétrico (obra/subestação/linha),
 // espelhando a organização já usada na aba Projetos > Energisa (gestão por
 // empreiteira/circuito). O dashboard abaixo agrupa os Flash Reports por
@@ -21329,12 +21374,13 @@ function flashHtmlHistorico() {
   if (!todos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado ainda.</div>';
 
   const filtro = window._flashCircuitoFiltro || null;
+  const statusFiltro = window._flashStatusFiltro || null;
   const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
 
   const linhaF = (f, numFR) => {
     const marcadosAtiv = Object.values(f.ckAtividades || {}).filter(Boolean).length;
     const marcadosVerif = Object.values(f.ckVerificacoes || {}).filter(Boolean).length;
-    const temOcorr = Object.entries(f.ckOcorrencias || {}).some(([k, v]) => v && k !== 'semocorr');
+    const { pct, temOcorr } = flashCalcularPontuacao(f);
     const dataFmt = f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—';
     return `
     <div class="alert-item" style="gap:14px;align-items:flex-start">
@@ -21342,10 +21388,10 @@ function flashHtmlHistorico() {
       <div style="flex:1;min-width:0">
         <div class="name">FR-${numFR} · ${dataFmt}</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${f.ResponsavelTecnico || '—'} · por ${f.CriadoPorNome || '—'}</div>
-        <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">✅ ${marcadosAtiv}/${FLASH_ATIVIDADES.length} atividades · ${marcadosVerif}/${FLASH_VERIFICACOES.length} verificações${(f.fotos||[]).length ? ' · 📷 ' + f.fotos.length : ''}</div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">✅ ${marcadosAtiv}/${FLASH_ATIVIDADES.length} atividades · ${marcadosVerif}/${FLASH_VERIFICACOES.length} verificações${(f.fotos||[]).length ? ' · 📷 ' + f.fotos.length : ''}${pct!=null ? ' · 📊 '+pct.toFixed(0)+'%' : ''}</div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
-        ${temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Ocorrência</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ OK</span>'}
+        ${temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Não Conforme</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ Conforme</span>'}
         <div style="display:flex;gap:4px">
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashEditarRegistro(${f.Id})">✏️ Editar</button>
@@ -21358,7 +21404,9 @@ function flashHtmlHistorico() {
   };
 
   const blocos = frentes.map(fr => {
-    const itens = todos.filter(f => f.FrenteId === fr.id).slice().sort((a, b) => (a.Data || '').localeCompare(b.Data || ''));
+    const itens = todos.filter(f => f.FrenteId === fr.id
+      && (!statusFiltro || (statusFiltro === 'naoconforme' && flashCalcularPontuacao(f).temOcorr))
+    ).slice().sort((a, b) => (a.Data || '').localeCompare(b.Data || ''));
     if (!itens.length) return '';
     const comNumero = itens.map((f, i) => ({ f, num: String(i + 1).padStart(3, '0') })).reverse().slice(0, 30);
     return `
@@ -21372,7 +21420,7 @@ function flashHtmlHistorico() {
     </div>`;
   }).filter(Boolean);
 
-  if (!blocos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado para este circuito.</div>';
+  if (!blocos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado para este filtro.</div>';
   return blocos.join('');
 }
 
@@ -21381,16 +21429,78 @@ function flashFiltrarCircuito(frenteId) {
   navigate('checklist_flash');
 }
 
-/* -- Fileira de botões (chips), um por circuito elétrico, pra abrir o
-   dashboard/histórico filtrado só daquele circuito com um clique. -- */
-function flashHtmlChipsCircuitos() {
-  const filtro = window._flashCircuitoFiltro || null;
-  const contagem = {};
-  (window._flashHistorico || []).forEach(f => { contagem[f.FrenteId] = (contagem[f.FrenteId] || 0) + 1; });
+function flashFiltrarStatus(tipo) {
+  window._flashStatusFiltro = tipo || null;
+  navigate('checklist_flash');
+}
+
+/* -- Mini dashboard geral + por circuito elétrico: Total, Pontuação Média e
+   Não Conforme (relatórios com ocorrência registrada). Os KPIs gerais e os
+   cards de cada circuito são clicáveis e funcionam como filtro do histórico
+   abaixo (flashHtmlHistorico). -- */
+function flashHtmlDashboard() {
+  const todos = window._flashHistorico || [];
+  if (!todos.length) return '';
+
+  const comPont = todos.map(f => ({ f, ...flashCalcularPontuacao(f) }));
+  const mediaGeral = comPont.filter(x => x.pct != null).length
+    ? comPont.filter(x => x.pct != null).reduce((s, x) => s + x.pct, 0) / comPont.filter(x => x.pct != null).length
+    : null;
+  const naoConformeGeral = comPont.filter(x => x.temOcorr).length;
+  const filtroStatus = window._flashStatusFiltro || null;
+  const filtroCircuito = window._flashCircuitoFiltro || null;
+
+  const statsPorFrente = {};
+  comPont.forEach(x => {
+    const id = x.f.FrenteId;
+    if (!statsPorFrente[id]) statsPorFrente[id] = { total: 0, somaPct: 0, comPct: 0, naoConforme: 0 };
+    const s = statsPorFrente[id];
+    s.total++;
+    if (x.pct != null) { s.somaPct += x.pct; s.comPct++; }
+    if (x.temOcorr) s.naoConforme++;
+  });
+
   return `
-  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
-    <button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${!filtro?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="flashFiltrarCircuito('')">⚡ Todos os circuitos</button>
-    ${FLASH_FRENTES.map(fr => `<button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${filtro===fr.id?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="flashFiltrarCircuito('${fr.id}')">${fr.nome}${contagem[fr.id]?' ('+contagem[fr.id]+')':''}</button>`).join('')}
+  <div class="card" style="margin-bottom:16px;border-top:3px solid var(--brand-brown,#3F261F)">
+    <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800;margin-bottom:12px">📊 Mini Dashboard — Flash Report</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+      <div class="kpi-card green" style="padding:12px;cursor:pointer;${!filtroStatus?'border-color:var(--green-main)':''}" title="Ver todos" onclick="flashFiltrarStatus('')">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Total de Flash Reports</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${todos.length}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Pontuação Média (checklist)</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${mediaGeral===null?'—':mediaGeral.toFixed(0)+'%'}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px;cursor:pointer${naoConformeGeral>0?';border-color:var(--red)':''}${filtroStatus==='naoconforme'?';background:var(--surface2)':''}" title="Ver só os Não Conforme" onclick="flashFiltrarStatus('naoconforme')">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🔴 Não Conforme (com ocorrência)</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${naoConformeGeral>0?'var(--red)':'inherit'}">${naoConformeGeral}</div>
+      </div>
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
+      Por Circuito Elétrico (clique para filtrar)
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px">
+      <div class="kpi-card${!filtroCircuito?' green':''}" style="padding:10px;cursor:pointer;${!filtroCircuito?'border-color:var(--brand-brown,#3F261F)':''}" onclick="flashFiltrarCircuito('')">
+        <div style="font-size:.72rem;font-weight:700">⚡ Todos os circuitos</div>
+        <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">${todos.length} registro${todos.length!==1?'s':''}</div>
+      </div>
+      ${FLASH_FRENTES.filter(fr => statsPorFrente[fr.id]).map(fr => {
+        const s = statsPorFrente[fr.id];
+        const media = s.comPct ? (s.somaPct / s.comPct) : null;
+        const ativo = filtroCircuito === fr.id;
+        return `
+        <div class="kpi-card" style="padding:10px;cursor:pointer;${ativo?'background:var(--surface2);border-color:var(--brand-brown,#3F261F)':''}${s.naoConforme>0?';border-color:var(--red)':''}" onclick="flashFiltrarCircuito('${fr.id}')">
+          <div style="font-size:.72rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${fr.nome}">${ativo?'📍 ':''}${fr.nome}</div>
+          <div style="display:flex;justify-content:space-between;gap:6px;margin-top:6px">
+            <div><div style="font-size:.58rem;color:var(--text-muted)">Total</div><div style="font-size:.85rem;font-weight:800">${s.total}</div></div>
+            <div><div style="font-size:.58rem;color:var(--text-muted)">Pontuação</div><div style="font-size:.85rem;font-weight:800">${media===null?'—':media.toFixed(0)+'%'}</div></div>
+            <div><div style="font-size:.58rem;color:var(--text-muted)">🔴 N.Conf.</div><div style="font-size:.85rem;font-weight:800;color:${s.naoConforme>0?'var(--red)':'inherit'}">${s.naoConforme}</div></div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
   </div>`;
 }
 
@@ -21412,7 +21522,7 @@ function pageChecklistFlash() {
       </div>
     </div>
 
-    ${flashHtmlChipsCircuitos()}
+    ${flashHtmlDashboard()}
 
     <div class="card">
       <div class="card-title">⚡ Histórico de Flash Reports por Circuito Elétrico</div>
@@ -22406,6 +22516,7 @@ function ncHtmlHistorico() {
   const todos = window._ncHistorico || [];
   if (!todos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma notificação registrada ainda.</div>';
   const filtro = window._ncCircuitoFiltro || null;
+  const statusFiltro = window._ncStatusFiltro || null;
   const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
   const sevCor = { Leve: '#f39c12', Moderada: '#e67e22', Grave: 'var(--red)', 'Gravíssima': '#8e44ad' };
   const statCor = { Aberta: 'var(--red)', Respondida: '#f39c12', Fechada: 'var(--green-main)' };
@@ -22438,7 +22549,9 @@ function ncHtmlHistorico() {
     </div>`;
   };
   const blocos = frentes.map(fr => {
-    const doCircuito = todos.filter(n => n.FrenteId === fr.id).sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
+    const doCircuito = todos.filter(n => n.FrenteId === fr.id
+      && (!statusFiltro || (statusFiltro === 'abertas' && n.Status === 'Aberta') || (statusFiltro === 'foraprazo' && n.AtendimentoPrazoStatus === 'Fora do Prazo'))
+    ).sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
     if (!doCircuito.length) return '';
     return `
     <div style="margin-bottom:14px">
@@ -22446,19 +22559,76 @@ function ncHtmlHistorico() {
       ${doCircuito.map(linhaN).join('')}
     </div>`;
   }).join('');
-  return blocos || '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma notificação para este circuito.</div>';
+  return blocos || '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma notificação para este filtro.</div>';
 }
 
-/* -- Fileira de botões (chips), um por circuito elétrico, pra abrir o
-   dashboard/histórico de notificações filtrado só daquele circuito. -- */
-function ncHtmlChipsCircuitos() {
-  const filtro = window._ncCircuitoFiltro || null;
-  const contagem = {};
-  (window._ncHistorico || []).forEach(n => { contagem[n.FrenteId] = (contagem[n.FrenteId] || 0) + 1; });
+function ncFiltrarStatus(tipo) {
+  window._ncStatusFiltro = tipo || null;
+  navigate('checklist_notif');
+}
+
+/* -- Mini dashboard geral + por circuito elétrico: Total, Abertas e Fora do
+   Prazo. Os KPIs gerais e os cards de cada circuito são clicáveis e
+   funcionam como filtro do histórico abaixo (ncHtmlHistorico). -- */
+function ncHtmlDashboard() {
+  const todos = window._ncHistorico || [];
+  if (!todos.length) return '';
+
+  const abertasGeral = todos.filter(n => n.Status === 'Aberta').length;
+  const foraPrazoGeral = todos.filter(n => n.AtendimentoPrazoStatus === 'Fora do Prazo').length;
+  const filtroStatus = window._ncStatusFiltro || null;
+  const filtroCircuito = window._ncCircuitoFiltro || null;
+
+  const statsPorFrente = {};
+  todos.forEach(n => {
+    const id = n.FrenteId;
+    if (!statsPorFrente[id]) statsPorFrente[id] = { total: 0, abertas: 0, foraPrazo: 0 };
+    const s = statsPorFrente[id];
+    s.total++;
+    if (n.Status === 'Aberta') s.abertas++;
+    if (n.AtendimentoPrazoStatus === 'Fora do Prazo') s.foraPrazo++;
+  });
+
   return `
-  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
-    <button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${!filtro?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="ncFiltrarCircuito('')">⚠️ Todos os circuitos</button>
-    ${FLASH_FRENTES.map(fr => `<button class="btn-secondary" style="padding:5px 12px;font-size:.72rem;${filtro===fr.id?'background:var(--brand-brown,#3F261F);color:#fff;border-color:var(--brand-brown,#3F261F)':''}" onclick="ncFiltrarCircuito('${fr.id}')">${fr.nome}${contagem[fr.id]?' ('+contagem[fr.id]+')':''}</button>`).join('')}
+  <div class="card" style="margin-bottom:16px;border-top:3px solid var(--brand-brown,#3F261F)">
+    <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800;margin-bottom:12px">📊 Mini Dashboard — Notificações de NC</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+      <div class="kpi-card green" style="padding:12px;cursor:pointer;${!filtroStatus?'border-color:var(--green-main)':''}" title="Ver todas" onclick="ncFiltrarStatus('')">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Total de Notificações</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${todos.length}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px;cursor:pointer${abertasGeral>0?';border-color:var(--red)':''}${filtroStatus==='abertas'?';background:var(--surface2)':''}" title="Ver só as Abertas" onclick="ncFiltrarStatus('abertas')">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🔴 Abertas (não resolvidas)</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${abertasGeral>0?'var(--red)':'inherit'}">${abertasGeral}</div>
+      </div>
+      <div class="kpi-card" style="padding:12px;cursor:pointer${foraPrazoGeral>0?';border-color:#d97706':''}${filtroStatus==='foraprazo'?';background:var(--surface2)':''}" title="Ver só as Fora do Prazo" onclick="ncFiltrarStatus('foraprazo')">
+        <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">⏳ Atendimento Fora do Prazo</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${foraPrazoGeral>0?'#d97706':'inherit'}">${foraPrazoGeral}</div>
+      </div>
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
+      Por Circuito Elétrico (clique para filtrar)
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px">
+      <div class="kpi-card${!filtroCircuito?' green':''}" style="padding:10px;cursor:pointer;${!filtroCircuito?'border-color:var(--brand-brown,#3F261F)':''}" onclick="ncFiltrarCircuito('')">
+        <div style="font-size:.72rem;font-weight:700">⚠️ Todos os circuitos</div>
+        <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">${todos.length} notificaç${todos.length!==1?'ões':'ão'}</div>
+      </div>
+      ${FLASH_FRENTES.filter(fr => statsPorFrente[fr.id]).map(fr => {
+        const s = statsPorFrente[fr.id];
+        const ativo = filtroCircuito === fr.id;
+        return `
+        <div class="kpi-card" style="padding:10px;cursor:pointer;${ativo?'background:var(--surface2);border-color:var(--brand-brown,#3F261F)':''}${s.abertas>0?';border-color:var(--red)':''}" onclick="ncFiltrarCircuito('${fr.id}')">
+          <div style="font-size:.72rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${fr.nome}">${ativo?'📍 ':''}${fr.nome}</div>
+          <div style="display:flex;justify-content:space-between;gap:6px;margin-top:6px">
+            <div><div style="font-size:.58rem;color:var(--text-muted)">Total</div><div style="font-size:.85rem;font-weight:800">${s.total}</div></div>
+            <div><div style="font-size:.58rem;color:var(--text-muted)">🔴 Abertas</div><div style="font-size:.85rem;font-weight:800;color:${s.abertas>0?'var(--red)':'inherit'}">${s.abertas}</div></div>
+            <div><div style="font-size:.58rem;color:var(--text-muted)">⏳ F.Prazo</div><div style="font-size:.85rem;font-weight:800;color:${s.foraPrazo>0?'#d97706':'inherit'}">${s.foraPrazo}</div></div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
   </div>`;
 }
 
@@ -22537,7 +22707,7 @@ function pageChecklistNotif() {
         <button class="btn-primary" onclick="ncAbrirNovo()">➕ Nova Notificação</button>
       </div>
     </div>
-    ${ncHtmlChipsCircuitos()}
+    ${ncHtmlDashboard()}
 
     <div class="card">
       <div class="card-title">⚠️ Histórico de Notificações por Circuito Elétrico</div>
