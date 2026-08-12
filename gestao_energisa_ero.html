@@ -287,6 +287,7 @@ textarea.form-control{resize:vertical;min-height:70px}
       <div class="topbar-sub">WS 108438 · WS 108437 · 2025022101 · CLM 108942 · CLM 108943 · Porto Velho/RO</div>
     </div>
   </div>
+  <button id="btn-liberar-espaco" class="btn btn-sm" style="margin-right:10px" onclick="liberarEspacoFotos()" title="Recomprime as fotos já salvas para liberar espaço no navegador">🗜️ Liberar espaço</button>
   <span class="topbar-date" id="topbar-data"></span>
 </header>
 
@@ -2633,12 +2634,69 @@ function comprimirImagem(dataUrl, maxW, maxH, qualidade, callback) {
   img.src = dataUrl;
 }
 
+/* -- Percorre recursivamente qualquer estrutura (objeto/array) já salva e
+   recomprime toda string que for uma foto em base64 (data:image/...), pra
+   liberar espaço no localStorage sem precisar saber de antemão todos os
+   lugares que guardam foto (Flash Report, Notificações, Documentação Legal,
+   Fornecedores, etc.) — evita deixar algum ponto de fora. -- */
+async function _recomprimirRecursivo(obj, stats) {
+  if (!obj || typeof obj !== 'object') return;
+  var keys = Array.isArray(obj) ? obj.map(function(_, i) { return i; }) : Object.keys(obj);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var v = obj[k];
+    if (typeof v === 'string' && v.indexOf('data:image') === 0) {
+      stats.antes += v.length;
+      try {
+        var novo = await new Promise(function(resolve) {
+          comprimirImagem(v, 900, 1200, 0.55, resolve);
+        });
+        if (novo && novo.length < v.length) { obj[k] = novo; stats.depois += novo.length; }
+        else { stats.depois += v.length; }
+        stats.total++;
+      } catch (e) { stats.depois += v.length; }
+    } else if (v && typeof v === 'object') {
+      await _recomprimirRecursivo(v, stats);
+    }
+  }
+}
+
+/* -- Botão "🗜️ Liberar espaço" na topbar: recomprime todas as fotos já
+   salvas (independente de qual módulo) pra aliviar o localStorage, que tem
+   limite de ~5 MB por navegador e enche rápido com fotos de campo. -- */
+async function liberarEspacoFotos() {
+  if (!confirm('Isso vai recomprimir todas as fotos já salvas (Flash Report, Notificações, Documentação Legal, etc.) para reduzir o tamanho e liberar espaço no navegador.\n\nA qualidade das fotos antigas cai um pouco, mas elas continuam visíveis normalmente e nos PDFs. Pode levar alguns segundos.\n\nContinuar?')) return;
+  var btn = document.getElementById('btn-liberar-espaco');
+  if (btn) { btn.disabled = true; btn.textContent = '🗜️ Recomprimindo...'; }
+  var stats = { antes: 0, depois: 0, total: 0 };
+  try {
+    for (var i = 0; i < _VARS_PERSISTIR.length; i++) {
+      var nome = _VARS_PERSISTIR[i];
+      try {
+        var val = eval(nome);
+        await _recomprimirRecursivo(val, stats);
+      } catch (e) {}
+    }
+    salvarTudo();
+    var economizadoMB = ((stats.antes - stats.depois) / 1024 / 1024).toFixed(2);
+    if (stats.total === 0) {
+      alert('Nenhuma foto encontrada para recomprimir.');
+    } else {
+      alert('✅ ' + stats.total + ' foto(s) recomprimida(s). Espaço liberado: ~' + economizadoMB + ' MB.');
+    }
+  } catch (e) {
+    alert('❌ Erro ao liberar espaço: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🗜️ Liberar espaço'; }
+  }
+}
+
 function adicionarFotosEmpr(input) {
   var files = Array.from(input.files);
   files.forEach(function(file) {
     var reader = new FileReader();
     reader.onload = function(e) {
-      comprimirImagem(e.target.result, 1200, 1600, 0.7, function(comprimido) {
+      comprimirImagem(e.target.result, 900, 1200, 0.55, function(comprimido) {
         _emprFotosNovo.push({src:comprimido, nome:file.name, legenda:''});
         renderFotosPreviewEmpr();
       });
@@ -3430,7 +3488,7 @@ function adicionarFotosNotif(input) {
   Array.from(files).forEach(function(file) {
     var reader = new FileReader();
     reader.onload = function(ev) {
-      comprimirImagem(ev.target.result, 1200, 1600, 0.7, function(compressed) {
+      comprimirImagem(ev.target.result, 900, 1200, 0.55, function(compressed) {
         _notifFotosNovo.push({src: compressed, legenda: ''});
         pending--;
         if(pending <= 0) renderFotosPreviewNotif();
@@ -3461,7 +3519,7 @@ function adicionarFotosAtendNotif(input) {
   Array.from(files).forEach(function(file) {
     var reader = new FileReader();
     reader.onload = function(ev) {
-      comprimirImagem(ev.target.result, 1200, 1600, 0.7, function(compressed) {
+      comprimirImagem(ev.target.result, 900, 1200, 0.55, function(compressed) {
         _notifAtendFotosNovo.push({src: compressed, legenda: ''});
         pending--;
         if(pending <= 0) renderFotosPreviewAtendNotif();
