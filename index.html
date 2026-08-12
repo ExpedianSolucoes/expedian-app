@@ -244,6 +244,12 @@
   .notif-badge[data-notif]:not([data-notif=''])::after {
     display: flex;
   }
+  .notif-dropdown {
+    position: absolute; top: 40px; right: 0; width: 320px; max-height: 420px;
+    overflow-y: auto; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.25); z-index: 500;
+  }
+  .notif-item:hover { background: var(--green-pale); }
 
   .content { padding: 28px; }
 
@@ -1020,7 +1026,7 @@
     <img id="_headerLogoImg" src="" alt="EXPEDIAN" style="height:28px;opacity:.7;display:none" class="header-logo-desk"><script>(function(){var s=document.getElementById('_appLogoSrc');if(!s)return;var src=s.getAttribute('src');['_sidebarLogoImg','_headerLogoImg'].forEach(function(id){var el=document.getElementById(id);if(el)el.setAttribute('src',src);});})();</script>
     <div class="header-actions">
       <span class="conn-status" id="connStatus" title="Status da conexão">🟢 Conectado</span>
-      <div class="btn-icon notif-badge" title="Notificações — clique para ver pendências" onclick="navigate((currentProfile==='diretoria'||currentProfile==='coordenador')?(window._notifDiretoriaDestino||'aprovacoes'):(window._notifColabDestino||'equipamentos'))" style="cursor:pointer">🔔</div>
+      <div class="btn-icon notif-badge" title="Notificações — clique para ver pendências" onclick="toggleNotifDropdown(event)" style="cursor:pointer;position:relative">🔔<div id="notif-dropdown" class="notif-dropdown" style="display:none"></div></div>
       <span class="pending-badge" id="pendingBadge" title="Registros pendentes de sync">^0</span>
       <div class="btn-icon" title="Pesquisar">🔍</div>
       <div class="btn-icon" title="Configurações">⚙️</div>
@@ -23059,6 +23065,24 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
 
     const total = equipPendentes.length + prestPendentes.length + prazosVencendo.length;
 
+    // Lista detalhada exibida no dropdown do sino (clique em cada item abre a pendência).
+    window._notifItens = [];
+    equipPendentes.forEach(e => window._notifItens.push({
+      icone: '📦', titulo: 'Equipamento aguardando confirmação',
+      subtitulo: e.Nome || e.Descricao || e.Patrimonio || '',
+      acao: () => navigate('equipamentos'),
+    }));
+    prestPendentes.forEach(r => window._notifItens.push({
+      icone: '📑', titulo: 'Prestação de contas devolvida — corrija e reenvie',
+      subtitulo: r.Descricao || r.Titulo || ('Prestação #' + (r.Id || '')),
+      acao: () => navigate('prestacao'),
+    }));
+    prazosVencendo.forEach(p => window._notifItens.push({
+      icone: '⏰', titulo: p.titulo,
+      subtitulo: 'Prazo: ' + (p.prazo ? new Date(p.prazo + 'T12:00').toLocaleDateString('pt-BR') : '—'),
+      acao: () => _notifAbrirPrazoItem(p),
+    }));
+
     if (_ultimaContagemNotifEquip !== null && equipPendentes.length > _ultimaContagemNotifEquip) {
       const novas = equipPendentes.length - _ultimaContagemNotifEquip;
       _notifTocarSom();
@@ -23131,15 +23155,61 @@ async function atualizarBadgeNotificacoes() {
     const solicGeraisPendentes = (solicitacoesGerais || []).filter(r => r.Status === 'Pendente' || (ehGestorGeral && r.Status === 'Aguardando Gestor Geral'));
     const prazosDocumentos = await coletarPrazosDocumentos();
     const prazosVencendo = prazosDocumentosVencendoEmBreve(prazosDocumentos);
+    const prestsAbertas = prests.filter(r => r.Status === 'Em Aberto');
+    const contasPagarAprovacao = contasPagar.filter(r => r.Status === 'Aguardando Aprovação');
+    const adiantamentosAprovacao = adiantamentos.filter(r => r.Status === 'Aguardando Aprovação');
     const totalAprovacoesPuras =
       aprsPendentes.length +
-      prests.filter(r => r.Status === 'Em Aberto').length +
-      contasPagar.filter(r => r.Status === 'Aguardando Aprovação').length +
-      adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').length +
+      prestsAbertas.length +
+      contasPagarAprovacao.length +
+      adiantamentosAprovacao.length +
       solicGeraisPendentes.length +
       despesasVencendo.length +
       prazosVencendo.length;
     const total = totalAprovacoesPuras + flashPendentes.length;
+
+    // Lista detalhada exibida no dropdown do sino (clique em cada item abre a pendência).
+    window._notifItens = [];
+    aprsPendentes.forEach(r => window._notifItens.push({
+      icone: '📋', titulo: 'APR em aberto — ' + (r.Local || r.Frente || ''),
+      subtitulo: 'Gestor: ' + (r.Gestor || '—'),
+      acao: () => navigate('aprovacoes'),
+    }));
+    prestsAbertas.forEach(r => window._notifItens.push({
+      icone: '📑', titulo: 'Prestação de contas aguardando aprovação',
+      subtitulo: r.Responsavel || r.Descricao || ('Prestação #' + (r.Id || '')),
+      acao: () => navigate('aprovacoes'),
+    }));
+    contasPagarAprovacao.forEach(r => window._notifItens.push({
+      icone: '💰', titulo: 'Conta a pagar aguardando aprovação',
+      subtitulo: r.Descricao || r.Fornecedor || ('Conta #' + (r.Id || '')),
+      acao: () => navigate('aprovacoes'),
+    }));
+    adiantamentosAprovacao.forEach(r => window._notifItens.push({
+      icone: '💵', titulo: 'Adiantamento aguardando aprovação',
+      subtitulo: r.Colaborador || r.Responsavel || ('Adiantamento #' + (r.Id || '')),
+      acao: () => navigate('aprovacoes'),
+    }));
+    solicGeraisPendentes.forEach(r => window._notifItens.push({
+      icone: '📨', titulo: 'Solicitação aguardando aprovação',
+      subtitulo: r.Titulo || r.Descricao || ('Solicitação #' + (r.Id || '')),
+      acao: () => navigate('aprovacoes'),
+    }));
+    despesasVencendo.forEach(r => window._notifItens.push({
+      icone: '💸', titulo: 'Conta a pagar vencendo',
+      subtitulo: (r.Descricao || r.Fornecedor || '') + (r.Vencimento ? ' — vence ' + new Date(r.Vencimento + 'T12:00').toLocaleDateString('pt-BR') : ''),
+      acao: () => navigate('receitas_despesas'),
+    }));
+    prazosVencendo.forEach(p => window._notifItens.push({
+      icone: '⏰', titulo: p.titulo,
+      subtitulo: 'Prazo: ' + (p.prazo ? new Date(p.prazo + 'T12:00').toLocaleDateString('pt-BR') : '—'),
+      acao: () => _notifAbrirPrazoItem(p),
+    }));
+    flashPendentes.forEach(f => window._notifItens.push({
+      icone: '🚧', titulo: 'Flash Report novo — ' + (f.FrenteNome || ''),
+      subtitulo: f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '',
+      acao: () => navigate('projetos'),
+    }));
 
     // Se só há Flash Reports pendentes (sem nenhuma aprovação financeira/APR
     // em aberto), o sino leva direto pra Projetos em vez de Aprovações.
@@ -23213,6 +23283,74 @@ async function atualizarBadgeNotificacoes() {
       }
     }
   } catch(e) {}
+}
+
+/* -- Dropdown do sino: mostra a lista de pendências (window._notifItens, montada pelas
+   duas funções de badge acima) em vez de simplesmente navegar pra uma página fixa. Cada
+   item, ao ser clicado, executa sua própria ação (abrir o módulo certo ou, no caso de
+   prazos, mostrar a mensagem específica da pendência). -- */
+function renderNotifDropdown() {
+  const panel = document.getElementById('notif-dropdown');
+  if (!panel) return;
+  const itens = window._notifItens || [];
+  if (!itens.length) {
+    panel.innerHTML = '<div style="padding:14px;font-size:.8rem;color:var(--text-muted);text-align:center">Nenhuma pendência no momento 🎉</div>';
+    return;
+  }
+  panel.innerHTML =
+    '<div style="padding:10px 12px;font-size:.72rem;font-weight:700;color:var(--text-muted);border-bottom:1px solid var(--border)">' +
+      itens.length + ' pendência' + (itens.length !== 1 ? 's' : '') +
+    '</div>' +
+    itens.map((it, i) =>
+      '<div class="notif-item" data-idx="' + i + '" style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;text-align:left">' +
+        '<div style="font-size:1.05rem;line-height:1.2">' + it.icone + '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:.76rem;font-weight:700">' + String(it.titulo || '').replace(/</g, '&lt;') + '</div>' +
+          (it.subtitulo ? '<div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">' + String(it.subtitulo).replace(/</g, '&lt;') + '</div>' : '') +
+        '</div>' +
+      '</div>'
+    ).join('');
+}
+
+function toggleNotifDropdown(ev) {
+  if (ev) ev.stopPropagation();
+  const panel = document.getElementById('notif-dropdown');
+  if (!panel) return;
+  const abrir = panel.style.display === 'none' || !panel.style.display;
+  if (abrir) {
+    renderNotifDropdown();
+    panel.style.display = 'block';
+  } else {
+    panel.style.display = 'none';
+  }
+}
+
+document.addEventListener('click', function(ev) {
+  const panel = document.getElementById('notif-dropdown');
+  if (!panel || panel.style.display === 'none') return;
+  const item = ev.target.closest('.notif-item');
+  if (item && panel.contains(item)) {
+    const idx = parseInt(item.dataset.idx, 10);
+    const it = (window._notifItens || [])[idx];
+    panel.style.display = 'none';
+    if (it && typeof it.acao === 'function') it.acao();
+    return;
+  }
+  if (!ev.target.closest('.notif-badge')) {
+    panel.style.display = 'none';
+  }
+});
+
+/* -- Abre a pendência de prazo (Flash Report / Mitigação / NC) direto a partir do item
+   cru retornado por coletarPrazosDocumentos(), sem depender da Agenda já ter carregado. -- */
+function _notifAbrirPrazoItem(p) {
+  const dt = p.prazo ? new Date(p.prazo + 'T12:00').toLocaleDateString('pt-BR') : '—';
+  const msg = p.titulo + '\n\n' + (p.descricao || '') + '\nPrazo: ' + dt + '\nResponsável: ' + (p.criadoPorNome || '—') + '\n\nAbrir o módulo de origem?';
+  if (confirm(msg)) {
+    if (p.origem === 'nc') { projetosAbrirProjeto('energisa'); }
+    else if (p.origem === 'flash') { navigate('checklist_flash'); }
+    else if (p.origem === 'mitigacao') { navigate('checklist_mitigacao'); }
+  }
 }
 
 /* -- Som de notificação (beep curto via Web Audio, sem precisar de arquivo externo).
