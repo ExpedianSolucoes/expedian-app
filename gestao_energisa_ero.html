@@ -2997,6 +2997,42 @@ function editarFlashReportNativo(appId) {
   alert('Abra esta página dentro do App Expedian (menu Projetos > Energisa) para editar o Flash Report.');
 }
 
+// Migra um Flash Report antigo (que ainda só existe aqui, salvo localmente
+// neste painel) pro sistema nativo (OneDrive) e já abre pra edição lá — um
+// "editar" de um clique só para registros legados, sem precisar usar o botão
+// de importação em massa. Depois de migrado, o registro fica marcado como
+// _origemApp e passa a se comportar como os demais (editado só no App).
+async function migrarEEditarFlashEmpr(i) {
+  if(!emprObrasAtual) return;
+  var f = emprObrasData[emprObrasAtual].flash[i];
+  if(!f || f._origemApp) return;
+  if(!window.top || window.top === window || typeof window.top.dbInserir !== 'function') {
+    alert('Abra esta página dentro do App Expedian (menu Projetos > Energisa) para editar este Flash Report.');
+    return;
+  }
+  var eObra = EMPR_OBRAS[emprObrasAtual] || {};
+  var registro = {
+    Title: 'Flash Report — ' + (eObra.obra || emprObrasAtual) + ' — ' + (f.data || ''),
+    FrenteId: emprObrasAtual, FrenteNome: eObra.obra || emprObrasAtual, Empreiteira: eObra.nome || '',
+    Data: f.data || '', ResponsavelTecnico: f.rt || '', Clima: f.clima || '', Trecho: f.trecho || '',
+    Equipe: f.equipe || '', Fiscal: f.fiscal || '',
+    OutraAtividade: f.outraativ || '', OutraOcorrencia: f.outraocorr || '',
+    Atividades: f.atividades || '', PrevisaoAmanha: f.amanha || '', Observacoes: f.obs || '',
+    OrientacaoVerbal: false, OrientacaoPara: '', OrientacaoPrazo: '',
+    ckAtividades: f.ckAtividades || {}, ckVerificacoes: f.ckVerificacoes || {}, ckOcorrencias: f.ckOcorrencias || {},
+    fotos: (f.fotos || []).filter(function(x){ return x.src; }).map(function(x){ return { dataUrl: x.src, desc: x.legenda || '', horizontal: true }; }),
+    Visualizado: true,
+    CriadoPorNome: f.criadoPorNome || '', CriadoPorEmail: f.criadoPorEmail || '',
+    DataCriacao: new Date().toISOString(),
+  };
+  var novo = await window.top.dbInserir('FlashReportsEnergisa', registro);
+  if(!novo) { alert('Não foi possível migrar este Flash Report agora. Verifique sua conexão/login com Microsoft e tente de novo.'); return; }
+  f._origemApp = true; f._origemAppId = novo.Id;
+  agendarSalvar(); mostrarSalvo();
+  renderFlashEmpr();
+  editarFlashReportNativo(novo.Id);
+}
+
 // Busca Notificações de NC lançadas no APP Expedian (aba Checklist >
 // Notificação de NC), que substituiu o antigo formulário local (form-notif-
 // empr — gravava só no localStorage deste arquivo e foi a causa do erro
@@ -3072,6 +3108,53 @@ function editarNotifNativo(appId) {
   alert('Abra esta página dentro do App Expedian (menu Projetos > Energisa) para editar a notificação.');
 }
 
+// Migra uma notificação antiga (só existe aqui, local a este painel) pro
+// sistema nativo (OneDrive) e já abre pra edição lá — mesmo padrão de
+// migrarEEditarFlashEmpr(). Resolve fotos que referenciam um Flash Report
+// (_refFR/_refFoto) antes de migrar, igual ncMigrarHistoricoIframe() faz.
+async function migrarEEditarNotifEmpr(i) {
+  if(!emprObrasAtual) return;
+  var n = (emprObrasData[emprObrasAtual].notificacoes || [])[i];
+  if(!n || n._origemApp) return;
+  if(!window.top || window.top === window || typeof window.top.dbInserir !== 'function') {
+    alert('Abra esta página dentro do App Expedian (menu Projetos > Energisa) para editar esta notificação.');
+    return;
+  }
+  var eObra = EMPR_OBRAS[emprObrasAtual] || {};
+  var resolveFotoSrc = function(f){
+    if (f.src) return f.src;
+    if (f._refFR !== undefined && f._refFoto !== undefined) {
+      var fr = emprObrasData[emprObrasAtual] && emprObrasData[emprObrasAtual].flash[f._refFR];
+      var foto = fr && fr.fotos && fr.fotos[f._refFoto];
+      return foto ? foto.src : '';
+    }
+    return '';
+  };
+  var registro = {
+    Title: (n.numero || 'NCA') + ' — ' + (eObra.obra || emprObrasAtual),
+    FrenteId: emprObrasAtual, FrenteNome: eObra.obra || emprObrasAtual, Empreiteira: eObra.nome || '',
+    Numero: n.numero || '', Data: n.data || '',
+    Destinatario: n.destinatario || '', EmailEmpr: n.emailEmpr || '', EmailEnergisa: n.emailEnergisa || '',
+    FrOrigemId: '',
+    Descricao: n.descricao || '', Programa: n.programa || '', ProgramasExtras: n.programasExtras || [],
+    Fundamentacao: n.fundamentacao || '', Acao: n.acao || '', Prazo: n.prazo || '', Severidade: n.severidade || 'Moderada', Status: n.status || 'Aberta',
+    Fiscal: n.fiscal || '', Gestor: n.gestor || '',
+    NcsExtras: n.ncsExtras || [],
+    Fotos: (n.fotos || []).map(function(f){ return { dataUrl: resolveFotoSrc(f), desc: f.legenda || '' }; }).filter(function(f){ return f.dataUrl; }),
+    AtendimentoData: n.atendimentoData || '', AtendimentoStatus: n.atendimentoStatus || '',
+    AtendimentoPrazoStatus: n.atendimentoPrazoStatus || '',
+    AtendimentoFotos: (n.atendimentoFotos || []).filter(function(f){ return f.src; }).map(function(f){ return { dataUrl: f.src, desc: f.legenda || '' }; }),
+    CriadoPorNome: n.criadoPorNome || '', CriadoPorEmail: n.criadoPorEmail || '',
+    DataCriacao: new Date().toISOString(),
+  };
+  var novo = await window.top.dbInserir('NotificacoesEnergisa', registro);
+  if(!novo) { alert('Não foi possível migrar esta notificação agora. Verifique sua conexão/login com Microsoft e tente de novo.'); return; }
+  n._origemApp = true; n._origemAppId = novo.Id;
+  agendarSalvar(); mostrarSalvo();
+  renderNotifEmpr();
+  editarNotifNativo(novo.Id);
+}
+
 function renderFlashEmpr() {
   var el = document.getElementById('lista-fr-empr'); if(!el||!emprObrasAtual) return;
   var lista = emprObrasData[emprObrasAtual].flash;
@@ -3101,7 +3184,7 @@ function renderFlashEmpr() {
         (f.atividades?'<div style="font-size:12px;color:var(--cinza-900);margin-top:2px">'+f.atividades.substring(0,120)+(f.atividades.length>120?'…':'')+'</div>':'')+
       '</div>'+
       '<div style="display:flex;flex-direction:column;gap:4px">'+
-        (f._origemApp?'<button class="btn btn-sm" style="background:#2980b9;color:#fff;border-color:#2980b9;font-size:10px" title="Editar no App" onclick="editarFlashReportNativo('+f._origemAppId+')">✏ Editar</button>':'')+
+        (f._origemApp?'<button class="btn btn-sm" style="background:#2980b9;color:#fff;border-color:#2980b9;font-size:10px" title="Editar no App" onclick="editarFlashReportNativo('+f._origemAppId+')">✏ Editar</button>':'<button class="btn btn-sm" style="background:#2980b9;color:#fff;border-color:#2980b9;font-size:10px" title="Migrar para o App e editar lá" onclick="migrarEEditarFlashEmpr('+i+')">✏ Editar</button>')+
         (temOcorr?'<button class="btn btn-sm" style="background:#e67e22;color:#fff;border-color:#e67e22;font-size:10px" title="Gerar Notificacao" onclick="abrirNotifNativo('+i+')">⚠ Notificar</button>':'')+
         '<button class="btn btn-sm" style="background:#c0392b;color:#fff;border-color:#c0392b;font-size:10px" title="Exportar PDF" onclick="exportarFlashEmprPDF('+i+')">📄 PDF</button>'+
         (f._origemApp?'':'<button class="btn btn-sm btn-danger" onclick="remFlashEmpr('+i+')" title="Excluir">✕</button>')+
@@ -3726,7 +3809,7 @@ function renderNotifEmpr() {
       '<div style="display:flex;flex-direction:column;gap:4px">'+
         (n._origemApp?
           '<button class="btn btn-sm" style="background:#2980b9;color:#fff;border-color:#2980b9;font-size:10px" title="Editar no App" onclick="editarNotifNativo('+n._origemAppId+')">✏ Editar</button>' :
-          '<button class="btn btn-sm" style="background:#2980b9;color:#fff;border-color:#2980b9;font-size:10px" onclick="editarNotifEmpr('+i+')">✏ Editar</button>')+
+          '<button class="btn btn-sm" style="background:#2980b9;color:#fff;border-color:#2980b9;font-size:10px" title="Migrar para o App e editar lá" onclick="migrarEEditarNotifEmpr('+i+')">✏ Editar</button>')+
         '<button class="btn btn-sm" style="background:#c0392b;color:#fff;border-color:#c0392b;font-size:10px" onclick="exportarNotifPDF('+i+')">📄 PDF</button>'+
         '<button class="btn btn-sm" style="background:#27ae60;color:#fff;border-color:#27ae60;font-size:10px" onclick="enviarNotifEmail('+i+')">✉ Email</button>'+
         (n._origemApp?'':'<button class="btn btn-sm btn-danger" onclick="remNotifEmpr('+i+')" title="Excluir">✕</button>')+
