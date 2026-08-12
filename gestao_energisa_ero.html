@@ -3366,21 +3366,40 @@ function carregarNCsDoFR() {
 }
 
 /* -- Ao selecionar o Flash Report de Origem, todas as fotos já tiradas nele
-   entram automaticamente na notificação (cópia independente em
-   _notifFotosNovo — excluir aqui no "✕" do preview NÃO apaga a foto do
-   Flash Report original, só tira da notificação). Fotos já presentes (ex.:
-   ao reabrir pra editar) não são duplicadas. -- */
+   entram automaticamente na notificação — mas como REFERÊNCIA (_refFR/_refFoto),
+   não como cópia do base64. Copiar o base64 inteiro duplicava o peso de cada
+   foto no localStorage (que já roda perto do limite de ~5MB do navegador) e
+   fazia o "Salvar" da notificação estourar a cota e falhar silenciosamente.
+   Excluir aqui no "✕" do preview só remove a referência da notificação — não
+   apaga a foto do Flash Report original. Fotos já presentes (ex.: ao reabrir
+   pra editar) não são duplicadas. Ver _notifFotoSrc() que resolve a referência
+   pra exibição/PDF sem nunca duplicar o dado salvo. -- */
 function notifIncluirTodasFotosFR(frIdx) {
   if(!emprObrasAtual || isNaN(frIdx)) return;
   var fr = emprObrasData[emprObrasAtual].flash[frIdx];
   if(!fr || !fr.fotos || !fr.fotos.length) return;
   if(!Array.isArray(_notifFotosNovo)) _notifFotosNovo = [];
-  fr.fotos.forEach(function(f) {
-    if(!_notifFotosNovo.some(function(s){ return s.src === f.src; })) {
-      _notifFotosNovo.push({ src: f.src, legenda: f.legenda || '' });
+  fr.fotos.forEach(function(f, fotoIdx) {
+    var jaTem = _notifFotosNovo.some(function(s){ return s._refFR === frIdx && s._refFoto === fotoIdx; });
+    if(!jaTem) {
+      _notifFotosNovo.push({ _refFR: frIdx, _refFoto: fotoIdx, legenda: f.legenda || '' });
     }
   });
   renderFotosPreviewNotif();
+}
+
+/* -- Resolve o src de uma foto da notificação: se for upload direto (tem
+   .src), usa ele; se for referência a uma foto do Flash Report (_refFR/
+   _refFoto), busca o base64 lá na hora, sem nunca duplicar no storage. -- */
+function _notifFotoSrc(f) {
+  if(!f) return '';
+  if(f.src) return f.src;
+  if(f._refFR !== undefined && f._refFoto !== undefined && emprObrasAtual) {
+    var fr = emprObrasData[emprObrasAtual].flash[f._refFR];
+    var foto = fr && fr.fotos && fr.fotos[f._refFoto];
+    return foto ? foto.src : '';
+  }
+  return '';
 }
 
 /* -- (Mantido apenas por compatibilidade — não é mais chamada. A partir de
@@ -3521,7 +3540,7 @@ function renderFotosPreviewNotif() {
   if(!el) return;
   el.innerHTML = _notifFotosNovo.map(function(f, i) {
     return '<div style="position:relative;display:inline-block">' +
-      '<img src="' + f.src + '" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid #ddd">' +
+      '<img src="' + _notifFotoSrc(f) + '" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid #ddd">' +
       '<button onclick="_notifFotosNovo.splice('+i+',1);renderFotosPreviewNotif()" style="position:absolute;top:-4px;right:-4px;background:#e74c3c;color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;line-height:18px;padding:0">✕</button>' +
       '<div><input placeholder="Legenda" value="' + (f.legenda||'').replace(/"/g,'&quot;') + '" onchange="_notifFotosNovo['+i+'].legenda=this.value" style="width:80px;font-size:9px;margin-top:2px;padding:2px 4px;border:1px solid #ddd;border-radius:3px"></div>' +
     '</div>';
@@ -3901,7 +3920,7 @@ function exportarNotifPDF(idx) {
   if(n.fotos && n.fotos.length) {
     if(y > pageH - 6) { doc.addPage(); y = 1.5; }
     nSectionTitle('EVIDENCIAS FOTOGRAFICAS');
-    nGaleriaFotos(n.fotos);
+    nGaleriaFotos(n.fotos.map(function(f){ return { src: _notifFotoSrc(f), legenda: f.legenda }; }).filter(function(f){ return f.src; }));
   }
 
   // Atendimento da NCA
