@@ -19467,6 +19467,7 @@ function renderColMiniDashboard() {
               <div style="display:flex;gap:4px;flex-shrink:0">
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Visualizar relatório completo" onclick="colVerChecklist(${r.Id})">👁️ Ver</button>
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="colEditarChecklist(${r.Id})">✏️ Editar</button>
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Exportar PDF deste relatório" onclick="colExportarPdfRegistro(${r.Id})">📄 PDF</button>
               </div>
             </div>`).join('')
       }
@@ -19715,12 +19716,49 @@ async function colVerChecklist(id) {
   w.document.write(html); w.document.close();
 }
 
-/* -- Gera o relatório em PDF (janela de impressão) e sincroniza como HTML no OneDrive -- */
+/* -- Gera o relatório em PDF (janela de impressão) e sincroniza como HTML no OneDrive.
+   Exporta o formulário aberto no momento (usado pelo botão "Exportar PDF" da tela de edição). -- */
 function exportarColetaPdf() {
+  colGerarPdfRelatorio(window._colData, window._colRegistroAtualId);
+}
+
+/* -- Exporta o PDF de um relatório já salvo, direto da lista do mini-dashboard, sem precisar
+   abrir para edição primeiro. Busca o snapshot completo (resíduos + fotos) no OneDrive. -- */
+async function colExportarPdfRegistro(id) {
+  const r = (window._colHistorico || []).find(x => x.Id === id);
+  if (!r) { showToast('⚠️ Registro não encontrado.'); return; }
+  showSyncStatus('Carregando relatório...');
+  let dados = null;
+  if (r.arquivoDados) {
+    try {
+      const texto = await baixarArquivoCentral(r.arquivoDados);
+      if (texto) dados = JSON.parse(texto);
+    } catch (e) { dados = null; }
+  }
+  if (!dados) {
+    dados = {
+      num: r.num, regional: r.regional, local: r.local, motorista: r.motorista,
+      placa: r.placa, reboque: r.reboque, transportadora: r.transportadora,
+      data: r.data, destinacao: r.destinacao, obs: r.obs, residuos: [], fotos: [],
+    };
+  }
+  if (!Array.isArray(dados.residuos)) dados.residuos = [];
+  if (!Array.isArray(dados.fotos)) dados.fotos = [];
+  showSyncStatus('Relatório carregado!', 'ok', 2000);
+  colGerarPdfRelatorio(dados, id);
+}
+
+function colGerarPdfRelatorio(d, registroId) {
   showToast('🔄 Gerando relatório... aguarde.');
   setTimeout(async () => {
-    const d = window._colData;
-    const tot = colCalcularTotais();
+    let totalKg = 0, c1Kg = 0, c2Kg = 0;
+    (d.residuos || []).forEach(r => {
+      const peso = parseFloat(r.peso) || 0;
+      if (r.unid !== 'kg') return;
+      totalKg += peso;
+      if (r.classe === 'I') c1Kg += peso; else c2Kg += peso;
+    });
+    const tot = { totalKg, c1Kg, c2Kg, qtdItens: (d.residuos || []).length };
     const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
     const regionalLabel = d.regional==='sul' ? 'Regional Sul' : d.regional==='centro' ? 'Regional Centro' : d.regional==='outro' ? 'Outro' : '—';
 
@@ -19810,9 +19848,9 @@ function exportarColetaPdf() {
         const nomeBase = `ColetaResiduos_${numOD}_${localOD}_${dataFmtOD}`;
         const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
         const url = await uploadParaOneDrive(blob, OD_FOLDERS.checklistsColeta, nomeBase + '.html');
-        if (url && window._colRegistroAtualId) {
-          await dbAtualizar('ChecklistColeta', window._colRegistroAtualId, { documentoUrl: url, documentoNome: nomeBase + '.html' });
-          const idx = (window._colHistorico || []).findIndex(r => r.Id === window._colRegistroAtualId);
+        if (url && registroId) {
+          await dbAtualizar('ChecklistColeta', registroId, { documentoUrl: url, documentoNome: nomeBase + '.html' });
+          const idx = (window._colHistorico || []).findIndex(r => r.Id === registroId);
           if (idx >= 0) { window._colHistorico[idx].documentoUrl = url; window._colHistorico[idx].documentoNome = nomeBase + '.html'; }
           try { localStorage.setItem('col_historico_cache', JSON.stringify(window._colHistorico)); } catch(e) {}
           showSyncStatus('Relatório sincronizado!', 'ok', 4000);
