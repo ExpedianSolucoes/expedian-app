@@ -1290,6 +1290,8 @@ function renderPage(id) {
     checklist_coleta: () => pageChecklistColeta(),
     checklist_flash: () => pageChecklistFlash(),
     checklist_notif: () => pageChecklistNotif(),
+    checklist_medicao: () => pageChecklistMedicao(),
+    checklist_faturamento: () => pageChecklistFaturamento(),
     checklist_fauna: () => pageChecklistFauna(),
     equipamentos: () => pageEquipamentos(),
     docs: () => pageGestaoDocumental(),
@@ -10647,6 +10649,7 @@ function projetosHtmlEnergisa() {
   return `
   <div style="position:fixed;top:var(--header-h);left:var(--sidebar-w);right:0;bottom:0;overflow:hidden;z-index:10">
     <button class="btn-secondary" onclick="projetosVoltarHub()" style="position:absolute;top:10px;left:10px;z-index:11;box-shadow:0 2px 8px rgba(0,0,0,.25)">← Todos os Projetos</button>
+    <button class="btn-secondary" onclick="projetosImportarAntigosParaApp()" title="Importa pro sistema novo (Fiscalização Ambiental ERO) os Flash Reports e Notificações que ainda só existem neste painel antigo" style="position:absolute;top:10px;right:16px;z-index:11;box-shadow:0 2px 8px rgba(0,0,0,.25)">📥 Importar dados antigos p/ o App</button>
     <iframe
       id="iframe-energisa-ero"
       src="./gestao_energisa_ero.html"
@@ -10654,6 +10657,23 @@ function projetosHtmlEnergisa() {
       title="Gestão Energisa Rondônia">
     </iframe>
   </div>`;
+}
+
+/* -- Dispara a importação de Flash Reports + Notificações que ainda estão só
+   no painel antigo (iframe) pro sistema nativo (OneDrive). Só funciona aqui
+   (Projetos > Energisa Rondônia), porque é a única página onde o iframe
+   realmente existe no DOM — navegar pra outra página do App destrói o
+   iframe (renderPage substitui o innerHTML inteiro). -- */
+async function projetosImportarAntigosParaApp() {
+  const ifr = document.getElementById('iframe-energisa-ero');
+  const win = ifr && ifr.contentWindow;
+  if (!win || !win.emprObrasData) {
+    showToast('⚠️ Aguarde o painel terminar de carregar (alguns segundos) e tente de novo.');
+    return;
+  }
+  if (!confirm('Isso vai importar para o novo sistema (Fiscalização Ambiental ERO) os Flash Reports e Notificações de NC que ainda estão salvos apenas neste painel antigo, sem duplicar os que já foram importados. Continuar?')) return;
+  await flashMigrarHistoricoIframe(true);
+  await ncMigrarHistoricoIframe(true);
 }
 
 function projetosFecharModal(idModal) {
@@ -18635,6 +18655,8 @@ const FISCALIZACAO_ERO_CATALOGO = [
   { rota: 'checklist_flash', icon: '🚧', titulo: 'Flash Report', subtitulo: 'Relatório diário de campo por frente/empreiteira' },
   { rota: 'checklist_notif', icon: '⚠️', titulo: 'Notificação de NC', subtitulo: 'Notificação de não conformidade ambiental por circuito elétrico' },
   { rota: 'checklist_mitigacao', icon: '🧯', titulo: 'Kit de Mitigação Ambiental', subtitulo: 'Checklist de vistoria do kit de contenção/mitigação ambiental' },
+  { rota: 'checklist_medicao', icon: '💰', titulo: 'Medição', subtitulo: 'Medições por período/BM em cada circuito elétrico' },
+  { rota: 'checklist_faturamento', icon: '🧾', titulo: 'Faturamento', subtitulo: 'Notas fiscais por circuito elétrico' },
 ];
 
 function pageFiscalizacaoEro() {
@@ -21075,7 +21097,7 @@ function flashCarregarFotosMultiplas(event) {
   event.target.value = '';
 }
 
-async function flashCarregarHistorico(forcar) {
+async function flashCarregarHistorico(forcar, semNavegar) {
   if (window._flashHistorico !== null && !forcar) return;
   let cacheLocal = [];
   try { cacheLocal = JSON.parse(localStorage.getItem('flash_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
@@ -21087,7 +21109,7 @@ async function flashCarregarHistorico(forcar) {
       try { localStorage.setItem('flash_historico_cache', JSON.stringify(lista)); } catch (e) {}
     }
   } catch (e) { console.warn('[Flash Report] Falha ao carregar histórico, usando cache local.', e); }
-  navigate('checklist_flash');
+  if (!semNavegar) navigate('checklist_flash');
 }
 
 /* -- Exclui um Flash Report Energisa já salvo (fotos ficam gravadas inline no
@@ -21105,6 +21127,51 @@ async function flashExcluirRegistro(id) {
   showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
   if (ok) { try { localStorage.setItem('flash_historico_cache', JSON.stringify(lista)); } catch (e) {} }
   await flashCarregarHistorico(true);
+}
+
+/* -- Importa para a tabela nativa (OneDrive) os Flash Reports que ainda estão
+   salvos só no painel antigo (Projetos > Energisa Rondônia), sem duplicar os
+   que já foram importados. Mesmo padrão de ncMigrarHistoricoIframe(). -- */
+async function flashMigrarHistoricoIframe(manterPagina) {
+  const ifr = document.getElementById('iframe-energisa-ero');
+  const win = ifr && ifr.contentWindow;
+  if (!win || !win.emprObrasData) {
+    showToast('⚠️ Abra Projetos > Energisa Rondônia pelo menos uma vez nesta sessão antes de importar.');
+    return;
+  }
+  if (!manterPagina && !confirm('Isso vai importar para o novo sistema (OneDrive) os Flash Reports que ainda estão salvos apenas no painel antigo (Projetos > Energisa), sem duplicar os que já foram importados. Continuar?')) return;
+  showSyncStatus('Importando Flash Reports antigos...');
+  await flashCarregarHistorico(true, manterPagina);
+  const jaImportados = window._flashHistorico || [];
+  const existe = (frenteId, data, trecho) => jaImportados.some(r => r.FrenteId === frenteId && r.Data === data && (r.Trecho || '') === (trecho || ''));
+  let importados = 0, falhas = 0;
+  for (const frenteId of Object.keys(win.emprObrasData)) {
+    const lista = (win.emprObrasData[frenteId] && win.emprObrasData[frenteId].flash) || [];
+    const frente = FLASH_FRENTES.find(f => f.id === frenteId);
+    for (const f of lista) {
+      if (existe(frenteId, f.data, f.trecho)) continue;
+      const registro = {
+        Title: 'Flash Report — ' + (frente ? frente.nome : frenteId) + ' — ' + (f.data || ''),
+        FrenteId: frenteId, FrenteNome: frente ? frente.nome : frenteId, Empreiteira: frente ? frente.empreiteira : '',
+        Data: f.data || '', ResponsavelTecnico: f.rt || '', Clima: f.clima || '', Trecho: f.trecho || '',
+        Equipe: f.equipe || '', Fiscal: f.fiscal || '',
+        OutraAtividade: f.outraativ || '', OutraOcorrencia: f.outraocorr || '',
+        Atividades: f.atividades || '', PrevisaoAmanha: f.amanha || '', Observacoes: f.obs || '',
+        OrientacaoVerbal: false, OrientacaoPara: '', OrientacaoPrazo: '',
+        ckAtividades: f.ckAtividades || {}, ckVerificacoes: f.ckVerificacoes || {}, ckOcorrencias: f.ckOcorrencias || {},
+        fotos: (f.fotos || []).filter(x => x.src).map(x => ({ dataUrl: x.src, desc: x.legenda || '', horizontal: true })),
+        Visualizado: true,
+        CriadoPorNome: f.criadoPorNome || '', CriadoPorEmail: f.criadoPorEmail || '',
+        DataCriacao: new Date().toISOString(),
+      };
+      const ok = await dbInserir('FlashReportsEnergisa', registro);
+      if (ok) importados++; else falhas++;
+    }
+  }
+  await flashCarregarHistorico(true, manterPagina);
+  showSyncStatus(importados ? 'Importação concluída!' : 'Nada novo para importar', 'ok', 3000);
+  showToast('📥 ' + importados + ' Flash Report(s) importado(s)' + (falhas ? ', ' + falhas + ' falha(s)' : '') + '.');
+  if (!manterPagina) navigate('checklist_flash');
 }
 
 async function flashSalvar() {
@@ -21263,7 +21330,10 @@ function pageChecklistFlash() {
 
     <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
       <div style="font-size:.85rem;color:var(--text-muted)">Preencha um Flash Report por frente/empreiteira sempre que fizer uma inspeção de campo.</div>
-      <button class="btn-primary" onclick="flashAbrirNovo()">➕ Novo Flash Report</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-secondary" style="font-size:.75rem" onclick="flashMigrarHistoricoIframe()">📥 Importar Flash Reports antigos</button>
+        <button class="btn-primary" onclick="flashAbrirNovo()">➕ Novo Flash Report</button>
+      </div>
     </div>
 
     <div class="card">
@@ -21705,7 +21775,7 @@ function ncPreviewNumero() {
   return 'NCA-' + String(mesmoCircuito.length + 1).padStart(3, '0');
 }
 
-async function ncCarregarHistorico(forcar) {
+async function ncCarregarHistorico(forcar, semNavegar) {
   if (window._ncHistorico !== null && !forcar) return;
   let cacheLocal = [];
   try { cacheLocal = JSON.parse(localStorage.getItem('notif_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
@@ -21717,7 +21787,7 @@ async function ncCarregarHistorico(forcar) {
       try { localStorage.setItem('notif_historico_cache', JSON.stringify(lista)); } catch (e) {}
     }
   } catch (e) { console.warn('[Notificação NC] Falha ao carregar histórico, usando cache local.', e); }
-  navigate('checklist_notif');
+  if (!semNavegar) navigate('checklist_notif');
 }
 
 function ncAbrirNovo(frenteIdPreSelecionado, frOrigemIdPreSelecionado) {
@@ -22305,16 +22375,16 @@ function ncHtmlHistorico() {
    estão só no painel antigo (iframe Projetos > Energisa), de antes desta
    migração pra tabela nativa. Casa por FrenteId+Numero+Data pra não
    duplicar se for clicado mais de uma vez. -- */
-async function ncMigrarHistoricoIframe() {
+async function ncMigrarHistoricoIframe(manterPagina) {
   const ifr = document.getElementById('iframe-energisa-ero');
   const win = ifr && ifr.contentWindow;
   if (!win || !win.emprObrasData) {
     showToast('⚠️ Abra Projetos > Energisa Rondônia pelo menos uma vez nesta sessão antes de importar.');
     return;
   }
-  if (!confirm('Isso vai importar para o novo sistema (OneDrive) as notificações de NC que ainda estão salvas apenas no painel antigo (Projetos > Energisa), sem duplicar as que já foram importadas. Continuar?')) return;
+  if (!manterPagina && !confirm('Isso vai importar para o novo sistema (OneDrive) as notificações de NC que ainda estão salvas apenas no painel antigo (Projetos > Energisa), sem duplicar as que já foram importadas. Continuar?')) return;
   showSyncStatus('Importando notificações antigas...');
-  await ncCarregarHistorico(true);
+  await ncCarregarHistorico(true, manterPagina);
   const jaImportadas = window._ncHistorico || [];
   const existe = (frenteId, numero, data) => jaImportadas.some(r => r.FrenteId === frenteId && r.Numero === numero && r.Data === data);
   let importadas = 0, falhas = 0;
@@ -22353,10 +22423,10 @@ async function ncMigrarHistoricoIframe() {
       if (ok) importadas++; else falhas++;
     }
   }
-  await ncCarregarHistorico(true);
+  await ncCarregarHistorico(true, manterPagina);
   showSyncStatus(importadas ? 'Importação concluída!' : 'Nada novo para importar', 'ok', 3000);
   showToast('📥 ' + importadas + ' notificação(ões) importada(s)' + (falhas ? ', ' + falhas + ' falha(s)' : '') + '.');
-  navigate('checklist_notif');
+  if (!manterPagina) navigate('checklist_notif');
 }
 
 function pageChecklistNotif() {
@@ -22508,6 +22578,397 @@ function pageChecklistNotif() {
       <button class="btn-primary" onclick="ncSalvar()">💾 ${editando ? 'Salvar Alterações' : 'Salvar e Sincronizar com OneDrive'}</button>
       <button class="btn-primary" style="background:var(--brand-brown,#3F261F);color:#fff" onclick="ncSalvarEExportarPDF()">🖨️ Salvar + Exportar PDF</button>
       <button class="btn-secondary" onclick="ncFecharForm()">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+/* =============================================================
+   MEDIÇÃO — Energisa Rondônia (nativo, substitui a aba "Medição"
+   do iframe gestao_energisa_ero.html). Mesmo padrão de dbLer/
+   dbInserir/dbAtualizar já usado em Flash Report e Notificação de NC.
+   ============================================================= */
+const MED_STATUS_OPCOES = ['Em elaboração', 'Enviada', 'Em análise', 'Aprovada', 'NF emitida', 'Paga'];
+const MED_STATUS_COR = { 'Em elaboração': '#7f8c8d', Enviada: '#2980b9', 'Em análise': '#f39c12', Aprovada: 'var(--green-main)', 'NF emitida': 'var(--green-main)', Paga: 'var(--green-main)' };
+
+async function medCarregarHistorico(forcar) {
+  if (window._medHistorico !== null && !forcar) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('med_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
+  if (window._medHistorico === null) window._medHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('MedicoesEnergisa');
+    if (Array.isArray(lista)) {
+      window._medHistorico = lista;
+      try { localStorage.setItem('med_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    }
+  } catch (e) { console.warn('[Medição] Falha ao carregar histórico, usando cache local.', e); }
+  navigate('checklist_medicao');
+}
+
+function medNovoForm(frenteIdPre) {
+  window._medData = { frenteId: frenteIdPre || FLASH_FRENTES[0].id, periodo: '', data: '', prazo: '', valor: '', status: 'Em elaboração', servicos: '', obs: '' };
+}
+
+function medCampo(campo, valor) { window._medData[campo] = valor; }
+
+function medAbrirNovo(frenteIdPre) {
+  medNovoForm(frenteIdPre);
+  window._medRegistroAtualId = null;
+  window._medMostrarForm = true;
+  navigate('checklist_medicao');
+}
+
+function medFecharForm() {
+  window._medMostrarForm = false;
+  window._medRegistroAtualId = null;
+  navigate('checklist_medicao');
+}
+
+function medEditarRegistro(id) {
+  const m = (window._medHistorico || []).find(r => r.Id === id);
+  if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
+  window._medData = {
+    frenteId: m.FrenteId || FLASH_FRENTES[0].id, periodo: m.Periodo || '', data: m.Data || '',
+    prazo: m.Prazo || '', valor: m.Valor || '', status: m.Status || 'Em elaboração',
+    servicos: m.Servicos || '', obs: m.Obs || '',
+  };
+  window._medRegistroAtualId = id;
+  window._medMostrarForm = true;
+  navigate('checklist_medicao');
+}
+
+async function medExcluirRegistro(id) {
+  if (!confirm('Tem certeza que deseja excluir esta medição?\n\nEssa ação não pode ser desfeita.')) return;
+  showSyncStatus('Excluindo medição...');
+  const lista = await dbLer('MedicoesEnergisa');
+  const idx = lista.findIndex(r => r.Id === id);
+  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
+  lista.splice(idx, 1);
+  const ok = await dbSalvar('MedicoesEnergisa', lista);
+  showToast(ok ? '🗑️ Medição excluída.' : '❌ Erro ao excluir.');
+  showSyncStatus(ok ? 'Excluída!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) { try { localStorage.setItem('med_historico_cache', JSON.stringify(lista)); } catch (e) {} }
+  await medCarregarHistorico(true);
+}
+
+function medFiltrarCircuito(frenteId) {
+  window._medCircuitoFiltro = frenteId || null;
+  navigate('checklist_medicao');
+}
+
+async function medSalvar() {
+  const d = window._medData;
+  if (!d.periodo) { showToast('⚠️ Informe o período/BM antes de salvar.'); return; }
+  const editando = !!window._medRegistroAtualId;
+  const frente = FLASH_FRENTES.find(f => f.id === d.frenteId) || FLASH_FRENTES[0];
+  const registro = {
+    Title: 'Medição - ' + d.periodo + ' - ' + frente.nome,
+    FrenteId: d.frenteId, FrenteNome: frente.nome,
+    Periodo: d.periodo, Data: d.data || '', Prazo: d.prazo || '',
+    Valor: parseFloat(d.valor) || 0, Status: d.status || 'Em elaboração',
+    Servicos: d.servicos || '', Obs: d.obs || '',
+    CriadoPorNome: window._currentUser ? window._currentUser.name : '',
+    CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
+  };
+  showSyncStatus('Enviando para OneDrive...');
+  const novo = editando
+    ? (await dbAtualizar('MedicoesEnergisa', window._medRegistroAtualId, registro)) ? { ...registro, Id: window._medRegistroAtualId } : null
+    : await dbInserir('MedicoesEnergisa', registro);
+  if (novo) {
+    showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
+    showToast(editando ? '☁️ Medição atualizada!' : '☁️ Medição salva e sincronizada!');
+    window._medMostrarForm = false;
+    window._medRegistroAtualId = null;
+    await medCarregarHistorico(true);
+  } else {
+    showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
+    showToast('⚠️ Não foi possível salvar. Verifique o login com Microsoft e tente de novo.');
+  }
+}
+
+function medHtmlHistorico() {
+  const todos = window._medHistorico || [];
+  if (!todos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma medição registrada ainda.</div>';
+  const filtro = window._medCircuitoFiltro || null;
+  const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
+  const linhaM = (m) => {
+    const dt = m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—';
+    const pz = m.Prazo ? new Date(m.Prazo + 'T12:00').toLocaleDateString('pt-BR') : '—';
+    return `
+    <div class="alert-item" style="gap:14px;align-items:flex-start">
+      <div style="font-size:1.2rem">💰</div>
+      <div style="flex:1;min-width:0">
+        <div class="name">${m.Periodo} · ${dt}${m.Prazo ? ' · prazo ' + pz : ''}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${m.Servicos ? m.Servicos.substring(0, 90) + (m.Servicos.length > 90 ? '…' : '') : '—'}</div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
+          <span class="badge" style="font-size:.62rem;background:${MED_STATUS_COR[m.Status] || '#7f8c8d'};color:#fff">${m.Status || '—'}</span>
+          <span class="badge badge-cinza" style="font-size:.62rem">R$ ${(m.Valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+        <div style="display:flex;gap:4px">
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="medEditarRegistro(${m.Id})">✏️ Editar</button>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="medExcluirRegistro(${m.Id})">🗑️ Excluir</button>
+        </div>
+      </div>
+    </div>`;
+  };
+  const blocos = frentes.map(fr => {
+    const doCircuito = todos.filter(m => m.FrenteId === fr.id).sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
+    if (!doCircuito.length) return '';
+    return `
+    <div style="margin-bottom:14px">
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">⚡ ${fr.nome} — ${fr.empreiteira} <span style="font-weight:400">(${doCircuito.length})</span></div>
+      ${doCircuito.map(linhaM).join('')}
+    </div>`;
+  }).join('');
+  return blocos || '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma medição para este circuito.</div>';
+}
+
+function pageChecklistMedicao() {
+  if (window._medHistorico === null) medCarregarHistorico();
+
+  if (!window._medMostrarForm) {
+    return `
+    <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+      <div><h1>Medição — Energisa</h1><p>Medições por circuito elétrico — Contrato 2025022101</p></div>
+      <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+    </div>
+    <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div style="font-size:.85rem;color:var(--text-muted)">Registre uma medição por período/BM para cada circuito elétrico.</div>
+      <button class="btn-primary" onclick="medAbrirNovo()">➕ Nova Medição</button>
+    </div>
+    <div class="card">
+      <div class="card-title">💰 Histórico de Medições por Circuito Elétrico</div>
+      ${medHtmlHistorico()}
+    </div>`;
+  }
+
+  const d = window._medData;
+  const editando = !!window._medRegistroAtualId;
+  return `
+  <div class="page-header"><h1>Medição — Energisa</h1><p>Contrato 2025022101 · Gestão Ambiental de Obras</p></div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">${editando ? '✏️ Editar Medição' : '➕ Nova Medição'}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Circuito Elétrico / Frente</label>
+        <select onchange="medCampo('frenteId', this.value); navigate('checklist_medicao')">
+          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Período / BM</label><input value="${(d.periodo || '').replace(/"/g, '&quot;')}" oninput="medCampo('periodo', this.value)" placeholder="BM01 · Jan/2026"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Data medição</label><input type="date" value="${d.data || ''}" onchange="medCampo('data', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Prazo pagamento</label><input type="date" value="${d.prazo || ''}" onchange="medCampo('prazo', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Valor (R$)</label><input type="number" step="0.01" value="${d.valor || ''}" oninput="medCampo('valor', this.value)"></div>
+    </div>
+    <div class="form-group"><label>Status</label>
+      <select onchange="medCampo('status', this.value)">${MED_STATUS_OPCOES.map(s => `<option ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+    </div>
+    <div class="form-group"><label>Serviços medidos</label><textarea rows="2" oninput="medCampo('servicos', this.value)">${d.servicos || ''}</textarea></div>
+    <div class="form-group"><label>Observações</label><input value="${(d.obs || '').replace(/"/g, '&quot;')}" oninput="medCampo('obs', this.value)"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-primary" onclick="medSalvar()">💾 ${editando ? 'Salvar Alterações' : 'Salvar e Sincronizar com OneDrive'}</button>
+      <button class="btn-secondary" onclick="medFecharForm()">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+/* =============================================================
+   FATURAMENTO — Energisa Rondônia (nativo, mesmo padrão de Medição). */
+const FAT_STATUS_OPCOES = ['Emitida', 'Lançada no portal', 'Em análise', 'Aprovada', 'Paga', 'Recusada'];
+const FAT_STATUS_COR = { Emitida: '#2980b9', 'Lançada no portal': '#2980b9', 'Em análise': '#f39c12', Aprovada: 'var(--green-main)', Paga: 'var(--green-main)', Recusada: 'var(--red)' };
+
+async function fatCarregarHistorico(forcar) {
+  if (window._fatHistorico !== null && !forcar) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('fat_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
+  if (window._fatHistorico === null) window._fatHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('FaturamentoEnergisa');
+    if (Array.isArray(lista)) {
+      window._fatHistorico = lista;
+      try { localStorage.setItem('fat_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    }
+  } catch (e) { console.warn('[Faturamento] Falha ao carregar histórico, usando cache local.', e); }
+  navigate('checklist_faturamento');
+}
+
+function fatNovoForm(frenteIdPre) {
+  window._fatData = { frenteId: frenteIdPre || FLASH_FRENTES[0].id, nf: '', dataEmissao: '', referencia: '', valorBruto: '', valorLiquido: '', status: 'Emitida', previsaoRecebimento: '', dataRecebimento: '', obs: '' };
+}
+
+function fatCampo(campo, valor) { window._fatData[campo] = valor; }
+
+function fatAbrirNovo(frenteIdPre) {
+  fatNovoForm(frenteIdPre);
+  window._fatRegistroAtualId = null;
+  window._fatMostrarForm = true;
+  navigate('checklist_faturamento');
+}
+
+function fatFecharForm() {
+  window._fatMostrarForm = false;
+  window._fatRegistroAtualId = null;
+  navigate('checklist_faturamento');
+}
+
+function fatEditarRegistro(id) {
+  const f = (window._fatHistorico || []).find(r => r.Id === id);
+  if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  window._fatData = {
+    frenteId: f.FrenteId || FLASH_FRENTES[0].id, nf: f.Nf || '', dataEmissao: f.DataEmissao || '',
+    referencia: f.Referencia || '', valorBruto: f.ValorBruto || '', valorLiquido: f.ValorLiquido || '',
+    status: f.Status || 'Emitida', previsaoRecebimento: f.PrevisaoRecebimento || '', dataRecebimento: f.DataRecebimento || '',
+    obs: f.Obs || '',
+  };
+  window._fatRegistroAtualId = id;
+  window._fatMostrarForm = true;
+  navigate('checklist_faturamento');
+}
+
+async function fatExcluirRegistro(id) {
+  if (!confirm('Tem certeza que deseja excluir esta NF?\n\nEssa ação não pode ser desfeita.')) return;
+  showSyncStatus('Excluindo NF...');
+  const lista = await dbLer('FaturamentoEnergisa');
+  const idx = lista.findIndex(r => r.Id === id);
+  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
+  lista.splice(idx, 1);
+  const ok = await dbSalvar('FaturamentoEnergisa', lista);
+  showToast(ok ? '🗑️ NF excluída.' : '❌ Erro ao excluir.');
+  showSyncStatus(ok ? 'Excluída!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) { try { localStorage.setItem('fat_historico_cache', JSON.stringify(lista)); } catch (e) {} }
+  await fatCarregarHistorico(true);
+}
+
+function fatFiltrarCircuito(frenteId) {
+  window._fatCircuitoFiltro = frenteId || null;
+  navigate('checklist_faturamento');
+}
+
+async function fatSalvar() {
+  const d = window._fatData;
+  if (!d.nf) { showToast('⚠️ Informe o número da NF antes de salvar.'); return; }
+  const editando = !!window._fatRegistroAtualId;
+  const frente = FLASH_FRENTES.find(f => f.id === d.frenteId) || FLASH_FRENTES[0];
+  const registro = {
+    Title: 'NF ' + d.nf + ' - ' + frente.nome,
+    FrenteId: d.frenteId, FrenteNome: frente.nome,
+    Nf: d.nf, DataEmissao: d.dataEmissao || '', Referencia: d.referencia || '',
+    ValorBruto: parseFloat(d.valorBruto) || 0, ValorLiquido: parseFloat(d.valorLiquido) || 0,
+    Status: d.status || 'Emitida', PrevisaoRecebimento: d.previsaoRecebimento || '', DataRecebimento: d.dataRecebimento || '',
+    Obs: d.obs || '',
+    CriadoPorNome: window._currentUser ? window._currentUser.name : '',
+    CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
+  };
+  showSyncStatus('Enviando para OneDrive...');
+  const novo = editando
+    ? (await dbAtualizar('FaturamentoEnergisa', window._fatRegistroAtualId, registro)) ? { ...registro, Id: window._fatRegistroAtualId } : null
+    : await dbInserir('FaturamentoEnergisa', registro);
+  if (novo) {
+    showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
+    showToast(editando ? '☁️ NF atualizada!' : '☁️ NF salva e sincronizada!');
+    window._fatMostrarForm = false;
+    window._fatRegistroAtualId = null;
+    await fatCarregarHistorico(true);
+  } else {
+    showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
+    showToast('⚠️ Não foi possível salvar. Verifique o login com Microsoft e tente de novo.');
+  }
+}
+
+function fatHtmlHistorico() {
+  const todos = window._fatHistorico || [];
+  if (!todos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma NF registrada ainda.</div>';
+  const filtro = window._fatCircuitoFiltro || null;
+  const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
+  const linhaF = (f) => {
+    const dt = f.DataEmissao ? new Date(f.DataEmissao + 'T12:00').toLocaleDateString('pt-BR') : '—';
+    const rc = f.DataRecebimento ? new Date(f.DataRecebimento + 'T12:00').toLocaleDateString('pt-BR') : null;
+    return `
+    <div class="alert-item" style="gap:14px;align-items:flex-start">
+      <div style="font-size:1.2rem">🧾</div>
+      <div style="flex:1;min-width:0">
+        <div class="name">NF ${f.Nf} · ${dt}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${f.Referencia || '—'}${rc ? ' · recebido ' + rc : ''}</div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
+          <span class="badge" style="font-size:.62rem;background:${FAT_STATUS_COR[f.Status] || '#7f8c8d'};color:#fff">${f.Status || '—'}</span>
+          <span class="badge badge-cinza" style="font-size:.62rem">Líq. R$ ${(f.ValorLiquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+        <div style="display:flex;gap:4px">
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="fatEditarRegistro(${f.Id})">✏️ Editar</button>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="fatExcluirRegistro(${f.Id})">🗑️ Excluir</button>
+        </div>
+      </div>
+    </div>`;
+  };
+  const blocos = frentes.map(fr => {
+    const doCircuito = todos.filter(f => f.FrenteId === fr.id).sort((a, b) => (b.DataEmissao || '').localeCompare(a.DataEmissao || ''));
+    if (!doCircuito.length) return '';
+    return `
+    <div style="margin-bottom:14px">
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">⚡ ${fr.nome} — ${fr.empreiteira} <span style="font-weight:400">(${doCircuito.length})</span></div>
+      ${doCircuito.map(linhaF).join('')}
+    </div>`;
+  }).join('');
+  return blocos || '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma NF para este circuito.</div>';
+}
+
+function pageChecklistFaturamento() {
+  if (window._fatHistorico === null) fatCarregarHistorico();
+
+  if (!window._fatMostrarForm) {
+    return `
+    <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+      <div><h1>Faturamento — Energisa</h1><p>Notas fiscais por circuito elétrico — Contrato 2025022101</p></div>
+      <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+    </div>
+    <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div style="font-size:.85rem;color:var(--text-muted)">Lance uma NF por circuito elétrico sempre que emitir faturamento.</div>
+      <button class="btn-primary" onclick="fatAbrirNovo()">➕ Lançar NF</button>
+    </div>
+    <div class="card">
+      <div class="card-title">🧾 Histórico de Faturamento por Circuito Elétrico</div>
+      ${fatHtmlHistorico()}
+    </div>`;
+  }
+
+  const d = window._fatData;
+  const editando = !!window._fatRegistroAtualId;
+  return `
+  <div class="page-header"><h1>Faturamento — Energisa</h1><p>Contrato 2025022101 · Gestão Ambiental de Obras</p></div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">${editando ? '✏️ Editar NF' : '➕ Lançar NF'}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Circuito Elétrico / Frente</label>
+        <select onchange="fatCampo('frenteId', this.value); navigate('checklist_faturamento')">
+          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>NF / NFS-e</label><input value="${(d.nf || '').replace(/"/g, '&quot;')}" oninput="fatCampo('nf', this.value)"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Data emissão</label><input type="date" value="${d.dataEmissao || ''}" onchange="fatCampo('dataEmissao', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Referência</label><input value="${(d.referencia || '').replace(/"/g, '&quot;')}" oninput="fatCampo('referencia', this.value)"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Valor bruto (R$)</label><input type="number" step="0.01" value="${d.valorBruto || ''}" oninput="fatCampo('valorBruto', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Valor líquido (R$)</label><input type="number" step="0.01" value="${d.valorLiquido || ''}" oninput="fatCampo('valorLiquido', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Status</label>
+        <select onchange="fatCampo('status', this.value)">${FAT_STATUS_OPCOES.map(s => `<option ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Previsão recebimento</label><input type="date" value="${d.previsaoRecebimento || ''}" onchange="fatCampo('previsaoRecebimento', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Data recebimento</label><input type="date" value="${d.dataRecebimento || ''}" onchange="fatCampo('dataRecebimento', this.value)"></div>
+    </div>
+    <div class="form-group"><label>Observações</label><input value="${(d.obs || '').replace(/"/g, '&quot;')}" oninput="fatCampo('obs', this.value)"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-primary" onclick="fatSalvar()">💾 ${editando ? 'Salvar Alterações' : 'Salvar e Sincronizar com OneDrive'}</button>
+      <button class="btn-secondary" onclick="fatFecharForm()">Cancelar</button>
     </div>
   </div>`;
 }
