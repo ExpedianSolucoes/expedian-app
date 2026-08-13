@@ -22110,7 +22110,9 @@ async function _flashGerarDoc(d, numOverride) {
   // Cabeçalho de identificação em colunas: linha 1 = Data / Empresa / Clima,
   // linha 2 = Frente de Serviço / Equipe. RT removido — não aparece mais aqui.
   const empresaTxt = 'Empresa: ' + (frente ? frente.empreiteira : (d.frenteId || '--'));
-  const dataTxt = 'Data: ' + dt;
+  // Formato curto (DD/MM/AAAA) em vez do extenso com dia da semana — cabe
+  // numa linha só dentro da coluna, sem quebrar.
+  const dataTxt = 'Data: ' + dtCurta;
   const climaTxt = 'Clima: ' + (d.clima || '--');
   const frenteTxt = 'Frente de Serviço: ' + (frente ? frente.nome : '--') + (d.trecho ? ' — ' + d.trecho : '');
   const equipeTxt = 'Equipe: ' + (d.equipe || '--');
@@ -22129,10 +22131,11 @@ async function _flashGerarDoc(d, numOverride) {
   const linhasEquipe = doc.splitTextToSize(equipeTxt, CW - 0.6);
   const alturaRow1 = Math.max.apply(null, linhasRow1.map(l => l.length)) * 0.4;
   const alturaRow2 = (linhasFrente.length + linhasEquipe.length) * 0.4;
-  // Título principal deixa nº, data e obra bem visíveis logo no topo do documento
-  // (era só "FR-xxx · Flash Report Diário — Obras", sem data/obra destacadas).
+  // Título principal deixa nº e obra bem visíveis logo no topo do documento.
+  // A data NÃO entra aqui — já aparece no campo "Data:" da linha de baixo,
+  // ficaria redundante e só disputava espaço com o nome da obra.
   doc.setFont('helvetica','bold'); doc.setFontSize(13);
-  const tituloLinhaTxt = 'FR-' + num + ' · ' + dtCurta + ' · ' + obraTxt;
+  const tituloLinhaTxt = 'FR-' + num + ' · ' + obraTxt;
   const linhasTitulo = doc.splitTextToSize(tituloLinhaTxt, CW - 0.6);
   const alturaTitulo = linhasTitulo.length * 0.5;
   const idBoxH = 0.55 + alturaTitulo + 0.4 + alturaRow1 + alturaRow2 + 0.45;
@@ -22179,10 +22182,16 @@ async function _flashGerarDoc(d, numOverride) {
       const ok = !!estado[item.id];
       const x = col === 0 ? ML+0.3 : ML+CW/2+0.3;
       if (col === 0 && y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-      doc.setFont('helvetica','normal'); doc.setFontSize(9);
-      if (corVerde) doc.setTextColor(ok?30:150, ok?120:30, ok?40:40);
-      else doc.setTextColor(ok?180:100, ok?40:100, ok?40:100);
-      doc.text((ok?'[X] ':'[ ] ') + item.label, x, y);
+      // Só o marcador [X]/[ ] recebe cor (verde quando marcado, se corVerde) —
+      // o texto do item continua sempre preto, pra não ficar ilegível quando
+      // impresso/exportado.
+      const corMarcador = corVerde ? (ok ? [20,110,45] : [180,40,40]) : (ok ? [180,40,40] : [150,150,150]);
+      doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.setTextColor(corMarcador[0], corMarcador[1], corMarcador[2]);
+      const marcador = ok ? '[X] ' : '[ ] ';
+      doc.text(marcador, x, y);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(30,30,30);
+      doc.text(item.label, x + doc.getTextWidth(marcador), y);
       col++; if (col === 2) { col = 0; y += 0.5; }
     });
     if (col !== 0) y += 0.5;
@@ -22197,12 +22206,12 @@ async function _flashGerarDoc(d, numOverride) {
         if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
         const r = (respostas || {})[it.cod] || '';
         const sitTxt = r === 'C' ? '[C]' : r === 'NC' ? '[NC]' : r === 'NA' ? '[NA]' : '[ ]';
-        // Preto pra Conforme (não verde — baixo contraste no PDF), vermelho só
-        // pra Não Conforme (destaca o que precisa de atenção), cinza pra N/A.
-        const cor = r === 'NC' ? [180,40,40] : r === 'NA' ? [130,130,130] : [30,30,30];
+        // Só o marcador recebe cor: verde legível pra Conforme, vermelho pra
+        // Não Conforme, cinza pra N/A — o texto do item continua sempre preto.
+        const cor = r === 'C' ? [20,110,45] : r === 'NC' ? [180,40,40] : [130,130,130];
         doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(cor[0],cor[1],cor[2]);
         doc.text(sitTxt, ML+0.3, y);
-        doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(40,40,40);
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(30,30,30);
         const labelTxt = it.label + '  (' + it.criticidade + ', peso ' + flashPesoItem(it.criticidade) + ')';
         const lines = doc.splitTextToSize(labelTxt, CW - 1.3);
         lines.forEach((ln, li) => { doc.text(ln, ML+1.1, y + li*0.35); });
@@ -22220,65 +22229,32 @@ async function _flashGerarDoc(d, numOverride) {
   }
 
   // Variante da grade V2 pra lista PLANA de itens (Atividades/Verificações),
-  // com o mesmo título em caixa marrom das seções do modelo antigo. Aceita
-  // "cols" opcional (2 ou 3) pra render em grade e reduzir a extensão
-  // vertical de listas com itens curtos (Atividades Acompanhadas, ex.).
-  function checklistGridV2Flat(titulo2, itens, respostas, obsItens, cols) {
-    cols = cols || 1;
+  // com o mesmo título em caixa marrom das seções do modelo antigo. Lista
+  // única (não em grade) — só o marcador [C]/[NC]/[NA] recebe cor (verde
+  // legível quando Conforme, vermelho quando Não Conforme), o texto do item
+  // continua sempre preto.
+  function checklistGridV2Flat(titulo2, itens, respostas, obsItens) {
     if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
     sectionTitle(titulo2);
-    if (cols === 1) {
-      (itens || []).forEach(it => {
-        if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-        const r = (respostas || {})[it.id] || '';
-        const sitTxt = r === 'C' ? '[C]' : r === 'NC' ? '[NC]' : r === 'NA' ? '[NA]' : '[ ]';
-        const cor = r === 'NC' ? [180,40,40] : r === 'NA' ? [130,130,130] : [30,30,30];
-        doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(cor[0],cor[1],cor[2]);
-        doc.text(sitTxt, ML+0.3, y);
-        doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(40,40,40);
-        const labelTxt = it.label + '  (' + it.criticidade + ', peso ' + flashPesoItem(it.criticidade) + ')';
-        const lines = doc.splitTextToSize(labelTxt, CW - 1.3);
-        lines.forEach((ln, li) => { doc.text(ln, ML+1.1, y + li*0.35); });
-        y += Math.max(lines.length, 1) * 0.35;
-        const obs = obsItens && obsItens[it.id];
-        if (r === 'NC' && obs) {
-          doc.setFont('helvetica','italic'); doc.setFontSize(7.5); doc.setTextColor(100,40,40);
-          const obsLines = doc.splitTextToSize('Obs: ' + obs, CW - 1.3);
-          obsLines.forEach(ln => { if (y > pageH - 1.8) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); doc.text(ln, ML+1.1, y); y += 0.32; });
-        }
-        y += 0.15;
-      });
-      y += 0.2;
-      return;
-    }
-    // Grade de N colunas: cada linha de "cols" itens avança pela altura do
-    // item mais alto daquela linha (label + observação, se houver).
-    const gap = 0.3;
-    const colW = (CW - gap*(cols-1)) / cols;
-    let colIdx = 0, rowMaxH = 0;
-    (itens || []).forEach((it, idx) => {
-      if (colIdx === 0 && y > pageH - 2.4) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-      const x = ML + colIdx * (colW + gap);
+    (itens || []).forEach(it => {
+      if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
       const r = (respostas || {})[it.id] || '';
       const sitTxt = r === 'C' ? '[C]' : r === 'NC' ? '[NC]' : r === 'NA' ? '[NA]' : '[ ]';
-      const cor = r === 'NC' ? [180,40,40] : r === 'NA' ? [130,130,130] : [30,30,30];
-      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(cor[0],cor[1],cor[2]);
-      doc.text(sitTxt, x, y);
-      doc.setFont('helvetica','normal'); doc.setFontSize(7.8); doc.setTextColor(40,40,40);
-      const labelTxt = it.label + ' (' + it.criticidade.charAt(0) + ', p' + flashPesoItem(it.criticidade) + ')';
-      const lines = doc.splitTextToSize(labelTxt, colW - 0.7);
-      lines.forEach((ln, li) => { doc.text(ln, x+0.65, y + li*0.3); });
-      let h = Math.max(lines.length, 1) * 0.3;
+      const cor = r === 'C' ? [20,110,45] : r === 'NC' ? [180,40,40] : [130,130,130];
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(cor[0],cor[1],cor[2]);
+      doc.text(sitTxt, ML+0.3, y);
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(30,30,30);
+      const labelTxt = it.label + '  (' + it.criticidade + ', peso ' + flashPesoItem(it.criticidade) + ')';
+      const lines = doc.splitTextToSize(labelTxt, CW - 1.3);
+      lines.forEach((ln, li) => { doc.text(ln, ML+1.1, y + li*0.35); });
+      y += Math.max(lines.length, 1) * 0.35;
       const obs = obsItens && obsItens[it.id];
       if (r === 'NC' && obs) {
-        doc.setFont('helvetica','italic'); doc.setFontSize(7); doc.setTextColor(100,40,40);
-        const obsLines = doc.splitTextToSize('Obs: ' + obs, colW - 0.1);
-        obsLines.forEach((ln, li) => { doc.text(ln, x, y + h + 0.26 + li*0.26); });
-        h += obsLines.length * 0.26 + 0.08;
+        doc.setFont('helvetica','italic'); doc.setFontSize(7.5); doc.setTextColor(100,40,40);
+        const obsLines = doc.splitTextToSize('Obs: ' + obs, CW - 1.3);
+        obsLines.forEach(ln => { if (y > pageH - 1.8) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); doc.text(ln, ML+1.1, y); y += 0.32; });
       }
-      rowMaxH = Math.max(rowMaxH, h + 0.18);
-      colIdx++;
-      if (colIdx === cols || idx === itens.length - 1) { y += rowMaxH; colIdx = 0; rowMaxH = 0; }
+      y += 0.15;
     });
     y += 0.2;
   }
@@ -22300,7 +22276,7 @@ async function _flashGerarDoc(d, numOverride) {
     notaIda.forEach((ln, li) => doc.text(ln, ML+0.3, y+0.78+li*0.24));
     y += 1.3;
 
-    checklistGridV2Flat('ATIVIDADES ACOMPANHADAS', FLASH_ATIVIDADES, d.respostasAtividades, d.obsItens, 3);
+    checklistGridV2Flat('ATIVIDADES ACOMPANHADAS', FLASH_ATIVIDADES, d.respostasAtividades, d.obsItens);
     if (d.outraativ) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outras: ' + d.outraativ, ML+0.3, y); y += 0.5; }
 
     checklistGridV2Flat('VERIFICACOES AMBIENTAIS', FLASH_VERIFICACOES, d.respostasVerificacoes, d.obsItens);
