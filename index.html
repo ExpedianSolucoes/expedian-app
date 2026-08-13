@@ -21246,23 +21246,33 @@ function _flashSomaResultados(...partes) {
   }), { ptsObtidos: 0, ptsMax: 0, conformes: 0, naoConformes: 0, naoAplicaveis: 0 });
 }
 
-// Pontuação IDA% do Flash Report V2: soma Atividades Acompanhadas +
-// Verificações Ambientais (3 estados, pesadas) + Supressão Vegetal (se
-// aplicável naquele dia). A seção de Ocorrências foi removida do V2 —
-// Atividades/Verificações já capturam Conforme/Não Conforme item a item,
-// então uma terceira lista de ocorrências era redundante (ver flashVerRegistro
-// e _flashGerarDoc pra exibição de registros antigos que ainda tenham
-// ckOcorrencias preenchido, mantida só por histórico).
+// Pontuação IDA% do Flash Report V2: baseada SÓ em Verificações Ambientais
+// (3 estados, pesadas) + Supressão Vegetal (se aplicável naquele dia).
+// Atividades Acompanhadas NÃO entra na pontuação — é um registro do que
+// aconteceu no dia (a atividade ocorreu ou não), não uma checagem de
+// conformidade/estado como Verificações; misturar as duas na mesma % dava
+// uma leitura ambígua ("Conforme" numa atividade = "ocorreu" ou "ocorreu
+// direito"?). Os botões C/NC/NA de Atividades continuam funcionando
+// (registram o que foi observado e alimentam o alerta de Não Conforme —
+// ver flashCalcularPontuacao), só não contam pontos.
+// A seção de Ocorrências foi removida do V2 — Atividades/Verificações já
+// capturam Conforme/Não Conforme item a item, então uma terceira lista de
+// ocorrências era redundante (ver flashVerRegistro e _flashGerarDoc pra
+// exibição de registros antigos que ainda tenham ckOcorrencias preenchido,
+// mantida só por histórico).
 function flashCalcularIdaV2(f) {
   const ativ = flashCalcularIdaFlat(FLASH_ATIVIDADES, f.RespostasAtividades || {});
   const verif = flashCalcularIdaFlat(FLASH_VERIFICACOES, f.RespostasVerificacoes || {});
-  let acc = _flashSomaResultados(ativ, verif);
+  let acc = verif;
   if (f.TemSupressao) {
     const supr = flashCalcularIdaCatalogo(FLASH_ITENS_SUPRESSAO, f.RespostasSupressao || {});
     acc = _flashSomaResultados(acc, supr);
   }
   const pct = acc.ptsMax > 0 ? (acc.ptsObtidos / acc.ptsMax) * 100 : null;
-  return { ...acc, pct };
+  return {
+    ...acc, pct,
+    ativConformes: ativ.conformes, ativNaoConformes: ativ.naoConformes, ativNaoAplicaveis: ativ.naoAplicaveis,
+  };
 }
 
 function flashClassificacaoIda(pct) {
@@ -21398,6 +21408,7 @@ function flashHtmlResumoV2(d) {
     TemSupressao: d.temSupressao, RespostasSupressao: d.respostasSupressao,
   });
   const cls = flashClassificacaoIda(r.pct);
+  const temAtivNC = r.ativNaoConformes > 0;
   return `
   <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:.8rem">
     <div><strong>IDA:</strong> ${r.pct===null?'—':r.pct.toFixed(0)+'%'} <span style="color:${cls.cor};font-weight:700">${cls.label}</span></div>
@@ -21405,7 +21416,8 @@ function flashHtmlResumoV2(d) {
     <div>❌ ${r.naoConformes} não conforme${r.naoConformes!==1?'s':''}</div>
     <div>➖ ${r.naoAplicaveis} não aplicável${r.naoAplicaveis!==1?'is':''}</div>
   </div>
-  <div style="margin-top:6px;font-size:.68rem;color:var(--text-muted)">O IDA% é a média ponderada dos itens Conforme sobre o total avaliado (Conforme + Não Conforme), com peso por criticidade (Alta = 3, Média = 2, Baixa = 1). Itens marcados Não Aplicável não entram na conta.</div>`;
+  <div style="margin-top:6px;font-size:.68rem;color:var(--text-muted)">O IDA% é calculado só com base em Verificações Ambientais${d.temSupressao ? ' e Supressão Vegetal' : ''} — média ponderada dos itens Conforme sobre o total avaliado (Conforme + Não Conforme), com peso por criticidade (Alta = 3, Média = 2, Baixa = 1). Não Aplicável não entra na conta. Atividades Acompanhadas registra o que foi feito no dia mas não pontua.</div>
+  ${temAtivNC ? `<div style="margin-top:4px;font-size:.72rem;color:var(--red);font-weight:700">⚠️ ${r.ativNaoConformes} atividade${r.ativNaoConformes!==1?'s':''} marcada${r.ativNaoConformes!==1?'s':''} como Não Conforme — não afeta o IDA%, mas vale registrar/notificar.</div>` : ''}`;
 }
 
 /* -- Renderiza uma lista PLANA de itens (Atividades Acompanhadas ou
@@ -21707,8 +21719,8 @@ function flashVerRegistro(id) {
   ${f.Modelo === 'v2' ? `
   <div style="margin-bottom:8px;padding:8px 10px;background:#f4f4f4;border-radius:6px">
     ${(() => { const r = flashCalcularIdaV2(f); const cls = flashClassificacaoIda(r.pct);
-      return `<strong>IDA:</strong> ${r.pct==null?'—':r.pct.toFixed(0)+'%'} — ${cls.label} &nbsp;|&nbsp; ✅ ${r.conformes} · ❌ ${r.naoConformes} · ➖ ${r.naoAplicaveis}`; })()}
-    <div style="font-size:11px;color:#777;margin-top:4px">IDA% = média ponderada dos itens Conforme sobre o total avaliado (peso por criticidade: Alta=3, Média=2, Baixa=1). Não Aplicável não entra na conta.</div>
+      return `<strong>IDA:</strong> ${r.pct==null?'—':r.pct.toFixed(0)+'%'} — ${cls.label} &nbsp;|&nbsp; ✅ ${r.conformes} · ❌ ${r.naoConformes} · ➖ ${r.naoAplicaveis}` + (r.ativNaoConformes>0 ? ` &nbsp;|&nbsp; <span style="color:#c0392b">⚠️ ${r.ativNaoConformes} atividade(s) Não Conforme</span>` : ''); })()}
+    <div style="font-size:11px;color:#777;margin-top:4px">IDA% = calculado só com base em Verificações Ambientais${f.TemSupressao ? ' e Supressão Vegetal' : ''} (peso por criticidade: Alta=3, Média=2, Baixa=1). Não Aplicável não entra na conta. Atividades Acompanhadas registra o que foi feito no dia mas não pontua.</div>
   </div>
   ${flashHtmlTabelaV2Flat('✅ Atividades Acompanhadas', FLASH_ATIVIDADES, f.RespostasAtividades, f.ObsItens)}
   ${f.OutraAtividade ? `<div style="margin-bottom:8px"><strong>Outras atividades:</strong> ${f.OutraAtividade}</div>` : ''}
@@ -21744,7 +21756,12 @@ function flashVerRegistro(id) {
 function flashCalcularPontuacao(f) {
   if (f.Modelo === 'v2') {
     const r = flashCalcularIdaV2(f);
-    return { pct: r.pct, temOcorr: r.naoConformes > 0, conforme: r.naoConformes === 0 };
+    // temOcorr considera Não Conforme em QUALQUER lista (Verificações/Supressão,
+    // que pontuam, OU Atividades, que não pontua mas ainda é um alerta válido —
+    // ex.: "Supressão vegetal: Não Conforme" deve continuar acionando o badge
+    // ⚠️ e o botão de Notificar no histórico, mesmo sem afetar o IDA%).
+    const temOcorr = r.naoConformes > 0 || r.ativNaoConformes > 0;
+    return { pct: r.pct, temOcorr, conforme: !temOcorr };
   }
   const totalItens = FLASH_ATIVIDADES.length + FLASH_VERIFICACOES.length;
   const marcadosAtiv = Object.values(f.ckAtividades || {}).filter(Boolean).length;
@@ -22265,16 +22282,29 @@ async function _flashGerarDoc(d, numOverride) {
       TemSupressao: d.temSupressao, RespostasSupressao: d.respostasSupressao,
     });
     const nivelTxt = idaR.pct == null ? '--' : idaR.pct >= 75 ? 'SATISFATORIO' : idaR.pct >= 50 ? 'REGULAR' : idaR.pct >= 25 ? 'RUIM' : 'PESSIMO';
-    if (y > pageH - 3.4) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-    doc.setFillColor(245,240,237); doc.roundedRect(ML, y, CW, 1.0, 0.15, 0.15, 'F');
+    const temAtivNC = idaR.ativNaoConformes > 0;
+    // Mede a nota explicativa ANTES de desenhar a caixa, pra caixa/aviso
+    // acompanharem a altura real do texto (a nota quebra em 2 linhas em
+    // telas/paginas mais estreitas — altura fixa causava sobreposição com
+    // o aviso de atividade Não Conforme logo abaixo).
+    doc.setFont('helvetica','italic'); doc.setFontSize(7);
+    const notaIda = doc.splitTextToSize('IDA% calculado so com base em Verificacoes Ambientais' + (d.temSupressao ? ' e Supressao Vegetal' : '') + ' (peso por criticidade: Alta=3, Media=2, Baixa=1). Nao Aplicavel nao entra na conta. Atividades Acompanhadas registra o que foi feito no dia mas nao pontua.', CW - 0.6);
+    const notaH = notaIda.length * 0.24;
+    const avisoH = temAtivNC ? 0.3 : 0;
+    const boxHIda = 0.78 + notaH + avisoH + 0.12;
+    if (y > pageH - (boxHIda + 0.4)) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    doc.setFillColor(245,240,237); doc.roundedRect(ML, y, CW, boxHIda, 0.15, 0.15, 'F');
     doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(63,38,31);
     doc.text('IDA: ' + (idaR.pct == null ? '--' : idaR.pct.toFixed(0) + '%') + ' - ' + nivelTxt, ML+0.3, y+0.3);
     doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(80,60,50);
     doc.text('Conformes: ' + idaR.conformes + '   Nao conformes: ' + idaR.naoConformes + '   Nao aplicaveis: ' + idaR.naoAplicaveis, ML+0.3, y+0.55);
     doc.setFont('helvetica','italic'); doc.setFontSize(7); doc.setTextColor(120,110,100);
-    const notaIda = doc.splitTextToSize('IDA% = media ponderada dos itens Conforme sobre o total avaliado (Conforme + Nao Conforme), com peso por criticidade (Alta=3, Media=2, Baixa=1). Itens Nao Aplicavel nao entram na conta.', CW - 0.6);
     notaIda.forEach((ln, li) => doc.text(ln, ML+0.3, y+0.78+li*0.24));
-    y += 1.3;
+    if (temAtivNC) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(180,40,40);
+      doc.text('Atencao: ' + idaR.ativNaoConformes + ' atividade(s) acompanhada(s) marcada(s) como Nao Conforme (nao afeta o IDA%).', ML+0.3, y+0.78+notaH+0.2);
+    }
+    y += boxHIda + 0.3;
 
     checklistGridV2Flat('ATIVIDADES ACOMPANHADAS', FLASH_ATIVIDADES, d.respostasAtividades, d.obsItens);
     if (d.outraativ) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outras: ' + d.outraativ, ML+0.3, y); y += 0.5; }
