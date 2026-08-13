@@ -21364,6 +21364,10 @@ function flashGrupoCheckboxesHtml(titulo, itens, grupoKey) {
 function flashResponderAtividade(id, valor) {
   if (!window._flashData.respostasAtividades) window._flashData.respostasAtividades = {};
   window._flashData.respostasAtividades[id] = valor;
+  // "Supressão vegetal" é o gatilho do checklist detalhado de supressão:
+  // respondida Conforme ou Não Conforme = houve a atividade no dia, abre o
+  // bloco específico automaticamente; Não Aplicável = não houve, some.
+  if (id === 'supressao') window._flashData.temSupressao = (valor === 'C' || valor === 'NC');
   navigate('checklist_flash');
 }
 function flashResponderVerificacao(id, valor) {
@@ -21379,10 +21383,6 @@ function flashResponderSupressao(cod, valor) {
 function flashObsItem(id, valor) {
   if (!window._flashData.obsItens) window._flashData.obsItens = {};
   window._flashData.obsItens[id] = valor;
-}
-function flashToggleSupressao(checked) {
-  window._flashData.temSupressao = checked;
-  navigate('checklist_flash');
 }
 
 /* -- Resumo ao vivo do IDA% enquanto o formulário V2 está sendo preenchido. -- */
@@ -21425,6 +21425,44 @@ function flashHtmlItensV2(titulo, itens, respostas, obsItens, respFnName) {
     </div>`;
   }).join('')}
   <div style="margin-bottom:10px"></div>`;
+}
+
+/* -- Checklist único do formulário V2: Atividades Acompanhadas e
+   Verificações Ambientais mescladas numa lista só (as duas já usam o mesmo
+   mecanismo de resposta — não há razão pra separar em duas seções). Cada
+   item continua salvando na sua chave de sempre (RespostasAtividades ou
+   RespostasVerificacoes), só a exibição foi unificada. Quando o item
+   "Supressão vegetal" é respondido Conforme ou Não Conforme (ou seja,
+   houve essa atividade no dia), o checklist detalhado de Supressão Vegetal
+   abre automaticamente logo abaixo dele — sem precisar de um botão/toggle
+   separado em outro lugar da página. -- */
+function flashHtmlChecklistUnificado(d) {
+  const todos = [
+    ...FLASH_ATIVIDADES.map(it => ({ it, fn: 'flashResponderAtividade', resp: d.respostasAtividades })),
+    ...FLASH_VERIFICACOES.map(it => ({ it, fn: 'flashResponderVerificacao', resp: d.respostasVerificacoes })),
+  ];
+  return todos.map(({ it, fn, resp }) => {
+    const r = (resp || {})[it.id] || '';
+    const peso = flashPesoItem(it.criticidade);
+    const mostrarSupressao = it.id === 'supressao' && (r === 'C' || r === 'NC');
+    return `
+    <div style="padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:5px">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px;font-size:.78rem">${it.label} <span style="color:var(--text-muted);font-size:.65rem">(${it.criticidade}, peso ${peso})</span></div>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <button type="button" class="btn-secondary" style="padding:2px 9px;font-size:.66rem;${r==='C'?'background:var(--green-main);color:#fff;border-color:var(--green-main)':''}" onclick="${fn}('${it.id}','C')">✅ Conforme</button>
+          <button type="button" class="btn-secondary" style="padding:2px 9px;font-size:.66rem;${r==='NC'?'background:var(--red);color:#fff;border-color:var(--red)':''}" onclick="${fn}('${it.id}','NC')">❌ Não Conf.</button>
+          <button type="button" class="btn-secondary" style="padding:2px 9px;font-size:.66rem;${r==='NA'?'background:var(--text-muted);color:#fff;border-color:var(--text-muted)':''}" onclick="${fn}('${it.id}','NA')">➖ N/A</button>
+        </div>
+      </div>
+      ${r==='NC' ? `<textarea placeholder="Observação..." oninput="flashObsItem('${it.id}', this.value)" style="width:100%;margin-top:5px;font-size:.72rem;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-family:inherit" rows="2">${((d.obsItens && d.obsItens[it.id]) || '').replace(/</g,'&lt;')}</textarea>` : ''}
+      ${mostrarSupressao ? `
+      <div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--brand-brown,#3F261F)">
+        <div style="font-size:.76rem;font-weight:800;color:var(--brand-brown,#3F261F);margin-bottom:8px">🌳 Checklist específico de Supressão Vegetal</div>
+        ${flashHtmlCatalogoV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens, 'flashResponderSupressao')}
+      </div>` : ''}
+    </div>`;
+  }).join('');
 }
 
 /* -- Renderiza um catálogo (seções + itens) do checklist V2 — usado só pelo
@@ -21913,23 +21951,11 @@ function pageChecklistFlash() {
     </div>
     <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:6px">Marque cada item como ✅ Conforme, ❌ Não Conforme ou ➖ Não Aplicável (não fazia sentido verificar hoje/aqui — não conta na pontuação).</div>
 
-    ${flashHtmlItensV2('✅ Atividades Acompanhadas', FLASH_ATIVIDADES, d.respostasAtividades, d.obsItens, 'flashResponderAtividade')}
-    <div class="form-group" style="margin-bottom:10px"><label>Outras atividades</label><input value="${(d.outraativ || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraativ', this.value)" placeholder="Descreva outras atividades acompanhadas..."></div>
-
-    ${flashHtmlItensV2('🔍 Verificações Ambientais', FLASH_VERIFICACOES, d.respostasVerificacoes, d.obsItens, 'flashResponderVerificacao')}
+    ${flashHtmlChecklistUnificado(d)}
+    <div class="form-group" style="margin-bottom:10px"><label>Outras atividades/verificações não listadas</label><input value="${(d.outraativ || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraativ', this.value)" placeholder="Descreva outras atividades ou verificações..."></div>
 
     ${flashGrupoCheckboxesHtml('⚠️ Ocorrências / Não Conformidades', FLASH_OCORRENCIAS_V2, 'ckOcorrencias')}
     <div class="form-group" style="margin-bottom:10px"><label>Outra ocorrência</label><input value="${(d.outraocorr || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraocorr', this.value)" placeholder="Descreva se houver outra ocorrência..."></div>
-
-    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px">
-      <label style="display:flex;align-items:center;gap:8px;font-size:.8rem;font-weight:700;cursor:pointer">
-        <input type="checkbox" ${d.temSupressao ? 'checked' : ''} onchange="flashToggleSupressao(this.checked)"> 🌳 Houve atividade de supressão vegetal nesta frente hoje?
-      </label>
-    </div>
-    ${d.temSupressao ? `
-    <div class="card-title">🌳 Checklist de Supressão Vegetal</div>
-    ${flashHtmlCatalogoV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens, 'flashResponderSupressao')}
-    ` : ''}
     ` : `
     ${flashGrupoCheckboxesHtml('✅ Atividades Acompanhadas', FLASH_ATIVIDADES, 'ckAtividades')}
     <div class="form-group" style="margin-bottom:10px"><label>Outras atividades</label><input value="${(d.outraativ || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraativ', this.value)" placeholder="Descreva outras atividades acompanhadas..."></div>
