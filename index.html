@@ -9745,7 +9745,8 @@ async function coletarPrazosDocumentos() {
   try {
     const flashs = await dbLer('FlashReportsEnergisa') || [];
     flashs.forEach(f => {
-      if (f.OrientacaoVerbal && f.OrientacaoPrazo) {
+      const resolvidoFlash = f.OrientacaoStatusCumprimento === 'Atendido' || f.OrientacaoStatusCumprimento === 'Finalizado';
+      if (f.OrientacaoVerbal && f.OrientacaoPrazo && !resolvidoFlash) {
         itens.push({
           origem: 'flash', id: f.Id,
           titulo: 'Orientação verbal em campo — ' + (f.FrenteNome || ''),
@@ -21083,9 +21084,9 @@ const FLASH_FRENTES = [
 ];
 const FLASH_RTS = ['Tiago Tavares', 'Marcelo Marafon', 'Luiz Evaristo'];
 const FLASH_CLIMAS = ['Ensolarado', 'Parcialmente nublado', 'Nublado', 'Chuva leve', 'Chuva forte'];
-// criticidade/bloqueante usados só pelo checklist V2 (peso na pontuação IDA%
-// e marcação de item bloqueante); o modelo V1 (checkbox simples) ignora esses
-// campos e continua funcionando exatamente como antes.
+// criticidade usada só pelo checklist V2 (peso na pontuação IDA%); o modelo
+// V1 (checkbox simples) ignora esse campo e continua funcionando exatamente
+// como antes.
 const FLASH_ATIVIDADES = [
   { id: 'supressao', label: 'Supressão vegetal', criticidade: 'Alta' }, { id: 'movsolo', label: 'Movimentação de solo', criticidade: 'Média' },
   { id: 'escavacao', label: 'Escavação', criticidade: 'Média' }, { id: 'concretagem', label: 'Concretagem', criticidade: 'Média' },
@@ -21119,29 +21120,26 @@ const FLASH_OCORRENCIAS = [
   { id: 'semdds', label: 'Ausência de DDS Ambiental', criticidade: 'Média', bloqueante: false },
 ];
 
-// Versão enxuta de FLASH_OCORRENCIAS usada SÓ pelo modelo V2 — remove os
-// itens que já têm equivalente direto em Atividades/Verificações (agora que
-// essas duas têm estado Não Conforme próprio), pra não pontuar o mesmo
-// problema duas vezes nem pedir pra preencher a mesma coisa em dois
-// lugares. O modelo V1 continua usando FLASH_OCORRENCIAS (lista completa),
-// sem nenhuma mudança — histórico antigo não é afetado.
-// Removidos por já estarem cobertos: vazoleo (~Verificação "vazamentos"),
-// residuoinadeq (~"segregacaoresid"), falhasinalizacao (~"sinalizamb"),
-// erosao (~Atividade "ctrlerosao"), kitausente (~"kitmitigacao"),
-// poeirasctrl (~"ctrlpoeira"), semdds (~"ddsregistrado"/Atividade "dds").
+// FLASH_OCORRENCIAS_V2 foi usada pelo modelo V2 até a seção de Ocorrências
+// ser removida (Atividades/Verificações já capturam Conforme/Não Conforme
+// item a item, então uma terceira lista de ocorrências virou redundante).
+// Mantida aqui só pra exibir corretamente registros antigos que já tenham
+// ckOcorrencias preenchido (histórico) — não entra mais no cálculo do IDA%
+// nem aparece no formulário de Flash Reports novos. O modelo V1 continua
+// usando FLASH_OCORRENCIAS (lista completa), sem nenhuma mudança.
 const FLASH_OCORRENCIAS_V2 = [
   { id: 'semocorr', label: 'Sem ocorrência' },
-  { id: 'intervnaoaut', label: 'Intervenção não autorizada', criticidade: 'Alta', bloqueante: true },
-  { id: 'supressnaoaut', label: 'Supressão vegetal não autorizada', criticidade: 'Alta', bloqueante: true },
-  { id: 'faunaameac', label: 'Fauna silvestre encontrada / ameaçada', criticidade: 'Alta', bloqueante: true },
-  { id: 'efluenteirreg', label: 'Disposição irregular de efluentes', criticidade: 'Alta', bloqueante: true },
-  { id: 'contamsolo', label: 'Contaminação do solo', criticidade: 'Alta', bloqueante: true },
-  { id: 'danoapp', label: 'Dano a APP / corpo hídrico', criticidade: 'Alta', bloqueante: true },
+  { id: 'intervnaoaut', label: 'Intervenção não autorizada', criticidade: 'Alta' },
+  { id: 'supressnaoaut', label: 'Supressão vegetal não autorizada', criticidade: 'Alta' },
+  { id: 'faunaameac', label: 'Fauna silvestre encontrada / ameaçada', criticidade: 'Alta' },
+  { id: 'efluenteirreg', label: 'Disposição irregular de efluentes', criticidade: 'Alta' },
+  { id: 'contamsolo', label: 'Contaminação do solo', criticidade: 'Alta' },
+  { id: 'danoapp', label: 'Dano a APP / corpo hídrico', criticidade: 'Alta' },
 ];
 
 /* =============================================================
    FLASH REPORT V2 — checklist ponderado (Conforme/Não Conforme/Não
-   Aplicável) com peso por criticidade, item bloqueante e IDA% — baseado
+   Aplicável) com peso por criticidade e IDA% — baseado
    na planilha "Check Fiscalização - NOVO.xlsx" (abas DIA XX e SUPRESSÃO
    VEGETAL). Convive com o modelo antigo (checkboxes simples, listas
    FLASH_ATIVIDADES/FLASH_VERIFICACOES/FLASH_OCORRENCIAS acima, que NÃO
@@ -21168,42 +21166,42 @@ const FLASH_PESO_CRITICIDADE = { 'Alta': 3, 'Média': 2, 'Baixa': 1 };
 // anterior) pra não duplicar pontuação.
 const FLASH_ITENS_SUPRESSAO = [
   { secao: 'Regularidade Ambiental (Supressão)', itens: [
-    { cod: 'S01', label: 'O empreendimento possui licença ambiental válida e disponível na frente?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S02', label: 'A ASV (Autorização de Supressão Vegetal) está vigente e disponível para conferência in loco?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S03', label: 'CTF da empresa executora está em dia (IBAMA)?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S04', label: 'Autorização de manejo/resgate de fauna está disponível?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S05', label: 'Licença/registro da motosserra (IBAMA) disponível?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S06', label: 'PAE está disponível na frente de serviço?', criticidade: 'Alta', bloqueante: false },
-    { cod: 'S07', label: 'A equipe conhece os procedimentos ambientais adotados na obra?', criticidade: 'Alta', bloqueante: false },
+    { cod: 'S01', label: 'O empreendimento possui licença ambiental válida e disponível na frente?', criticidade: 'Alta' },
+    { cod: 'S02', label: 'A ASV (Autorização de Supressão Vegetal) está vigente e disponível para conferência in loco?', criticidade: 'Alta' },
+    { cod: 'S03', label: 'CTF da empresa executora está em dia (IBAMA)?', criticidade: 'Alta' },
+    { cod: 'S04', label: 'Autorização de manejo/resgate de fauna está disponível?', criticidade: 'Alta' },
+    { cod: 'S05', label: 'Licença/registro da motosserra (IBAMA) disponível?', criticidade: 'Alta' },
+    { cod: 'S06', label: 'PAE está disponível na frente de serviço?', criticidade: 'Alta' },
+    { cod: 'S07', label: 'A equipe conhece os procedimentos ambientais adotados na obra?', criticidade: 'Alta' },
   ]},
   { secao: 'Abertura de Acessos', itens: [
-    { cod: 'S08', label: 'Abertura de acesso está dentro da largura autorizada no projeto?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S09', label: 'Não há intervenção em APP, nascente ou corpo hídrico?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S10', label: 'Controle de erosão implantado nas vias de acesso (barreiras, drenos)?', criticidade: 'Alta', bloqueante: false },
-    { cod: 'S11', label: 'Porteiras e acessos a propriedades estão mantidos fechados?', criticidade: 'Média', bloqueante: false },
-    { cod: 'S12', label: 'Não há danos a benfeitorias, cercas ou propriedades no entorno?', criticidade: 'Alta', bloqueante: false },
-    { cod: 'S13', label: 'Acesso é usado somente por pessoal autorizado?', criticidade: 'Média', bloqueante: false },
-    { cod: 'S14', label: 'Verificação com GPS: acesso não adentra APP ou área sensível?', criticidade: 'Alta', bloqueante: true },
+    { cod: 'S08', label: 'Abertura de acesso está dentro da largura autorizada no projeto?', criticidade: 'Alta' },
+    { cod: 'S09', label: 'Não há intervenção em APP, nascente ou corpo hídrico?', criticidade: 'Alta' },
+    { cod: 'S10', label: 'Controle de erosão implantado nas vias de acesso (barreiras, drenos)?', criticidade: 'Alta' },
+    { cod: 'S11', label: 'Porteiras e acessos a propriedades estão mantidos fechados?', criticidade: 'Média' },
+    { cod: 'S12', label: 'Não há danos a benfeitorias, cercas ou propriedades no entorno?', criticidade: 'Alta' },
+    { cod: 'S13', label: 'Acesso é usado somente por pessoal autorizado?', criticidade: 'Média' },
+    { cod: 'S14', label: 'Verificação com GPS: acesso não adentra APP ou área sensível?', criticidade: 'Alta' },
   ]},
   { secao: 'Supressão Vegetal', itens: [
-    { cod: 'S15', label: 'Faixa de supressão delimitada fisicamente em campo (piqueteamento)?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S16', label: 'Largura da faixa está dentro do permitido na licença/projeto?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S17', label: 'Não há supressão fora da área autorizada?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S18', label: 'Preservação total de APPs e áreas sensíveis verificada com GPS?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S19', label: 'Operador de motosserra habilitado e com EPI completo?', criticidade: 'Alta', bloqueante: false },
-    { cod: 'S20', label: 'Afugentamento sonoro realizado antes do início da supressão?', criticidade: 'Alta', bloqueante: false },
-    { cod: 'S21', label: 'Queda direcionada, evitando danos à vegetação remanescente?', criticidade: 'Alta', bloqueante: false },
-    { cod: 'S22', label: 'Altura de toco adequada (≤15 cm ao solo)?', criticidade: 'Média', bloqueante: false },
-    { cod: 'S23', label: 'Madeira enleirada e organizada; cubagem realizada e registrada?', criticidade: 'Média', bloqueante: false },
-    { cod: 'S24', label: 'Nota fiscal ou GF de destinação da madeira emitida e arquivada?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S25', label: "Não há obstrução de drenagem natural ou curso d'água?", criticidade: 'Alta', bloqueante: true },
-    { cod: 'S26', label: 'Não há focos de calor ou risco de incêndio na faixa desmatada?', criticidade: 'Alta', bloqueante: true },
-    { cod: 'S27', label: 'Aceiros implantados nas bordas da faixa em período de seca?', criticidade: 'Alta', bloqueante: false },
+    { cod: 'S15', label: 'Faixa de supressão delimitada fisicamente em campo (piqueteamento)?', criticidade: 'Alta' },
+    { cod: 'S16', label: 'Largura da faixa está dentro do permitido na licença/projeto?', criticidade: 'Alta' },
+    { cod: 'S17', label: 'Não há supressão fora da área autorizada?', criticidade: 'Alta' },
+    { cod: 'S18', label: 'Preservação total de APPs e áreas sensíveis verificada com GPS?', criticidade: 'Alta' },
+    { cod: 'S19', label: 'Operador de motosserra habilitado e com EPI completo?', criticidade: 'Alta' },
+    { cod: 'S20', label: 'Afugentamento sonoro realizado antes do início da supressão?', criticidade: 'Alta' },
+    { cod: 'S21', label: 'Queda direcionada, evitando danos à vegetação remanescente?', criticidade: 'Alta' },
+    { cod: 'S22', label: 'Altura de toco adequada (≤15 cm ao solo)?', criticidade: 'Média' },
+    { cod: 'S23', label: 'Madeira enleirada e organizada; cubagem realizada e registrada?', criticidade: 'Média' },
+    { cod: 'S24', label: 'Nota fiscal ou GF de destinação da madeira emitida e arquivada?', criticidade: 'Alta' },
+    { cod: 'S25', label: "Não há obstrução de drenagem natural ou curso d'água?", criticidade: 'Alta' },
+    { cod: 'S26', label: 'Não há focos de calor ou risco de incêndio na faixa desmatada?', criticidade: 'Alta' },
+    { cod: 'S27', label: 'Aceiros implantados nas bordas da faixa em período de seca?', criticidade: 'Alta' },
   ]},
   { secao: 'Recuperação de Áreas Degradadas', itens: [
-    { cod: 'S28', label: 'Áreas degradadas por abertura de acesso estão sendo revegetadas ou em plano de recuperação?', criticidade: 'Alta', bloqueante: false },
-    { cod: 'S29', label: 'Há hidrossemeadura, enleiramento ou barreira de contenção nas áreas expostas?', criticidade: 'Alta', bloqueante: false },
-    { cod: 'S30', label: 'Evidências fotográficas georreferenciadas de monitoramento e recuperação disponíveis?', criticidade: 'Média', bloqueante: false },
+    { cod: 'S28', label: 'Áreas degradadas por abertura de acesso estão sendo revegetadas ou em plano de recuperação?', criticidade: 'Alta' },
+    { cod: 'S29', label: 'Há hidrossemeadura, enleiramento ou barreira de contenção nas áreas expostas?', criticidade: 'Alta' },
+    { cod: 'S30', label: 'Evidências fotográficas georreferenciadas de monitoramento e recuperação disponíveis?', criticidade: 'Média' },
   ]},
 ];
 
@@ -21213,15 +21211,15 @@ function flashPesoItem(criticidade) { return FLASH_PESO_CRITICIDADE[criticidade]
 // { cod: 'C'|'NC'|'NA' }: pts obtidos (soma dos pesos com 'C') / pts máx
 // (soma dos pesos com 'C' ou 'NC' — 'NA' fica fora do cálculo).
 function flashCalcularIdaCatalogo(catalogo, respostas) {
-  let ptsObtidos = 0, ptsMax = 0, conformes = 0, naoConformes = 0, naoAplicaveis = 0, bloqueantesNC = 0;
+  let ptsObtidos = 0, ptsMax = 0, conformes = 0, naoConformes = 0, naoAplicaveis = 0;
   (catalogo || []).forEach(sec => sec.itens.forEach(it => {
     const r = respostas ? respostas[it.cod] : null;
     const peso = flashPesoItem(it.criticidade);
     if (r === 'C') { ptsObtidos += peso; ptsMax += peso; conformes++; }
-    else if (r === 'NC') { ptsMax += peso; naoConformes++; if (it.bloqueante) bloqueantesNC++; }
+    else if (r === 'NC') { ptsMax += peso; naoConformes++; }
     else if (r === 'NA') { naoAplicaveis++; }
   }));
-  return { ptsObtidos, ptsMax, conformes, naoConformes, naoAplicaveis, bloqueantesNC };
+  return { ptsObtidos, ptsMax, conformes, naoConformes, naoAplicaveis };
 }
 
 // Igual à de cima, mas pra uma lista PLANA de itens (sem seções) — usada
@@ -21229,48 +21227,36 @@ function flashCalcularIdaCatalogo(catalogo, respostas) {
 // e Verificações Ambientais, agora respondidas em 3 estados (Conforme/Não
 // Conforme/Não Aplicável) em vez de um checkbox simples.
 function flashCalcularIdaFlat(itens, respostas) {
-  let ptsObtidos = 0, ptsMax = 0, conformes = 0, naoConformes = 0, naoAplicaveis = 0, bloqueantesNC = 0;
+  let ptsObtidos = 0, ptsMax = 0, conformes = 0, naoConformes = 0, naoAplicaveis = 0;
   (itens || []).forEach(it => {
     const r = respostas ? respostas[it.id] : null;
     const peso = flashPesoItem(it.criticidade);
     if (r === 'C') { ptsObtidos += peso; ptsMax += peso; conformes++; }
-    else if (r === 'NC') { ptsMax += peso; naoConformes++; if (it.bloqueante) bloqueantesNC++; }
+    else if (r === 'NC') { ptsMax += peso; naoConformes++; }
     else if (r === 'NA') { naoAplicaveis++; }
   });
-  return { ptsObtidos, ptsMax, conformes, naoConformes, naoAplicaveis, bloqueantesNC };
-}
-
-// Ocorrências continua com o MESMO checkbox simples de sempre (campo
-// ckOcorrencias, idêntico ao modelo V1) — só passa a valer ponto: cada
-// ocorrência marcada conta como um item Não Conforme com peso pela
-// criticidade; a que NÃO for marcada não penaliza em nada (equivale a Não
-// Aplicável). "Sem ocorrência" é só um marcador informativo, não pontua.
-function flashCalcularIdaOcorrencias(itens, marcados) {
-  let ptsMax = 0, naoConformes = 0, bloqueantesNC = 0;
-  (itens || []).forEach(it => {
-    if (it.id === 'semocorr') return;
-    const peso = flashPesoItem(it.criticidade);
-    if (marcados && marcados[it.id]) { ptsMax += peso; naoConformes++; if (it.bloqueante) bloqueantesNC++; }
-  });
-  return { ptsObtidos: 0, ptsMax, conformes: 0, naoConformes, naoAplicaveis: 0, bloqueantesNC };
+  return { ptsObtidos, ptsMax, conformes, naoConformes, naoAplicaveis };
 }
 
 function _flashSomaResultados(...partes) {
   return partes.reduce((acc, p) => ({
     ptsObtidos: acc.ptsObtidos + p.ptsObtidos, ptsMax: acc.ptsMax + p.ptsMax,
     conformes: acc.conformes + p.conformes, naoConformes: acc.naoConformes + p.naoConformes,
-    naoAplicaveis: acc.naoAplicaveis + p.naoAplicaveis, bloqueantesNC: acc.bloqueantesNC + p.bloqueantesNC,
-  }), { ptsObtidos: 0, ptsMax: 0, conformes: 0, naoConformes: 0, naoAplicaveis: 0, bloqueantesNC: 0 });
+    naoAplicaveis: acc.naoAplicaveis + p.naoAplicaveis,
+  }), { ptsObtidos: 0, ptsMax: 0, conformes: 0, naoConformes: 0, naoAplicaveis: 0 });
 }
 
 // Pontuação IDA% do Flash Report V2: soma Atividades Acompanhadas +
-// Verificações Ambientais (3 estados, pesadas) + Ocorrências (checkbox,
-// pesada) + Supressão Vegetal (se aplicável naquele dia).
+// Verificações Ambientais (3 estados, pesadas) + Supressão Vegetal (se
+// aplicável naquele dia). A seção de Ocorrências foi removida do V2 —
+// Atividades/Verificações já capturam Conforme/Não Conforme item a item,
+// então uma terceira lista de ocorrências era redundante (ver flashVerRegistro
+// e _flashGerarDoc pra exibição de registros antigos que ainda tenham
+// ckOcorrencias preenchido, mantida só por histórico).
 function flashCalcularIdaV2(f) {
   const ativ = flashCalcularIdaFlat(FLASH_ATIVIDADES, f.RespostasAtividades || {});
   const verif = flashCalcularIdaFlat(FLASH_VERIFICACOES, f.RespostasVerificacoes || {});
-  const ocorr = flashCalcularIdaOcorrencias(FLASH_OCORRENCIAS_V2, f.ckOcorrencias || {});
-  let acc = _flashSomaResultados(ativ, verif, ocorr);
+  let acc = _flashSomaResultados(ativ, verif);
   if (f.TemSupressao) {
     const supr = flashCalcularIdaCatalogo(FLASH_ITENS_SUPRESSAO, f.RespostasSupressao || {});
     acc = _flashSomaResultados(acc, supr);
@@ -21297,6 +21283,7 @@ function flashNovoForm(frenteIdPreSelecionado) {
     respostasAtividades: {}, respostasVerificacoes: {}, temSupressao: false, respostasSupressao: {}, obsItens: {},
     outraativ: '', outraocorr: '', atividades: '', amanha: '', obs: '', fotos: [],
     orientacaoVerbal: false, orientacaoPara: '', orientacaoPrazo: '',
+    orientacaoDataCumprimento: '', orientacaoStatusCumprimento: '',
   };
 }
 if (!window._flashData) flashNovoForm();
@@ -21333,6 +21320,7 @@ function flashEditarRegistro(id) {
     atividades: f.Atividades || '', amanha: f.PrevisaoAmanha || '', obs: f.Observacoes || '',
     fotos: (f.fotos || []).map(x => ({ ...x })),
     orientacaoVerbal: !!f.OrientacaoVerbal, orientacaoPara: f.OrientacaoPara || '', orientacaoPrazo: f.OrientacaoPrazo || '',
+    orientacaoDataCumprimento: f.OrientacaoDataCumprimento || '', orientacaoStatusCumprimento: f.OrientacaoStatusCumprimento || '',
   };
   window._flashRegistroAtualId = id;
   window._flashMostrarForm = true;
@@ -21344,6 +21332,24 @@ function flashMarcar(grupo, id, checked) {
   window._flashData[grupo][id] = checked;
 }
 function flashCampo(campo, valor) { window._flashData[campo] = valor; }
+
+/* -- Cumprimento do prazo de atendimento da orientação verbal (mesmo padrão
+   já usado em Notificação de NC — ver ncCalcularStatusPrazoAtendimento):
+   compara a data de cumprimento informada com o prazo dado em campo, sem
+   precisar re-renderizar a página inteira a cada tecla. -- */
+function flashAtualizarStatusPrazoOrientacao() {
+  const info = document.getElementById('flash-orient-prazo-info');
+  if (!info) return;
+  const st = ncCalcularStatusPrazoAtendimento(window._flashData.orientacaoPrazo, window._flashData.orientacaoDataCumprimento);
+  if (!st) { info.textContent = ''; return; }
+  if (st === 'Dentro do Prazo') {
+    info.innerHTML = '🟢 Dentro do Prazo (prazo: ' + new Date(window._flashData.orientacaoPrazo + 'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = 'var(--green-main)';
+  } else {
+    info.innerHTML = '🔴 Fora do Prazo (prazo: ' + new Date(window._flashData.orientacaoPrazo + 'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = 'var(--red)';
+  }
+}
 
 function flashGrupoCheckboxesHtml(titulo, itens, grupoKey) {
   const estado = window._flashData[grupoKey] || {};
@@ -21389,7 +21395,7 @@ function flashObsItem(id, valor) {
 function flashHtmlResumoV2(d) {
   const r = flashCalcularIdaV2({
     RespostasAtividades: d.respostasAtividades, RespostasVerificacoes: d.respostasVerificacoes,
-    ckOcorrencias: d.ckOcorrencias, TemSupressao: d.temSupressao, RespostasSupressao: d.respostasSupressao,
+    TemSupressao: d.temSupressao, RespostasSupressao: d.respostasSupressao,
   });
   const cls = flashClassificacaoIda(r.pct);
   return `
@@ -21398,8 +21404,8 @@ function flashHtmlResumoV2(d) {
     <div>✅ ${r.conformes} conforme${r.conformes!==1?'s':''}</div>
     <div>❌ ${r.naoConformes} não conforme${r.naoConformes!==1?'s':''}</div>
     <div>➖ ${r.naoAplicaveis} não aplicável${r.naoAplicaveis!==1?'is':''}</div>
-    ${r.bloqueantesNC>0 ? `<div style="color:var(--red);font-weight:800">⛔ ${r.bloqueantesNC} item bloqueante em não conformidade!</div>` : ''}
-  </div>`;
+  </div>
+  <div style="margin-top:6px;font-size:.68rem;color:var(--text-muted)">O IDA% é a média ponderada dos itens Conforme sobre o total avaliado (Conforme + Não Conforme), com peso por criticidade (Alta = 3, Média = 2, Baixa = 1). Itens marcados Não Aplicável não entram na conta.</div>`;
 }
 
 /* -- Renderiza uma lista PLANA de itens (Atividades Acompanhadas ou
@@ -21475,9 +21481,9 @@ function flashHtmlCatalogoV2(catalogo, respostas, obsItens, respFnName) {
         const r = (respostas || {})[it.cod] || '';
         const peso = flashPesoItem(it.criticidade);
         return `
-        <div style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;${it.bloqueante?'border-left:3px solid var(--red)':''}">
+        <div style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
           <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
-            <div style="flex:1;min-width:220px;font-size:.8rem">${it.bloqueante?'⛔ ':''}${it.label} <span style="color:var(--text-muted);font-size:.68rem">(${it.criticidade}, peso ${peso})</span></div>
+            <div style="flex:1;min-width:220px;font-size:.8rem">${it.label} <span style="color:var(--text-muted);font-size:.68rem">(${it.criticidade}, peso ${peso})</span></div>
             <div style="display:flex;gap:4px;flex-shrink:0">
               <button type="button" class="btn-secondary" style="padding:3px 10px;font-size:.68rem;${r==='C'?'background:var(--green-main);color:#fff;border-color:var(--green-main)':''}" onclick="${respFnName}('${it.cod}','C')">✅ Conforme</button>
               <button type="button" class="btn-secondary" style="padding:3px 10px;font-size:.68rem;${r==='NC'?'background:var(--red);color:#fff;border-color:var(--red)':''}" onclick="${respFnName}('${it.cod}','NC')">❌ Não Conf.</button>
@@ -21609,6 +21615,7 @@ async function flashSalvar() {
     OutraAtividade: d.outraativ, OutraOcorrencia: d.outraocorr,
     Atividades: d.atividades, PrevisaoAmanha: d.amanha, Observacoes: d.obs,
     OrientacaoVerbal: !!d.orientacaoVerbal, OrientacaoPara: d.orientacaoPara || '', OrientacaoPrazo: d.orientacaoPrazo || '',
+    OrientacaoDataCumprimento: d.orientacaoDataCumprimento || '', OrientacaoStatusCumprimento: d.orientacaoStatusCumprimento || '',
     Modelo: d.modelo === 'v2' ? 'v2' : 'v1',
     ckAtividades: d.ckAtividades || {}, ckVerificacoes: d.ckVerificacoes || {}, ckOcorrencias: d.ckOcorrencias || {},
     RespostasAtividades: d.respostasAtividades || {}, RespostasVerificacoes: d.respostasVerificacoes || {},
@@ -21647,7 +21654,7 @@ function flashHtmlTabelaV2(catalogo, respostas, obsItens) {
       ${sec.itens.map(it => {
         const r = (respostas || {})[it.cod] || '';
         const obs = (obsItens && obsItens[it.cod]) || '';
-        return `<tr><td>${it.bloqueante ? '⛔ ' : ''}${it.label}</td><td>${situacaoTxt[r] || '—'}</td><td>${it.criticidade} (${flashPesoItem(it.criticidade)})</td><td>${obs || '—'}</td></tr>`;
+        return `<tr><td>${it.label}</td><td>${situacaoTxt[r] || '—'}</td><td>${it.criticidade} (${flashPesoItem(it.criticidade)})</td><td>${obs || '—'}</td></tr>`;
       }).join('')}
     </table>`).join('');
 }
@@ -21700,13 +21707,14 @@ function flashVerRegistro(id) {
   ${f.Modelo === 'v2' ? `
   <div style="margin-bottom:8px;padding:8px 10px;background:#f4f4f4;border-radius:6px">
     ${(() => { const r = flashCalcularIdaV2(f); const cls = flashClassificacaoIda(r.pct);
-      return `<strong>IDA:</strong> ${r.pct==null?'—':r.pct.toFixed(0)+'%'} — ${cls.label} &nbsp;|&nbsp; ✅ ${r.conformes} · ❌ ${r.naoConformes} · ➖ ${r.naoAplicaveis}${r.bloqueantesNC>0?' · ⛔ '+r.bloqueantesNC+' bloqueante(s) em NC':''}`; })()}
+      return `<strong>IDA:</strong> ${r.pct==null?'—':r.pct.toFixed(0)+'%'} — ${cls.label} &nbsp;|&nbsp; ✅ ${r.conformes} · ❌ ${r.naoConformes} · ➖ ${r.naoAplicaveis}`; })()}
+    <div style="font-size:11px;color:#777;margin-top:4px">IDA% = média ponderada dos itens Conforme sobre o total avaliado (peso por criticidade: Alta=3, Média=2, Baixa=1). Não Aplicável não entra na conta.</div>
   </div>
   ${flashHtmlTabelaV2Flat('✅ Atividades Acompanhadas', FLASH_ATIVIDADES, f.RespostasAtividades, f.ObsItens)}
   ${f.OutraAtividade ? `<div style="margin-bottom:8px"><strong>Outras atividades:</strong> ${f.OutraAtividade}</div>` : ''}
   ${flashHtmlTabelaV2Flat('🔍 Verificações Ambientais', FLASH_VERIFICACOES, f.RespostasVerificacoes, f.ObsItens)}
-  ${grupoHtml('⚠️ Ocorrências', 'ckOcorrencias', FLASH_OCORRENCIAS_V2)}
-  ${f.OutraOcorrencia ? `<div style="margin-bottom:8px"><strong>Outra ocorrência:</strong> ${f.OutraOcorrencia}</div>` : ''}
+  ${(() => { const tem = Object.entries(f.ckOcorrencias||{}).some(([k,v])=>v && k!=='semocorr'); return tem ? grupoHtml('⚠️ Ocorrências (histórico)', 'ckOcorrencias', FLASH_OCORRENCIAS_V2) : ''; })()}
+  ${f.OutraOcorrencia ? `<div style="margin-bottom:8px"><strong>Outras observações:</strong> ${f.OutraOcorrencia}</div>` : ''}
   ${f.TemSupressao ? flashHtmlTabelaV2(FLASH_ITENS_SUPRESSAO, f.RespostasSupressao, f.ObsItens) : ''}
   ` : `
   ${grupoHtml('✅ Atividades acompanhadas', 'ckAtividades', FLASH_ATIVIDADES)}
@@ -21715,7 +21723,9 @@ function flashVerRegistro(id) {
   ${grupoHtml('⚠️ Ocorrências', 'ckOcorrencias', FLASH_OCORRENCIAS)}
   ${f.OutraOcorrencia ? `<div style="margin-bottom:8px"><strong>Outra ocorrência:</strong> ${f.OutraOcorrencia}</div>` : ''}
   `}
-  ${f.OrientacaoVerbal ? `<div style="margin-bottom:8px;padding:8px 10px;background:#fffbeb;border:1px solid #f59e0b;border-radius:6px"><strong>🗣️ Orientação verbal:</strong> Sim<br>Para: ${f.OrientacaoPara || '—'} &nbsp;|&nbsp; Prazo para atendimento: ${f.OrientacaoPrazo ? new Date(f.OrientacaoPrazo + 'T12:00').toLocaleDateString('pt-BR') : '—'}</div>` : ''}
+  ${f.OrientacaoVerbal ? `<div style="margin-bottom:8px;padding:8px 10px;background:#fffbeb;border:1px solid #f59e0b;border-radius:6px"><strong>🗣️ Orientação verbal:</strong> Sim<br>Para: ${f.OrientacaoPara || '—'} &nbsp;|&nbsp; Prazo para atendimento: ${f.OrientacaoPrazo ? new Date(f.OrientacaoPrazo + 'T12:00').toLocaleDateString('pt-BR') : '—'}
+  ${f.OrientacaoPrazo ? `<br>Data de cumprimento: ${f.OrientacaoDataCumprimento ? new Date(f.OrientacaoDataCumprimento + 'T12:00').toLocaleDateString('pt-BR') : '—'} &nbsp;|&nbsp; Status: ${f.OrientacaoStatusCumprimento || '—'}${f.OrientacaoDataCumprimento ? ' &nbsp;|&nbsp; ' + (ncCalcularStatusPrazoAtendimento(f.OrientacaoPrazo, f.OrientacaoDataCumprimento) || '—') : ''}` : ''}
+  </div>` : ''}
   ${f.Atividades ? `<div style="margin-bottom:8px"><strong>📝 Descrição/Ação adotada:</strong><br>${f.Atividades.replace(/\n/g, '<br>')}</div>` : ''}
   ${f.PrevisaoAmanha ? `<div style="margin-bottom:8px"><strong>Previsão para amanhã:</strong><br>${f.PrevisaoAmanha.replace(/\n/g, '<br>')}</div>` : ''}
   ${f.Observacoes ? `<div style="margin-bottom:8px"><strong>Observações:</strong><br>${f.Observacoes.replace(/\n/g, '<br>')}</div>` : ''}
@@ -21727,14 +21737,14 @@ function flashVerRegistro(id) {
 }
 
 /* -- Pontuação de um Flash Report. Detecta o modelo do registro (f.Modelo):
-   'v2' usa o checklist ponderado (IDA%, C/NC/NA + peso + bloqueante — ver
+   'v2' usa o checklist ponderado (IDA%, C/NC/NA + peso por criticidade — ver
    flashCalcularIdaV2); registros antigos (sem Modelo, ou 'v1') continuam
    usando a lógica legada de % de checkbox marcado — nada se quebra pros
    Flash Reports já preenchidos antes da mudança. -- */
 function flashCalcularPontuacao(f) {
   if (f.Modelo === 'v2') {
     const r = flashCalcularIdaV2(f);
-    return { pct: r.pct, temOcorr: r.naoConformes > 0, conforme: r.naoConformes === 0, bloqueantesNC: r.bloqueantesNC };
+    return { pct: r.pct, temOcorr: r.naoConformes > 0, conforme: r.naoConformes === 0 };
   }
   const totalItens = FLASH_ATIVIDADES.length + FLASH_VERIFICACOES.length;
   const marcadosAtiv = Object.values(f.ckAtividades || {}).filter(Boolean).length;
@@ -21758,7 +21768,7 @@ function flashHtmlHistorico() {
   const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
 
   const linhaF = (f, numFR) => {
-    const { pct, temOcorr, bloqueantesNC } = flashCalcularPontuacao(f);
+    const { pct, temOcorr } = flashCalcularPontuacao(f);
     const dataFmt = f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—';
     const detalheV2 = f.Modelo === 'v2';
     const marcadosAtiv = Object.values(f.ckAtividades || {}).filter(Boolean).length;
@@ -21775,7 +21785,7 @@ function flashHtmlHistorico() {
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">${linhaDetalhe}</div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
-        ${bloqueantesNC>0 ? `<span class="status-pill red" style="font-size:.62rem">⛔ Bloqueante</span>` : temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Não Conforme</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ Conforme</span>'}
+        ${temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Não Conforme</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ Conforme</span>'}
         <div style="display:flex;gap:4px">
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashEditarRegistro(${f.Id})">✏️ Editar</button>
@@ -21917,6 +21927,7 @@ function pageChecklistFlash() {
   const d = window._flashData;
   const fotos = d.fotos || [];
   const editando = !!window._flashRegistroAtualId;
+  setTimeout(() => flashAtualizarStatusPrazoOrientacao(), 50);
   return `
   <div class="page-header"><h1>Flash Report — Energisa</h1><p>Relatório diário de campo — Contrato 2025022101 (Gestão Ambiental de Obras)</p></div>
 
@@ -21954,8 +21965,7 @@ function pageChecklistFlash() {
     ${flashHtmlChecklistUnificado(d)}
     <div class="form-group" style="margin-bottom:10px"><label>Outras atividades/verificações não listadas</label><input value="${(d.outraativ || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraativ', this.value)" placeholder="Descreva outras atividades ou verificações..."></div>
 
-    ${flashGrupoCheckboxesHtml('⚠️ Ocorrências / Não Conformidades', FLASH_OCORRENCIAS_V2, 'ckOcorrencias')}
-    <div class="form-group" style="margin-bottom:10px"><label>Outra ocorrência</label><input value="${(d.outraocorr || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraocorr', this.value)" placeholder="Descreva se houver outra ocorrência..."></div>
+    <div class="form-group" style="margin-bottom:10px"><label>Outras observações / ocorrências não cobertas acima</label><input value="${(d.outraocorr || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraocorr', this.value)" placeholder="Descreva se houver algo relevante que não se encaixa nos itens acima..."></div>
     ` : `
     ${flashGrupoCheckboxesHtml('✅ Atividades Acompanhadas', FLASH_ATIVIDADES, 'ckAtividades')}
     <div class="form-group" style="margin-bottom:10px"><label>Outras atividades</label><input value="${(d.outraativ || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraativ', this.value)" placeholder="Descreva outras atividades acompanhadas..."></div>
@@ -21973,8 +21983,20 @@ function pageChecklistFlash() {
       ${d.orientacaoVerbal ? `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div class="form-group" style="margin:0"><label>Para quem foi orientado</label><input value="${(d.orientacaoPara || '').replace(/"/g, '&quot;')}" oninput="flashCampo('orientacaoPara', this.value)" placeholder="Nome / função / empresa"></div>
-        <div class="form-group" style="margin:0"><label>Prazo para atendimento</label><input type="date" value="${d.orientacaoPrazo || ''}" oninput="flashCampo('orientacaoPrazo', this.value)"></div>
-      </div>` : ''}
+        <div class="form-group" style="margin:0"><label>Prazo para atendimento</label><input type="date" value="${d.orientacaoPrazo || ''}" oninput="flashCampo('orientacaoPrazo', this.value); navigate('checklist_flash')"></div>
+      </div>
+      ${d.orientacaoPrazo ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+        <div class="form-group" style="margin:0"><label>Data de cumprimento</label><input type="date" value="${d.orientacaoDataCumprimento || ''}" onchange="flashCampo('orientacaoDataCumprimento', this.value); flashAtualizarStatusPrazoOrientacao()"></div>
+        <div class="form-group" style="margin:0"><label>Status de atendimento</label>
+          <select onchange="flashCampo('orientacaoStatusCumprimento', this.value)">
+            <option value="">-- Selecione --</option>
+            ${['Atendido', 'Finalizado', 'Pendente'].map(s => `<option ${d.orientacaoStatusCumprimento === s ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div id="flash-orient-prazo-info" style="font-size:.76rem;font-weight:700;margin-top:6px"></div>
+      ` : ''}` : ''}
     </div>
 
     <div class="form-group" style="margin-bottom:10px"><label>📝 Descrição / Ação adotada</label><textarea rows="3" oninput="flashCampo('atividades', this.value)">${d.atividades || ''}</textarea></div>
@@ -22175,11 +22197,13 @@ async function _flashGerarDoc(d, numOverride) {
         if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
         const r = (respostas || {})[it.cod] || '';
         const sitTxt = r === 'C' ? '[C]' : r === 'NC' ? '[NC]' : r === 'NA' ? '[NA]' : '[ ]';
-        const cor = r === 'C' ? [30,120,40] : r === 'NC' ? [180,40,40] : [120,120,120];
+        // Preto pra Conforme (não verde — baixo contraste no PDF), vermelho só
+        // pra Não Conforme (destaca o que precisa de atenção), cinza pra N/A.
+        const cor = r === 'NC' ? [180,40,40] : r === 'NA' ? [130,130,130] : [30,30,30];
         doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(cor[0],cor[1],cor[2]);
         doc.text(sitTxt, ML+0.3, y);
         doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(40,40,40);
-        const labelTxt = (it.bloqueante ? '[BLOQ] ' : '') + it.label + '  (' + it.criticidade + ', peso ' + flashPesoItem(it.criticidade) + ')';
+        const labelTxt = it.label + '  (' + it.criticidade + ', peso ' + flashPesoItem(it.criticidade) + ')';
         const lines = doc.splitTextToSize(labelTxt, CW - 1.3);
         lines.forEach((ln, li) => { doc.text(ln, ML+1.1, y + li*0.35); });
         y += Math.max(lines.length, 1) * 0.35;
@@ -22196,29 +22220,65 @@ async function _flashGerarDoc(d, numOverride) {
   }
 
   // Variante da grade V2 pra lista PLANA de itens (Atividades/Verificações),
-  // com o mesmo título em caixa marrom das seções do modelo antigo.
-  function checklistGridV2Flat(titulo2, itens, respostas, obsItens) {
+  // com o mesmo título em caixa marrom das seções do modelo antigo. Aceita
+  // "cols" opcional (2 ou 3) pra render em grade e reduzir a extensão
+  // vertical de listas com itens curtos (Atividades Acompanhadas, ex.).
+  function checklistGridV2Flat(titulo2, itens, respostas, obsItens, cols) {
+    cols = cols || 1;
     if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
     sectionTitle(titulo2);
-    (itens || []).forEach(it => {
-      if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    if (cols === 1) {
+      (itens || []).forEach(it => {
+        if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+        const r = (respostas || {})[it.id] || '';
+        const sitTxt = r === 'C' ? '[C]' : r === 'NC' ? '[NC]' : r === 'NA' ? '[NA]' : '[ ]';
+        const cor = r === 'NC' ? [180,40,40] : r === 'NA' ? [130,130,130] : [30,30,30];
+        doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(cor[0],cor[1],cor[2]);
+        doc.text(sitTxt, ML+0.3, y);
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(40,40,40);
+        const labelTxt = it.label + '  (' + it.criticidade + ', peso ' + flashPesoItem(it.criticidade) + ')';
+        const lines = doc.splitTextToSize(labelTxt, CW - 1.3);
+        lines.forEach((ln, li) => { doc.text(ln, ML+1.1, y + li*0.35); });
+        y += Math.max(lines.length, 1) * 0.35;
+        const obs = obsItens && obsItens[it.id];
+        if (r === 'NC' && obs) {
+          doc.setFont('helvetica','italic'); doc.setFontSize(7.5); doc.setTextColor(100,40,40);
+          const obsLines = doc.splitTextToSize('Obs: ' + obs, CW - 1.3);
+          obsLines.forEach(ln => { if (y > pageH - 1.8) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); doc.text(ln, ML+1.1, y); y += 0.32; });
+        }
+        y += 0.15;
+      });
+      y += 0.2;
+      return;
+    }
+    // Grade de N colunas: cada linha de "cols" itens avança pela altura do
+    // item mais alto daquela linha (label + observação, se houver).
+    const gap = 0.3;
+    const colW = (CW - gap*(cols-1)) / cols;
+    let colIdx = 0, rowMaxH = 0;
+    (itens || []).forEach((it, idx) => {
+      if (colIdx === 0 && y > pageH - 2.4) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+      const x = ML + colIdx * (colW + gap);
       const r = (respostas || {})[it.id] || '';
       const sitTxt = r === 'C' ? '[C]' : r === 'NC' ? '[NC]' : r === 'NA' ? '[NA]' : '[ ]';
-      const cor = r === 'C' ? [30,120,40] : r === 'NC' ? [180,40,40] : [120,120,120];
-      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(cor[0],cor[1],cor[2]);
-      doc.text(sitTxt, ML+0.3, y);
-      doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(40,40,40);
-      const labelTxt = it.label + '  (' + it.criticidade + ', peso ' + flashPesoItem(it.criticidade) + ')';
-      const lines = doc.splitTextToSize(labelTxt, CW - 1.3);
-      lines.forEach((ln, li) => { doc.text(ln, ML+1.1, y + li*0.35); });
-      y += Math.max(lines.length, 1) * 0.35;
+      const cor = r === 'NC' ? [180,40,40] : r === 'NA' ? [130,130,130] : [30,30,30];
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(cor[0],cor[1],cor[2]);
+      doc.text(sitTxt, x, y);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.8); doc.setTextColor(40,40,40);
+      const labelTxt = it.label + ' (' + it.criticidade.charAt(0) + ', p' + flashPesoItem(it.criticidade) + ')';
+      const lines = doc.splitTextToSize(labelTxt, colW - 0.7);
+      lines.forEach((ln, li) => { doc.text(ln, x+0.65, y + li*0.3); });
+      let h = Math.max(lines.length, 1) * 0.3;
       const obs = obsItens && obsItens[it.id];
       if (r === 'NC' && obs) {
-        doc.setFont('helvetica','italic'); doc.setFontSize(7.5); doc.setTextColor(100,40,40);
-        const obsLines = doc.splitTextToSize('Obs: ' + obs, CW - 1.3);
-        obsLines.forEach(ln => { if (y > pageH - 1.8) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); doc.text(ln, ML+1.1, y); y += 0.32; });
+        doc.setFont('helvetica','italic'); doc.setFontSize(7); doc.setTextColor(100,40,40);
+        const obsLines = doc.splitTextToSize('Obs: ' + obs, colW - 0.1);
+        obsLines.forEach((ln, li) => { doc.text(ln, x, y + h + 0.26 + li*0.26); });
+        h += obsLines.length * 0.26 + 0.08;
       }
-      y += 0.15;
+      rowMaxH = Math.max(rowMaxH, h + 0.18);
+      colIdx++;
+      if (colIdx === cols || idx === itens.length - 1) { y += rowMaxH; colIdx = 0; rowMaxH = 0; }
     });
     y += 0.2;
   }
@@ -22226,24 +22286,31 @@ async function _flashGerarDoc(d, numOverride) {
   if (d.modelo === 'v2') {
     const idaR = flashCalcularIdaV2({
       RespostasAtividades: d.respostasAtividades, RespostasVerificacoes: d.respostasVerificacoes,
-      ckOcorrencias: d.ckOcorrencias, TemSupressao: d.temSupressao, RespostasSupressao: d.respostasSupressao,
+      TemSupressao: d.temSupressao, RespostasSupressao: d.respostasSupressao,
     });
     const nivelTxt = idaR.pct == null ? '--' : idaR.pct >= 75 ? 'SATISFATORIO' : idaR.pct >= 50 ? 'REGULAR' : idaR.pct >= 25 ? 'RUIM' : 'PESSIMO';
-    if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-    doc.setFillColor(245,240,237); doc.roundedRect(ML, y, CW, 0.7, 0.15, 0.15, 'F');
+    if (y > pageH - 3.4) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    doc.setFillColor(245,240,237); doc.roundedRect(ML, y, CW, 1.0, 0.15, 0.15, 'F');
     doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(63,38,31);
     doc.text('IDA: ' + (idaR.pct == null ? '--' : idaR.pct.toFixed(0) + '%') + ' - ' + nivelTxt, ML+0.3, y+0.3);
     doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(80,60,50);
-    doc.text('Conformes: ' + idaR.conformes + '   Nao conformes: ' + idaR.naoConformes + '   Nao aplicaveis: ' + idaR.naoAplicaveis + (idaR.bloqueantesNC > 0 ? '   ITENS BLOQUEANTES EM NC: ' + idaR.bloqueantesNC : ''), ML+0.3, y+0.55);
-    y += 1.0;
+    doc.text('Conformes: ' + idaR.conformes + '   Nao conformes: ' + idaR.naoConformes + '   Nao aplicaveis: ' + idaR.naoAplicaveis, ML+0.3, y+0.55);
+    doc.setFont('helvetica','italic'); doc.setFontSize(7); doc.setTextColor(120,110,100);
+    const notaIda = doc.splitTextToSize('IDA% = media ponderada dos itens Conforme sobre o total avaliado (Conforme + Nao Conforme), com peso por criticidade (Alta=3, Media=2, Baixa=1). Itens Nao Aplicavel nao entram na conta.', CW - 0.6);
+    notaIda.forEach((ln, li) => doc.text(ln, ML+0.3, y+0.78+li*0.24));
+    y += 1.3;
 
-    checklistGridV2Flat('ATIVIDADES ACOMPANHADAS', FLASH_ATIVIDADES, d.respostasAtividades, d.obsItens);
+    checklistGridV2Flat('ATIVIDADES ACOMPANHADAS', FLASH_ATIVIDADES, d.respostasAtividades, d.obsItens, 3);
     if (d.outraativ) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outras: ' + d.outraativ, ML+0.3, y); y += 0.5; }
 
     checklistGridV2Flat('VERIFICACOES AMBIENTAIS', FLASH_VERIFICACOES, d.respostasVerificacoes, d.obsItens);
 
-    checklistGrid('OCORRENCIAS / NAO CONFORMIDADES', FLASH_OCORRENCIAS_V2, d.ckOcorrencias || {}, false);
-    if (d.outraocorr) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outra: ' + d.outraocorr, ML+0.3, y); y += 0.5; }
+    // Ocorrências foi removida do modelo V2 (Atividades/Verificações já
+    // capturam Conforme/Não Conforme item a item) — só aparece aqui se o
+    // registro for antigo e já tiver ckOcorrencias preenchido (histórico).
+    const temOcorrHist = Object.entries(d.ckOcorrencias || {}).some(([k, v]) => v && k !== 'semocorr');
+    if (temOcorrHist) checklistGrid('OCORRENCIAS (HISTORICO)', FLASH_OCORRENCIAS_V2, d.ckOcorrencias || {}, false);
+    if (d.outraocorr) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outras observacoes: ' + d.outraocorr, ML+0.3, y); y += 0.5; }
 
     if (d.temSupressao) checklistGridV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens);
   } else {
@@ -22257,15 +22324,22 @@ async function _flashGerarDoc(d, numOverride) {
   }
 
   if (d.orientacaoVerbal) {
-    if (y > pageH - 2.5) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    if (y > pageH - 2.8) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
     const prazoFmt = d.orientacaoPrazo ? new Date(d.orientacaoPrazo + 'T12:00').toLocaleDateString('pt-BR') : '--';
+    const temCumprimento = !!d.orientacaoPrazo;
+    const boxH = temCumprimento ? 1.15 : 0.85;
     doc.setFillColor(255,251,235); doc.setDrawColor(245,158,11); doc.setLineWidth(0.02);
-    doc.roundedRect(ML, y, CW, 0.85, 0.15, 0.15, 'FD');
+    doc.roundedRect(ML, y, CW, boxH, 0.15, 0.15, 'FD');
     doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(120,80,10);
     doc.text('ORIENTACAO VERBAL EM CAMPO', ML+0.3, y+0.35);
     doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,70,20);
     doc.text('Para: ' + (d.orientacaoPara || '--') + '   |   Prazo para atendimento: ' + prazoFmt, ML+0.3, y+0.65);
-    y += 1.15;
+    if (temCumprimento) {
+      const dataCumprFmt = d.orientacaoDataCumprimento ? new Date(d.orientacaoDataCumprimento + 'T12:00').toLocaleDateString('pt-BR') : '--';
+      const statusPrazo = ncCalcularStatusPrazoAtendimento(d.orientacaoPrazo, d.orientacaoDataCumprimento) || 'Pendente';
+      doc.text('Data de cumprimento: ' + dataCumprFmt + '   |   Status: ' + (d.orientacaoStatusCumprimento || '--') + '   |   ' + statusPrazo, ML+0.3, y+0.95);
+    }
+    y += boxH + 0.3;
   }
 
   sectionTitle('DESCRICAO / ACAO ADOTADA');
@@ -22365,6 +22439,7 @@ async function flashExportarRegistro(id) {
     temSupressao: !!f.TemSupressao, respostasSupressao: f.RespostasSupressao || {}, obsItens: f.ObsItens || {},
     outraativ: f.OutraAtividade, outraocorr: f.OutraOcorrencia, atividades: f.Atividades, amanha: f.PrevisaoAmanha, obs: f.Observacoes, fotos: f.fotos || [],
     orientacaoVerbal: !!f.OrientacaoVerbal, orientacaoPara: f.OrientacaoPara || '', orientacaoPrazo: f.OrientacaoPrazo || '',
+    orientacaoDataCumprimento: f.OrientacaoDataCumprimento || '', orientacaoStatusCumprimento: f.OrientacaoStatusCumprimento || '',
   };
   const { doc, frente } = await _flashGerarDoc(dLocal, num);
   showSyncStatus('PDF gerado!', 'ok', 2000);
