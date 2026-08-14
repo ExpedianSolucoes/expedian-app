@@ -10792,6 +10792,31 @@ async function projetosCarregarResumoFinanceiroObras() {
   }
 }
 
+/* -- Histórico de medições (mesmos 22 BM importados da pasta "MEDIÇÃO GEST
+   OBRAS") embutido direto aqui em Projetos > Energisa > Obras — não só
+   como um card-link pra página de Fiscalização. Reaproveita medHtmlHistorico()
+   (mesmo renderer/agrupamento por circuito da página checklist_medicao),
+   só que carregado com dbLer direto + patch de DOM, sem o navigate('checklist_medicao')
+   que medCarregarHistorico() dispara no final (o que redirecionaria pra
+   fora de Projetos por engano). -- */
+async function projetosCarregarHistoricoMedicoesObras() {
+  const alvo = document.getElementById('projetos-obras-medicoes-historico');
+  if (!alvo) return;
+  try {
+    const lista = await dbLer('MedicoesEnergisa') || [];
+    window._medHistorico = lista;
+    try { localStorage.setItem('med_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    alvo.innerHTML = medHtmlHistorico();
+  } catch (e) {
+    alvo.innerHTML = '<div style="font-size:.78rem;color:var(--text-muted)">Não foi possível carregar o histórico de medições agora.</div>';
+  }
+}
+function projetosFiltrarMedicoesObrasCircuito(frenteId) {
+  window._medCircuitoFiltro = frenteId || null;
+  const alvo = document.getElementById('projetos-obras-medicoes-historico');
+  if (alvo) alvo.innerHTML = medHtmlHistorico();
+}
+
 function projetosHtmlContratoVisaoGeral() {
   const c = CONTRATO_ENERGISA_OBRAS;
   const dataBR = iso => { try { return new Date(iso + 'T12:00').toLocaleDateString('pt-BR'); } catch (e) { return iso; } };
@@ -10878,7 +10903,7 @@ function projetosHtmlEnergisaObras() {
       <div class="card-title" style="margin-bottom:6px">${c.titulo}</div>
       <div style="font-size:.78rem;color:var(--text-muted)">${c.subtitulo}</div>
     </div>`;
-  setTimeout(() => projetosCarregarResumoFinanceiroObras(), 100);
+  setTimeout(() => { projetosCarregarResumoFinanceiroObras(); projetosCarregarHistoricoMedicoesObras(); }, 100);
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
     <div><h1>2025022101 — Gestão Ambiental de Obras</h1><p>Energisa Rondônia</p></div>
@@ -10886,6 +10911,20 @@ function projetosHtmlEnergisaObras() {
   </div>
 
   ${projetosHtmlContratoVisaoGeral()}
+
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+      <div class="card-title" style="margin-bottom:0">💰 Histórico de Medições por Circuito Elétrico</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <select onchange="projetosFiltrarMedicoesObrasCircuito(this.value)" style="font-size:.72rem;padding:3px 6px;border:1px solid var(--border);border-radius:5px">
+          <option value="">Todos os circuitos</option>
+          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${window._medCircuitoFiltro === f.id ? 'selected' : ''}>${f.nome}</option>`).join('')}
+        </select>
+        <button class="btn-secondary" style="padding:3px 10px;font-size:.72rem" onclick="navigate('checklist_medicao')">➕ Nova / Editar</button>
+      </div>
+    </div>
+    <div id="projetos-obras-medicoes-historico"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title" style="margin-bottom:4px">Compartilhado com Fiscalização Ambiental ERO</div>
@@ -21405,7 +21444,7 @@ const FLASH_ATIVIDADES = [
 const FLASH_VERIFICACOES = [
   { id: 'epis', label: 'Uso correto de EPIs', criticidade: 'Alta' }, { id: 'residuos', label: 'Coletores de resíduos instalados', criticidade: 'Média' },
   { id: 'vazamentos', label: 'Ausência de vazamentos', criticidade: 'Alta' }, { id: 'organizada', label: 'Área organizada', criticidade: 'Baixa' },
-  { id: 'condicionantes', label: 'Atendimento às condicionantes', criticidade: 'Alta' }, { id: 'semNC', label: 'Sem não conformidades', criticidade: 'Média' },
+  { id: 'condicionantes', label: 'Atendimento às condicionantes', criticidade: 'Alta' },
   { id: 'kitmitigacao', label: 'Kit de mitigação ambiental completo', criticidade: 'Alta' }, { id: 'baciacontencao', label: 'Bacia de contenção em abastecimento', criticidade: 'Alta' },
   { id: 'segregacaoresid', label: 'Segregação correta de resíduos', criticidade: 'Alta' }, { id: 'ctrlpoeira', label: 'Controle de poeira / aspersão', criticidade: 'Média' },
   { id: 'cxdecantacao', label: 'Caixa de decantação operacional', criticidade: 'Média' }, { id: 'fossaoperac', label: 'Sanitários / fossa operacionais', criticidade: 'Média' },
@@ -22162,11 +22201,12 @@ function flashHtmlItensV2(titulo, itens, respostas, obsItens, respFnName) {
    separado em outro lugar da página. -- */
 /* -- Atividades Acompanhadas no Dia: grade de 3 colunas, só um tick de "foi
    acompanhada hoje" por item (sem C/NC/NA — ver decisão em
-   flashCalcularIdaV2, essa seção não pontua no IDA%). "Supressão vegetal"
-   marcada abre o checklist detalhado de Supressão Vegetal logo abaixo. -- */
+   flashCalcularIdaV2, essa seção não pontua no IDA%). Quando "Supressão
+   vegetal" é marcada aqui, o checklist detalhado de Supressão Vegetal abre
+   dentro de Verificações Ambientais no Dia (ver flashHtmlVerificacoesTabela),
+   não aqui — é lá que os itens pesam no IDA%. -- */
 function flashHtmlAtividadesV2(d) {
   const resp = d.respostasAtividades || {};
-  const mostrarSupressao = flashAtividadeFoiAcompanhada(resp['supressao']);
   return `
   <div style="margin:10px 0 6px;font-size:.82rem;font-weight:700">✅ Atividades Acompanhadas no Dia</div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
@@ -22178,11 +22218,6 @@ function flashHtmlAtividadesV2(d) {
       </label>`;
     }).join('')}
   </div>
-  ${mostrarSupressao ? `
-  <div style="margin-bottom:10px;padding:10px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--brand-brown,#3F261F)">
-    <div style="font-size:.76rem;font-weight:800;color:var(--brand-brown,#3F261F);margin-bottom:8px">🌳 Checklist específico de Supressão Vegetal</div>
-    ${flashHtmlCatalogoV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens, 'flashResponderSupressao')}
-  </div>` : ''}
   <div style="background:var(--surface2);border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px">
     <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">➕ Outra atividade não relacionada na lista acima</label>
     <textarea rows="2" placeholder="Descreva aqui se alguma atividade acompanhada não estiver nos itens acima..." oninput="flashCampo('outraativ', this.value)" style="width:100%;font-size:.78rem;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit">${(d.outraativ || '').replace(/</g,'&lt;')}</textarea>
@@ -22204,6 +22239,10 @@ function _flashBotoesConformidade(fn, id, valorAtual) {
 function flashHtmlVerificacoesTabela(d) {
   const resp = d.respostasVerificacoes || {};
   const obsItens = d.obsItens || {};
+  // "Supressão vegetal" é marcada lá em Atividades Acompanhadas, mas o
+  // checklist detalhado dela abre aqui — em Verificações Ambientais no Dia
+  // — porque é aqui que os itens pesam de fato no cálculo do IDA%.
+  const mostrarSupressao = flashAtividadeFoiAcompanhada((d.respostasAtividades || {})['supressao']);
   const linhas = FLASH_VERIFICACOES.map(it => {
     const r = resp[it.id] || '';
     const peso = flashPesoItem(it.criticidade);
@@ -22228,6 +22267,11 @@ function flashHtmlVerificacoesTabela(d) {
       <tbody>${linhas}</tbody>
     </table>
   </div>
+  ${mostrarSupressao ? `
+  <div style="margin-bottom:10px;padding:10px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--brand-brown,#3F261F)">
+    <div style="font-size:.76rem;font-weight:800;color:var(--brand-brown,#3F261F);margin-bottom:8px">🌳 Checklist específico de Supressão Vegetal</div>
+    ${flashHtmlCatalogoV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens, 'flashResponderSupressao')}
+  </div>` : ''}
   ${flashHtmlOutrasVerificacoes(d)}`;
 }
 
@@ -22477,9 +22521,9 @@ function flashVerRegistro(id) {
   </div>
   ${flashHtmlAtividadesLeitura(f)}
   ${flashHtmlVerificacoesTabelaLeitura('🔍 Verificações Ambientais no Dia', FLASH_VERIFICACOES, f.RespostasVerificacoes, f.ObsItens, f.OutrasVerificacoes)}
+  ${f.TemSupressao ? flashHtmlTabelaV2(FLASH_ITENS_SUPRESSAO, f.RespostasSupressao, f.ObsItens) : ''}
   ${(() => { const tem = Object.entries(f.ckOcorrencias||{}).some(([k,v])=>v && k!=='semocorr'); return tem ? grupoHtml('⚠️ Ocorrências (histórico)', 'ckOcorrencias', FLASH_OCORRENCIAS_V2) : ''; })()}
   ${f.OutraOcorrencia ? `<div style="margin-bottom:8px"><strong>Outras observações:</strong> ${f.OutraOcorrencia}</div>` : ''}
-  ${f.TemSupressao ? flashHtmlTabelaV2(FLASH_ITENS_SUPRESSAO, f.RespostasSupressao, f.ObsItens) : ''}
   ` : `
   ${grupoHtml('✅ Atividades acompanhadas', 'ckAtividades', FLASH_ATIVIDADES)}
   ${f.OutraAtividade ? `<div style="margin-bottom:8px"><strong>Outras atividades:</strong> ${f.OutraAtividade}</div>` : ''}
@@ -23108,14 +23152,14 @@ async function _flashGerarDoc(d, numOverride) {
 
     checklistTabelaVerificacoesPdf('VERIFICACOES AMBIENTAIS NO DIA', FLASH_VERIFICACOES, d.respostasVerificacoes, d.obsItens, d.outrasVerificacoes);
 
+    if (d.temSupressao) checklistGridV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens);
+
     // Ocorrências foi removida do modelo V2 (Atividades/Verificações já
     // capturam Conforme/Não Conforme item a item) — só aparece aqui se o
     // registro for antigo e já tiver ckOcorrencias preenchido (histórico).
     const temOcorrHist = Object.entries(d.ckOcorrencias || {}).some(([k, v]) => v && k !== 'semocorr');
     if (temOcorrHist) checklistGrid('OCORRENCIAS (HISTORICO)', FLASH_OCORRENCIAS_V2, d.ckOcorrencias || {}, false);
     if (d.outraocorr) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outras observacoes: ' + d.outraocorr, ML+0.3, y); y += 0.5; }
-
-    if (d.temSupressao) checklistGridV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens);
   } else {
     checklistGrid('ATIVIDADES ACOMPANHADAS', FLASH_ATIVIDADES, d.ckAtividades || {}, true);
     if (d.outraativ) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outras: ' + d.outraativ, ML+0.3, y); y += 0.5; }
