@@ -21307,12 +21307,13 @@ function _flashItensSupressaoFlat() {
    pdf.js), diferente de extrairTextoPDF() que junta tudo numa linha só por
    página — aqui a estrutura de linha importa pra achar onde cada item do
    checklist termina e a próxima "Obs:" começa. -- */
-async function extrairTextoPDFComLinhas(file) {
+async function extrairTextoPDFComLinhas(file, onProgress) {
   await carregarPdfJs();
   const buf = await file.arrayBuffer();
   const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
   let texto = '';
   for (let p = 1; p <= pdf.numPages; p++) {
+    if (onProgress) { try { onProgress(p, pdf.numPages); } catch(e) {} }
     const page = await pdf.getPage(p);
     const content = await page.getTextContent();
     let linha = '';
@@ -21332,13 +21333,14 @@ async function extrairTextoPDFComLinhas(file) {
    (1200x420 e 600x588), que se repetem em toda página e não são fotos de
    campo. Se algo falhar numa imagem específica, pula ela e segue — nunca
    derruba a importação inteira por causa das fotos. -- */
-async function extrairImagensFlashPDF(file) {
+async function extrairImagensFlashPDF(file, onProgress) {
   const imagens = [];
   try {
     await carregarPdfJs();
     const buf = await file.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
     for (let p = 1; p <= pdf.numPages; p++) {
+      if (onProgress) { try { onProgress(p, pdf.numPages, imagens.length); } catch(e) {} }
       try {
         const page = await pdf.getPage(p);
         const ops = await page.getOperatorList();
@@ -21522,13 +21524,19 @@ async function flashImportarDePdf(event) {
   const file = event.target.files && event.target.files[0];
   event.target.value = '';
   if (!file) return;
-  showSyncStatus('📄 Lendo Flash Report do PDF...');
   try {
-    const [texto, fotos] = await Promise.all([
-      extrairTextoPDFComLinhas(file),
-      extrairImagensFlashPDF(file).catch(() => []),
-    ]);
+    showSyncStatus('📄 Lendo texto do PDF...');
+    const texto = await extrairTextoPDFComLinhas(file, (p, total) => {
+      showSyncStatus(`📄 Lendo texto do PDF... (página ${p} de ${total})`);
+    });
     if (!texto || texto.trim().length < 20) throw new Error('Não consegui ler texto neste PDF.');
+
+    showSyncStatus('🖼️ Extraindo fotos do PDF...');
+    const fotos = await extrairImagensFlashPDF(file, (p, total, encontradasAteAgora) => {
+      showSyncStatus(`🖼️ Extraindo fotos do PDF... (página ${p} de ${total}${encontradasAteAgora ? ', ' + encontradasAteAgora + ' encontrada(s)' : ''})`);
+    }).catch(() => []);
+
+    showSyncStatus('🧩 Reconhecendo campos e preenchendo o formulário...');
     const { dados, campos } = flashParsearTextoPdf(texto);
     if (campos === 0) throw new Error('Não reconheci nenhum campo — confirme que é um PDF de Flash Report gerado por este sistema (modelo V2).');
 
