@@ -21464,6 +21464,16 @@ const FLASH_OCORRENCIAS_V2 = [
 const FLASH_CHECKLIST_V2 = true;
 
 const FLASH_PESO_CRITICIDADE = { 'Alta': 3, 'Média': 2, 'Baixa': 1 };
+const FLASH_CRIT_ABREV = { 'Alta': 'A', 'Média': 'M', 'Baixa': 'B' };
+
+// Compatibilidade: registros antigos guardavam RespostasAtividades[id] como
+// 'C'/'NC'/'NA' (3 estados). No modelo novo, Atividades Acompanhadas é só
+// um tick de "foi acompanhada hoje" (boolean). Essa função lê os dois
+// formatos: true/'C'/'NC' viram "acompanhada=true", false/'NA'/vazio viram
+// "acompanhada=false" — assim registros antigos continuam exibindo certo.
+function flashAtividadeFoiAcompanhada(valor) {
+  return valor === true || valor === 'C' || valor === 'NC';
+}
 
 // Checklist SUPRESSÃO VEGETAL — bloco condicional, só entra no Flash
 // Report quando o usuário marcar que houve essa atividade na frente
@@ -21568,19 +21578,55 @@ function _flashSomaResultados(...partes) {
 // ocorrências era redundante (ver flashVerRegistro e _flashGerarDoc pra
 // exibição de registros antigos que ainda tenham ckOcorrencias preenchido,
 // mantida só por histórico).
+// Calcula a mesma estrutura { ptsObtidos, ptsMax, conformes, naoConformes,
+// naoAplicaveis } pra lista de "outras verificações" (dinâmica, adicionada
+// à mão pelo fiscal no dia) — cada uma soma no IDA% exatamente como um item
+// fixo de FLASH_VERIFICACOES, usando o peso da criticidade escolhida.
+function flashCalcularIdaOutras(outras) {
+  let ptsObtidos = 0, ptsMax = 0, conformes = 0, naoConformes = 0, naoAplicaveis = 0;
+  (outras || []).forEach(o => {
+    const peso = flashPesoItem(o.criticidade);
+    if (o.resposta === 'C') { ptsObtidos += peso; ptsMax += peso; conformes++; }
+    else if (o.resposta === 'NC') { ptsMax += peso; naoConformes++; }
+    else if (o.resposta === 'NA') { naoAplicaveis++; }
+  });
+  return { ptsObtidos, ptsMax, conformes, naoConformes, naoAplicaveis };
+}
+
 function flashCalcularIdaV2(f) {
-  const ativ = flashCalcularIdaFlat(FLASH_ATIVIDADES, f.RespostasAtividades || {});
   const verif = flashCalcularIdaFlat(FLASH_VERIFICACOES, f.RespostasVerificacoes || {});
   let acc = verif;
   if (f.TemSupressao) {
     const supr = flashCalcularIdaCatalogo(FLASH_ITENS_SUPRESSAO, f.RespostasSupressao || {});
     acc = _flashSomaResultados(acc, supr);
   }
+  const outras = flashCalcularIdaOutras(f.OutrasVerificacoes || []);
+  acc = _flashSomaResultados(acc, outras);
   const pct = acc.ptsMax > 0 ? (acc.ptsObtidos / acc.ptsMax) * 100 : null;
+  const respAtiv = f.RespostasAtividades || {};
+  const ativTotal = FLASH_ATIVIDADES.length;
+  const ativAcompanhadas = FLASH_ATIVIDADES.filter(it => flashAtividadeFoiAcompanhada(respAtiv[it.id])).length;
   return {
     ...acc, pct,
-    ativConformes: ativ.conformes, ativNaoConformes: ativ.naoConformes, ativNaoAplicaveis: ativ.naoAplicaveis,
+    ativAcompanhadas, ativTotal,
   };
+}
+
+// Junta os itens fixos de FLASH_VERIFICACOES com as "outras verificações"
+// dinâmicas do dia num único array de linhas normalizadas — usado pela
+// tabela de leitura (flashVerRegistro) e pelo PDF, pra não duplicar a
+// lógica de merge em cada lugar que precisa exibir a lista completa.
+function flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras) {
+  const fixas = (itens || []).map(it => ({
+    id: it.id, label: it.label, criticidade: it.criticidade,
+    resposta: respostas ? respostas[it.id] : null,
+    obs: obsItens ? obsItens[it.id] : '',
+  }));
+  const dinamicas = (outras || []).map(o => ({
+    id: o.id, label: o.descricao || '(sem descrição)', criticidade: o.criticidade,
+    resposta: o.resposta, obs: o.obs || '',
+  }));
+  return fixas.concat(dinamicas);
 }
 
 function flashClassificacaoIda(pct) {
@@ -21720,24 +21766,29 @@ async function extrairImagensFlashPDF(file, onProgress) {
    objeto no formato de window._flashData (parcial — só os campos que
    conseguiu reconhecer), pra ser mesclado no formulário e revisado antes
    de salvar. -- */
-function _flashParsearBlocoChecklist(texto, itens, cursorInicial, fimSecao) {
+// marcadores: alternativas regex aceitas dentro dos colchetes ([X] no PDF de
+// Atividades Acompanhadas — só um tick — ou [C|NC|NA] no de Verificações
+// Ambientais/Supressão, que pesam por criticidade). Default preserva o
+// comportamento antigo (C|NC|NA).
+function _flashParsearBlocoChecklist(texto, itens, cursorInicial, fimSecao, marcadores) {
   const respostas = {}, obs = {};
   const teto = (typeof fimSecao === 'number') ? fimSecao : texto.length;
   let cursor = cursorInicial || 0;
+  const grupoMarcador = marcadores || 'C|NC|NA';
   for (let i = 0; i < itens.length; i++) {
     const it = itens[i];
-    const re = new RegExp('\\[\\s*(C|NC|NA)?\\s*\\]\\s*' + _flashLabelParaRegex(it.label), 'i');
+    const re = new RegExp('\\[\\s*(' + grupoMarcador + ')?\\s*\\]\\s*' + _flashLabelParaRegex(it.label), 'i');
     const m = texto.slice(cursor, teto).match(re);
     if (!m) continue; // item não apareceu no PDF (outro modelo/versão) — segue sem essa resposta
     const posFim = cursor + m.index + m[0].length;
     const marcador = (m[1] || '').toUpperCase();
-    if (marcador === 'C' || marcador === 'NC' || marcador === 'NA') respostas[it.id] = marcador;
+    if (marcador) respostas[it.id] = marcador;
     // Limite da busca da Obs: até o próximo item conhecido desta MESMA seção,
     // sem nunca passar do "teto" (fim da seção) — senão o último item de uma
     // seção "vaza" e pega a Obs do primeiro item da seção seguinte por engano.
     let limite = teto;
     for (let j = i + 1; j < itens.length; j++) {
-      const re2 = new RegExp('\\[\\s*(?:C|NC|NA)?\\s*\\]\\s*' + _flashLabelParaRegex(itens[j].label), 'i');
+      const re2 = new RegExp('\\[\\s*(?:' + grupoMarcador + ')?\\s*\\]\\s*' + _flashLabelParaRegex(itens[j].label), 'i');
       const m2 = texto.slice(posFim, teto).match(re2);
       if (m2) { limite = posFim + m2.index; break; }
     }
@@ -21806,8 +21857,14 @@ function flashParsearTextoPdf(texto) {
 
   dados.obsItens = {};
   if (idxAtiv >= 0) {
-    const r = _flashParsearBlocoChecklist(texto, FLASH_ATIVIDADES, idxAtiv, fimAtiv);
-    if (Object.keys(r.respostas).length) { dados.respostasAtividades = r.respostas; campos += Object.keys(r.respostas).length; }
+    // PDF de Atividades usa [X]/[ ] (tick simples), não C/NC/NA — converte
+    // pro formato boolean que o formulário/IDA esperam.
+    const r = _flashParsearBlocoChecklist(texto, FLASH_ATIVIDADES, idxAtiv, fimAtiv, 'X');
+    if (Object.keys(r.respostas).length) {
+      dados.respostasAtividades = {};
+      Object.keys(r.respostas).forEach(id => { dados.respostasAtividades[id] = r.respostas[id] === 'X'; });
+      campos += Object.keys(r.respostas).length;
+    }
     Object.assign(dados.obsItens, r.obs);
   }
   if (idxVerif >= 0) {
@@ -21911,6 +21968,7 @@ function flashNovoForm(frenteIdPreSelecionado) {
     rt: '', clima: 'Ensolarado', trecho: '', equipe: '', fiscal: '',
     ckAtividades: {}, ckVerificacoes: {}, ckOcorrencias: {},
     respostasAtividades: {}, respostasVerificacoes: {}, temSupressao: false, respostasSupressao: {}, obsItens: {},
+    outrasVerificacoes: [],
     outraativ: '', outraocorr: '', atividades: '', amanha: '', obs: '', fotos: [],
     orientacaoVerbal: false, orientacaoPara: '', orientacaoPrazo: '',
     orientacaoDataCumprimento: '', orientacaoStatusCumprimento: '',
@@ -21946,6 +22004,7 @@ function flashEditarRegistro(id) {
     ckAtividades: Object.assign({}, f.ckAtividades || {}), ckVerificacoes: Object.assign({}, f.ckVerificacoes || {}), ckOcorrencias: Object.assign({}, f.ckOcorrencias || {}),
     respostasAtividades: Object.assign({}, f.RespostasAtividades || {}), respostasVerificacoes: Object.assign({}, f.RespostasVerificacoes || {}),
     temSupressao: !!f.TemSupressao, respostasSupressao: Object.assign({}, f.RespostasSupressao || {}), obsItens: Object.assign({}, f.ObsItens || {}),
+    outrasVerificacoes: (f.OutrasVerificacoes || []).map(o => ({ ...o })),
     outraativ: f.OutraAtividade || '', outraocorr: f.OutraOcorrencia || '',
     atividades: f.Atividades || '', amanha: f.PrevisaoAmanha || '', obs: f.Observacoes || '',
     fotos: (f.fotos || []).map(x => ({ ...x })),
@@ -21993,17 +22052,42 @@ function flashGrupoCheckboxesHtml(titulo, itens, grupoKey) {
   </div>`;
 }
 
-/* -- Formulário V2: resposta (C/NC/NA) de um item de Atividades Acompanhadas,
-   Verificações Ambientais ou do bloco de Supressão Vegetal; observação por
-   item; toggle do bloco condicional de supressão. Ocorrências continua
-   usando flashMarcar (mesmo checkbox simples do modelo V1). -- */
-function flashResponderAtividade(id, valor) {
+/* -- Formulário V2: Atividades Acompanhadas agora é um simples tick de "foi
+   acompanhada hoje" (sem C/NC/NA — ver flashAtividadeFoiAcompanhada);
+   Verificações Ambientais e Supressão Vegetal continuam respondidas em
+   C/NC/NA com peso por criticidade; observação por item; toggle do bloco
+   condicional de supressão. Ocorrências continua usando flashMarcar (mesmo
+   checkbox simples do modelo V1). -- */
+function flashToggleAtividade(id, checked) {
   if (!window._flashData.respostasAtividades) window._flashData.respostasAtividades = {};
-  window._flashData.respostasAtividades[id] = valor;
+  window._flashData.respostasAtividades[id] = !!checked;
   // "Supressão vegetal" é o gatilho do checklist detalhado de supressão:
-  // respondida Conforme ou Não Conforme = houve a atividade no dia, abre o
-  // bloco específico automaticamente; Não Aplicável = não houve, some.
-  if (id === 'supressao') window._flashData.temSupressao = (valor === 'C' || valor === 'NC');
+  // marcada como acompanhada hoje = houve a atividade, abre o bloco
+  // específico automaticamente; desmarcada = não houve, some.
+  if (id === 'supressao') window._flashData.temSupressao = !!checked;
+  navigate('checklist_flash');
+}
+/* -- "Outras verificações": lista dinâmica adicionada pelo fiscal no dia,
+   com as mesmas colunas da tabela fixa (Conformidade, Descrição,
+   Criticidade, Peso). Pode haver mais de uma no mesmo dia, e cada uma soma
+   no IDA% (ver flashCalcularIdaOutras). -- */
+function flashAdicionarOutraVerificacao() {
+  if (!Array.isArray(window._flashData.outrasVerificacoes)) window._flashData.outrasVerificacoes = [];
+  window._flashData.outrasVerificacoes.push({ id: 'ov' + Date.now() + Math.floor(Math.random() * 1000), descricao: '', criticidade: 'Média', resposta: '', obs: '' });
+  navigate('checklist_flash');
+}
+function flashRemoverOutraVerificacao(id) {
+  window._flashData.outrasVerificacoes = (window._flashData.outrasVerificacoes || []).filter(o => o.id !== id);
+  navigate('checklist_flash');
+}
+function flashCampoOutraVerificacao(id, campo, valor) {
+  const o = (window._flashData.outrasVerificacoes || []).find(o => o.id === id);
+  if (o) o[campo] = valor;
+  if (campo === 'criticidade') navigate('checklist_flash');
+}
+function flashResponderOutraVerificacao(id, valor) {
+  const o = (window._flashData.outrasVerificacoes || []).find(o => o.id === id);
+  if (o) o.resposta = valor;
   navigate('checklist_flash');
 }
 function flashResponderVerificacao(id, valor) {
@@ -22021,23 +22105,25 @@ function flashObsItem(id, valor) {
   window._flashData.obsItens[id] = valor;
 }
 
-/* -- Resumo ao vivo do IDA% enquanto o formulário V2 está sendo preenchido. -- */
+/* -- Resumo ao vivo do IDA% enquanto o formulário V2 está sendo preenchido.
+   IDA começa em 100 no dia e vai reduzindo conforme as Verificações (+
+   Supressão + Outras Verificações) forem respondidas Não Conforme — texto
+   explicativo reduzido ao mínimo a pedido do usuário. -- */
 function flashHtmlResumoV2(d) {
   const r = flashCalcularIdaV2({
-    RespostasAtividades: d.respostasAtividades, RespostasVerificacoes: d.respostasVerificacoes,
+    RespostasVerificacoes: d.respostasVerificacoes,
     TemSupressao: d.temSupressao, RespostasSupressao: d.respostasSupressao,
+    OutrasVerificacoes: d.outrasVerificacoes,
   });
   const cls = flashClassificacaoIda(r.pct);
-  const temAtivNC = r.ativNaoConformes > 0;
   return `
-  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:.8rem">
-    <div><strong>IDA:</strong> ${r.pct===null?'—':r.pct.toFixed(0)+'%'} <span style="color:${cls.cor};font-weight:700">${cls.label}</span></div>
-    <div>✅ ${r.conformes} conforme${r.conformes!==1?'s':''}</div>
-    <div>❌ ${r.naoConformes} não conforme${r.naoConformes!==1?'s':''}</div>
-    <div>➖ ${r.naoAplicaveis} não aplicável${r.naoAplicaveis!==1?'is':''}</div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:.8rem">
+    <div><strong>IDA:</strong> ${r.pct===null?'100%':r.pct.toFixed(0)+'%'} <span style="color:${cls.cor};font-weight:700">${cls.label}</span></div>
+    <div>✅ ${r.conformes}</div>
+    <div>❌ ${r.naoConformes}</div>
+    <div>➖ ${r.naoAplicaveis}</div>
   </div>
-  <div style="margin-top:6px;font-size:.68rem;color:var(--text-muted)">O IDA% é calculado só com base em Verificações Ambientais${d.temSupressao ? ' e Supressão Vegetal' : ''} — média ponderada dos itens Conforme sobre o total avaliado (Conforme + Não Conforme), com peso por criticidade (Alta = 3, Média = 2, Baixa = 1). Não Aplicável não entra na conta. Atividades Acompanhadas registra o que foi feito no dia mas não pontua.</div>
-  ${temAtivNC ? `<div style="margin-top:4px;font-size:.72rem;color:var(--red);font-weight:700">⚠️ ${r.ativNaoConformes} atividade${r.ativNaoConformes!==1?'s':''} marcada${r.ativNaoConformes!==1?'s':''} como Não Conforme — não afeta o IDA%, mas vale registrar/notificar.</div>` : ''}`;
+  <div style="margin-top:4px;font-size:.62rem;color:var(--text-muted)">IDA = Verificações${d.temSupressao ? '+Supressão' : ''} (peso A=3 M=2 B=1). NA não conta.</div>`;
 }
 
 /* -- Renderiza uma lista PLANA de itens (Atividades Acompanhadas ou
@@ -22074,36 +22160,116 @@ function flashHtmlItensV2(titulo, itens, respostas, obsItens, respFnName) {
    houve essa atividade no dia), o checklist detalhado de Supressão Vegetal
    abre automaticamente logo abaixo dele — sem precisar de um botão/toggle
    separado em outro lugar da página. -- */
-function flashHtmlChecklistUnificado(d) {
-  const todos = [
-    ...FLASH_ATIVIDADES.map(it => ({ it, fn: 'flashResponderAtividade', resp: d.respostasAtividades, isAtividade: true })),
-    ...FLASH_VERIFICACOES.map(it => ({ it, fn: 'flashResponderVerificacao', resp: d.respostasVerificacoes, isAtividade: false })),
-  ];
-  return todos.map(({ it, fn, resp, isAtividade }) => {
-    const r = (resp || {})[it.id] || '';
+/* -- Atividades Acompanhadas no Dia: grade de 3 colunas, só um tick de "foi
+   acompanhada hoje" por item (sem C/NC/NA — ver decisão em
+   flashCalcularIdaV2, essa seção não pontua no IDA%). "Supressão vegetal"
+   marcada abre o checklist detalhado de Supressão Vegetal logo abaixo. -- */
+function flashHtmlAtividadesV2(d) {
+  const resp = d.respostasAtividades || {};
+  const mostrarSupressao = flashAtividadeFoiAcompanhada(resp['supressao']);
+  return `
+  <div style="margin:10px 0 6px;font-size:.82rem;font-weight:700">✅ Atividades Acompanhadas no Dia</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
+    ${FLASH_ATIVIDADES.map(it => {
+      const marcada = flashAtividadeFoiAcompanhada(resp[it.id]);
+      return `
+      <label style="display:flex;align-items:center;gap:6px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:.76rem;cursor:pointer;${marcada ? 'background:var(--surface2);border-color:var(--green-main)' : ''}">
+        <input type="checkbox" ${marcada ? 'checked' : ''} onchange="flashToggleAtividade('${it.id}', this.checked)"> ${it.label}
+      </label>`;
+    }).join('')}
+  </div>
+  ${mostrarSupressao ? `
+  <div style="margin-bottom:10px;padding:10px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--brand-brown,#3F261F)">
+    <div style="font-size:.76rem;font-weight:800;color:var(--brand-brown,#3F261F);margin-bottom:8px">🌳 Checklist específico de Supressão Vegetal</div>
+    ${flashHtmlCatalogoV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens, 'flashResponderSupressao')}
+  </div>` : ''}
+  <div style="background:var(--surface2);border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px">
+    <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">➕ Outra atividade não relacionada na lista acima</label>
+    <textarea rows="2" placeholder="Descreva aqui se alguma atividade acompanhada não estiver nos itens acima..." oninput="flashCampo('outraativ', this.value)" style="width:100%;font-size:.78rem;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit">${(d.outraativ || '').replace(/</g,'&lt;')}</textarea>
+  </div>`;
+}
+
+/* -- Verificações Ambientais no Dia: tabela de 4 colunas (Conformidade,
+   Descrição, Criticidade abreviada, Peso). NC abre caixa de descrição
+   inline. Seguida da caixa de "Outras verificações" (mesmas colunas,
+   repetível). -- */
+function _flashBotoesConformidade(fn, id, valorAtual) {
+  return `
+  <div style="display:flex;gap:3px">
+    <button type="button" class="btn-secondary" style="padding:2px 7px;font-size:.64rem;${valorAtual==='C'?'background:var(--green-main);color:#fff;border-color:var(--green-main)':''}" onclick="${fn}('${id}','C')">C</button>
+    <button type="button" class="btn-secondary" style="padding:2px 7px;font-size:.64rem;${valorAtual==='NC'?'background:var(--red);color:#fff;border-color:var(--red)':''}" onclick="${fn}('${id}','NC')">NC</button>
+    <button type="button" class="btn-secondary" style="padding:2px 7px;font-size:.64rem;${valorAtual==='NA'?'background:var(--text-muted);color:#fff;border-color:var(--text-muted)':''}" onclick="${fn}('${id}','NA')">NA</button>
+  </div>`;
+}
+function flashHtmlVerificacoesTabela(d) {
+  const resp = d.respostasVerificacoes || {};
+  const obsItens = d.obsItens || {};
+  const linhas = FLASH_VERIFICACOES.map(it => {
+    const r = resp[it.id] || '';
     const peso = flashPesoItem(it.criticidade);
-    const mostrarSupressao = it.id === 'supressao' && (r === 'C' || r === 'NC');
-    // Atividades Acompanhadas não pontua mais (ver flashCalcularIdaV2), então
-    // a legenda de criticidade/peso ao lado de cada item só faz sentido pras
-    // Verificações Ambientais, que são a base do IDA%.
     return `
-    <div style="padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:5px">
-      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
-        <div style="flex:1;min-width:200px;font-size:.78rem">${it.label}${isAtividade ? '' : ` <span style="color:var(--text-muted);font-size:.65rem">(${it.criticidade}, peso ${peso})</span>`}</div>
-        <div style="display:flex;gap:4px;flex-shrink:0">
-          <button type="button" class="btn-secondary" style="padding:2px 9px;font-size:.66rem;${r==='C'?'background:var(--green-main);color:#fff;border-color:var(--green-main)':''}" onclick="${fn}('${it.id}','C')">✅ Conforme</button>
-          <button type="button" class="btn-secondary" style="padding:2px 9px;font-size:.66rem;${r==='NC'?'background:var(--red);color:#fff;border-color:var(--red)':''}" onclick="${fn}('${it.id}','NC')">❌ Não Conf.</button>
-          <button type="button" class="btn-secondary" style="padding:2px 9px;font-size:.66rem;${r==='NA'?'background:var(--text-muted);color:#fff;border-color:var(--text-muted)':''}" onclick="${fn}('${it.id}','NA')">➖ N/A</button>
-        </div>
-      </div>
-      ${r==='NC' ? `<textarea placeholder="Observação..." oninput="flashObsItem('${it.id}', this.value)" style="width:100%;margin-top:5px;font-size:.72rem;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-family:inherit" rows="2">${((d.obsItens && d.obsItens[it.id]) || '').replace(/</g,'&lt;')}</textarea>` : ''}
-      ${mostrarSupressao ? `
-      <div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--brand-brown,#3F261F)">
-        <div style="font-size:.76rem;font-weight:800;color:var(--brand-brown,#3F261F);margin-bottom:8px">🌳 Checklist específico de Supressão Vegetal</div>
-        ${flashHtmlCatalogoV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens, 'flashResponderSupressao')}
-      </div>` : ''}
-    </div>`;
+    <tr>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top">${_flashBotoesConformidade('flashResponderVerificacao', it.id, r)}</td>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);font-size:.76rem;vertical-align:top">${it.label}${r==='NC' ? `<textarea placeholder="Descreva a não conformidade..." oninput="flashObsItem('${it.id}', this.value)" style="width:100%;margin-top:5px;font-size:.72rem;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-family:inherit" rows="2">${((obsItens[it.id]) || '').replace(/</g,'&lt;')}</textarea>` : ''}</td>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);font-size:.76rem;text-align:center;vertical-align:top">${FLASH_CRIT_ABREV[it.criticidade] || '—'}</td>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);font-size:.76rem;text-align:center;vertical-align:top">${peso}</td>
+    </tr>`;
   }).join('');
+  return `
+  <div style="margin:10px 0 6px;font-size:.82rem;font-weight:700">🔍 Verificações Ambientais no Dia</div>
+  <div style="overflow-x:auto;margin-bottom:10px">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        <th style="padding:5px 6px;text-align:left;font-size:.66rem;color:var(--text-muted);border-bottom:1px solid var(--border)">Conf.</th>
+        <th style="padding:5px 6px;text-align:left;font-size:.66rem;color:var(--text-muted);border-bottom:1px solid var(--border)">Descrição</th>
+        <th style="padding:5px 6px;text-align:center;font-size:.66rem;color:var(--text-muted);border-bottom:1px solid var(--border)">Crit.</th>
+        <th style="padding:5px 6px;text-align:center;font-size:.66rem;color:var(--text-muted);border-bottom:1px solid var(--border)">Peso</th>
+      </tr></thead>
+      <tbody>${linhas}</tbody>
+    </table>
+  </div>
+  ${flashHtmlOutrasVerificacoes(d)}`;
+}
+
+/* -- Outras verificações do dia: box repetível, mesmas colunas da tabela
+   fixa acima. Cada entrada soma no IDA% via flashCalcularIdaOutras. -- */
+function flashHtmlOutrasVerificacoes(d) {
+  const outras = d.outrasVerificacoes || [];
+  const linhas = outras.map(o => `
+    <tr>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top">${_flashBotoesConformidade('flashResponderOutraVerificacao', o.id, o.resposta)}</td>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top">
+        <input value="${(o.descricao || '').replace(/"/g,'&quot;')}" oninput="flashCampoOutraVerificacao('${o.id}', 'descricao', this.value)" placeholder="Descreva a verificação..." style="width:100%;font-size:.76rem;padding:3px 6px;border:1px solid var(--border);border-radius:5px">
+        ${o.resposta==='NC' ? `<textarea placeholder="Descreva a não conformidade..." oninput="flashCampoOutraVerificacao('${o.id}', 'obs', this.value)" style="width:100%;margin-top:5px;font-size:.72rem;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-family:inherit" rows="2">${(o.obs || '').replace(/</g,'&lt;')}</textarea>` : ''}
+      </td>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top">
+        <select onchange="flashCampoOutraVerificacao('${o.id}', 'criticidade', this.value)" style="font-size:.72rem;padding:2px 4px">
+          ${['Alta','Média','Baixa'].map(c => `<option value="${c}" ${o.criticidade===c?'selected':''}>${FLASH_CRIT_ABREV[c]}</option>`).join('')}
+        </select>
+      </td>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);text-align:center;vertical-align:top">${flashPesoItem(o.criticidade)}</td>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top"><button type="button" class="btn-secondary" style="padding:2px 7px;font-size:.66rem;color:var(--red)" onclick="flashRemoverOutraVerificacao('${o.id}')">✕</button></td>
+    </tr>`).join('');
+  return `
+  <div style="background:var(--surface2);border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <label style="font-size:.78rem;font-weight:700">➕ Outras verificações do dia</label>
+      <button type="button" class="btn-secondary" style="padding:3px 10px;font-size:.72rem" onclick="flashAdicionarOutraVerificacao()">+ Adicionar</button>
+    </div>
+    ${!outras.length ? `<div style="font-size:.72rem;color:var(--text-muted)">Nenhuma outra verificação adicionada neste dia.</div>` : `
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr>
+          <th style="padding:5px 6px;text-align:left;font-size:.66rem;color:var(--text-muted);border-bottom:1px solid var(--border)">Conf.</th>
+          <th style="padding:5px 6px;text-align:left;font-size:.66rem;color:var(--text-muted);border-bottom:1px solid var(--border)">Descrição</th>
+          <th style="padding:5px 6px;text-align:center;font-size:.66rem;color:var(--text-muted);border-bottom:1px solid var(--border)">Crit.</th>
+          <th style="padding:5px 6px;text-align:center;font-size:.66rem;color:var(--text-muted);border-bottom:1px solid var(--border)">Peso</th>
+          <th style="border-bottom:1px solid var(--border)"></th>
+        </tr></thead>
+        <tbody>${linhas}</tbody>
+      </table>
+    </div>`}
+  </div>`;
 }
 
 /* -- Renderiza um catálogo (seções + itens) do checklist V2 — usado só pelo
@@ -22207,6 +22373,7 @@ async function flashSalvar() {
     ckAtividades: d.ckAtividades || {}, ckVerificacoes: d.ckVerificacoes || {}, ckOcorrencias: d.ckOcorrencias || {},
     RespostasAtividades: d.respostasAtividades || {}, RespostasVerificacoes: d.respostasVerificacoes || {},
     TemSupressao: !!d.temSupressao, RespostasSupressao: d.respostasSupressao || {}, ObsItens: d.obsItens || {},
+    OutrasVerificacoes: d.outrasVerificacoes || [],
     fotos: d.fotos || [],
     Visualizado: false,
   };
@@ -22246,19 +22413,29 @@ function flashHtmlTabelaV2(catalogo, respostas, obsItens) {
     </table>`).join('');
 }
 
-// Igual à de cima, mas pra lista PLANA de itens (Atividades/Verificações).
-function flashHtmlTabelaV2Flat(titulo, itens, respostas, obsItens, mostrarCriticidade) {
-  if (mostrarCriticidade === undefined) mostrarCriticidade = true;
-  const situacaoTxt = { C: '✅ Conforme', NC: '❌ Não Conforme', NA: '➖ Não Aplicável' };
+// Leitura (visualização/impressão) de Atividades Acompanhadas: grade de 3
+// colunas ✅/⬜ + rótulo, sem C/NC/NA — essa seção não pontua no IDA%.
+function flashHtmlAtividadesLeitura(f) {
+  const resp = f.RespostasAtividades || {};
+  return `
+    <div style="margin-bottom:6px;font-weight:700;font-size:13px;margin-top:10px">✅ Atividades Acompanhadas no Dia</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px">
+      ${FLASH_ATIVIDADES.map(it => `<div style="font-size:12px;padding:3px 0">${flashAtividadeFoiAcompanhada(resp[it.id]) ? '✅' : '⬜'} ${it.label}</div>`).join('')}
+    </div>
+    ${f.OutraAtividade ? `<div style="margin-bottom:8px;font-size:12px"><strong>Outras atividades:</strong> ${f.OutraAtividade}</div>` : ''}`;
+}
+
+// Leitura de Verificações Ambientais em tabela de 4 colunas (Conformidade,
+// Descrição, Criticidade, Peso) — junta os itens fixos com as "outras
+// verificações" do dia (flashLinhasVerificacoesNormalizadas).
+function flashHtmlVerificacoesTabelaLeitura(titulo, itens, respostas, obsItens, outras) {
+  const situacaoTxt = { C: '✅ C', NC: '❌ NC', NA: '➖ NA' };
+  const linhas = flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras);
   return `
     <div style="margin-bottom:6px;font-weight:700;font-size:13px;margin-top:10px">${titulo}</div>
     <table>
-      <tr style="background:#f4f4f4"><td style="font-weight:700">Item</td><td style="font-weight:700;width:110px">Situação</td>${mostrarCriticidade ? '<td style="font-weight:700;width:80px">Criticidade</td>' : ''}<td style="font-weight:700">Observação</td></tr>
-      ${(itens || []).map(it => {
-        const r = (respostas || {})[it.id] || '';
-        const obs = (obsItens && obsItens[it.id]) || '';
-        return `<tr><td>${it.label}</td><td>${situacaoTxt[r] || '—'}</td>${mostrarCriticidade ? `<td>${it.criticidade} (${flashPesoItem(it.criticidade)})</td>` : ''}<td>${obs || '—'}</td></tr>`;
-      }).join('')}
+      <tr style="background:#f4f4f4"><td style="font-weight:700;width:60px">Conf.</td><td style="font-weight:700">Descrição</td><td style="font-weight:700;width:60px">Crit.</td><td style="font-weight:700;width:50px">Peso</td></tr>
+      ${linhas.map(l => `<tr><td>${situacaoTxt[l.resposta] || '—'}</td><td>${l.label}${l.resposta==='NC' && l.obs ? `<div style="font-size:11px;color:#b03;margin-top:2px">Obs: ${l.obs}</div>` : ''}</td><td>${FLASH_CRIT_ABREV[l.criticidade] || '—'}</td><td>${flashPesoItem(l.criticidade)}</td></tr>`).join('')}
     </table>`;
 }
 
@@ -22295,12 +22472,11 @@ function flashVerRegistro(id) {
   ${f.Modelo === 'v2' ? `
   <div style="margin-bottom:8px;padding:8px 10px;background:#f4f4f4;border-radius:6px">
     ${(() => { const r = flashCalcularIdaV2(f); const cls = flashClassificacaoIda(r.pct);
-      return `<strong>IDA:</strong> ${r.pct==null?'—':r.pct.toFixed(0)+'%'} — ${cls.label} &nbsp;|&nbsp; ✅ ${r.conformes} · ❌ ${r.naoConformes} · ➖ ${r.naoAplicaveis}` + (r.ativNaoConformes>0 ? ` &nbsp;|&nbsp; <span style="color:#c0392b">⚠️ ${r.ativNaoConformes} atividade(s) Não Conforme</span>` : ''); })()}
-    <div style="font-size:11px;color:#777;margin-top:4px">IDA% = calculado só com base em Verificações Ambientais${f.TemSupressao ? ' e Supressão Vegetal' : ''} (peso por criticidade: Alta=3, Média=2, Baixa=1). Não Aplicável não entra na conta. Atividades Acompanhadas registra o que foi feito no dia mas não pontua.</div>
+      return `<strong>IDA:</strong> ${r.pct==null?'100%':r.pct.toFixed(0)+'%'} — ${cls.label} &nbsp;|&nbsp; ✅ ${r.conformes} · ❌ ${r.naoConformes} · ➖ ${r.naoAplicaveis}`; })()}
+    <div style="font-size:10px;color:#888;margin-top:3px">IDA = Verificações${f.TemSupressao ? '+Supressão' : ''} (peso A=3 M=2 B=1). NA não conta.</div>
   </div>
-  ${flashHtmlTabelaV2Flat('✅ Atividades Acompanhadas', FLASH_ATIVIDADES, f.RespostasAtividades, f.ObsItens, false)}
-  ${f.OutraAtividade ? `<div style="margin-bottom:8px"><strong>Outras atividades:</strong> ${f.OutraAtividade}</div>` : ''}
-  ${flashHtmlTabelaV2Flat('🔍 Verificações Ambientais', FLASH_VERIFICACOES, f.RespostasVerificacoes, f.ObsItens)}
+  ${flashHtmlAtividadesLeitura(f)}
+  ${flashHtmlVerificacoesTabelaLeitura('🔍 Verificações Ambientais no Dia', FLASH_VERIFICACOES, f.RespostasVerificacoes, f.ObsItens, f.OutrasVerificacoes)}
   ${(() => { const tem = Object.entries(f.ckOcorrencias||{}).some(([k,v])=>v && k!=='semocorr'); return tem ? grupoHtml('⚠️ Ocorrências (histórico)', 'ckOcorrencias', FLASH_OCORRENCIAS_V2) : ''; })()}
   ${f.OutraOcorrencia ? `<div style="margin-bottom:8px"><strong>Outras observações:</strong> ${f.OutraOcorrencia}</div>` : ''}
   ${f.TemSupressao ? flashHtmlTabelaV2(FLASH_ITENS_SUPRESSAO, f.RespostasSupressao, f.ObsItens) : ''}
@@ -22332,11 +22508,10 @@ function flashVerRegistro(id) {
 function flashCalcularPontuacao(f) {
   if (f.Modelo === 'v2') {
     const r = flashCalcularIdaV2(f);
-    // temOcorr considera Não Conforme em QUALQUER lista (Verificações/Supressão,
-    // que pontuam, OU Atividades, que não pontua mas ainda é um alerta válido —
-    // ex.: "Supressão vegetal: Não Conforme" deve continuar acionando o badge
-    // ⚠️ e o botão de Notificar no histórico, mesmo sem afetar o IDA%).
-    const temOcorr = r.naoConformes > 0 || r.ativNaoConformes > 0;
+    // temOcorr considera Não Conforme em Verificações/Supressão/Outras
+    // Verificações — as únicas listas que ainda usam C/NC/NA (Atividades
+    // Acompanhadas virou um tick simples e não gera esse alerta).
+    const temOcorr = r.naoConformes > 0;
     return { pct: r.pct, temOcorr, conforme: !temOcorr };
   }
   const totalItens = FLASH_ATIVIDADES.length + FLASH_VERIFICACOES.length;
@@ -22556,19 +22731,10 @@ function pageChecklistFlash() {
     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px">
       ${flashHtmlResumoV2(d)}
     </div>
-    <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:6px">Marque cada item como ✅ Conforme, ❌ Não Conforme ou ➖ Não Aplicável (não fazia sentido verificar hoje/aqui — não conta na pontuação).</div>
+    <div style="font-size:.62rem;color:var(--text-muted);margin-bottom:6px">Legenda: C = Conforme · NC = Não Conforme · NA = Não Aplicável (não conta na pontuação).</div>
 
-    ${flashHtmlChecklistUnificado(d)}
-
-    <div style="background:var(--surface2);border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">
-      <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">➕ Atividade/verificação não relacionada na lista acima</label>
-      <textarea rows="2" placeholder="Descreva aqui se alguma atividade ou verificação acompanhada não estiver nos itens acima..." oninput="flashCampo('outraativ', this.value)" style="width:100%;font-size:.78rem;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit">${(d.outraativ || '').replace(/</g,'&lt;')}</textarea>
-    </div>
-
-    <div style="background:var(--surface2);border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">
-      <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">➕ Outras observações / ocorrências não cobertas acima</label>
-      <textarea rows="2" placeholder="Descreva se houver algo relevante que não se encaixa nos itens acima..." oninput="flashCampo('outraocorr', this.value)" style="width:100%;font-size:.78rem;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit">${(d.outraocorr || '').replace(/</g,'&lt;')}</textarea>
-    </div>
+    ${flashHtmlAtividadesV2(d)}
+    ${flashHtmlVerificacoesTabela(d)}
     ` : `
     ${flashGrupoCheckboxesHtml('✅ Atividades Acompanhadas', FLASH_ATIVIDADES, 'ckAtividades')}
     <div class="form-group" style="margin-bottom:10px"><label>Outras atividades</label><input value="${(d.outraativ || '').replace(/"/g, '&quot;')}" oninput="flashCampo('outraativ', this.value)" placeholder="Descreva outras atividades acompanhadas..."></div>
@@ -22840,74 +23006,107 @@ async function _flashGerarDoc(d, numOverride) {
     });
   }
 
-  // Variante da grade V2 pra lista PLANA de itens (Atividades/Verificações),
-  // com o mesmo título em caixa marrom das seções do modelo antigo. Lista
-  // única (não em grade) — só o marcador [C]/[NC]/[NA] recebe cor (verde
-  // legível quando Conforme, vermelho quando Não Conforme), o texto do item
-  // continua sempre preto.
-  function checklistGridV2Flat(titulo2, itens, respostas, obsItens, mostrarPeso) {
-    if (mostrarPeso === undefined) mostrarPeso = true;
+  // Atividades Acompanhadas no PDF: grade de 3 colunas, só [X]/[ ] (sem
+  // criticidade/peso — essa seção não pontua no IDA%, ver flashCalcularIdaV2).
+  function checklistGridAtividadesPdf(titulo2, itens, respostas) {
     if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
     sectionTitle(titulo2);
-    (itens || []).forEach(it => {
-      if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-      const r = (respostas || {})[it.id] || '';
-      const sitTxt = r === 'C' ? '[C]' : r === 'NC' ? '[NC]' : r === 'NA' ? '[NA]' : '[ ]';
-      const cor = r === 'C' ? [20,110,45] : r === 'NC' ? [180,40,40] : [130,130,130];
-      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(cor[0],cor[1],cor[2]);
-      doc.text(sitTxt, ML+0.3, y);
-      doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(30,30,30);
-      // Atividades Acompanhadas não pontua mais — a legenda de criticidade/
-      // peso só é mostrada pra Verificações Ambientais (mostrarPeso=true).
-      const labelTxt = mostrarPeso ? (it.label + '  (' + it.criticidade + ', peso ' + flashPesoItem(it.criticidade) + ')') : it.label;
-      const lines = doc.splitTextToSize(labelTxt, CW - 1.3);
-      lines.forEach((ln, li) => { doc.text(ln, ML+1.1, y + li*0.35); });
-      y += Math.max(lines.length, 1) * 0.35;
-      const obs = obsItens && obsItens[it.id];
-      if (r === 'NC' && obs) {
-        doc.setFont('helvetica','italic'); doc.setFontSize(7.5); doc.setTextColor(100,40,40);
-        const obsLines = doc.splitTextToSize('Obs: ' + obs, CW - 1.3);
-        obsLines.forEach(ln => { if (y > pageH - 1.8) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); doc.text(ln, ML+1.1, y); y += 0.32; });
+    const cols = 3, colW = CW / cols;
+    let colIdx = 0, rowY = y, rowMaxLines = 1;
+    (itens || []).forEach((it, idx) => {
+      colIdx = idx % cols;
+      if (colIdx === 0) {
+        if (idx !== 0) y = rowY + rowMaxLines * 0.34 + 0.14;
+        if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+        rowY = y; rowMaxLines = 1;
       }
-      y += 0.15;
+      const marcada = flashAtividadeFoiAcompanhada((respostas || {})[it.id]);
+      const x = ML + colIdx * colW;
+      const cor = marcada ? [20,110,45] : [150,150,150];
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(cor[0],cor[1],cor[2]);
+      doc.text(marcada ? '[X]' : '[ ]', x, rowY);
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(30,30,30);
+      const lines = doc.splitTextToSize(it.label, colW - 0.55);
+      lines.forEach((ln, li) => doc.text(ln, x + 0.38, rowY + li*0.3));
+      rowMaxLines = Math.max(rowMaxLines, lines.length);
     });
-    y += 0.2;
+    y = rowY + rowMaxLines * 0.34 + 0.14;
+    y += 0.15;
+  }
+
+  // Verificações Ambientais no PDF: tabela desenhada manualmente (sem
+  // plugin autoTable) de 4 colunas — Conformidade, Descricao, Criticidade
+  // abreviada, Peso — juntando os itens fixos com as "outras verificacoes"
+  // do dia (mesma linha, mesmas colunas). NC abre uma sub-linha indentada,
+  // em italico/vermelho, com a descricao da nao conformidade.
+  function checklistTabelaVerificacoesPdf(titulo2, itens, respostas, obsItens, outras) {
+    const linhas = flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras);
+    if (!linhas.length) return;
+    const colConf = 0.65, colCrit = 0.55, colPeso = 0.5;
+    const colDesc = CW - colConf - colCrit - colPeso;
+    const xConf = ML, xDesc = ML + colConf, xCrit = xDesc + colDesc, xPeso = xCrit + colCrit;
+    function desenhaCabecalho() {
+      doc.setFillColor(238,233,229); doc.rect(ML, y, CW, 0.3, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(63,38,31);
+      doc.text('CONF.', xConf+0.05, y+0.21); doc.text('DESCRICAO', xDesc+0.05, y+0.21);
+      doc.text('CRIT.', xCrit+0.08, y+0.21); doc.text('PESO', xPeso+0.08, y+0.21);
+      y += 0.38;
+    }
+    if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    sectionTitle(titulo2);
+    desenhaCabecalho();
+    linhas.forEach(l => {
+      const sitTxt = l.resposta === 'C' ? '[C]' : l.resposta === 'NC' ? '[NC]' : l.resposta === 'NA' ? '[NA]' : '[ ]';
+      const cor = l.resposta === 'C' ? [20,110,45] : l.resposta === 'NC' ? [180,40,40] : [150,150,150];
+      doc.setFontSize(8);
+      const descLines = doc.splitTextToSize(l.label || '', colDesc - 0.15);
+      const critAbrev = FLASH_CRIT_ABREV[l.criticidade] || '-';
+      const peso = flashPesoItem(l.criticidade);
+      const obsLines = (l.resposta === 'NC' && l.obs) ? doc.splitTextToSize('Obs: ' + l.obs, colDesc - 0.35) : [];
+      const rowH = Math.max(descLines.length, 1) * 0.3 + obsLines.length * 0.27 + 0.14;
+      if (y + rowH > pageH - 1.6) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); desenhaCabecalho(); }
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(cor[0],cor[1],cor[2]);
+      doc.text(sitTxt, xConf+0.05, y+0.26);
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(30,30,30);
+      descLines.forEach((ln, li) => doc.text(ln, xDesc+0.05, y+0.26+li*0.3));
+      doc.text(critAbrev, xCrit+0.18, y+0.26);
+      doc.text(String(peso), xPeso+0.2, y+0.26);
+      let localY = y + Math.max(descLines.length, 1) * 0.3;
+      if (obsLines.length) {
+        doc.setFont('helvetica','italic'); doc.setFontSize(7.2); doc.setTextColor(110,40,40);
+        obsLines.forEach(ln => { localY += 0.27; doc.text(ln, xDesc+0.2, localY); });
+      }
+      y = localY + 0.16;
+      doc.setDrawColor(225,220,215); doc.line(ML, y-0.07, ML+CW, y-0.07);
+    });
+    y += 0.15;
   }
 
   if (d.modelo === 'v2') {
     const idaR = flashCalcularIdaV2({
-      RespostasAtividades: d.respostasAtividades, RespostasVerificacoes: d.respostasVerificacoes,
+      RespostasVerificacoes: d.respostasVerificacoes,
       TemSupressao: d.temSupressao, RespostasSupressao: d.respostasSupressao,
+      OutrasVerificacoes: d.outrasVerificacoes,
     });
     const nivelTxt = idaR.pct == null ? '--' : idaR.pct >= 75 ? 'SATISFATORIO' : idaR.pct >= 50 ? 'REGULAR' : idaR.pct >= 25 ? 'RUIM' : 'PESSIMO';
-    const temAtivNC = idaR.ativNaoConformes > 0;
-    // Mede a nota explicativa ANTES de desenhar a caixa, pra caixa/aviso
-    // acompanharem a altura real do texto (a nota quebra em 2 linhas em
-    // telas/paginas mais estreitas — altura fixa causava sobreposição com
-    // o aviso de atividade Não Conforme logo abaixo).
-    doc.setFont('helvetica','italic'); doc.setFontSize(7);
-    const notaIda = doc.splitTextToSize('IDA% calculado so com base em Verificacoes Ambientais' + (d.temSupressao ? ' e Supressao Vegetal' : '') + ' (peso por criticidade: Alta=3, Media=2, Baixa=1). Nao Aplicavel nao entra na conta. Atividades Acompanhadas registra o que foi feito no dia mas nao pontua.', CW - 0.6);
-    const notaH = notaIda.length * 0.24;
-    const avisoH = temAtivNC ? 0.3 : 0;
-    const boxHIda = 0.78 + notaH + avisoH + 0.12;
+    doc.setFont('helvetica','italic'); doc.setFontSize(6.5);
+    const notaIda = doc.splitTextToSize('IDA baseado em Verificacoes' + (d.temSupressao ? '+Supressao' : '') + ' (peso A=3 M=2 B=1). NA nao conta. C=Conforme NC=Nao Conforme NA=Nao Aplicavel.', CW - 0.6);
+    const notaH = notaIda.length * 0.22;
+    const boxHIda = 0.78 + notaH + 0.1;
     if (y > pageH - (boxHIda + 0.4)) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
     doc.setFillColor(245,240,237); doc.roundedRect(ML, y, CW, boxHIda, 0.15, 0.15, 'F');
     doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(63,38,31);
-    doc.text('IDA: ' + (idaR.pct == null ? '--' : idaR.pct.toFixed(0) + '%') + ' - ' + nivelTxt, ML+0.3, y+0.3);
+    doc.text('IDA: ' + (idaR.pct == null ? '100%' : idaR.pct.toFixed(0) + '%') + ' - ' + nivelTxt, ML+0.3, y+0.3);
     doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(80,60,50);
     doc.text('Conformes: ' + idaR.conformes + '   Nao conformes: ' + idaR.naoConformes + '   Nao aplicaveis: ' + idaR.naoAplicaveis, ML+0.3, y+0.55);
-    doc.setFont('helvetica','italic'); doc.setFontSize(7); doc.setTextColor(120,110,100);
-    notaIda.forEach((ln, li) => doc.text(ln, ML+0.3, y+0.78+li*0.24));
-    if (temAtivNC) {
-      doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(180,40,40);
-      doc.text('Atencao: ' + idaR.ativNaoConformes + ' atividade(s) acompanhada(s) marcada(s) como Nao Conforme (nao afeta o IDA%).', ML+0.3, y+0.78+notaH+0.2);
-    }
+    doc.setFont('helvetica','italic'); doc.setFontSize(6.5); doc.setTextColor(120,110,100);
+    notaIda.forEach((ln, li) => doc.text(ln, ML+0.3, y+0.78+li*0.22));
     y += boxHIda + 0.3;
 
-    checklistGridV2Flat('ATIVIDADES ACOMPANHADAS', FLASH_ATIVIDADES, d.respostasAtividades, d.obsItens, false);
+    checklistGridAtividadesPdf('ATIVIDADES ACOMPANHADAS NO DIA', FLASH_ATIVIDADES, d.respostasAtividades);
     if (d.outraativ) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outras: ' + d.outraativ, ML+0.3, y); y += 0.5; }
 
-    checklistGridV2Flat('VERIFICACOES AMBIENTAIS', FLASH_VERIFICACOES, d.respostasVerificacoes, d.obsItens);
+    checklistTabelaVerificacoesPdf('VERIFICACOES AMBIENTAIS NO DIA', FLASH_VERIFICACOES, d.respostasVerificacoes, d.obsItens, d.outrasVerificacoes);
 
     // Ocorrências foi removida do modelo V2 (Atividades/Verificações já
     // capturam Conforme/Não Conforme item a item) — só aparece aqui se o
@@ -23041,6 +23240,7 @@ async function flashExportarRegistro(id) {
     ckAtividades: f.ckAtividades || {}, ckVerificacoes: f.ckVerificacoes || {}, ckOcorrencias: f.ckOcorrencias || {},
     respostasAtividades: f.RespostasAtividades || {}, respostasVerificacoes: f.RespostasVerificacoes || {},
     temSupressao: !!f.TemSupressao, respostasSupressao: f.RespostasSupressao || {}, obsItens: f.ObsItens || {},
+    outrasVerificacoes: f.OutrasVerificacoes || [],
     outraativ: f.OutraAtividade, outraocorr: f.OutraOcorrencia, atividades: f.Atividades, amanha: f.PrevisaoAmanha, obs: f.Observacoes, fotos: f.fotos || [],
     orientacaoVerbal: !!f.OrientacaoVerbal, orientacaoPara: f.OrientacaoPara || '', orientacaoPrazo: f.OrientacaoPrazo || '',
     orientacaoDataCumprimento: f.OrientacaoDataCumprimento || '', orientacaoStatusCumprimento: f.OrientacaoStatusCumprimento || '',
