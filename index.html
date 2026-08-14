@@ -21283,6 +21283,270 @@ function flashClassificacaoIda(pct) {
   return { label: '🔴 Péssimo', cor: 'var(--red)' };
 }
 
+/* ===========================================================
+   IMPORTAR FLASH REPORT DE PDF (leitura automática, 100% no navegador)
+   Reaproveita pdf.js (já usado na leitura de Nota Fiscal). Como o PDF é
+   gerado pelo próprio _flashGerarDoc, o layout é fixo e conhecido — dá pra
+   extrair os campos com regex ancorada nos rótulos/itens do catálogo, em
+   vez de depender de IA/servidor externo. Nunca salva sozinho: só preenche
+   o formulário de Novo Flash Report pra revisão, o usuário confere e clica
+   Salvar normalmente (mesmo caminho, mesmo dbInserir protegido contra
+   condição de corrida). Funciona só com PDFs do modelo V2. -- */
+
+function _flashLabelParaRegex(label) {
+  return String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+}
+
+function _flashItensSupressaoFlat() {
+  const flat = [];
+  (FLASH_ITENS_SUPRESSAO || []).forEach(sec => (sec.itens || []).forEach(it => flat.push({ id: it.cod, label: it.label, criticidade: it.criticidade })));
+  return flat;
+}
+
+/* -- Extrai o texto do PDF preservando quebras de linha (usa item.hasEOL do
+   pdf.js), diferente de extrairTextoPDF() que junta tudo numa linha só por
+   página — aqui a estrutura de linha importa pra achar onde cada item do
+   checklist termina e a próxima "Obs:" começa. -- */
+async function extrairTextoPDFComLinhas(file) {
+  await carregarPdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+  let texto = '';
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    let linha = '';
+    for (const it of content.items) {
+      linha += it.str;
+      if (it.hasEOL) { texto += linha + '\n'; linha = ''; }
+      else if (it.str) linha += ' ';
+    }
+    if (linha.trim()) texto += linha + '\n';
+    texto += '\n';
+  }
+  return texto;
+}
+
+/* -- Best-effort: extrai as fotos embutidas no PDF (Registros Fotográficos).
+   Filtra pelas dimensões fixas da logo/assinatura do cabeçalho/rodapé
+   (1200x420 e 600x588), que se repetem em toda página e não são fotos de
+   campo. Se algo falhar numa imagem específica, pula ela e segue — nunca
+   derruba a importação inteira por causa das fotos. -- */
+async function extrairImagensFlashPDF(file) {
+  const imagens = [];
+  try {
+    await carregarPdfJs();
+    const buf = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+    for (let p = 1; p <= pdf.numPages; p++) {
+      try {
+        const page = await pdf.getPage(p);
+        const ops = await page.getOperatorList();
+        for (let i = 0; i < ops.fnArray.length; i++) {
+          if (ops.fnArray[i] !== window.pdfjsLib.OPS.paintImageXObject) continue;
+          const imgId = ops.argsArray[i][0];
+          try {
+            const img = await new Promise((resolve) => { try { page.objs.get(imgId, resolve); } catch(e) { resolve(null); } });
+            if (!img || !img.width || !img.height) continue;
+            const w = img.width, h = img.height;
+            if ((w === 1200 && h === 420) || (w === 600 && h === 588) || w < 100 || h < 100) continue; // logo/assinatura, não é foto
+            const canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            const imageData = ctx.createImageData(w, h);
+            const src = img.data;
+            if (src.length === w * h * 4) {
+              imageData.data.set(src);
+            } else if (src.length === w * h * 3) {
+              for (let px = 0, di = 0; px < w * h; px++, di += 3) {
+                imageData.data[px*4] = src[di]; imageData.data[px*4+1] = src[di+1];
+                imageData.data[px*4+2] = src[di+2]; imageData.data[px*4+3] = 255;
+              }
+            } else { continue; } // formato inesperado — pula essa imagem em vez de quebrar
+            ctx.putImageData(imageData, 0, 0);
+            imagens.push({ desc: '', dataUrl: canvas.toDataURL('image/jpeg', 0.85), horizontal: w >= h });
+          } catch(eImg) { console.warn('[FlashImport] falha ao extrair uma imagem, pulando:', eImg); }
+        }
+      } catch(ePg) { console.warn('[FlashImport] falha ao ler imagens da página', p, ePg); }
+    }
+  } catch(e) { console.warn('[FlashImport] falha geral na extração de fotos:', e); }
+  return imagens;
+}
+
+/* -- Parser central: recebe o texto (com quebras de linha) e devolve um
+   objeto no formato de window._flashData (parcial — só os campos que
+   conseguiu reconhecer), pra ser mesclado no formulário e revisado antes
+   de salvar. -- */
+function _flashParsearBlocoChecklist(texto, itens, cursorInicial, fimSecao) {
+  const respostas = {}, obs = {};
+  const teto = (typeof fimSecao === 'number') ? fimSecao : texto.length;
+  let cursor = cursorInicial || 0;
+  for (let i = 0; i < itens.length; i++) {
+    const it = itens[i];
+    const re = new RegExp('\\[\\s*(C|NC|NA)?\\s*\\]\\s*' + _flashLabelParaRegex(it.label), 'i');
+    const m = texto.slice(cursor, teto).match(re);
+    if (!m) continue; // item não apareceu no PDF (outro modelo/versão) — segue sem essa resposta
+    const posFim = cursor + m.index + m[0].length;
+    const marcador = (m[1] || '').toUpperCase();
+    if (marcador === 'C' || marcador === 'NC' || marcador === 'NA') respostas[it.id] = marcador;
+    // Limite da busca da Obs: até o próximo item conhecido desta MESMA seção,
+    // sem nunca passar do "teto" (fim da seção) — senão o último item de uma
+    // seção "vaza" e pega a Obs do primeiro item da seção seguinte por engano.
+    let limite = teto;
+    for (let j = i + 1; j < itens.length; j++) {
+      const re2 = new RegExp('\\[\\s*(?:C|NC|NA)?\\s*\\]\\s*' + _flashLabelParaRegex(itens[j].label), 'i');
+      const m2 = texto.slice(posFim, teto).match(re2);
+      if (m2) { limite = posFim + m2.index; break; }
+    }
+    const trecho = texto.slice(posFim, limite);
+    const mObs = trecho.match(/Obs:\s*([\s\S]+?)(?:\n\s*\n|\[|$)/i);
+    if (mObs) { const t = mObs[1].replace(/\s+/g, ' ').trim(); if (t) obs[it.id] = t; }
+    cursor = posFim;
+  }
+  return { respostas, obs };
+}
+
+function flashParsearTextoPdf(texto) {
+  const dados = {};
+  let campos = 0;
+
+  const frenteEncontrada = FLASH_FRENTES.slice().sort((a, b) => b.nome.length - a.nome.length).find(fr => texto.includes(fr.nome));
+  if (frenteEncontrada) { dados.frenteId = frenteEncontrada.id; campos++; }
+
+  const mData = texto.match(/Data:\s*(\d{2})\/(\d{2})\/(\d{4})/);
+  if (mData) { dados.data = mData[3] + '-' + mData[2] + '-' + mData[1]; campos++; }
+
+  const mClima = texto.match(/Clima:\s*([^\n]+?)\s*(?:\n|$)/);
+  if (mClima && mClima[1].trim() && mClima[1].trim() !== '--') { dados.clima = mClima[1].trim(); campos++; }
+
+  const mFrenteServico = texto.match(/Frente de Servi[çc]o:\s*.+?\s*[—-]\s*([^\n]+?)\s*(?:\n|$)/i);
+  if (mFrenteServico && mFrenteServico[1].trim()) { dados.trecho = mFrenteServico[1].trim(); campos++; }
+
+  const mEquipe = texto.match(/Equipe:\s*([^\n]+?)\s*(?:\n|$)/);
+  if (mEquipe && mEquipe[1].trim() && mEquipe[1].trim() !== '--') { dados.equipe = mEquipe[1].trim(); campos++; }
+
+  const mFiscal = texto.match(/([^\n]+?)\s*\n\s*Fiscal Ambiental\s*\n/i);
+  if (mFiscal && mFiscal[1].trim() && mFiscal[1].trim() !== 'Fiscal Ambiental') { dados.fiscal = mFiscal[1].trim(); campos++; }
+  const mGestor = texto.match(/([^\n]+?)\s*\n\s*Gestor do Contrato\s*\n/i);
+  if (mGestor && mGestor[1].trim() && mGestor[1].trim() !== 'Gestor do Contrato') { dados.rt = mGestor[1].trim(); campos++; }
+
+  const mOrient = texto.match(/Para:\s*(.+?)\s*\|\s*Prazo para atendimento:\s*(\d{2})\/(\d{2})\/(\d{4})/i);
+  if (mOrient) {
+    dados.orientacaoVerbal = true;
+    dados.orientacaoPara = mOrient[1].trim();
+    dados.orientacaoPrazo = mOrient[4] + '-' + mOrient[3] + '-' + mOrient[2];
+    campos += 2;
+    const mCumpr = texto.match(/Data de cumprimento:\s*(--|\d{2}\/\d{2}\/\d{4})\s*\|\s*Status:\s*(--|[^\|\n]+)/i);
+    if (mCumpr) {
+      if (mCumpr[1] !== '--') { const p = mCumpr[1].split('/'); dados.orientacaoDataCumprimento = p[2] + '-' + p[1] + '-' + p[0]; campos++; }
+      if (mCumpr[2] && mCumpr[2].trim() !== '--') { dados.orientacaoStatusCumprimento = mCumpr[2].trim(); campos++; }
+    }
+  }
+
+  const mOutraAtiv = texto.match(/\nOutras:\s*(.+?)\s*(?:\n|$)/);
+  if (mOutraAtiv && mOutraAtiv[1].trim()) { dados.outraativ = mOutraAtiv[1].trim(); campos++; }
+  const mOutraOcorr = texto.match(/\nOutras observa[çc][õo]es:\s*(.+?)\s*(?:\n|$)/i);
+  if (mOutraOcorr && mOutraOcorr[1].trim()) { dados.outraocorr = mOutraOcorr[1].trim(); campos++; }
+
+  const idxAtiv = texto.search(/ATIVIDADES ACOMPANHADAS/i);
+  const idxVerif = texto.search(/VERIFICA[ÇC][ÕO]ES AMBIENTAIS/i);
+  const idxSupr = FLASH_ITENS_SUPRESSAO && FLASH_ITENS_SUPRESSAO[0] ? texto.search(new RegExp(_flashLabelParaRegex(FLASH_ITENS_SUPRESSAO[0].secao.toUpperCase()), 'i')) : -1;
+  const idxOrientVerbal = texto.search(/ORIENTA[ÇC][ÃA]O VERBAL EM CAMPO/i);
+  const idxDescricao = texto.search(/DESCRI[ÇC][ÃA]O\s*\/\s*A[ÇC][ÃA]O ADOTADA/i);
+  // Fim de cada seção = início da próxima seção conhecida que vier depois dela
+  // (senão o último item de uma lista "vaza" pra próxima seção e rouba a Obs
+  // de lá por engano — cada seção precisa de um teto próprio).
+  const proximaSecao = (depoisDe) => [idxVerif, idxSupr, idxOrientVerbal, idxDescricao, texto.length].filter(x => x > depoisDe).sort((a,b)=>a-b)[0];
+  const fimAtiv = idxAtiv >= 0 ? proximaSecao(idxAtiv) : texto.length;
+  const fimVerif = idxVerif >= 0 ? proximaSecao(idxVerif) : texto.length;
+  const fimSupr = idxSupr >= 0 ? proximaSecao(idxSupr) : texto.length;
+
+  dados.obsItens = {};
+  if (idxAtiv >= 0) {
+    const r = _flashParsearBlocoChecklist(texto, FLASH_ATIVIDADES, idxAtiv, fimAtiv);
+    if (Object.keys(r.respostas).length) { dados.respostasAtividades = r.respostas; campos += Object.keys(r.respostas).length; }
+    Object.assign(dados.obsItens, r.obs);
+  }
+  if (idxVerif >= 0) {
+    const r = _flashParsearBlocoChecklist(texto, FLASH_VERIFICACOES, idxVerif, fimVerif);
+    if (Object.keys(r.respostas).length) { dados.respostasVerificacoes = r.respostas; campos += Object.keys(r.respostas).length; }
+    Object.assign(dados.obsItens, r.obs);
+  }
+  if (idxSupr >= 0) {
+    const flat = _flashItensSupressaoFlat();
+    const r = _flashParsearBlocoChecklist(texto, flat, idxSupr, fimSupr);
+    if (Object.keys(r.respostas).length) { dados.temSupressao = true; dados.respostasSupressao = r.respostas; campos += Object.keys(r.respostas).length; }
+    Object.assign(dados.obsItens, r.obs);
+  }
+
+  if (idxDescricao >= 0) {
+    let fim = texto.length;
+    ['OBSERVACOES / NAO CONFORMIDADES', 'OBSERVAÇÕES / NÃO CONFORMIDADES', 'PREVISAO PARA AMANHA', 'PREVISÃO PARA AMANHÃ', 'REGISTROS FOTOGRAFICOS', 'REGISTROS FOTOGRÁFICOS'].forEach(marc => {
+      const idx = texto.indexOf(marc, idxDescricao + 30);
+      if (idx >= 0 && idx < fim) fim = idx;
+    });
+    let bruto = texto.slice(idxDescricao, fim).replace(/^DESCRI[ÇC][ÃA]O\s*\/\s*A[ÇC][ÃA]O ADOTADA/i, '').trim();
+    if (/^N[ãa]o informado\.?$/i.test(bruto)) bruto = '';
+    if (bruto) { dados.atividades = bruto; campos++; }
+  }
+
+  const idxObs = texto.search(/OBSERVA[ÇC][ÕO]ES \/ N[ÃA]O CONFORMIDADES/i);
+  if (idxObs >= 0) {
+    let fim = texto.length;
+    ['PREVISAO PARA AMANHA', 'PREVISÃO PARA AMANHÃ', 'REGISTROS FOTOGRAFICOS', 'REGISTROS FOTOGRÁFICOS'].forEach(marc => {
+      const idx = texto.indexOf(marc, idxObs + 20);
+      if (idx >= 0 && idx < fim) fim = idx;
+    });
+    const bruto = texto.slice(idxObs, fim).replace(/^OBSERVA[ÇC][ÕO]ES \/ N[ÃA]O CONFORMIDADES/i, '').trim();
+    if (bruto) { dados.obs = bruto; campos++; }
+  }
+
+  const idxAmanha = texto.search(/PREVIS[ÃA]O PARA AMANH[ÃA]/i);
+  if (idxAmanha >= 0) {
+    let fim = texto.length;
+    ['REGISTROS FOTOGRAFICOS', 'REGISTROS FOTOGRÁFICOS'].forEach(marc => {
+      const idx = texto.indexOf(marc, idxAmanha + 20);
+      if (idx >= 0 && idx < fim) fim = idx;
+    });
+    const bruto = texto.slice(idxAmanha, fim).replace(/^PREVIS[ÃA]O PARA AMANH[ÃA]/i, '').trim();
+    if (bruto) { dados.amanha = bruto; campos++; }
+  }
+
+  return { dados, campos };
+}
+
+/* -- Orquestra a importação: lê o PDF, extrai texto+fotos, preenche o
+   formulário de Novo Flash Report e abre pra revisão. Nunca salva sozinho —
+   quem confirma é o usuário, clicando Salvar como sempre. -- */
+async function flashImportarDePdf(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  showSyncStatus('📄 Lendo Flash Report do PDF...');
+  try {
+    const [texto, fotos] = await Promise.all([
+      extrairTextoPDFComLinhas(file),
+      extrairImagensFlashPDF(file).catch(() => []),
+    ]);
+    if (!texto || texto.trim().length < 20) throw new Error('Não consegui ler texto neste PDF.');
+    const { dados, campos } = flashParsearTextoPdf(texto);
+    if (campos === 0) throw new Error('Não reconheci nenhum campo — confirme que é um PDF de Flash Report gerado por este sistema (modelo V2).');
+
+    flashNovoForm(dados.frenteId);
+    Object.assign(window._flashData, dados);
+    if (fotos.length) window._flashData.fotos = fotos;
+    window._flashRegistroAtualId = null;
+    window._flashMostrarForm = true;
+    navigate('checklist_flash');
+    showSyncStatus('', '', 1);
+    showToast(`📄 PDF lido: ${campos} campo(s) preenchido(s) automaticamente${fotos.length ? ' + ' + fotos.length + ' foto(s)' : ''} — revise tudo antes de salvar.`);
+  } catch (err) {
+    console.warn('[FlashImport] Erro:', err);
+    showSyncStatus('', '', 1);
+    showToast('⚠️ ' + (err.message || 'Falha ao importar o PDF.') + ' Preencha manualmente.');
+  }
+}
+
 function flashNovoForm(frenteIdPreSelecionado) {
   window._flashData = {
     modelo: FLASH_CHECKLIST_V2 ? 'v2' : 'v1',
@@ -21930,6 +22194,10 @@ function pageChecklistFlash() {
       <div style="font-size:.85rem;color:var(--text-muted)">Preencha um Flash Report por frente/empreiteira sempre que fizer uma inspeção de campo.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn-secondary" style="font-size:.75rem" onclick="flashMigrarHistoricoIframe()">📥 Importar Flash Reports antigos</button>
+        <label class="btn-secondary" style="font-size:.75rem;cursor:pointer;display:inline-flex;align-items:center;gap:4px" title="Suba um PDF de Flash Report já exportado por este sistema — o app lê e preenche o formulário automaticamente pra você revisar e salvar">
+          📄 Importar de PDF
+          <input type="file" accept="application/pdf" style="display:none" onchange="flashImportarDePdf(event)">
+        </label>
         <button class="btn-primary" onclick="flashAbrirNovo()">➕ Novo Flash Report</button>
       </div>
     </div>
