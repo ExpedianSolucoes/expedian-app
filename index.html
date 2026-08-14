@@ -21357,6 +21357,21 @@ async function extrairTextoPDFComLinhas(file, onProgress) {
    (1200x420 e 600x588), que se repetem em toda página e não são fotos de
    campo. Se algo falhar numa imagem específica, pula ela e segue — nunca
    derruba a importação inteira por causa das fotos. -- */
+/* -- Corre uma promise com prazo máximo — se "prom" não resolver/rejeitar a
+   tempo, resolve com "valorTimeout" em vez de ficar esperando pra sempre.
+   Usado pra garantir que a extração de fotos NUNCA trave a importação
+   indefinidamente, mesmo se o pdf.js deixar alguma imagem "pendurada". -- */
+function _comPrazo(prom, ms, valorTimeout) {
+  return new Promise((resolve) => {
+    let resolvido = false;
+    const timer = setTimeout(() => { if (!resolvido) { resolvido = true; resolve(valorTimeout); } }, ms);
+    prom.then(
+      (v) => { if (!resolvido) { resolvido = true; clearTimeout(timer); resolve(v); } },
+      () => { if (!resolvido) { resolvido = true; clearTimeout(timer); resolve(valorTimeout); } }
+    );
+  });
+}
+
 async function extrairImagensFlashPDF(file, onProgress) {
   const imagens = [];
   try {
@@ -21367,12 +21382,29 @@ async function extrairImagensFlashPDF(file, onProgress) {
       if (onProgress) { try { onProgress(p, pdf.numPages, imagens.length); } catch(e) {} }
       try {
         const page = await pdf.getPage(p);
+        // O pdf.js só decodifica de fato os bitmaps das imagens durante a
+        // renderização — sem isso, page.objs.get() fica esperando pra
+        // sempre um "resolve" que nunca chega (foi o que travou a
+        // importação). Renderiza a página inteira num canvas invisível
+        // primeiro, só pra forçar essa decodificação.
+        const viewport = page.getViewport({ scale: 1 });
+        const canvasRender = document.createElement('canvas');
+        canvasRender.width = Math.max(1, Math.round(viewport.width));
+        canvasRender.height = Math.max(1, Math.round(viewport.height));
+        const ctxRender = canvasRender.getContext('2d');
+        const renderTask = page.render({ canvasContext: ctxRender, viewport });
+        const renderOk = await _comPrazo(renderTask.promise, 15000, false);
+        if (renderOk === false) { try { renderTask.cancel(); } catch(e) {} console.warn('[FlashImport] render da página', p, 'não terminou a tempo — pulando fotos desta página.'); canvasRender.width = 0; canvasRender.height = 0; continue; }
+
         const ops = await page.getOperatorList();
         for (let i = 0; i < ops.fnArray.length; i++) {
           if (ops.fnArray[i] !== window.pdfjsLib.OPS.paintImageXObject) continue;
           const imgId = ops.argsArray[i][0];
           try {
-            const img = await new Promise((resolve) => { try { page.objs.get(imgId, resolve); } catch(e) { resolve(null); } });
+            const img = await _comPrazo(
+              new Promise((resolve) => { try { page.objs.get(imgId, resolve); } catch(e) { resolve(null); } }),
+              4000, null
+            );
             if (!img || !img.width || !img.height) continue;
             const w = img.width, h = img.height;
             if ((w === 1200 && h === 420) || (w === 600 && h === 588) || w < 100 || h < 100) continue; // logo/assinatura, não é foto
@@ -21393,6 +21425,7 @@ async function extrairImagensFlashPDF(file, onProgress) {
             imagens.push({ desc: '', dataUrl: canvas.toDataURL('image/jpeg', 0.85), horizontal: w >= h });
           } catch(eImg) { console.warn('[FlashImport] falha ao extrair uma imagem, pulando:', eImg); }
         }
+        canvasRender.width = 0; canvasRender.height = 0; // libera memória do canvas de render
       } catch(ePg) { console.warn('[FlashImport] falha ao ler imagens da página', p, ePg); }
     }
   } catch(e) { console.warn('[FlashImport] falha geral na extração de fotos:', e); }
@@ -21556,9 +21589,16 @@ async function flashImportarDePdf(event) {
     if (!texto || texto.trim().length < 20) throw new Error('Não consegui ler texto neste PDF.');
 
     showSyncStatus('🖼️ Extraindo fotos do PDF...');
-    const fotos = await extrairImagensFlashPDF(file, (p, total, encontradasAteAgora) => {
-      showSyncStatus(`🖼️ Extraindo fotos do PDF... (página ${p} de ${total}${encontradasAteAgora ? ', ' + encontradasAteAgora + ' encontrada(s)' : ''})`);
-    }).catch(() => []);
+    // Prazo geral de segurança: mesmo com os timeouts internos de
+    // extrairImagensFlashPDF, isso garante que a importação NUNCA fica
+    // travada esperando fotos — no pior caso, segue sem elas (o usuário
+    // sempre pode anexar manualmente depois, no formulário).
+    const fotos = await _comPrazo(
+      extrairImagensFlashPDF(file, (p, total, encontradasAteAgora) => {
+        showSyncStatus(`🖼️ Extraindo fotos do PDF... (página ${p} de ${total}${encontradasAteAgora ? ', ' + encontradasAteAgora + ' encontrada(s)' : ''})`);
+      }).catch(() => []),
+      60000, []
+    );
 
     showSyncStatus('🧩 Reconhecendo campos e preenchendo o formulário...');
     const { dados, campos } = flashParsearTextoPdf(texto);
