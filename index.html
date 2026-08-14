@@ -1310,6 +1310,7 @@ function renderPage(id) {
     checklist_linha: () => pageChecklistLinha(),
     checklist_bombeamento: () => pageChecklistBombeamento(),
     checklist_fiscalizacao_ero: () => pageFiscalizacaoEro(),
+    painel_geral_ero: () => pagePainelGeralEro(),
     checklist_mitigacao: () => pageChecklistMitigacao(),
     checklist_coleta: () => pageChecklistColeta(),
     checklist_flash: () => pageChecklistFlash(),
@@ -19102,6 +19103,7 @@ function renderMitMiniDashboard() {
    diário de campo) quanto por Projetos (mesmas páginas nativas, mesmos
    dados — só muda por onde se entra). -- */
 const FISCALIZACAO_ERO_CATALOGO = [
+  { rota: 'painel_geral_ero', icon: '📊', titulo: 'Painel Geral', subtitulo: 'Visão consolidada da gestão ambiental por circuito elétrico' },
   { rota: 'checklist_flash', icon: '🚧', titulo: 'Flash Report', subtitulo: 'Relatório diário de campo por frente/empreiteira' },
   { rota: 'checklist_notif', icon: '⚠️', titulo: 'Notificação de NC', subtitulo: 'Notificação de não conformidade ambiental por circuito elétrico' },
   { rota: 'checklist_mitigacao', icon: '🧯', titulo: 'Kit de Mitigação Ambiental', subtitulo: 'Checklist de vistoria do kit de contenção/mitigação ambiental' },
@@ -19121,6 +19123,158 @@ function pageFiscalizacaoEro() {
       <div class="card-title" style="margin-bottom:6px">${c.titulo}</div>
       <div style="font-size:.78rem;color:var(--text-muted)">${c.subtitulo}</div>
     </div>`).join('')}
+  </div>`;
+}
+
+/* -- Painel Geral: visão consolidada de Flash Report + Notificação de NC +
+   Kit de Mitigação, agrupada por circuito elétrico (FLASH_FRENTES). Não tem
+   tabela própria — só lê os 3 históricos já existentes (window._flashHistorico/
+   _ncHistorico/_mitHistorico) e cruza por FrenteId (Flash/NC) ou por nome
+   (Mitigação usa campo `local` livre, comparado contra fr.nome). -- */
+if (window._painelGeralCarregando === undefined) window._painelGeralCarregando = false;
+
+/* -- Cópia enxuta de carregarMitigacaoHistorico() sem o navigate('checklist_mitigacao')
+   forçado no final — aqui é só leitura, pro Painel Geral, e não pode puxar o
+   usuário pra fora dessa tela só porque o histórico de Mitigação ainda não
+   tinha sido carregado nesta sessão (mesmo cuidado já tomado em
+   projetosCarregarHistoricoMedicoesObras). -- */
+async function painelGeralCarregarMitigacaoSemNavegar() {
+  if (window._mitHistorico !== null) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('mit_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
+  window._mitHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('ChecklistMitigacao');
+    if (Array.isArray(lista)) {
+      window._mitHistorico = lista;
+      try { localStorage.setItem('mit_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    }
+  } catch (e) { console.warn('[Painel Geral] Falha ao carregar histórico de Mitigação, usando cache local.', e); }
+}
+
+async function painelGeralCarregarDados(forcar) {
+  if (window._painelGeralCarregando) return;
+  window._painelGeralCarregando = true;
+  try {
+    if (forcar) window._mitHistorico = null;
+    await Promise.all([
+      (window._flashHistorico === null || forcar) ? flashCarregarHistorico(true, true) : Promise.resolve(),
+      (window._ncHistorico === null || forcar) ? ncCarregarHistorico(true, true) : Promise.resolve(),
+      painelGeralCarregarMitigacaoSemNavegar(),
+    ]);
+  } finally {
+    window._painelGeralCarregando = false;
+    navigate('painel_geral_ero');
+  }
+}
+
+function painelGeralCalcularFrente(fr, flashList, ncList, mitList) {
+  const flashDaFrente = flashList.filter(f => f.FrenteId === fr.id);
+  const flashPontuacoes = flashDaFrente.map(f => flashCalcularPontuacao(f));
+  const flashComPct = flashPontuacoes.filter(r => typeof r.pct === 'number');
+  const flashMediaIda = flashComPct.length ? (flashComPct.reduce((s, r) => s + r.pct, 0) / flashComPct.length) : null;
+  const flashComOcorr = flashPontuacoes.filter(r => r.temOcorr).length;
+
+  const ncDaFrente = ncList.filter(n => n.FrenteId === fr.id);
+  const ncAbertas = ncDaFrente.filter(n => n.Status === 'Aberta').length;
+  const ncForaPrazo = ncDaFrente.filter(n => n.AtendimentoPrazoStatus === 'Fora do Prazo').length;
+
+  const mitDaFrente = mitList.filter(r => (r.local || '').trim() === fr.nome);
+  const mitComPct = mitDaFrente.filter(r => typeof r.pontuacaoPct === 'number');
+  const mitMediaPct = mitComPct.length ? (mitComPct.reduce((s, r) => s + r.pontuacaoPct, 0) / mitComPct.length) : null;
+  const mitNaoAceitavel = mitDaFrente.filter(r => r.pontuacaoLabel === 'Não Aceitável').length;
+  const mitAcoesPendentes = mitDaFrente.filter(r => r.acaoNecessaria === 'sim' && r.acaoStatus !== 'concluida').length;
+
+  const temDados = flashDaFrente.length > 0 || ncDaFrente.length > 0 || mitDaFrente.length > 0;
+  const critico = ncAbertas > 0 || ncForaPrazo > 0 || mitNaoAceitavel > 0 || mitAcoesPendentes > 0;
+  const atencao = !critico && flashComOcorr > 0;
+  const status = !temDados
+    ? { cor: '⚪', label: 'Sem dados ainda', corCss: 'var(--border)' }
+    : critico
+      ? { cor: '🔴', label: 'Requer atenção', corCss: 'var(--red)' }
+      : atencao
+        ? { cor: '🟡', label: 'Acompanhar', corCss: '#d97706' }
+        : { cor: '🟢', label: 'Em conformidade', corCss: 'var(--green-main)' };
+
+  return {
+    fr, temDados, status,
+    flashDaFrente, flashMediaIda, flashComOcorr,
+    ncDaFrente, ncAbertas, ncForaPrazo,
+    mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes,
+  };
+}
+
+function painelGeralCardFrente(p) {
+  const { fr, status, flashDaFrente, flashMediaIda, flashComOcorr, ncDaFrente, ncAbertas, ncForaPrazo, mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes } = p;
+  return `
+  <div class="card" style="border-top:3px solid ${status.corCss}">
+    <div style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:800">${status.cor} ${fr.nome}</div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:6px">${fr.empreiteira}</div>
+    <div style="font-size:.7rem;font-weight:700;margin-bottom:10px;color:${status.corCss}">${status.label}</div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="navigate('checklist_flash')" title="Ver Flash Reports">
+        <span style="font-size:.72rem">🚧 Flash Report</span>
+        <span style="font-size:.72rem;font-weight:700">${flashDaFrente.length ? (flashMediaIda === null ? '—' : flashMediaIda.toFixed(0) + '% IDA') + (flashComOcorr ? ` · ❌${flashComOcorr}` : '') : 'sem registros'}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="navigate('checklist_notif')" title="Ver Notificações de NC">
+        <span style="font-size:.72rem">⚠️ Notificação NC</span>
+        <span style="font-size:.72rem;font-weight:700;color:${ncAbertas > 0 ? 'var(--red)' : 'inherit'}">${ncDaFrente.length ? `${ncDaFrente.length} total${ncAbertas ? ` · 🔴${ncAbertas} aberta${ncAbertas !== 1 ? 's' : ''}` : ''}${ncForaPrazo ? ` · ⏳${ncForaPrazo}` : ''}` : 'sem registros'}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="navigate('checklist_mitigacao')" title="Ver Kit de Mitigação">
+        <span style="font-size:.72rem">🧯 Kit Mitigação</span>
+        <span style="font-size:.72rem;font-weight:700;color:${mitNaoAceitavel > 0 ? 'var(--red)' : 'inherit'}">${mitDaFrente.length ? (mitMediaPct === null ? '—' : mitMediaPct.toFixed(0) + '%') + (mitNaoAceitavel ? ` · 🔴${mitNaoAceitavel}` : '') + (mitAcoesPendentes ? ` · ⏳${mitAcoesPendentes}` : '') : 'sem registros'}</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function pagePainelGeralEro() {
+  if (window._flashHistorico === null || window._ncHistorico === null || window._mitHistorico === null) {
+    painelGeralCarregarDados();
+  }
+  const flashList = window._flashHistorico || [];
+  const ncList = window._ncHistorico || [];
+  const mitList = window._mitHistorico || [];
+
+  const porFrente = FLASH_FRENTES.map(fr => painelGeralCalcularFrente(fr, flashList, ncList, mitList));
+  const totalCritico = porFrente.filter(p => p.status.cor === '🔴').length;
+  const totalAtencao = porFrente.filter(p => p.status.cor === '🟡').length;
+  const totalOk = porFrente.filter(p => p.status.cor === '🟢').length;
+  const totalSemDados = porFrente.filter(p => p.status.cor === '⚪').length;
+
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div>
+      <h1>Painel Geral — Gestão Ambiental por Empreendimento</h1>
+      <p>Visão consolidada de Flash Report, Notificação de NC e Kit de Mitigação por circuito elétrico — Contrato 2025022101</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-secondary" onclick="painelGeralCarregarDados(true)">🔄 Atualizar</button>
+      <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px">
+    <div class="kpi-card red" style="padding:12px">
+      <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🔴 Requerem atenção</div>
+      <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${totalCritico > 0 ? 'var(--red)' : 'inherit'}">${totalCritico}</div>
+    </div>
+    <div class="kpi-card amber" style="padding:12px">
+      <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🟡 Acompanhar</div>
+      <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${totalAtencao > 0 ? '#d97706' : 'inherit'}">${totalAtencao}</div>
+    </div>
+    <div class="kpi-card green" style="padding:12px">
+      <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🟢 Em conformidade</div>
+      <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${totalOk}</div>
+    </div>
+    <div class="kpi-card" style="padding:12px">
+      <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">⚪ Sem dados ainda</div>
+      <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${totalSemDados}</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px">
+    ${porFrente.map(p => painelGeralCardFrente(p)).join('')}
   </div>`;
 }
 
@@ -21449,14 +21603,27 @@ function pageFaunaFlash() {
 // (linha de transmissão, direito de passagem) — usado só como metadado
 // informativo/filtro; o checklist do Flash Report funciona igual pros dois
 // (cada item tem opção "Não Aplicável" pra quando não fizer sentido no local).
+// valorEscopo: valor mensal fixo contratual de medição pra esse circuito
+// (usado só como SUGESTÃO pra pré-preencher o campo "Valor" em Nova Medição
+// — sempre editável, nunca travado). Confirmado via e-mail "PREVISÃO
+// MEDIÇÃO GESTÃO OBRAS - 2025" (Tiago Tavares -> Bruno Nascimento/Energisa,
+// 09/02/2026): "LDAT 138 KV Pimenta/Espigão – R$25.932,12" e "LDAT 69 KV
+// Pv1/Guaporé – R$25.932,12", "valores contratuais são fixos mensais" — e
+// cruzado com os BMs realmente emitidos (BM01 a BM19), que usam
+// R$25.923,12 de forma consistente (o e-mail tem um provável erro de
+// digitação nos 2 últimos dígitos). Aplica pros circuitos que já rodam
+// nesse rodízio mensal (Sistema Espigão + Sistema PVH); "SE Presidente
+// Médici" (engm3) e serviços avulsos (Malarigeno etc.) não têm valor fixo
+// confirmado ainda, por isso ficam sem valorEscopo (campo fica em branco,
+// pra preencher na mão).
 const FLASH_FRENTES = [
-  { id: 'css1',     nome: 'SE Pimenta Bueno (Ampliação)',              empreiteira: 'CSS Engenharia', tipo: 'canteiro' },
-  { id: 'css2',     nome: "SE Espigão D'Oeste",                        empreiteira: 'CSS Engenharia', tipo: 'canteiro' },
-  { id: 'at2',      nome: 'LDAT 138 kV Pimenta Bueno / Espigão',       empreiteira: 'AT2 Construções', tipo: 'linha' },
-  { id: 'engm1',    nome: 'Subestação Guaporé',                        empreiteira: 'ENGM', tipo: 'canteiro' },
-  { id: 'engm2',    nome: 'SE Porto Velho (Bay)',                      empreiteira: 'ENGM', tipo: 'canteiro' },
+  { id: 'css1',     nome: 'SE Pimenta Bueno (Ampliação)',              empreiteira: 'CSS Engenharia', tipo: 'canteiro', valorEscopo: 25923.12 },
+  { id: 'css2',     nome: "SE Espigão D'Oeste",                        empreiteira: 'CSS Engenharia', tipo: 'canteiro', valorEscopo: 25923.12 },
+  { id: 'at2',      nome: 'LDAT 138 kV Pimenta Bueno / Espigão',       empreiteira: 'AT2 Construções', tipo: 'linha', valorEscopo: 25923.12 },
+  { id: 'engm1',    nome: 'Subestação Guaporé',                        empreiteira: 'ENGM', tipo: 'canteiro', valorEscopo: 25923.12 },
+  { id: 'engm2',    nome: 'SE Porto Velho (Bay)',                      empreiteira: 'ENGM', tipo: 'canteiro', valorEscopo: 25923.12 },
   { id: 'engm3',    nome: 'SE Presidente Médici',                      empreiteira: 'ENGM', tipo: 'canteiro' },
-  { id: 'enermais', nome: 'LDAT 69 kV Porto Velho / Guaporé',          empreiteira: 'Enermais', tipo: 'linha' },
+  { id: 'enermais', nome: 'LDAT 69 kV Porto Velho / Guaporé',          empreiteira: 'Enermais', tipo: 'linha', valorEscopo: 25923.12 },
 ];
 const FLASH_RTS = ['Tiago Tavares', 'Marcelo Marafon', 'Luiz Evaristo'];
 const FLASH_CLIMAS = ['Ensolarado', 'Parcialmente nublado', 'Nublado', 'Chuva leve', 'Chuva forte'];
@@ -24322,9 +24489,13 @@ async function medExportarExcel() {
    cabeçalho/rodapé/paginação dos demais PDFs do app (_pdfCabecalhoRodape/
    _pdfNovaPagina/_pdfNumerarPaginas). Recebe os dados no "formato de
    formulário" (m.frenteId/periodo/regObras/data/prazo/valor/status/
-   servicos/obs/assinaturaFiscal.../assinaturaEnergisa...), o mesmo shape de
-   window._medData — assim serve tanto pra exportar direto do formulário
-   (antes de salvar) quanto por um registro já salvo (ver medExportarPDF). -- */
+   servicos/obs/assinaturaExpedian.../assinaturaReEnergisa.../
+   assinaturaEnergisa...), o mesmo shape de window._medData — assim serve
+   tanto pra exportar direto do formulário (antes de salvar) quanto por um
+   registro já salvo (ver medExportarPDF). Três assinaturas porque, na
+   prática, o lado do cliente já assina em dois nomes/marcas diferentes
+   dentro do mesmo grupo — Energisa e (re)energisa — conforme e-mails reais
+   de medição da obra (confirmado com o Tiago). -- */
 async function medGerarDoc(m) {
   await _garantirJsPDF();
   const frente = FLASH_FRENTES.find(fr => fr.id === m.frenteId);
@@ -24370,13 +24541,17 @@ async function medGerarDoc(m) {
   if (m.obs) { medSectionTitle('OBSERVAÇÕES'); medTextBlock(m.obs); }
 
   // Assinaturas — imagem do traço (canvas) quando existir, senão só a linha
-  // em branco pra assinar na cópia impressa.
+  // em branco pra assinar na cópia impressa. 3 colunas: Expedian, (re)energisa
+  // e Energisa (os dois últimos são identidades/pessoas distintas do lado
+  // do cliente, mesmo pertencendo ao mesmo grupo).
   if (y > pageH - 5.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
   y += 0.3;
-  const colW = CW / 2 - 0.3;
+  const gap = 0.3;
+  const colW = (CW - gap * 2) / 3;
   const assinaturas = [
-    { nome: m.assinaturaFiscalNome, img: m.assinaturaFiscal, papel: 'Fiscal Expedian', x: ML },
-    { nome: m.assinaturaEnergisaNome, img: m.assinaturaEnergisa, papel: 'Responsável Energisa', x: ML + CW / 2 + 0.3 },
+    { nome: m.assinaturaExpedianNome, img: m.assinaturaExpedian, papel: 'Expedian', x: ML },
+    { nome: m.assinaturaReEnergisaNome, img: m.assinaturaReEnergisa, papel: '(re)energisa', x: ML + colW + gap },
+    { nome: m.assinaturaEnergisaNome, img: m.assinaturaEnergisa, papel: 'Energisa', x: ML + (colW + gap) * 2 },
   ];
   assinaturas.forEach(a => {
     if (a.img) { try { doc.addImage(a.img, 'PNG', a.x, y, colW, 1.6); } catch (ex) {} }
@@ -24405,7 +24580,7 @@ async function medExportarPDFForm() {
   if (!d.frenteId) { showToast('⚠️ Selecione o circuito elétrico antes de exportar.'); return; }
   if (!d.periodo) { showToast('⚠️ Informe o período/BM antes de exportar.'); return; }
   showToast('🔄 Gerando PDF... aguarde.');
-  ['Fiscal', 'Energisa'].forEach(qual => {
+  ['Expedian', 'ReEnergisa', 'Energisa'].forEach(qual => {
     const sigId = 'sig_med_' + qual.toLowerCase();
     if (_sigState[sigId]) {
       const canvas = document.getElementById(sigId);
@@ -24424,8 +24599,8 @@ async function medExportarPDF(id) {
   const dLocal = {
     frenteId: m.FrenteId, periodo: m.Periodo, regObras: m.RegObras, data: m.Data, prazo: m.Prazo,
     valor: m.Valor, status: m.Status, servicos: m.Servicos, obs: m.Obs,
-    assinaturaFiscalNome: m.AssinaturaFiscalNome, assinaturaEnergisaNome: m.AssinaturaEnergisaNome,
-    assinaturaFiscal: m.AssinaturaFiscal, assinaturaEnergisa: m.AssinaturaEnergisa,
+    assinaturaExpedianNome: m.AssinaturaExpedianNome, assinaturaReEnergisaNome: m.AssinaturaReEnergisaNome, assinaturaEnergisaNome: m.AssinaturaEnergisaNome,
+    assinaturaExpedian: m.AssinaturaExpedian, assinaturaReEnergisa: m.AssinaturaReEnergisa, assinaturaEnergisa: m.AssinaturaEnergisa,
   };
   const doc = await medGerarDoc(dLocal);
   doc.save(_medNomeArquivoPdf(dLocal));
@@ -24447,10 +24622,26 @@ async function medCarregarHistorico(forcar) {
 }
 
 function medNovoForm(frenteIdPre) {
+  const frenteId = frenteIdPre || FLASH_FRENTES[0].id;
+  const frente = FLASH_FRENTES.find(f => f.id === frenteId);
   window._medData = {
-    frenteId: frenteIdPre || FLASH_FRENTES[0].id, periodo: '', regObras: '', data: '', prazo: '', valor: '', status: 'Em elaboração', servicos: '', obs: '',
-    assinaturaFiscalNome: '', assinaturaEnergisaNome: '', assinaturaFiscal: '', assinaturaEnergisa: '',
+    frenteId, periodo: '', regObras: '', data: '', prazo: '', valor: frente && frente.valorEscopo ? frente.valorEscopo : '', status: 'Em elaboração', servicos: '', obs: '',
+    assinaturaExpedianNome: '', assinaturaReEnergisaNome: '', assinaturaEnergisaNome: '',
+    assinaturaExpedian: '', assinaturaReEnergisa: '', assinaturaEnergisa: '',
   };
+}
+/* -- Pré-preenche o campo Valor com o valor de escopo mensal fixo daquele
+   circuito (FLASH_FRENTES[].valorEscopo, ver comentário na definição da
+   lista) quando o usuário troca o circuito em Nova Medição. Só sugere —
+   nunca sobrescreve um valor já digitado nem mexe num registro que já está
+   sendo editado (aí o valor real já foi lançado antes, não é pra reescrever
+   por cima). -- */
+function medAutoPreencherValorEscopo() {
+  if (window._medRegistroAtualId) return;
+  const d = window._medData;
+  if (d.valor) return;
+  const frente = FLASH_FRENTES.find(f => f.id === d.frenteId);
+  if (frente && frente.valorEscopo) d.valor = frente.valorEscopo;
 }
 /* -- Redesenha as assinaturas já salvas nos canvases ao abrir um registro pra
    edição (o canvas nasce em branco a cada render; sem isso, editar um
@@ -24458,7 +24649,7 @@ function medNovoForm(frenteIdPre) {
    setTimeout logo após o formulário ser inserido no DOM. -- */
 function medRestaurarAssinaturas() {
   const d = window._medData || {};
-  [['Fiscal', d.assinaturaFiscal], ['Energisa', d.assinaturaEnergisa]].forEach(([qual, dataUrl]) => {
+  [['Expedian', d.assinaturaExpedian], ['ReEnergisa', d.assinaturaReEnergisa], ['Energisa', d.assinaturaEnergisa]].forEach(([qual, dataUrl]) => {
     if (!dataUrl) return;
     const canvas = document.getElementById('sig_med_' + qual.toLowerCase());
     if (!canvas) return;
@@ -24491,8 +24682,8 @@ function medEditarRegistro(id) {
     frenteId: m.FrenteId || FLASH_FRENTES[0].id, periodo: m.Periodo || '', regObras: m.RegObras || '', data: m.Data || '',
     prazo: m.Prazo || '', valor: m.Valor || '', status: m.Status || 'Em elaboração',
     servicos: m.Servicos || '', obs: m.Obs || '',
-    assinaturaFiscalNome: m.AssinaturaFiscalNome || '', assinaturaEnergisaNome: m.AssinaturaEnergisaNome || '',
-    assinaturaFiscal: m.AssinaturaFiscal || '', assinaturaEnergisa: m.AssinaturaEnergisa || '',
+    assinaturaExpedianNome: m.AssinaturaExpedianNome || '', assinaturaReEnergisaNome: m.AssinaturaReEnergisaNome || '', assinaturaEnergisaNome: m.AssinaturaEnergisaNome || '',
+    assinaturaExpedian: m.AssinaturaExpedian || '', assinaturaReEnergisa: m.AssinaturaReEnergisa || '', assinaturaEnergisa: m.AssinaturaEnergisa || '',
   };
   window._medRegistroAtualId = id;
   window._medMostrarForm = true;
@@ -24526,8 +24717,8 @@ async function medSalvar() {
   const frente = FLASH_FRENTES.find(f => f.id === d.frenteId) || FLASH_FRENTES[0];
   // Captura o traço desenhado nos canvases de assinatura nesta sessão (se não
   // houve traço novo, _sigState não tem a chave e mantém a assinatura salva
-  // anteriormente, já carregada em d.assinaturaFiscal/assinaturaEnergisa).
-  ['Fiscal', 'Energisa'].forEach(qual => {
+  // anteriormente, já carregada em d.assinaturaExpedian/ReEnergisa/Energisa).
+  ['Expedian', 'ReEnergisa', 'Energisa'].forEach(qual => {
     const sigId = 'sig_med_' + qual.toLowerCase();
     if (_sigState[sigId]) {
       const canvas = document.getElementById(sigId);
@@ -24540,8 +24731,8 @@ async function medSalvar() {
     Periodo: d.periodo, RegObras: d.regObras || '', Data: d.data || '', Prazo: d.prazo || '',
     Valor: parseFloat(d.valor) || 0, Status: d.status || 'Em elaboração',
     Servicos: d.servicos || '', Obs: d.obs || '',
-    AssinaturaFiscalNome: d.assinaturaFiscalNome || '', AssinaturaEnergisaNome: d.assinaturaEnergisaNome || '',
-    AssinaturaFiscal: d.assinaturaFiscal || '', AssinaturaEnergisa: d.assinaturaEnergisa || '',
+    AssinaturaExpedianNome: d.assinaturaExpedianNome || '', AssinaturaReEnergisaNome: d.assinaturaReEnergisaNome || '', AssinaturaEnergisaNome: d.assinaturaEnergisaNome || '',
+    AssinaturaExpedian: d.assinaturaExpedian || '', AssinaturaReEnergisa: d.assinaturaReEnergisa || '', AssinaturaEnergisa: d.assinaturaEnergisa || '',
     CriadoPorNome: window._currentUser ? window._currentUser.name : '',
     CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
   };
@@ -24657,7 +24848,7 @@ function pageChecklistMedicao() {
     <div class="card-title">${editando ? '✏️ Editar Medição' : '➕ Nova Medição'}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Circuito Elétrico</label>
-        <select onchange="medCampo('frenteId', this.value); navigate('checklist_medicao')">
+        <select onchange="medCampo('frenteId', this.value); medAutoPreencherValorEscopo(); navigate('checklist_medicao')">
           ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome}</option>`).join('')}
         </select>
       </div>
@@ -24678,35 +24869,31 @@ function pageChecklistMedicao() {
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">Assinaturas</div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">3 vias — Expedian e as duas identidades do lado Energisa (Energisa e (re)energisa, conforme os e-mails reais de medição da obra).</div>
     <div style="display:flex;flex-direction:column;gap:20px">
+      ${[
+        { qual: 'Expedian', label: 'Expedian' },
+        { qual: 'ReEnergisa', label: '(re)energisa' },
+        { qual: 'Energisa', label: 'Energisa' },
+      ].map(({ qual, label }) => {
+        const campoNome = 'assinatura' + qual + 'Nome';
+        const sigId = 'sig_med_' + qual.toLowerCase();
+        return `
       <div style="display:flex;flex-direction:column;gap:4px">
-        <div class="form-group" style="margin:0 0 4px"><label style="font-size:.68rem">Nome — Fiscal Expedian</label>
-          <input type="text" value="${(d.assinaturaFiscalNome || '').replace(/"/g, '&quot;')}" oninput="medCampo('assinaturaFiscalNome', this.value)" placeholder="Nome completo">
+        <div class="form-group" style="margin:0 0 4px"><label style="font-size:.68rem">Nome — ${label}</label>
+          <input type="text" value="${(d[campoNome] || '').replace(/"/g, '&quot;')}" oninput="medCampo('${campoNome}', this.value)" placeholder="Nome completo">
         </div>
-        <canvas id="sig_med_fiscal" width="500" height="90"
+        <canvas id="${sigId}" width="500" height="90"
           style="border:1px solid var(--border);border-radius:8px;background:#fff;cursor:crosshair;touch-action:none;width:100%;max-width:500px;height:90px"
-          onmousedown="startSign(event,'sig_med_fiscal')" onmousemove="drawSign(event,'sig_med_fiscal')"
-          onmouseup="stopSign('sig_med_fiscal')" onmouseleave="stopSign('sig_med_fiscal')"
-          ontouchstart="startSign(event,'sig_med_fiscal')" ontouchmove="drawSign(event,'sig_med_fiscal')" ontouchend="stopSign('sig_med_fiscal')">
+          onmousedown="startSign(event,'${sigId}')" onmousemove="drawSign(event,'${sigId}')"
+          onmouseup="stopSign('${sigId}')" onmouseleave="stopSign('${sigId}')"
+          ontouchstart="startSign(event,'${sigId}')" ontouchmove="drawSign(event,'${sigId}')" ontouchend="stopSign('${sigId}')">
         </canvas>
         <div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">
-          <button onclick="clearSig('sig_med_fiscal')" style="font-size:.68rem;padding:4px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;color:var(--text-muted)">🗑️ Limpar</button>
+          <button onclick="clearSig('${sigId}')" style="font-size:.68rem;padding:4px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;color:var(--text-muted)">🗑️ Limpar</button>
         </div>
-      </div>
-      <div style="display:flex;flex-direction:column;gap:4px">
-        <div class="form-group" style="margin:0 0 4px"><label style="font-size:.68rem">Nome — Responsável Energisa</label>
-          <input type="text" value="${(d.assinaturaEnergisaNome || '').replace(/"/g, '&quot;')}" oninput="medCampo('assinaturaEnergisaNome', this.value)" placeholder="Nome completo">
-        </div>
-        <canvas id="sig_med_energisa" width="500" height="90"
-          style="border:1px solid var(--border);border-radius:8px;background:#fff;cursor:crosshair;touch-action:none;width:100%;max-width:500px;height:90px"
-          onmousedown="startSign(event,'sig_med_energisa')" onmousemove="drawSign(event,'sig_med_energisa')"
-          onmouseup="stopSign('sig_med_energisa')" onmouseleave="stopSign('sig_med_energisa')"
-          ontouchstart="startSign(event,'sig_med_energisa')" ontouchmove="drawSign(event,'sig_med_energisa')" ontouchend="stopSign('sig_med_energisa')">
-        </canvas>
-        <div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">
-          <button onclick="clearSig('sig_med_energisa')" style="font-size:.68rem;padding:4px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;color:var(--text-muted)">🗑️ Limpar</button>
-        </div>
-      </div>
+      </div>`;
+      }).join('')}
     </div>
   </div>
 
