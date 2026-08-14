@@ -23669,7 +23669,8 @@ async function flashCarregarHistorico(forcar, semNavegar) {
 
 /* -- Exclui um Flash Report Energisa já salvo (fotos ficam gravadas inline no
    próprio registro, então basta remover a linha da tabela — sem arquivo à
-   parte no OneDrive pra apagar). -- */
+   parte no OneDrive pra apagar). Só é chamada diretamente pela Diretoria —
+   colaborador/coordenador passam por flashSolicitarExclusao() abaixo. -- */
 async function flashExcluirRegistro(id) {
   if (!confirm('Tem certeza que deseja excluir este Flash Report?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo Flash Report...');
@@ -23679,6 +23680,59 @@ async function flashExcluirRegistro(id) {
   showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
   if (ok) { try { localStorage.setItem('flash_historico_cache', JSON.stringify(lista)); } catch (e) {} }
   await flashCarregarHistorico(true);
+}
+
+/* -- Colaborador/coordenador não excluem Flash Report direto — só a Diretoria
+   pode (via flashExcluirRegistro acima e flashResponderSolicitacaoExclusao
+   abaixo). Quem não é Diretoria manda uma solicitação com motivo, gravada no
+   próprio registro (campo SolicitacaoExclusao); a Diretoria vê e aprova/rejeita
+   ao abrir o histórico do Flash Report. Decisão de 14/08/2026. -- */
+async function flashSolicitarExclusao(id) {
+  const motivo = prompt('Por que este Flash Report deve ser excluído?\n\nIsso vai ser enviado pra Diretoria aprovar.');
+  if (motivo === null) return;
+  if (!motivo.trim()) { showToast('⚠️ Informe o motivo da solicitação.'); return; }
+  showSyncStatus('Enviando solicitação...');
+  const solicitacao = {
+    motivo: motivo.trim(),
+    solicitadoPorNome: window._currentUser ? window._currentUser.name : '',
+    solicitadoPorEmail: window._currentUser ? window._currentUser.email : '',
+    data: new Date().toISOString(),
+    status: 'pendente',
+  };
+  const ok = await dbAtualizar('FlashReportsEnergisa', id, { SolicitacaoExclusao: solicitacao });
+  showToast(ok ? '📨 Solicitação de exclusão enviada à Diretoria.' : '❌ Erro ao enviar solicitação.');
+  showSyncStatus(ok ? 'Enviada!' : 'Falha ao enviar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) {
+    const idx = (window._flashHistorico || []).findIndex(r => r.Id === id);
+    if (idx >= 0) window._flashHistorico[idx].SolicitacaoExclusao = solicitacao;
+    try { localStorage.setItem('flash_historico_cache', JSON.stringify(window._flashHistorico)); } catch (e) {}
+    navigate('checklist_flash');
+  }
+}
+
+/* -- Diretoria aprova (exclui de verdade) ou rejeita (mantém o registro,
+   limpando a solicitação) uma exclusão pedida por colaborador/coordenador. -- */
+async function flashResponderSolicitacaoExclusao(id, aprovar) {
+  const f = (window._flashHistorico || []).find(r => r.Id === id);
+  if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  const sol = f.SolicitacaoExclusao || {};
+  if (aprovar) {
+    if (!confirm('Aprovar exclusão deste Flash Report?\n\nSolicitado por: ' + (sol.solicitadoPorNome || '—') + '\nMotivo: ' + (sol.motivo || '—') + '\n\nEssa ação não pode ser desfeita.')) return;
+    showSyncStatus('Excluindo Flash Report...');
+    const { ok, lista } = await dbRemover('FlashReportsEnergisa', id);
+    if (!ok && lista === null) { showToast('❌ Registro não encontrado.'); showSyncStatus('', '', 1); return; }
+    showToast(ok ? '🗑️ Flash Report excluído.' : '❌ Erro ao excluir.');
+    showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+    if (ok) { try { localStorage.setItem('flash_historico_cache', JSON.stringify(lista)); } catch (e) {} }
+    await flashCarregarHistorico(true);
+    return;
+  }
+  if (!confirm('Rejeitar esta solicitação de exclusão?\n\nO Flash Report continua no histórico.')) return;
+  showSyncStatus('Rejeitando solicitação...');
+  const ok = await dbAtualizar('FlashReportsEnergisa', id, { SolicitacaoExclusao: null });
+  showToast(ok ? '✅ Solicitação rejeitada — registro mantido.' : '❌ Erro ao rejeitar.');
+  showSyncStatus(ok ? 'Rejeitada!' : 'Falha', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) await flashCarregarHistorico(true);
 }
 
 async function flashSalvar() {
@@ -23870,6 +23924,18 @@ function flashHtmlHistorico() {
     const linhaDetalhe = detalheV2
       ? `📋 IDA${f.TemSupressao ? ' · 🌳 c/ supressão' : ''}${(f.fotos||[]).length ? ' · 📷 ' + f.fotos.length : ''}${pct!=null ? ' · 📊 '+pct.toFixed(0)+'%' : ''}`
       : `✅ ${marcadosAtiv}/${FLASH_ATIVIDADES.length} atividades · ${marcadosVerif}/${FLASH_VERIFICACOES.length} verificações${(f.fotos||[]).length ? ' · 📷 ' + f.fotos.length : ''}${pct!=null ? ' · 📊 '+pct.toFixed(0)+'%' : ''}`;
+    // Só a Diretoria exclui direto; colaborador/coordenador precisam solicitar
+    // com motivo, e a Diretoria aprova/rejeita — ver flashSolicitarExclusao()/
+    // flashResponderSolicitacaoExclusao() (decisão de 14/08/2026).
+    const solicitacaoPendente = f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente';
+    const botaoExcluir = currentProfile === 'diretoria'
+      ? (solicitacaoPendente
+          ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:#fff;background:var(--red);border-color:var(--red)" onclick="flashResponderSolicitacaoExclusao(${f.Id}, true)" title="Solicitado por ${(f.SolicitacaoExclusao.solicitadoPorNome||'').replace(/"/g,'&quot;')} — motivo: ${(f.SolicitacaoExclusao.motivo||'').replace(/"/g,'&quot;')}">🗑️ Aprovar exclusão</button>
+             <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashResponderSolicitacaoExclusao(${f.Id}, false)">✋ Rejeitar</button>`
+          : `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="flashExcluirRegistro(${f.Id})">🗑️ Excluir</button>`)
+      : (solicitacaoPendente
+          ? `<span class="status-pill" style="font-size:.62rem;background:#fff8e6;color:#d97706;border:1px solid #d97706">⏳ Exclusão solicitada</span>`
+          : `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="flashSolicitarExclusao(${f.Id})">🗑️ Solicitar exclusão</button>`);
     return `
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">🚧</div>
@@ -23880,12 +23946,12 @@ function flashHtmlHistorico() {
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         ${temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Não Conforme</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ Conforme</span>'}
-        <div style="display:flex;gap:4px">
+        <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashEditarRegistro(${f.Id})">✏️ Editar</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashExportarRegistro(${f.Id})">🖨️ Exportar PDF</button>
           ${temOcorr ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;background:#e67e22;color:#fff;border-color:#e67e22" onclick="ncAbrirNovo('${f.FrenteId}', ${f.Id})">⚠️ Notificar</button>` : ''}
-          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="flashExcluirRegistro(${f.Id})">🗑️ Excluir</button>
+          ${botaoExcluir}
         </div>
       </div>
     </div>`;
@@ -24302,35 +24368,8 @@ async function _flashGerarDoc(d, numOverride) {
     y += 0.4;
   }
 
-  function checklistGridV2(catalogo, respostas, obsItens) {
-    (catalogo || []).forEach(sec => {
-      if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-      sectionTitle(sec.secao.toUpperCase());
-      sec.itens.forEach(it => {
-        if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
-        const r = (respostas || {})[it.cod] || '';
-        const sitTxt = r === 'C' ? '[C]' : r === 'NC' ? '[NC]' : r === 'NA' ? '[NA]' : '[ ]';
-        // Só o marcador recebe cor: verde legível pra Conforme, vermelho pra
-        // Não Conforme, cinza pra N/A — o texto do item continua sempre preto.
-        const cor = r === 'C' ? [20,110,45] : r === 'NC' ? [180,40,40] : [130,130,130];
-        doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(cor[0],cor[1],cor[2]);
-        doc.text(sitTxt, ML+0.3, y);
-        doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(30,30,30);
-        const labelTxt = it.label + '  (' + it.criticidade + ', peso ' + flashPesoItem(it.criticidade) + ')';
-        const lines = doc.splitTextToSize(labelTxt, CW - 1.3);
-        lines.forEach((ln, li) => { doc.text(ln, ML+1.1, y + li*0.35); });
-        y += Math.max(lines.length, 1) * 0.35;
-        const obs = obsItens && obsItens[it.cod];
-        if (r === 'NC' && obs) {
-          doc.setFont('helvetica','italic'); doc.setFontSize(7.5); doc.setTextColor(100,40,40);
-          const obsLines = doc.splitTextToSize('Obs: ' + obs, CW - 1.3);
-          obsLines.forEach(ln => { if (y > pageH - 1.8) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); doc.text(ln, ML+1.1, y); y += 0.32; });
-        }
-        y += 0.15;
-      });
-      y += 0.2;
-    });
-  }
+  // (checklistGridV2 — lista de texto solta usada antes pra Supressão — foi
+  // substituída por checklistTabelaSupressaoPdf, mais abaixo, em 14/08/2026.)
 
   // Atividades Acompanhadas no PDF: grade de 3 colunas, só [X]/[ ] (sem
   // criticidade/peso — essa seção não pontua no IDA%, ver flashCalcularIdaV2).
@@ -24368,14 +24407,17 @@ async function _flashGerarDoc(d, numOverride) {
   function checklistTabelaVerificacoesPdf(titulo2, itens, respostas, obsItens, outras) {
     const linhas = flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras);
     if (!linhas.length) return;
-    const colConf = 0.65, colCrit = 0.55, colPeso = 0.5;
+    // colCrit/colPeso alargadas em 14/08/2026 — nos valores antigos (0.55/0.5cm)
+    // os cabeçalhos "CRIT." e "PESO" (fonte 7 bold) ficavam largos demais pra
+    // coluna, colidindo um no outro ("CRITPESO" ilegível no PDF exportado).
+    const colConf = 0.65, colCrit = 0.85, colPeso = 0.65;
     const colDesc = CW - colConf - colCrit - colPeso;
     const xConf = ML, xDesc = ML + colConf, xCrit = xDesc + colDesc, xPeso = xCrit + colCrit;
     function desenhaCabecalho() {
       doc.setFillColor(238,233,229); doc.rect(ML, y, CW, 0.3, 'F');
       doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(63,38,31);
       doc.text('CONF.', xConf+0.05, y+0.21); doc.text('DESCRICAO', xDesc+0.05, y+0.21);
-      doc.text('CRIT.', xCrit+0.08, y+0.21); doc.text('PESO', xPeso+0.08, y+0.21);
+      doc.text('CRIT.', xCrit+0.1, y+0.21); doc.text('PESO', xPeso+0.1, y+0.21);
       y += 0.38;
     }
     if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
@@ -24408,6 +24450,57 @@ async function _flashGerarDoc(d, numOverride) {
     y += 0.15;
   }
 
+  // Checklist de Supressão Vegetal no PDF: mesmo layout de tabela de 4 colunas
+  // (Conformidade, Descrição, Criticidade, Peso) da checklistTabelaVerificacoesPdf
+  // acima, só que agrupado por seção (Regularidade Ambiental, Abertura de Acessos,
+  // Supressão Vegetal, Recuperação de Áreas Degradadas — ver FLASH_ITENS_SUPRESSAO),
+  // uma mini-tabela por seção. Antes disso usava checklistGridV2, que saía como
+  // lista de texto solta em vez de tabela — trocado aqui em 14/08/2026.
+  function checklistTabelaSupressaoPdf(catalogo, respostas, obsItens) {
+    const colConf = 0.65, colCrit = 0.85, colPeso = 0.65;
+    const colDesc = CW - colConf - colCrit - colPeso;
+    const xConf = ML, xDesc = ML + colConf, xCrit = xDesc + colDesc, xPeso = xCrit + colCrit;
+    function desenhaCabecalho() {
+      doc.setFillColor(238,233,229); doc.rect(ML, y, CW, 0.3, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(63,38,31);
+      doc.text('CONF.', xConf+0.05, y+0.21); doc.text('DESCRICAO', xDesc+0.05, y+0.21);
+      doc.text('CRIT.', xCrit+0.1, y+0.21); doc.text('PESO', xPeso+0.1, y+0.21);
+      y += 0.38;
+    }
+    (catalogo || []).forEach(sec => {
+      if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+      sectionTitle(sec.secao.toUpperCase());
+      desenhaCabecalho();
+      (sec.itens || []).forEach(it => {
+        const r = (respostas || {})[it.cod] || '';
+        const sitTxt = r === 'C' ? '[C]' : r === 'NC' ? '[NC]' : r === 'NA' ? '[NA]' : '[ ]';
+        const cor = r === 'C' ? [20,110,45] : r === 'NC' ? [180,40,40] : [150,150,150];
+        doc.setFontSize(8);
+        const descLines = doc.splitTextToSize(it.label || '', colDesc - 0.15);
+        const critAbrev = FLASH_CRIT_ABREV[it.criticidade] || '-';
+        const peso = flashPesoItem(it.criticidade);
+        const obs = obsItens && obsItens[it.cod];
+        const obsLines = (r === 'NC' && obs) ? doc.splitTextToSize('Obs: ' + obs, colDesc - 0.35) : [];
+        const rowH = Math.max(descLines.length, 1) * 0.3 + obsLines.length * 0.27 + 0.14;
+        if (y + rowH > pageH - 1.6) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); desenhaCabecalho(); }
+        doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(cor[0],cor[1],cor[2]);
+        doc.text(sitTxt, xConf+0.05, y+0.26);
+        doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(30,30,30);
+        descLines.forEach((ln, li) => doc.text(ln, xDesc+0.05, y+0.26+li*0.3));
+        doc.text(critAbrev, xCrit+0.18, y+0.26);
+        doc.text(String(peso), xPeso+0.2, y+0.26);
+        let localY = y + Math.max(descLines.length, 1) * 0.3;
+        if (obsLines.length) {
+          doc.setFont('helvetica','italic'); doc.setFontSize(7.2); doc.setTextColor(110,40,40);
+          obsLines.forEach(ln => { localY += 0.27; doc.text(ln, xDesc+0.2, localY); });
+        }
+        y = localY + 0.16;
+        doc.setDrawColor(225,220,215); doc.line(ML, y-0.07, ML+CW, y-0.07);
+      });
+      y += 0.2;
+    });
+  }
+
   if (d.modelo === 'v2') {
     const idaR = flashCalcularIdaV2({
       RespostasVerificacoes: d.respostasVerificacoes,
@@ -24434,7 +24527,7 @@ async function _flashGerarDoc(d, numOverride) {
 
     checklistTabelaVerificacoesPdf('VERIFICACOES AMBIENTAIS NO DIA', FLASH_VERIFICACOES, d.respostasVerificacoes, d.obsItens, d.outrasVerificacoes);
 
-    if (d.temSupressao) checklistGridV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens);
+    if (d.temSupressao) checklistTabelaSupressaoPdf(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens);
 
     // Ocorrências foi removida do modelo V2 (Atividades/Verificações já
     // capturam Conforme/Não Conforme item a item) — só aparece aqui se o
