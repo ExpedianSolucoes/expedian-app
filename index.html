@@ -21561,11 +21561,8 @@ async function flashCarregarHistorico(forcar, semNavegar) {
 async function flashExcluirRegistro(id) {
   if (!confirm('Tem certeza que deseja excluir este Flash Report?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo Flash Report...');
-  const lista = await dbLer('FlashReportsEnergisa');
-  const idx = lista.findIndex(r => r.Id === id);
-  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
-  lista.splice(idx, 1);
-  const ok = await dbSalvar('FlashReportsEnergisa', lista);
+  const { ok, lista } = await dbRemover('FlashReportsEnergisa', id);
+  if (!ok && lista === null) { showToast('❌ Registro não encontrado.'); showSyncStatus('', '', 1); return; }
   showToast(ok ? '🗑️ Flash Report excluído.' : '❌ Erro ao excluir.');
   showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
   if (ok) { try { localStorage.setItem('flash_historico_cache', JSON.stringify(lista)); } catch (e) {} }
@@ -30974,26 +30971,37 @@ function pageGestaoDocumental() {
 
 /* == BANCO DE DADOS (JSON na pasta central /db) == */
 async function dbLer(tabela) {
+  const { lista } = await dbLerComEtag(tabela);
+  return lista;
+}
+
+/* -- Igual a dbLer, mas também devolve o eTag atual do arquivo no OneDrive.
+   Usado por dbInserir/dbAtualizar para escrita otimista: grava só se
+   ninguém mais mexeu no arquivo entre a leitura e a escrita (se mexeu, o
+   Graph responde 412 e a gente relê + tenta de novo, em vez de sobrescrever
+   às cegas e apagar o que a outra pessoa acabou de salvar). -- */
+async function dbLerComEtag(tabela) {
   const token = await getOneDriveToken();
-  if (!token) { console.warn('[DB] Sem token para ler', tabela); return []; }
+  if (!token) { console.warn('[DB] Sem token para ler', tabela); return { lista: [], etag: null }; }
   try {
     const pasta = await _resolverRaizPara(tabela, true, token);
-    if (!pasta) return [];
+    if (!pasta) return { lista: [], etag: null };
     const { driveId, itemId } = pasta;
     const dbId = await garantirPastaOneDrive(token, driveId, itemId, 'db');
-    if (!dbId) { console.warn('[DB] Pasta "db" não resolvida, abortando leitura de', tabela); return []; }
+    if (!dbId) { console.warn('[DB] Pasta "db" não resolvida, abortando leitura de', tabela); return { lista: [], etag: null }; }
     const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${dbId}:/${tabela}.json:/content`;
     const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
-    if (r.status === 404) { return []; } // tabela ainda nao existe
+    if (r.status === 404) { return { lista: [], etag: null }; } // tabela ainda nao existe
     if (!r.ok) {
       console.warn('[DB] Erro ao ler', tabela, r.status);
-      return [];
+      return { lista: [], etag: null };
     }
+    const etag = r.headers.get('etag') || r.headers.get('ETag') || null;
     const data = await r.json();
-    return Array.isArray(data) ? data : [];
+    return { lista: Array.isArray(data) ? data : [], etag };
   } catch(e) {
     console.warn('[DB] Erro parse', tabela, e);
-    return [];
+    return { lista: [], etag: null };
   }
 }
 
@@ -31020,7 +31028,19 @@ async function baixarArquivoCentral(caminhoRelativo) {
   }
 }
 
-async function dbSalvar(tabela, dados) {
+/* -- Grava a tabela inteira no OneDrive. "etagEsperado" controla escrita
+   otimista:
+     - string com o eTag lido antes -> manda If-Match (só grava se ninguém
+       mudou o arquivo desde a leitura);
+     - '*' -> manda If-None-Match: * (só grava se o arquivo AINDA não
+       existir — usado na primeira gravação de uma tabela nova, pra dois
+       "primeiros escritores" concorrentes não se pisarem também);
+     - undefined/omitido -> sem cabeçalho condicional, comportamento
+       idêntico ao de antes (é o que as chamadas antigas continuam usando).
+   Em qualquer caso de choque o Graph responde 412 e a função devolve a
+   string 'conflito', em vez de sobrescrever cegamente e apagar o que outra
+   pessoa acabou de salvar. -- */
+async function dbSalvar(tabela, dados, etagEsperado) {
   const token = await getOneDriveToken();
   if (!token) { console.warn('[DB] Sem token para salvar', tabela); _setSyncError('não foi possível obter permissão da sua conta Microsoft — tente sair e entrar novamente'); return false; }
   try {
@@ -31033,20 +31053,50 @@ async function dbSalvar(tabela, dados) {
 
     const json = JSON.stringify(dados, null, 2);
     const url  = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${dbId}:/${tabela}.json:/content`;
-    const r = await fetch(url, {
-      method: 'PUT',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json',
-      },
-      body: json,
-    });
+    const headers = {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json',
+    };
+    if (etagEsperado === '*') headers['If-None-Match'] = '*';
+    else if (etagEsperado) headers['If-Match'] = etagEsperado;
+    const r = await fetch(url, { method: 'PUT', headers, body: json });
     if (r.ok) { console.log('[DB] Salvo:', tabela, dados.length || 1, 'registros'); _limparSyncError(); return true; }
+    if (r.status === 412) {
+      console.warn('[DB] Conflito de concorrência (412) ao salvar', tabela, '— outra gravação aconteceu no meio do caminho, vou reler e tentar de novo.');
+      return 'conflito';
+    }
     const errTxt = await r.text();
     console.warn('[DB] Erro ao salvar', tabela, r.status, errTxt.substring(0, 200));
     _setSyncError('falha ao gravar dados no OneDrive (tabela ' + tabela + ')', r.status);
     return false;
   } catch(e) { console.warn('[DB] Erro dbSalvar', tabela, e); _setSyncError('erro de conexão ao gravar dados no OneDrive'); return false; }
+}
+
+/* -- Helper genérico: lê a tabela (com eTag), aplica "mutarFn" na lista e
+   tenta gravar com If-Match. Se rolar conflito (outra gravação aconteceu no
+   meio do caminho), relê a versão mais recente, reaplica "mutarFn" em cima
+   dela e tenta de novo — até "tentativas" vezes. É isso que evita o "lost
+   update" que apagou os Flash Reports em 13/08: antes, dbInserir/dbAtualizar
+   liam a lista, mexiam nela e regravavam sem checar se alguém tinha
+   salvo algo nesse meio-tempo; se duas pessoas salvassem perto uma da
+   outra, a segunda gravação apagava silenciosamente o registro da primeira. -- */
+async function _dbGravarComRetry(tabela, mutarFn, tentativas) {
+  if (!tentativas) tentativas = 5;
+  let ultimaLista = null;
+  for (let i = 0; i < tentativas; i++) {
+    const { lista, etag } = await dbLerComEtag(tabela);
+    const novaLista = mutarFn(lista);
+    if (novaLista === null) return { ok: false, lista: null }; // mutarFn sinalizou erro (ex.: registro não encontrado)
+    ultimaLista = novaLista;
+    const resultado = await dbSalvar(tabela, novaLista, etag || '*');
+    if (resultado === true) return { ok: true, lista: novaLista };
+    if (resultado !== 'conflito') return { ok: false, lista: novaLista }; // erro real (rede, permissão etc.) — não adianta tentar de novo na hora
+    // 'conflito': outra gravação venceu a corrida — espera um pouco e tenta de novo com dados frescos
+    await new Promise(res => setTimeout(res, 250 + Math.random() * 250));
+  }
+  console.warn('[DB] Conflito de concorrência persistente em', tabela, 'após', tentativas, 'tentativas.');
+  _setSyncError('não foi possível salvar em ' + tabela + ' — muitas pessoas salvando ao mesmo tempo, tente novamente em alguns segundos');
+  return { ok: false, lista: ultimaLista };
 }
 
 async function dbInserir(tabela, registro) {
@@ -31057,10 +31107,8 @@ async function dbInserir(tabela, registro) {
     queueSync(tabela, { op: 'inserir', registro: novoOffline });
     return novoOffline;
   }
-  const lista = await dbLer(tabela);
-  const novo  = { ...registro, Id: registro.Id || Date.now(), Created: new Date().toISOString() };
-  lista.push(novo);
-  const ok = await dbSalvar(tabela, lista);
+  const novo = { ...registro, Id: registro.Id || Date.now(), Created: new Date().toISOString() };
+  const { ok } = await _dbGravarComRetry(tabela, lista => { lista.push(novo); return lista; });
   if (ok) { atualizarBadgeNotificacoes(); registrarSyncLog(tabela, 'inserir', novo); }
   return ok ? novo : null;
 }
@@ -31072,13 +31120,29 @@ async function dbAtualizar(tabela, id, campos) {
     queueSync(tabela, { op: 'atualizar', id, campos });
     return true;
   }
-  const lista = await dbLer(tabela);
-  const idx   = lista.findIndex(r => r.Id === id);
-  if (idx < 0) { console.warn('[DB] Registro nao encontrado:', tabela, id); return false; }
-  lista[idx] = { ...lista[idx], ...campos, ModificadoEm: new Date().toISOString() };
-  const ok = await dbSalvar(tabela, lista);
-  if (ok) registrarSyncLog(tabela, 'atualizar', lista[idx]);
+  let atualizado = null;
+  const { ok } = await _dbGravarComRetry(tabela, lista => {
+    const idx = lista.findIndex(r => r.Id === id);
+    if (idx < 0) { console.warn('[DB] Registro nao encontrado:', tabela, id); return null; }
+    lista[idx] = { ...lista[idx], ...campos, ModificadoEm: new Date().toISOString() };
+    atualizado = lista[idx];
+    return lista;
+  });
+  if (ok) registrarSyncLog(tabela, 'atualizar', atualizado);
   return ok;
+}
+
+/* -- Remove um registro (por Id) de uma tabela, com a mesma proteção contra
+   condição de corrida de dbInserir/dbAtualizar (relê + tenta de novo se
+   alguém gravou algo no meio do caminho, em vez de apagar tudo às cegas). -- */
+async function dbRemover(tabela, id) {
+  const { ok, lista } = await _dbGravarComRetry(tabela, lista => {
+    const idx = lista.findIndex(r => r.Id === id);
+    if (idx < 0) return null;
+    lista.splice(idx, 1);
+    return lista;
+  });
+  return { ok, lista };
 }
 
 /* == LOG LOCAL DE SINCRONIZAÇÃO ==
