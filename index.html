@@ -3688,6 +3688,16 @@ function pageAmbiental() {
 }
 
 /* -- PRESTAÇÃO DE CONTAS -- */
+// Nomes de pessoas que lançam despesas mas não têm login próprio no sistema
+// (ex.: estagiário/menor aprendiz usando o login de outra pessoa) — aparecem
+// no campo "Lançado por" junto com todo mundo que já está cadastrado em
+// `users`, mesmo sem ter (ou precisar de) acesso próprio ao app.
+const PREST_LANCADORES_EXTRA = ['Levi Rabelo'];
+function prestListaLancadores() {
+  const doLogin = (typeof users === 'object' && users) ? Object.values(users).map(u => u.name) : [];
+  return [...new Set([...doLogin, ...PREST_LANCADORES_EXTRA])].filter(Boolean).sort();
+}
+
 function pagePrestacao() {
   setTimeout(()=>{ carregarFornecedoresListaPrest().then(()=>carregarPrestacoes()); }, 200);
   const isGestorFin = currentProfile==='diretoria'||currentProfile==='coordenador';
@@ -3831,6 +3841,18 @@ function pagePrestacao() {
       <div class="form-group" style="grid-column:span 2">
         <label>Observação</label>
         <input type="text" id="prest_obs" placeholder="Descreva a natureza da despesa (ex: combustível viagem campo, hospedagem, alimentação...)">
+      </div>
+    </div>
+
+    <!-- Linha 5b: Lançado por — quem de fato preencheu este lançamento. Existe
+         porque nem todo mundo que digita uma despesa aqui tem login próprio
+         no sistema (ex.: estagiário usando o login de outra pessoa); esse
+         campo é o registro de autoria manual, separado do login da sessão. -->
+    <div class="form-row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Lançado por</label>
+        <input list="prest_lancadopor_dl" id="prest_lancadopor" placeholder="Nome de quem está fazendo este lançamento" value="${window._currentUser ? String(window._currentUser.name).replace(/"/g, '&quot;') : ''}">
+        <datalist id="prest_lancadopor_dl">${prestListaLancadores().map(n => `<option value="${n}">`).join('')}</datalist>
       </div>
     </div>
 
@@ -4225,6 +4247,7 @@ function coletarDadosPrestacao(validar=false) {
   const tipoParcelamento=parcelamento==='parcelado'?((document.getElementById('prest_tipo_parcelamento')||{}).value||''):'';
   const fornecedorObj=_fornecedoresPrest.find(f=>f.Title===fornecedor);
   const municipio=fornecedorObj?(fornecedorObj.Municipio||''):'';
+  const lancadoPor=(document.getElementById('prest_lancadopor')||{}).value?.trim()||(window._currentUser?window._currentUser.name:'');
   if(validar){
     if(!data){showToast('⚠️ Informe a data da despesa.');return null;}
     if(!valor){showToast('⚠️ Informe o valor da despesa.');return null;}
@@ -4241,6 +4264,7 @@ function coletarDadosPrestacao(validar=false) {
     FormaPagamento: formaPgto, Parcelamento: parcelamento, NumParcelas: numParcelas, TipoParcelamento: tipoParcelamento,
     Responsavel: window._currentUser?window._currentUser.name:'',
     EnviadoPor: window._currentUser?window._currentUser.name:'Desconhecido',
+    LancadoPor: lancadoPor,
     DataLancamento: new Date().toISOString(),
   };
 }
@@ -4257,6 +4281,7 @@ function limparFormPrestacao() {
   const formaPgto=document.getElementById('prest_forma_pgto');if(formaPgto)formaPgto.selectedIndex=0;
   const parc=document.getElementById('prest_parcelamento');if(parc)parc.selectedIndex=0;
   pcToggleParcelas();
+  const lanc=document.getElementById('prest_lancadopor');if(lanc)lanc.value=window._currentUser?window._currentUser.name:'';
   const anx=document.getElementById('prest_anexo');if(anx)anx.value='';
   window._prestAnexoFile = null;
   window._prestComprovanteUrl = null;
@@ -4424,7 +4449,7 @@ async function carregarPrestacoes() {
         const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcelas||'?'}x (${i.TipoParcelamento||''})` : i.Parcelamento==='faturado' ? `${i.FormaPagamento||''} · Faturado` : (i.FormaPagamento||'—');
         return `<tr${atrasado?' style="background:#fffbeb"':''}>
         <td style="font-size:.78rem">${i.DataDespesa?new Date(i.DataDespesa+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
-        <td><strong>${i.Fornecedor||'—'}</strong><div style="font-size:.7rem;color:var(--text-muted)">${i.Responsavel||''}</div></td>
+        <td><strong>${i.Fornecedor||'—'}</strong><div style="font-size:.7rem;color:var(--text-muted)">${i.Responsavel||''}${i.LancadoPor && i.LancadoPor !== i.Responsavel ? ' · lançado por ' + i.LancadoPor : ''}</div></td>
         <td style="font-size:.75rem">${i.Municipio||'—'}</td>
         <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}<br><span style="color:var(--text-muted)">${i.CentroCusto||''}</span></td>
         <td style="font-size:.72rem">${pgtoTxt}</td>
@@ -4493,6 +4518,7 @@ async function pcEditarPrestacao(id) {
   setTimeout(() => set('prest_subcategoria', r.Subcategoria), 60);
   set('prest_obs', r.Observacoes);
   set('prest_forma_pgto', r.FormaPagamento);
+  set('prest_lancadopor', r.LancadoPor || r.EnviadoPor || r.Responsavel || '');
   set('prest_parcelamento', r.Parcelamento || 'avista');
   pcToggleParcelas();
   if (r.Parcelamento === 'parcelado') {
@@ -4557,6 +4583,7 @@ async function exportarPrestacaoExcel() {
   const rows = items.map(i => ({
     'Data': i.DataDespesa ? new Date(i.DataDespesa+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Colaborador': i.Responsavel || '',
+    'Lançado por': i.LancadoPor || '',
     'Fornecedor': i.Fornecedor || '',
     'Município': i.Municipio || '',
     'Empresa': normalizarEmpresa(i.Empresa) || '',
@@ -4783,6 +4810,7 @@ async function pcAbrirVisualizar(id) {
       ${linha('Forma de Pagamento', i.FormaPagamento||'—')}
       ${linha('NF/Recibo', i.NumeroNF||'—')}
       ${linha('Responsável', i.Responsavel||i.EnviadoPor||'—')}
+      ${i.LancadoPor && i.LancadoPor !== i.Responsavel ? linha('Lançado por', i.LancadoPor) : ''}
       ${linha('Status', i.Status||'—')}
       ${i.Observacoes ? linha('Observações', i.Observacoes) : ''}
       ${i.ComprovanteUrl ? `<div style="margin-top:8px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.8rem">📎 Ver comprovante</a></div>` : ''}
@@ -10806,7 +10834,7 @@ async function projetosCarregarHistoricoMedicoesObras() {
     const lista = await dbLer('MedicoesEnergisa') || [];
     window._medHistorico = lista;
     try { localStorage.setItem('med_historico_cache', JSON.stringify(lista)); } catch (e) {}
-    alvo.innerHTML = medHtmlHistorico();
+    alvo.innerHTML = medHtmlDashboard(lista) + medHtmlHistorico();
   } catch (e) {
     alvo.innerHTML = '<div style="font-size:.78rem;color:var(--text-muted)">Não foi possível carregar o histórico de medições agora.</div>';
   }
@@ -10814,7 +10842,7 @@ async function projetosCarregarHistoricoMedicoesObras() {
 function projetosFiltrarMedicoesObrasCircuito(frenteId) {
   window._medCircuitoFiltro = frenteId || null;
   const alvo = document.getElementById('projetos-obras-medicoes-historico');
-  if (alvo) alvo.innerHTML = medHtmlHistorico();
+  if (alvo) alvo.innerHTML = medHtmlDashboard(window._medHistorico || []) + medHtmlHistorico();
 }
 
 function projetosHtmlContratoVisaoGeral() {
@@ -10920,6 +10948,7 @@ function projetosHtmlEnergisaObras() {
           <option value="">Todos os circuitos</option>
           ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${window._medCircuitoFiltro === f.id ? 'selected' : ''}>${f.nome}</option>`).join('')}
         </select>
+        <button class="btn-secondary" style="padding:3px 10px;font-size:.72rem" onclick="medExportarExcel()">📊 Exportar Excel</button>
         <button class="btn-secondary" style="padding:3px 10px;font-size:.72rem" onclick="navigate('checklist_medicao')">➕ Nova / Editar</button>
       </div>
     </div>
@@ -24202,6 +24231,206 @@ function pageChecklistNotif() {
 const MED_STATUS_OPCOES = ['Em elaboração', 'Enviada', 'Em análise', 'Aprovada', 'NF emitida', 'Paga'];
 const MED_STATUS_COR = { 'Em elaboração': '#7f8c8d', Enviada: '#2980b9', 'Em análise': '#f39c12', Aprovada: 'var(--green-main)', 'NF emitida': 'var(--green-main)', Paga: 'var(--green-main)' };
 
+/* -- Dashboard de medições: total, quebra por circuito elétrico e os 3 marcos
+   do fluxo (Emitida ao cliente / Aprovada / Recebida-Paga). "Emitida" conta
+   tudo que já saiu de rascunho (Enviada, Em análise, Aprovada, NF emitida,
+   Paga); "Aprovada" conta quem já passou pela aprovação (Aprovada, NF
+   emitida, Paga); "Recebida" é só o status final Paga. Sempre calculado
+   sobre a lista INTEIRA (não a filtrada por circuito), pra servir de visão
+   geral mesmo quando o usuário está olhando um circuito específico
+   embaixo. -- */
+function medCalcularDashboard(lista) {
+  const soma = arr => arr.reduce((s, m) => s + (parseFloat(m.Valor) || 0), 0);
+  const emitidasArr = lista.filter(m => m.Status && m.Status !== 'Em elaboração');
+  const aprovadasArr = lista.filter(m => ['Aprovada', 'NF emitida', 'Paga'].includes(m.Status));
+  const recebidasArr = lista.filter(m => m.Status === 'Paga');
+  const porCircuitoMap = {};
+  lista.forEach(m => {
+    const chave = m.FrenteNome || 'Outros';
+    if (!porCircuitoMap[chave]) porCircuitoMap[chave] = { nome: chave, qtd: 0, valor: 0 };
+    porCircuitoMap[chave].qtd++;
+    porCircuitoMap[chave].valor += parseFloat(m.Valor) || 0;
+  });
+  return {
+    total: { qtd: lista.length, valor: soma(lista) },
+    emitidas: { qtd: emitidasArr.length, valor: soma(emitidasArr) },
+    aprovadas: { qtd: aprovadasArr.length, valor: soma(aprovadasArr) },
+    recebidas: { qtd: recebidasArr.length, valor: soma(recebidasArr) },
+    porCircuito: Object.values(porCircuitoMap).sort((a, b) => b.valor - a.valor),
+  };
+}
+function medHtmlDashboard(lista) {
+  if (!lista || !lista.length) return '';
+  const dash = medCalcularDashboard(lista);
+  const fmt = v => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  const kpi = (cor, label, icone, dados) => `
+    <div class="kpi-card ${cor}"><div class="kpi-label">${label}</div><div class="kpi-value">${dados.qtd}</div><div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${fmt(dados.valor)}</div><div class="kpi-icon">${icone}</div></div>`;
+  return `
+  <div class="kpi-grid" style="margin-bottom:16px">
+    ${kpi('blue', 'Total de Medições', '💰', dash.total)}
+    ${kpi('amber', 'Emitidas', '📤', dash.emitidas)}
+    ${kpi('green', 'Aprovadas', '✅', dash.aprovadas)}
+    ${kpi('green', 'Recebidas', '💵', dash.recebidas)}
+  </div>
+  <div style="margin-bottom:16px">
+    <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:8px">⚡ Total por Circuito Elétrico</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
+      ${dash.porCircuito.map(c => `
+      <div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
+        <div style="font-size:.74rem;font-weight:700">${c.nome}</div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${c.qtd} medição${c.qtd !== 1 ? 'ões' : ''}</div>
+        <div style="font-size:.8rem;font-weight:700;color:var(--green-main);margin-top:3px">${fmt(c.valor)}</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+/* -- Exporta o histórico inteiro (mesma lista carregada em window._medHistorico)
+   pra Excel — mesmo padrão de exportarPrestacaoExcel (SheetJS via CDN, sem
+   dependência instalada). -- */
+async function medExportarExcel() {
+  const lista = (window._medHistorico || []).slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
+  if (!lista.length) { showToast('⚠️ Nenhuma medição para exportar.'); return; }
+  showToast('📊 Gerando planilha...');
+  if (typeof XLSX === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  const rows = lista.map(m => ({
+    'Circuito Elétrico': m.FrenteNome || '',
+    'Período / BM': m.Periodo || '',
+    'Reg. Obras': m.RegObras || '',
+    'Data Medição': m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '',
+    'Prazo Pagamento': m.Prazo ? new Date(m.Prazo + 'T12:00').toLocaleDateString('pt-BR') : '',
+    'Valor': m.Valor || 0,
+    'Status': m.Status || '',
+    'Serviços Medidos': m.Servicos || '',
+    'Observações': m.Obs || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Medições');
+  XLSX.writeFile(wb, 'Historico_Medicoes_Energisa_2025022101 - ' + new Date().toLocaleDateString('pt-BR').replace(/\//g, '.') + '.xlsx');
+  showToast('✅ Planilha gerada!');
+}
+
+/* -- Gera o Boletim de Medição em PDF (jsPDF), reaproveitando o mesmo
+   cabeçalho/rodapé/paginação dos demais PDFs do app (_pdfCabecalhoRodape/
+   _pdfNovaPagina/_pdfNumerarPaginas). Recebe os dados no "formato de
+   formulário" (m.frenteId/periodo/regObras/data/prazo/valor/status/
+   servicos/obs/assinaturaFiscal.../assinaturaEnergisa...), o mesmo shape de
+   window._medData — assim serve tanto pra exportar direto do formulário
+   (antes de salvar) quanto por um registro já salvo (ver medExportarPDF). -- */
+async function medGerarDoc(m) {
+  await _garantirJsPDF();
+  const frente = FLASH_FRENTES.find(fr => fr.id === m.frenteId);
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'BOLETIM DE MEDIÇÃO';
+  const subtitulo = 'Contrato 2025022101 · Gestão Ambiental de Obras · Energisa RO';
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.4, CW = pageW - 2.8;
+
+  doc.setFillColor(245, 240, 237); doc.roundedRect(ML, y, CW, 2.9, 0.15, 0.15, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(63, 38, 31);
+  doc.text(m.periodo || 'Medição', ML + 0.3, y + 0.5);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80, 60, 50);
+  let iy = y + 0.95;
+  doc.text('Circuito Elétrico: ' + (frente ? frente.nome : (m.frenteId || '--')), ML + 0.3, iy); iy += 0.42;
+  if (m.regObras) { doc.text('Reg. Obras: ' + m.regObras, ML + 0.3, iy); iy += 0.42; }
+  doc.text('Data da medição: ' + (m.data ? new Date(m.data + 'T12:00').toLocaleDateString('pt-BR') : '--'), ML + 0.3, iy); iy += 0.42;
+  doc.text('Prazo de pagamento: ' + (m.prazo ? new Date(m.prazo + 'T12:00').toLocaleDateString('pt-BR') : '--') + '    |    Status: ' + (m.status || '--'), ML + 0.3, iy); iy += 0.42;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(63, 38, 31);
+  doc.text('Valor: R$ ' + (parseFloat(m.valor) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }), ML + 0.3, iy + 0.1);
+  y += 3.1;
+
+  function medSectionTitle(t) {
+    if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    doc.setFillColor(63, 38, 31); doc.roundedRect(ML, y, CW, 0.55, 0.1, 0.1, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
+    doc.text(t, ML + 0.3, y + 0.37);
+    y += 0.75;
+  }
+  function medTextBlock(txt) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(40, 40, 40);
+    const lines = doc.splitTextToSize(txt || 'Não informado.', CW - 0.6);
+    lines.forEach(ln => {
+      if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+      doc.text(ln, ML + 0.3, y); y += 0.45;
+    });
+    y += 0.3;
+  }
+  medSectionTitle('SERVIÇOS MEDIDOS');
+  medTextBlock(m.servicos);
+  if (m.obs) { medSectionTitle('OBSERVAÇÕES'); medTextBlock(m.obs); }
+
+  // Assinaturas — imagem do traço (canvas) quando existir, senão só a linha
+  // em branco pra assinar na cópia impressa.
+  if (y > pageH - 5.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  y += 0.3;
+  const colW = CW / 2 - 0.3;
+  const assinaturas = [
+    { nome: m.assinaturaFiscalNome, img: m.assinaturaFiscal, papel: 'Fiscal Expedian', x: ML },
+    { nome: m.assinaturaEnergisaNome, img: m.assinaturaEnergisa, papel: 'Responsável Energisa', x: ML + CW / 2 + 0.3 },
+  ];
+  assinaturas.forEach(a => {
+    if (a.img) { try { doc.addImage(a.img, 'PNG', a.x, y, colW, 1.6); } catch (ex) {} }
+    doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.02);
+    doc.line(a.x, y + 1.65, a.x + colW, y + 1.65);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
+    doc.text(a.nome || a.papel, a.x, y + 2.0);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(100, 100, 100);
+    doc.text(a.papel, a.x, y + 2.35);
+  });
+  y += 2.6;
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  return doc;
+}
+function _medNomeArquivoPdf(m) {
+  const frente = FLASH_FRENTES.find(fr => fr.id === m.frenteId);
+  const obraSlug = (frente ? frente.nome : m.frenteId || '').replace(/\s+/g, '_');
+  const periodoSlug = (m.periodo || 'Medicao').replace(/\s+/g, '_');
+  return 'BM_' + periodoSlug + '_' + obraSlug + '.pdf';
+}
+/* -- Exporta em PDF os dados que estão atualmente abertos no formulário
+   (window._medData), útil pra conferir o boletim antes mesmo de salvar. -- */
+async function medExportarPDFForm() {
+  const d = window._medData;
+  if (!d.frenteId) { showToast('⚠️ Selecione o circuito elétrico antes de exportar.'); return; }
+  if (!d.periodo) { showToast('⚠️ Informe o período/BM antes de exportar.'); return; }
+  showToast('🔄 Gerando PDF... aguarde.');
+  ['Fiscal', 'Energisa'].forEach(qual => {
+    const sigId = 'sig_med_' + qual.toLowerCase();
+    if (_sigState[sigId]) {
+      const canvas = document.getElementById(sigId);
+      if (canvas) d['assinatura' + qual] = canvas.toDataURL('image/png');
+    }
+  });
+  const doc = await medGerarDoc(d);
+  doc.save(_medNomeArquivoPdf(d));
+}
+/* -- Exporta em PDF um registro já salvo no histórico, sem precisar reabrir
+   o formulário (mesmo padrão de flashExportarRegistro/ncExportarRegistro). -- */
+async function medExportarPDF(id) {
+  const m = (window._medHistorico || []).find(r => r.Id === id);
+  if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
+  showToast('🔄 Gerando PDF... aguarde.');
+  const dLocal = {
+    frenteId: m.FrenteId, periodo: m.Periodo, regObras: m.RegObras, data: m.Data, prazo: m.Prazo,
+    valor: m.Valor, status: m.Status, servicos: m.Servicos, obs: m.Obs,
+    assinaturaFiscalNome: m.AssinaturaFiscalNome, assinaturaEnergisaNome: m.AssinaturaEnergisaNome,
+    assinaturaFiscal: m.AssinaturaFiscal, assinaturaEnergisa: m.AssinaturaEnergisa,
+  };
+  const doc = await medGerarDoc(dLocal);
+  doc.save(_medNomeArquivoPdf(dLocal));
+}
+
 async function medCarregarHistorico(forcar) {
   if (window._medHistorico !== null && !forcar) return;
   let cacheLocal = [];
@@ -24218,7 +24447,26 @@ async function medCarregarHistorico(forcar) {
 }
 
 function medNovoForm(frenteIdPre) {
-  window._medData = { frenteId: frenteIdPre || FLASH_FRENTES[0].id, periodo: '', data: '', prazo: '', valor: '', status: 'Em elaboração', servicos: '', obs: '' };
+  window._medData = {
+    frenteId: frenteIdPre || FLASH_FRENTES[0].id, periodo: '', regObras: '', data: '', prazo: '', valor: '', status: 'Em elaboração', servicos: '', obs: '',
+    assinaturaFiscalNome: '', assinaturaEnergisaNome: '', assinaturaFiscal: '', assinaturaEnergisa: '',
+  };
+}
+/* -- Redesenha as assinaturas já salvas nos canvases ao abrir um registro pra
+   edição (o canvas nasce em branco a cada render; sem isso, editar um
+   registro que já tinha assinatura faria parecer que ela sumiu). Chamada via
+   setTimeout logo após o formulário ser inserido no DOM. -- */
+function medRestaurarAssinaturas() {
+  const d = window._medData || {};
+  [['Fiscal', d.assinaturaFiscal], ['Energisa', d.assinaturaEnergisa]].forEach(([qual, dataUrl]) => {
+    if (!dataUrl) return;
+    const canvas = document.getElementById('sig_med_' + qual.toLowerCase());
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const img = new Image();
+    img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    img.src = dataUrl;
+  });
 }
 
 function medCampo(campo, valor) { window._medData[campo] = valor; }
@@ -24240,13 +24488,16 @@ function medEditarRegistro(id) {
   const m = (window._medHistorico || []).find(r => r.Id === id);
   if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
   window._medData = {
-    frenteId: m.FrenteId || FLASH_FRENTES[0].id, periodo: m.Periodo || '', data: m.Data || '',
+    frenteId: m.FrenteId || FLASH_FRENTES[0].id, periodo: m.Periodo || '', regObras: m.RegObras || '', data: m.Data || '',
     prazo: m.Prazo || '', valor: m.Valor || '', status: m.Status || 'Em elaboração',
     servicos: m.Servicos || '', obs: m.Obs || '',
+    assinaturaFiscalNome: m.AssinaturaFiscalNome || '', assinaturaEnergisaNome: m.AssinaturaEnergisaNome || '',
+    assinaturaFiscal: m.AssinaturaFiscal || '', assinaturaEnergisa: m.AssinaturaEnergisa || '',
   };
   window._medRegistroAtualId = id;
   window._medMostrarForm = true;
   navigate('checklist_medicao');
+  setTimeout(() => medRestaurarAssinaturas(), 80);
 }
 
 async function medExcluirRegistro(id) {
@@ -24273,12 +24524,24 @@ async function medSalvar() {
   if (!d.periodo) { showToast('⚠️ Informe o período/BM antes de salvar.'); return; }
   const editando = !!window._medRegistroAtualId;
   const frente = FLASH_FRENTES.find(f => f.id === d.frenteId) || FLASH_FRENTES[0];
+  // Captura o traço desenhado nos canvases de assinatura nesta sessão (se não
+  // houve traço novo, _sigState não tem a chave e mantém a assinatura salva
+  // anteriormente, já carregada em d.assinaturaFiscal/assinaturaEnergisa).
+  ['Fiscal', 'Energisa'].forEach(qual => {
+    const sigId = 'sig_med_' + qual.toLowerCase();
+    if (_sigState[sigId]) {
+      const canvas = document.getElementById(sigId);
+      if (canvas) d['assinatura' + qual] = canvas.toDataURL('image/png');
+    }
+  });
   const registro = {
     Title: 'Medição - ' + d.periodo + ' - ' + frente.nome,
     FrenteId: d.frenteId, FrenteNome: frente.nome,
-    Periodo: d.periodo, Data: d.data || '', Prazo: d.prazo || '',
+    Periodo: d.periodo, RegObras: d.regObras || '', Data: d.data || '', Prazo: d.prazo || '',
     Valor: parseFloat(d.valor) || 0, Status: d.status || 'Em elaboração',
     Servicos: d.servicos || '', Obs: d.obs || '',
+    AssinaturaFiscalNome: d.assinaturaFiscalNome || '', AssinaturaEnergisaNome: d.assinaturaEnergisaNome || '',
+    AssinaturaFiscal: d.assinaturaFiscal || '', AssinaturaEnergisa: d.assinaturaEnergisa || '',
     CriadoPorNome: window._currentUser ? window._currentUser.name : '',
     CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
   };
@@ -24319,6 +24582,7 @@ function medHtmlHistorico() {
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         <div style="display:flex;gap:4px">
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="medExportarPDF(${m.Id})">📄 PDF</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="medEditarRegistro(${m.Id})">✏️ Editar</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="medExcluirRegistro(${m.Id})">🗑️ Excluir</button>
         </div>
@@ -24374,25 +24638,31 @@ function pageChecklistMedicao() {
       <div style="font-size:.85rem;color:var(--text-muted)">Registre uma medição por período/BM para cada circuito elétrico.</div>
       <button class="btn-primary" onclick="medAbrirNovo()">➕ Nova Medição</button>
     </div>
+    ${medHtmlDashboard(window._medHistorico || [])}
     <div class="card">
-      <div class="card-title">💰 Histórico de Medições por Circuito Elétrico</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:4px">
+        <div class="card-title" style="margin-bottom:0">💰 Histórico de Medições por Circuito Elétrico</div>
+        <button class="btn-secondary" onclick="medExportarExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
+      </div>
       ${medHtmlHistorico()}
     </div>`;
   }
 
   const d = window._medData;
   const editando = !!window._medRegistroAtualId;
+  setTimeout(() => medRestaurarAssinaturas(), 80);
   return `
   <div class="page-header"><h1>Medição — Energisa</h1><p>Contrato 2025022101 · Gestão Ambiental de Obras</p></div>
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">${editando ? '✏️ Editar Medição' : '➕ Nova Medição'}</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-      <div class="form-group" style="margin:0"><label>Circuito Elétrico / Frente</label>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Circuito Elétrico</label>
         <select onchange="medCampo('frenteId', this.value); navigate('checklist_medicao')">
-          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
+          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome}</option>`).join('')}
         </select>
       </div>
       <div class="form-group" style="margin:0"><label>Período / BM</label><input value="${(d.periodo || '').replace(/"/g, '&quot;')}" oninput="medCampo('periodo', this.value)" placeholder="BM01 · Jan/2026"></div>
+      <div class="form-group" style="margin:0"><label>Reg. Obras</label><input value="${(d.regObras || '').replace(/"/g, '&quot;')}" oninput="medCampo('regObras', this.value)" placeholder="Cód. SIGCO / Reg. Obra"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Data medição</label><input type="date" value="${d.data || ''}" onchange="medCampo('data', this.value)"></div>
@@ -24404,10 +24674,46 @@ function pageChecklistMedicao() {
     </div>
     <div class="form-group"><label>Serviços medidos</label><textarea rows="2" oninput="medCampo('servicos', this.value)">${d.servicos || ''}</textarea></div>
     <div class="form-group"><label>Observações</label><input value="${(d.obs || '').replace(/"/g, '&quot;')}" oninput="medCampo('obs', this.value)"></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn-primary" onclick="medSalvar()">💾 ${editando ? 'Salvar Alterações' : 'Salvar e Sincronizar com OneDrive'}</button>
-      <button class="btn-secondary" onclick="medFecharForm()">Cancelar</button>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">Assinaturas</div>
+    <div style="display:flex;flex-direction:column;gap:20px">
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <div class="form-group" style="margin:0 0 4px"><label style="font-size:.68rem">Nome — Fiscal Expedian</label>
+          <input type="text" value="${(d.assinaturaFiscalNome || '').replace(/"/g, '&quot;')}" oninput="medCampo('assinaturaFiscalNome', this.value)" placeholder="Nome completo">
+        </div>
+        <canvas id="sig_med_fiscal" width="500" height="90"
+          style="border:1px solid var(--border);border-radius:8px;background:#fff;cursor:crosshair;touch-action:none;width:100%;max-width:500px;height:90px"
+          onmousedown="startSign(event,'sig_med_fiscal')" onmousemove="drawSign(event,'sig_med_fiscal')"
+          onmouseup="stopSign('sig_med_fiscal')" onmouseleave="stopSign('sig_med_fiscal')"
+          ontouchstart="startSign(event,'sig_med_fiscal')" ontouchmove="drawSign(event,'sig_med_fiscal')" ontouchend="stopSign('sig_med_fiscal')">
+        </canvas>
+        <div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">
+          <button onclick="clearSig('sig_med_fiscal')" style="font-size:.68rem;padding:4px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;color:var(--text-muted)">🗑️ Limpar</button>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <div class="form-group" style="margin:0 0 4px"><label style="font-size:.68rem">Nome — Responsável Energisa</label>
+          <input type="text" value="${(d.assinaturaEnergisaNome || '').replace(/"/g, '&quot;')}" oninput="medCampo('assinaturaEnergisaNome', this.value)" placeholder="Nome completo">
+        </div>
+        <canvas id="sig_med_energisa" width="500" height="90"
+          style="border:1px solid var(--border);border-radius:8px;background:#fff;cursor:crosshair;touch-action:none;width:100%;max-width:500px;height:90px"
+          onmousedown="startSign(event,'sig_med_energisa')" onmousemove="drawSign(event,'sig_med_energisa')"
+          onmouseup="stopSign('sig_med_energisa')" onmouseleave="stopSign('sig_med_energisa')"
+          ontouchstart="startSign(event,'sig_med_energisa')" ontouchmove="drawSign(event,'sig_med_energisa')" ontouchend="stopSign('sig_med_energisa')">
+        </canvas>
+        <div style="display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">
+          <button onclick="clearSig('sig_med_energisa')" style="font-size:.68rem;padding:4px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;color:var(--text-muted)">🗑️ Limpar</button>
+        </div>
+      </div>
     </div>
+  </div>
+
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px">
+    <button class="btn-primary" onclick="medSalvar()">💾 ${editando ? 'Salvar Alterações' : 'Salvar e Sincronizar com OneDrive'}</button>
+    <button class="btn-secondary" onclick="medExportarPDFForm()">📄 Exportar PDF</button>
+    <button class="btn-secondary" onclick="medFecharForm()">Cancelar</button>
   </div>`;
 }
 
