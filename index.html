@@ -22958,6 +22958,28 @@ function flashCalcularIdaV2(f) {
   };
 }
 
+// Lista o texto REAL dos itens marcados Não Conforme num Flash Report V2 (label do
+// item + observação registrada, quando houver) — Verificações Ambientais, Supressão
+// (se aplicável) e Outras Verificações avulsas do dia. Usada pela Notificação de NC
+// pra pré-preencher a Descrição da Não Conformidade com o que foi de fato apontado
+// em campo, em vez de um texto genérico tipo "N item(ns) marcado(s) Não Conforme"
+// (pedido em 15/08/2026 — a descrição tem que vir editável, pronta pra revisão).
+function flashItensNaoConformesDetalhe(f) {
+  if (!f || f.Modelo !== 'v2') return [];
+  const linhas = flashLinhasVerificacoesNormalizadas(FLASH_VERIFICACOES, f.RespostasVerificacoes, f.ObsItens, f.OutrasVerificacoes)
+    .filter(l => l.resposta === 'NC')
+    .map(l => l.label + (l.obs ? ' — ' + l.obs : ''));
+  if (f.TemSupressao) {
+    (FLASH_ITENS_SUPRESSAO || []).forEach(sec => (sec.itens || []).forEach(it => {
+      if ((f.RespostasSupressao || {})[it.cod] === 'NC') {
+        const obs = (f.ObsItens || {})[it.cod];
+        linhas.push(it.label + (obs ? ' — ' + obs : ''));
+      }
+    }));
+  }
+  return linhas;
+}
+
 // Junta os itens fixos de FLASH_VERIFICACOES com as "outras verificações"
 // dinâmicas do dia num único array de linhas normalizadas — usado pela
 // tabela de leitura (flashVerRegistro) e pelo PDF, pra não duplicar a
@@ -24888,12 +24910,13 @@ function ncIncluirFotosFR(frId) {
 // Percorre TODOS os Flash Reports vinculados (frOrigensIds) — não só o primeiro — e
 // junta as NCs de cada um num único resumo. Cobre tanto o modelo antigo (ckOcorrencias)
 // quanto o V2 (itens Não Conforme no checklist ponderado — ver flashCalcularIdaV2).
-function ncCarregarNCsDoFR() {
-  const autoDiv = document.getElementById('nc-ncs-auto');
-  if (!autoDiv) return;
+// Parte "pura" (sem tocar no DOM) da coleta de NCs dos FRs vinculados — separada de
+// ncCarregarNCsDoFR pra poder ser chamada ANTES de um navigate() re-renderizar a
+// página (ver ncToggleFrOrigem), garantindo que a Descrição já apareça preenchida
+// na textarea assim que o formulário reaparece, e não só no resumo em vermelho.
+function _ncColetarNCsDosFRsVinculados() {
   const d = window._ncData;
   const ids = (d.frOrigensIds && d.frOrigensIds.length) ? d.frOrigensIds : (d.frOrigemId ? [d.frOrigemId] : []);
-  if (!ids.length) { autoDiv.innerHTML = ''; return; }
   const ocMap = {
     vazoleo: 'Vazamento de óleo/combustível', residuoinadeq: 'Resíduo disposto inadequadamente',
     falhasinalizacao: 'Falha em sinalização', erosao: 'Processo erosivo', intervnaoaut: 'Intervenção não autorizada',
@@ -24909,8 +24932,7 @@ function ncCarregarNCsDoFR() {
     if (!fr) return;
     const ncs = [];
     if (fr.Modelo === 'v2') {
-      const r = flashCalcularIdaV2(fr);
-      if (r.naoConformes > 0) ncs.push(r.naoConformes + ' item(ns) marcado(s) Não Conforme no checklist (ver Flash Report completo para detalhes)');
+      ncs.push(...flashItensNaoConformesDetalhe(fr));
     } else {
       const ck = fr.ckOcorrencias || {};
       Object.keys(ocMap).filter(k => ck[k]).forEach(k => ncs.push(ocMap[k]));
@@ -24923,6 +24945,16 @@ function ncCarregarNCsDoFR() {
       descricaoPartes.push(...ncs);
     }
   });
+  return { blocosHtml, descricaoPartes };
+}
+
+function ncCarregarNCsDoFR() {
+  const autoDiv = document.getElementById('nc-ncs-auto');
+  if (!autoDiv) return;
+  const d = window._ncData;
+  const ids = (d.frOrigensIds && d.frOrigensIds.length) ? d.frOrigensIds : (d.frOrigemId ? [d.frOrigemId] : []);
+  if (!ids.length) { autoDiv.innerHTML = ''; return; }
+  const { blocosHtml, descricaoPartes } = _ncColetarNCsDosFRsVinculados();
   autoDiv.innerHTML = blocosHtml || '<div style="color:var(--text-muted);font-style:italic">Nenhuma NC registrada nos Flash Reports vinculados.</div>';
   if (!window._ncData.descricao && descricaoPartes.length) window._ncData.descricao = descricaoPartes.join('; ');
 }
@@ -24962,6 +24994,12 @@ function ncToggleFrOrigem(frId, incluir) {
   if (incluir && idx === -1) { d.frOrigensIds.push(frId); ncIncluirFotosFR(frId); }
   else if (!incluir && idx !== -1) { d.frOrigensIds.splice(idx, 1); }
   d.frOrigemId = d.frOrigensIds[0] || '';
+  // Preenche a Descrição ANTES do navigate() — assim a textarea já reaparece com o
+  // texto real das NCs apontadas (editável), não só o resumo em vermelho abaixo dela.
+  if (!d.descricao) {
+    const { descricaoPartes } = _ncColetarNCsDosFRsVinculados();
+    if (descricaoPartes.length) d.descricao = descricaoPartes.join('; ');
+  }
   navigate('checklist_notif');
   setTimeout(() => ncCarregarNCsDoFR(), 50);
 }
@@ -24991,7 +25029,7 @@ function ncHtmlFROrigem() {
     ${vinculados.length ? vinculados.map(f => {
       const { dataFmt, temOcorr } = fmtFR(f);
       return `<div style="display:flex;align-items:center;gap:8px;background:${temOcorr ? '#fef3f0' : 'var(--surface2)'};border:1px solid ${temOcorr ? 'var(--red)' : 'var(--border)'};border-radius:8px;padding:6px 10px;margin-bottom:6px;flex-wrap:wrap">
-        <div style="flex:1;font-size:.78rem;min-width:160px"><strong>${dataFmt}</strong> — ${f.ResponsavelTecnico || '—'} ${temOcorr ? '<span style="color:var(--red)">⚠️ NC</span>' : '<span style="color:var(--green-main)">✅ Conforme</span>'}</div>
+        <div style="flex:1;font-size:.78rem;min-width:160px"><strong>${dataFmt}</strong> — ${f.FrenteNome || '—'} ${temOcorr ? '<span style="color:var(--red)">⚠️ NC</span>' : '<span style="color:var(--green-main)">✅ Conforme</span>'}</div>
         <button type="button" class="btn-secondary" style="padding:2px 8px;font-size:.66rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver Flash Report completo</button>
         <button type="button" class="btn-secondary" style="padding:2px 8px;font-size:.66rem;color:var(--red)" onclick="ncToggleFrOrigem(${f.Id}, false)">✖ Desvincular</button>
       </div>`;
@@ -25001,7 +25039,7 @@ function ncHtmlFROrigem() {
     <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
       <select id="nc-fr-vincular-manual" style="font-size:.76rem">
         <option value="">+ Vincular outro Flash Report deste circuito...</option>
-        ${disponiveis.map(f => { const { dataFmt, temOcorr } = fmtFR(f); return `<option value="${f.Id}">${dataFmt} — ${f.ResponsavelTecnico || ''}${temOcorr ? ' ⚠️ NC' : ''}</option>`; }).join('')}
+        ${disponiveis.map(f => { const { dataFmt, temOcorr } = fmtFR(f); return `<option value="${f.Id}">${dataFmt} — ${f.FrenteNome || ''}${temOcorr ? ' ⚠️ NC' : ''}</option>`; }).join('')}
       </select>
       <button type="button" class="btn-secondary" style="padding:3px 10px;font-size:.7rem" onclick="const s=document.getElementById('nc-fr-vincular-manual'); if(s.value) ncToggleFrOrigem(s.value, true)">Vincular</button>
     </div>` : ''}
@@ -25013,7 +25051,7 @@ function ncHtmlFROrigem() {
     ${sugestoes.map(f => {
       const { dataFmt } = fmtFR(f);
       return `<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #f5d59a;border-radius:6px;padding:5px 8px;margin-bottom:5px;flex-wrap:wrap">
-        <div style="flex:1;font-size:.76rem;min-width:140px">${dataFmt} — ${f.ResponsavelTecnico || '—'}</div>
+        <div style="flex:1;font-size:.76rem;min-width:140px">${dataFmt} — ${f.FrenteNome || '—'}</div>
         <button type="button" class="btn-secondary" style="padding:2px 8px;font-size:.66rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
         <button type="button" class="btn-primary" style="padding:2px 8px;font-size:.66rem" onclick="ncToggleFrOrigem(${f.Id}, true)">➕ Incluir</button>
       </div>`;
