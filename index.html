@@ -877,6 +877,26 @@
   .sync-bar.synced .sync-dot, .sync-bar.offline .sync-dot { animation: none; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
+  /* -- Banner de nova versão do app disponível (Service Worker) — fica ACIMA da
+     sync-bar (z-index maior), pois é um aviso mais importante/raro. -- */
+  .update-banner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 10001;
+    padding: 10px 20px;
+    display: flex; align-items: center; justify-content: center; gap: 14px;
+    font-size: .82rem; font-weight: 600; flex-wrap: wrap;
+    background: #1a5c9e; color: #fff;
+    transform: translateY(-100%);
+    transition: transform .35s cubic-bezier(.4,0,.2,1);
+  }
+  .update-banner.show { transform: translateY(0); }
+  .update-banner button {
+    background: #fff; color: #1a5c9e; border: none; border-radius: 20px;
+    padding: 5px 14px; font-size: .78rem; font-weight: 700; cursor: pointer;
+  }
+  .update-banner .update-dismiss {
+    background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.5);
+  }
+
   .offline-indicator {
     position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
     background: #3D1F1A; color: #fff;
@@ -966,6 +986,11 @@
 </style>
 </head>
 <body>
+<div id="updateBanner" class="update-banner">
+  <span>🔄 Uma nova versão do EXPEDIAN está disponível.</span>
+  <button onclick="location.reload()">Atualizar agora</button>
+  <button class="update-dismiss" onclick="ocultarBannerAtualizacao()">Depois</button>
+</div>
 <div id="syncBar" class="sync-bar"><span class="sync-dot"></span><span id="syncMsg"></span></div>
 <div id="offlinePill" class="offline-indicator">📵 Sem conexão — dados salvos no aparelho</div>
 <div id="sync-status"><div class="sync-spinner" id="sync-spinner"></div><span id="sync-msg">Sincronizando...</span></div>
@@ -24715,17 +24740,23 @@ const NC_PROGRAMA_LEGISLACAO = {
 };
 
 function ncNovoForm(frenteIdPreSelecionado, frOrigemIdPreSelecionado) {
+  // frOrigensIds substitui o antigo frOrigemId único — uma notificação pode vincular
+  // vários Flash Reports do mesmo circuito (ver ncToggleFrOrigem/ncHtmlFROrigem).
+  // frOrigemId é mantido em paralelo (= primeiro item) só por compatibilidade com
+  // registros antigos que só tinham o campo singular.
+  const idsIniciais = frOrigemIdPreSelecionado ? [Number(frOrigemIdPreSelecionado)] : [];
   window._ncData = {
     frenteId: (frenteIdPreSelecionado && FLASH_FRENTES.some(f => f.id === frenteIdPreSelecionado)) ? frenteIdPreSelecionado : FLASH_FRENTES[0].id,
     numero: '', data: new Date().toISOString().split('T')[0],
     destinatario: '', emailEmpr: '', emailEnergisa: '',
-    frOrigemId: frOrigemIdPreSelecionado || '',
+    frOrigemId: idsIniciais[0] || '', frOrigensIds: idsIniciais,
     descricao: '', programa: '', programasExtras: [],
     fundamentacao: '', acao: '', prazo: '', severidade: 'Moderada', status: 'Aberta',
     fiscal: '', gestor: '',
     ncsExtras: [],
     fotos: [],
     atendimentoData: '', atendimentoStatus: '', atendimentoFotos: [],
+    _sugestoesFechadas: false,
   };
 }
 if (!window._ncData) ncNovoForm();
@@ -24766,6 +24797,11 @@ function ncAbrirNovo(frenteIdPreSelecionado, frOrigemIdPreSelecionado) {
     (window._flashHistorico === null ? flashCarregarHistorico() : Promise.resolve()).then(() => {
       ncIncluirFotosFR(frOrigemIdPreSelecionado);
       ncCarregarNCsDoFR();
+      const fr = (window._flashHistorico || []).find(r => r.Id === Number(frOrigemIdPreSelecionado) || r.Id === frOrigemIdPreSelecionado);
+      if (fr) {
+        const dataFmt = fr.Data ? new Date(fr.Data + 'T12:00').toLocaleDateString('pt-BR') : 'data não informada';
+        showToast('🔗 Notificação vinculada ao Flash Report de ' + dataFmt + '.');
+      }
       navigate('checklist_notif');
     });
   }
@@ -24785,6 +24821,7 @@ function ncEditarRegistro(id) {
     numero: n.Numero || '', data: n.Data || '',
     destinatario: n.Destinatario || '', emailEmpr: n.EmailEmpr || '', emailEnergisa: n.EmailEnergisa || '',
     frOrigemId: n.FrOrigemId || '',
+    frOrigensIds: (n.FrOrigensIds && n.FrOrigensIds.length) ? n.FrOrigensIds.slice() : (n.FrOrigemId ? [n.FrOrigemId] : []),
     descricao: n.Descricao || '', programa: n.Programa || '', programasExtras: (n.ProgramasExtras || []).slice(),
     fundamentacao: n.Fundamentacao || '', acao: n.Acao || '', prazo: n.Prazo || '', severidade: n.Severidade || 'Moderada', status: n.Status || 'Aberta',
     fiscal: n.Fiscal || '', gestor: n.Gestor || '',
@@ -24848,13 +24885,15 @@ function ncIncluirFotosFR(frId) {
   });
 }
 
+// Percorre TODOS os Flash Reports vinculados (frOrigensIds) — não só o primeiro — e
+// junta as NCs de cada um num único resumo. Cobre tanto o modelo antigo (ckOcorrencias)
+// quanto o V2 (itens Não Conforme no checklist ponderado — ver flashCalcularIdaV2).
 function ncCarregarNCsDoFR() {
   const autoDiv = document.getElementById('nc-ncs-auto');
   if (!autoDiv) return;
-  const frId = window._ncData.frOrigemId;
-  if (!frId) { autoDiv.innerHTML = ''; return; }
-  const fr = (window._flashHistorico || []).find(r => r.Id === Number(frId) || r.Id === frId);
-  if (!fr) { autoDiv.innerHTML = ''; return; }
+  const d = window._ncData;
+  const ids = (d.frOrigensIds && d.frOrigensIds.length) ? d.frOrigensIds : (d.frOrigemId ? [d.frOrigemId] : []);
+  if (!ids.length) { autoDiv.innerHTML = ''; return; }
   const ocMap = {
     vazoleo: 'Vazamento de óleo/combustível', residuoinadeq: 'Resíduo disposto inadequadamente',
     falhasinalizacao: 'Falha em sinalização', erosao: 'Processo erosivo', intervnaoaut: 'Intervenção não autorizada',
@@ -24863,17 +24902,125 @@ function ncCarregarNCsDoFR() {
     poeirasctrl: 'Emissão de poeira sem controle', contamsolo: 'Contaminação do solo',
     danoapp: 'Dano a APP / corpo hídrico', semdds: 'Ausência de DDS Ambiental',
   };
-  const ck = fr.ckOcorrencias || {};
-  const ncs = Object.keys(ocMap).filter(k => ck[k]).map(k => ocMap[k]);
-  if (fr.OutraOcorrencia) ncs.push(fr.OutraOcorrencia);
-  if (ncs.length) {
-    autoDiv.innerHTML = '<div style="background:#fef3f0;border:1px solid var(--red);border-radius:6px;padding:8px;margin-bottom:8px">' +
-      '<div style="font-weight:700;color:var(--red);margin-bottom:4px">NCs do Flash Report selecionado (' + (fr.Data || '') + '):</div>' +
-      ncs.map(nc => '<div style="margin:2px 0">• ' + nc + '</div>').join('') + '</div>';
-    if (!window._ncData.descricao) window._ncData.descricao = ncs.join('; ');
-  } else {
-    autoDiv.innerHTML = '<div style="color:var(--text-muted);font-style:italic">Nenhuma NC registrada neste Flash Report.</div>';
-  }
+  let blocosHtml = '';
+  const descricaoPartes = [];
+  ids.forEach(frIdRaw => {
+    const fr = (window._flashHistorico || []).find(r => r.Id === Number(frIdRaw) || r.Id === frIdRaw);
+    if (!fr) return;
+    const ncs = [];
+    if (fr.Modelo === 'v2') {
+      const r = flashCalcularIdaV2(fr);
+      if (r.naoConformes > 0) ncs.push(r.naoConformes + ' item(ns) marcado(s) Não Conforme no checklist (ver Flash Report completo para detalhes)');
+    } else {
+      const ck = fr.ckOcorrencias || {};
+      Object.keys(ocMap).filter(k => ck[k]).forEach(k => ncs.push(ocMap[k]));
+    }
+    if (fr.OutraOcorrencia) ncs.push(fr.OutraOcorrencia);
+    if (ncs.length) {
+      blocosHtml += '<div style="background:#fef3f0;border:1px solid var(--red);border-radius:6px;padding:8px;margin-bottom:8px">' +
+        '<div style="font-weight:700;color:var(--red);margin-bottom:4px">NCs do Flash Report ' + (fr.Data || '') + ':</div>' +
+        ncs.map(nc => '<div style="margin:2px 0">• ' + nc + '</div>').join('') + '</div>';
+      descricaoPartes.push(...ncs);
+    }
+  });
+  autoDiv.innerHTML = blocosHtml || '<div style="color:var(--text-muted);font-style:italic">Nenhuma NC registrada nos Flash Reports vinculados.</div>';
+  if (!window._ncData.descricao && descricaoPartes.length) window._ncData.descricao = descricaoPartes.join('; ');
+}
+
+// FRs do mesmo circuito ainda não vinculados a NENHUMA outra notificação já salva
+// (evita linkar o mesmo Flash Report em duas notificações por engano). Usado tanto
+// pra sugerir FRs com NC em aberto quanto pro seletor manual "vincular outro FR".
+function ncFRsVinculaveis(frenteId) {
+  if (!frenteId) return [];
+  const todosDoFrente = (window._flashHistorico || []).filter(f => f.FrenteId === frenteId);
+  const jaLinkadosEmOutras = new Set();
+  (window._ncHistorico || []).forEach(n => {
+    if (window._ncRegistroAtualId && n.Id === window._ncRegistroAtualId) return;
+    const ids = (n.FrOrigensIds && n.FrOrigensIds.length) ? n.FrOrigensIds : (n.FrOrigemId ? [n.FrOrigemId] : []);
+    ids.forEach(id => jaLinkadosEmOutras.add(String(id)));
+  });
+  return todosDoFrente.filter(f => !jaLinkadosEmOutras.has(String(f.Id)));
+}
+
+// Flash Reports com NC em aberto no circuito selecionado, ainda não incluídos nesta
+// notificação — disparam o aviso "tem FR com NC em aberto, deseja incluir?" (ver
+// ncHtmlFROrigem, chamado sempre que o circuito/frente é selecionado ou trocado).
+function ncFRsComNcAbertaSugeridas() {
+  const d = window._ncData;
+  if (!d.frenteId || d._sugestoesFechadas) return [];
+  const jaNaNotificacao = new Set((d.frOrigensIds || []).map(String));
+  return ncFRsVinculaveis(d.frenteId).filter(f => !jaNaNotificacao.has(String(f.Id)) && flashCalcularPontuacao(f).temOcorr);
+}
+
+// Inclui/remove um Flash Report da lista de origem da notificação (frOrigensIds).
+// Ao incluir, já puxa as fotos do FR pra notificação (ncIncluirFotosFR não duplica).
+function ncToggleFrOrigem(frId, incluir) {
+  const d = window._ncData;
+  if (!Array.isArray(d.frOrigensIds)) d.frOrigensIds = d.frOrigemId ? [Number(d.frOrigemId)] : [];
+  frId = Number(frId);
+  const idx = d.frOrigensIds.indexOf(frId);
+  if (incluir && idx === -1) { d.frOrigensIds.push(frId); ncIncluirFotosFR(frId); }
+  else if (!incluir && idx !== -1) { d.frOrigensIds.splice(idx, 1); }
+  d.frOrigemId = d.frOrigensIds[0] || '';
+  navigate('checklist_notif');
+  setTimeout(() => ncCarregarNCsDoFR(), 50);
+}
+
+function ncIgnorarSugestoesFR() {
+  window._ncData._sugestoesFechadas = true;
+  navigate('checklist_notif');
+}
+
+// Bloco de FRs de origem: lista os já vinculados (com botão de abrir o FR completo e
+// desvincular), um seletor manual pra vincular outro FR do circuito, e o aviso de
+// sugestão de FRs com NC em aberto ainda não vinculados (ver ncFRsComNcAbertaSugeridas).
+function ncHtmlFROrigem() {
+  const d = window._ncData;
+  const vinculados = (d.frOrigensIds || []).map(id => (window._flashHistorico || []).find(f => f.Id === Number(id) || f.Id === id)).filter(Boolean);
+  const sugestoes = ncFRsComNcAbertaSugeridas();
+  const jaVinculadosSet = new Set((d.frOrigensIds || []).map(String));
+  const disponiveis = ncFRsVinculaveis(d.frenteId).filter(f => !jaVinculadosSet.has(String(f.Id)));
+  const fmtFR = f => ({
+    dataFmt: f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—',
+    temOcorr: flashCalcularPontuacao(f).temOcorr,
+  });
+
+  return `
+  <div class="form-group" style="margin-bottom:10px">
+    <label>Flash Report(s) de Origem</label>
+    ${vinculados.length ? vinculados.map(f => {
+      const { dataFmt, temOcorr } = fmtFR(f);
+      return `<div style="display:flex;align-items:center;gap:8px;background:${temOcorr ? '#fef3f0' : 'var(--surface2)'};border:1px solid ${temOcorr ? 'var(--red)' : 'var(--border)'};border-radius:8px;padding:6px 10px;margin-bottom:6px;flex-wrap:wrap">
+        <div style="flex:1;font-size:.78rem;min-width:160px"><strong>${dataFmt}</strong> — ${f.ResponsavelTecnico || '—'} ${temOcorr ? '<span style="color:var(--red)">⚠️ NC</span>' : '<span style="color:var(--green-main)">✅ Conforme</span>'}</div>
+        <button type="button" class="btn-secondary" style="padding:2px 8px;font-size:.66rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver Flash Report completo</button>
+        <button type="button" class="btn-secondary" style="padding:2px 8px;font-size:.66rem;color:var(--red)" onclick="ncToggleFrOrigem(${f.Id}, false)">✖ Desvincular</button>
+      </div>`;
+    }).join('') : '<div style="font-size:.76rem;color:var(--text-muted);font-style:italic;margin-bottom:6px">Nenhum Flash Report vinculado ainda (opcional).</div>'}
+
+    ${disponiveis.length ? `
+    <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <select id="nc-fr-vincular-manual" style="font-size:.76rem">
+        <option value="">+ Vincular outro Flash Report deste circuito...</option>
+        ${disponiveis.map(f => { const { dataFmt, temOcorr } = fmtFR(f); return `<option value="${f.Id}">${dataFmt} — ${f.ResponsavelTecnico || ''}${temOcorr ? ' ⚠️ NC' : ''}</option>`; }).join('')}
+      </select>
+      <button type="button" class="btn-secondary" style="padding:3px 10px;font-size:.7rem" onclick="const s=document.getElementById('nc-fr-vincular-manual'); if(s.value) ncToggleFrOrigem(s.value, true)">Vincular</button>
+    </div>` : ''}
+  </div>
+
+  ${sugestoes.length ? `
+  <div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:10px 12px;margin-bottom:12px">
+    <div style="font-weight:700;font-size:.8rem;color:#b45309;margin-bottom:6px">⚠️ Este circuito tem ${sugestoes.length} Flash Report${sugestoes.length > 1 ? 's' : ''} com não conformidade em aberto. Deseja incluir na notificação?</div>
+    ${sugestoes.map(f => {
+      const { dataFmt } = fmtFR(f);
+      return `<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #f5d59a;border-radius:6px;padding:5px 8px;margin-bottom:5px;flex-wrap:wrap">
+        <div style="flex:1;font-size:.76rem;min-width:140px">${dataFmt} — ${f.ResponsavelTecnico || '—'}</div>
+        <button type="button" class="btn-secondary" style="padding:2px 8px;font-size:.66rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
+        <button type="button" class="btn-primary" style="padding:2px 8px;font-size:.66rem" onclick="ncToggleFrOrigem(${f.Id}, true)">➕ Incluir</button>
+      </div>`;
+    }).join('')}
+    <div style="text-align:right"><a href="#" onclick="ncIgnorarSugestoesFR();return false" style="font-size:.7rem;color:#b45309">Ignorar sugestão desta vez</a></div>
+  </div>` : ''}
+  `;
 }
 
 function ncProgramasEnvolvidos() {
@@ -25042,7 +25189,8 @@ async function ncSalvar(manterFormAberto) {
     FrenteId: d.frenteId, FrenteNome: frente ? frente.nome : d.frenteId, Empreiteira: frente ? frente.empreiteira : '',
     Numero: d.numero, Data: d.data,
     Destinatario: d.destinatario, EmailEmpr: d.emailEmpr, EmailEnergisa: d.emailEnergisa,
-    FrOrigemId: d.frOrigemId || '',
+    FrOrigemId: (d.frOrigensIds && d.frOrigensIds[0]) || d.frOrigemId || '',
+    FrOrigensIds: (d.frOrigensIds || []).map(Number),
     Descricao: d.descricao, Programa: d.programa, ProgramasExtras: d.programasExtras || [],
     Fundamentacao: d.fundamentacao, Acao: d.acao, Prazo: d.prazo, Severidade: d.severidade, Status: d.status,
     Fiscal: d.fiscal, Gestor: d.gestor,
@@ -25448,7 +25596,7 @@ function pageChecklistNotif() {
     ncRenderNCsExtras();
     ncSugerirLegislacao();
     ncAtualizarStatusPrazoAtendimento();
-    if (d.frOrigemId) ncCarregarNCsDoFR();
+    if ((d.frOrigensIds && d.frOrigensIds.length) || d.frOrigemId) ncCarregarNCsDoFR();
   }, 50);
 
   return `
@@ -25458,7 +25606,7 @@ function pageChecklistNotif() {
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Circuito Elétrico / Frente</label>
-        <select onchange="ncCampo('frenteId', this.value); navigate('checklist_notif')">
+        <select onchange="ncCampo('frenteId', this.value); window._ncData._sugestoesFechadas = false; navigate('checklist_notif')">
           ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
         </select>
       </div>
@@ -25470,12 +25618,7 @@ function pageChecklistNotif() {
       <div class="form-group" style="margin:0"><label>Email Energisa (cópia)</label><input type="email" value="${(d.emailEnergisa || '').replace(/"/g, '&quot;')}" oninput="ncCampo('emailEnergisa', this.value)"></div>
     </div>
 
-    <div class="form-group" style="margin-bottom:10px"><label>Flash Report de Origem</label>
-      <select onchange="ncCampo('frOrigemId', this.value ? Number(this.value) : ''); ncCarregarNCsDoFR(); if(this.value) ncIncluirFotosFR(Number(this.value)); navigate('checklist_notif')">
-        <option value="">-- Selecione (opcional) --</option>
-        ${(window._flashHistorico || []).filter(f => f.FrenteId === d.frenteId).sort((a, b) => (a.Data || '').localeCompare(b.Data || '')).map(f => `<option value="${f.Id}" ${String(d.frOrigemId) === String(f.Id) ? 'selected' : ''}>${f.Data || 'sem data'} — ${f.ResponsavelTecnico || ''}</option>`).join('')}
-      </select>
-    </div>
+    ${ncHtmlFROrigem()}
 
     <div style="margin:10px 0 6px;font-size:.78rem;font-weight:700;color:var(--red)">⚠️ Não Conformidades Identificadas</div>
     <div id="nc-ncs-auto" style="margin-bottom:8px;font-size:.72rem;color:var(--text-muted)"></div>
@@ -27992,6 +28135,8 @@ let _ultimaContagemNotifEquip = null;
 let _ultimaContagemNotifPrest = null;
 let _ultimaContagemNotifFlash = null;
 let _ultimaContagemNotifPrazos = null;
+let _ultimaContagemNotifExclusaoFlash = null;
+let _ultimaContagemNotifExclusaoEquip = null;
 
 /* -- Filtra os prazos de documentos (coletarPrazosDocumentos) que estão
    vencendo em breve, vencendo hoje ou em atraso há até 30 dias — mesma
@@ -28140,9 +28285,10 @@ async function atualizarBadgeNotificacoes() {
     return;
   }
   const ehGestorGeral = usuario.role === 'Gestor Geral';
+  const ehDiretoria = perfil === 'diretoria';
   try {
-    const [aprs, prests, contasPagar, despesas, adiantamentos, flashReports, solicitacoesGerais] = await Promise.all([
-      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos'), dbLer('FlashReportsEnergisa'), dbLer('SolicitacoesGerais')
+    const [aprs, prests, contasPagar, despesas, adiantamentos, flashReports, solicitacoesGerais, equipamentos] = await Promise.all([
+      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos'), dbLer('FlashReportsEnergisa'), dbLer('SolicitacoesGerais'), dbLer('Equipamentos')
     ]);
     const aprsPendentes = aprs.filter(r =>
       r.Status === 'Em Aberto' && (ehGestorGeral || r.Gestor === usuario.name)
@@ -28150,6 +28296,11 @@ async function atualizarBadgeNotificacoes() {
     const despesasVencendo = despesasVencendoEmBreve(despesas);
     const flashPendentes = (flashReports || []).filter(f => f.Visualizado === false);
     const solicGeraisPendentes = (solicitacoesGerais || []).filter(r => r.Status === 'Pendente' || (ehGestorGeral && r.Status === 'Aguardando Gestor Geral'));
+    // Solicitações de exclusão (Flash Report / Equipamentos) só têm um estágio de
+    // aprovação — direto pra Diretoria (ver flashSolicitarExclusao/equipSolicitarExclusao,
+    // 14-15/08/2026) — por isso só entram no sino de quem é Diretoria.
+    const flashExclusaoPendente = ehDiretoria ? (flashReports || []).filter(f => f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente') : [];
+    const equipExclusaoPendente = ehDiretoria ? (equipamentos || []).filter(e => e.SolicitacaoExclusao && e.SolicitacaoExclusao.status === 'pendente') : [];
     const prazosDocumentos = await coletarPrazosDocumentos();
     const prazosVencendo = prazosDocumentosVencendoEmBreve(prazosDocumentos);
     const prestsAbertas = prests.filter(r => r.Status === 'Em Aberto');
@@ -28163,7 +28314,7 @@ async function atualizarBadgeNotificacoes() {
       solicGeraisPendentes.length +
       despesasVencendo.length +
       prazosVencendo.length;
-    const total = totalAprovacoesPuras + flashPendentes.length;
+    const total = totalAprovacoesPuras + flashPendentes.length + flashExclusaoPendente.length + equipExclusaoPendente.length;
 
     // Lista detalhada exibida no dropdown do sino (clique em cada item abre a pendência).
     window._notifItens = [];
@@ -28207,6 +28358,16 @@ async function atualizarBadgeNotificacoes() {
       subtitulo: f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '',
       acao: () => navigate('projetos'),
     }));
+    flashExclusaoPendente.forEach(f => window._notifItens.push({
+      icone: '🗑️', titulo: 'Exclusão de Flash Report solicitada',
+      subtitulo: (f.SolicitacaoExclusao.solicitadoPorNome || '—') + ' — ' + (f.FrenteNome || '') + (f.Data ? ' · ' + new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : ''),
+      acao: () => navigate('projetos'),
+    }));
+    equipExclusaoPendente.forEach(e => window._notifItens.push({
+      icone: '🗑️', titulo: 'Exclusão de equipamento solicitada',
+      subtitulo: (e.SolicitacaoExclusao.solicitadoPorNome || '—') + ' — ' + (e.Title || ''),
+      acao: () => navigate('equipamentos'),
+    }));
 
     // Se só há Flash Reports pendentes (sem nenhuma aprovação financeira/APR
     // em aberto), o sino leva direto pra Projetos em vez de Aprovações.
@@ -28223,6 +28384,29 @@ async function atualizarBadgeNotificacoes() {
       );
     }
     _ultimaContagemNotifFlash = flashPendentes.length;
+
+    // Detectar NOVAS solicitações de exclusão (Flash Report/Equipamentos) -> som + push,
+    // só pra Diretoria (único perfil que aprova essas solicitações).
+    if (_ultimaContagemNotifExclusaoFlash !== null && flashExclusaoPendente.length > _ultimaContagemNotifExclusaoFlash) {
+      const novas = flashExclusaoPendente.length - _ultimaContagemNotifExclusaoFlash;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '🗑️ EXPEDIAN — Solicitação de exclusão',
+        novas === 1 ? 'Uma exclusão de Flash Report foi solicitada — aguarda sua aprovação.' : `${novas} exclusões de Flash Report foram solicitadas — aguardam sua aprovação.`,
+        'projetos'
+      );
+    }
+    _ultimaContagemNotifExclusaoFlash = flashExclusaoPendente.length;
+    if (_ultimaContagemNotifExclusaoEquip !== null && equipExclusaoPendente.length > _ultimaContagemNotifExclusaoEquip) {
+      const novas = equipExclusaoPendente.length - _ultimaContagemNotifExclusaoEquip;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '🗑️ EXPEDIAN — Solicitação de exclusão',
+        novas === 1 ? 'Uma exclusão de equipamento foi solicitada — aguarda sua aprovação.' : `${novas} exclusões de equipamento foram solicitadas — aguardam sua aprovação.`,
+        'equipamentos'
+      );
+    }
+    _ultimaContagemNotifExclusaoEquip = equipExclusaoPendente.length;
 
     // Detectar NOVAS despesas entrando na janela de vencimento -> mensagem específica
     if (_ultimaContagemNotifDespesas !== null && despesasVencendo.length > _ultimaContagemNotifDespesas) {
@@ -29899,7 +30083,9 @@ function queueSync(listName, payload) {
   });
   pendingCount++;
   updatePendingBadge();
-  showSyncBar('offline', `📵 Offline — ${pendingCount} registro(s) aguardando sincronização`);
+  const nome = (window._currentUser && window._currentUser.name) || 'Você';
+  const label = (typeof DB_TABELA_LABEL !== 'undefined' && DB_TABELA_LABEL[listName]) || listName;
+  showSyncBar('offline', `📵 ${nome}, seu documento "${label}" foi salvo no aparelho — ${pendingCount} no total aguardando conexão para sincronizar.`);
 }
 
 function getPending() {
@@ -29942,7 +30128,9 @@ async function syncPending() {
   const items = await getPending();
   if (!items.length) return;
 
-  showSyncBar('syncing', `⏳ Sincronizando ${items.length} registro(s)...`);
+  const nome = (window._currentUser && window._currentUser.name) || 'Você';
+  const rotulo = listName => (typeof DB_TABELA_LABEL !== 'undefined' && DB_TABELA_LABEL[listName]) || listName;
+  showSyncBar('syncing', `⏳ ${nome}, sincronizando ${items.length} documento(s) salvos offline...`);
 
   const token = await getOneDriveToken();
   if (!token) {
@@ -29954,6 +30142,9 @@ async function syncPending() {
   for (const item of items) {
     try {
       const { listName, payload } = item;
+      // Mensagem por item, pra quem estiver de olho no topo da tela ver exatamente
+      // qual documento está sendo sincronizado no momento (não só um contador).
+      showSyncBar('syncing', `⏳ ${nome}, sincronizando "${rotulo(listName)}"...`);
       let sucesso = false;
       if (payload && payload.op === 'inserir') {
         const novo = await dbInserir(listName, payload.registro);
@@ -29982,10 +30173,10 @@ async function syncPending() {
   updatePendingBadge();
 
   if (fail === 0) {
-    showSyncBar('synced', `✅ ${ok} registro(s) sincronizado(s) com sucesso!`);
+    showSyncBar('synced', `✅ ${nome}, ${ok} documento(s) sincronizado(s) com sucesso!`);
     setTimeout(() => hideSyncBar(), 4000);
   } else {
-    showSyncBar('offline', `⚠️ ${ok} sincronizados · ${fail} com erro (será reprocessado)`);
+    showSyncBar('offline', `⚠️ ${nome}, ${ok} sincronizados · ${fail} com erro (será reprocessado)`);
   }
 }
 
@@ -30012,16 +30203,42 @@ function showSyncBar(type, msg) {
   bar.className = `sync-bar ${type} show`;
   const el = document.getElementById('syncMsg');
   if (el) el.textContent = msg;
-  const main = document.querySelector('.main');
-  if (main) main.style.paddingTop = '38px';
+  _ajustarPaddingBanners();
 }
 
 function hideSyncBar() {
   const bar = document.getElementById('syncBar');
   if (!bar) return;
   bar.classList.remove('show');
+  _ajustarPaddingBanners();
+}
+
+// Empurra o conteúdo (.main) pra baixo o suficiente pra caber tanto a sync-bar
+// quanto o banner de atualização, quando os dois estão visíveis ao mesmo tempo.
+function _ajustarPaddingBanners() {
   const main = document.querySelector('.main');
-  if (main) main.style.paddingTop = '0';
+  if (!main) return;
+  const syncVisivel = document.getElementById('syncBar')?.classList.contains('show');
+  const updateVisivel = document.getElementById('updateBanner')?.classList.contains('show');
+  main.style.paddingTop = (syncVisivel && updateVisivel) ? '76px' : (syncVisivel || updateVisivel) ? '38px' : '0';
+}
+
+/* -- Banner de "nova versão disponível" — separado da sync-bar (fica por cima dela)
+   porque é um aviso raro e mais importante: pede uma ação explícita (recarregar) em
+   vez de só informar status de sincronização. Some sozinho se o usuário recarregar
+   (nova versão já carrega) ou pode ser adiado com "Depois". -- */
+function mostrarBannerAtualizacao() {
+  const banner = document.getElementById('updateBanner');
+  if (!banner) return;
+  banner.classList.add('show');
+  _ajustarPaddingBanners();
+}
+
+function ocultarBannerAtualizacao() {
+  const banner = document.getElementById('updateBanner');
+  if (!banner) return;
+  banner.classList.remove('show');
+  _ajustarPaddingBanners();
 }
 
 function updatePendingBadge() {
@@ -30100,7 +30317,7 @@ async function registerSW() {
       const newSW = reg.installing;
       newSW.addEventListener('statechange', () => {
         if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
-          showSyncBar('syncing', '🔄 Nova versão disponível — recarregue para atualizar');
+          mostrarBannerAtualizacao();
         }
       });
     });
