@@ -34748,24 +34748,54 @@ function gdExportarExcel() {
    abre o documento (ou um novo, já com o tipo pré-selecionado, se ainda não
    existir); o ícone 🖨️ só aparece quando já dá pra emitir o certificado
    (documento com emissão preenchida). -- */
+// Badge genérico de status (bolinha colorida + rótulo curto), clicável — abre o
+// documento existente (mais recente daquele tipo) ou um novo já com o tipo
+// pré-selecionado. cfgCert (opcional) só existe pros 4 tipos certificáveis, e é o
+// que decide se aparece o ícone 🖨️ de emissão junto do badge.
+function _gdBadgeDoc(colabId, nomeEsc, tipo, achado, cfgCert) {
+  const rotulo = cfgCert ? cfgCert.sigla : (tipo.length > 16 ? tipo.slice(0, 15) + '…' : tipo);
+  const st = achado ? gdStatusDocumento(achado.d) : 'sem';
+  const CORES = { ok: '#10b981', alerta30: '#dc2626', alerta90: '#f59e0b', vencido: '#7f1d1d', sem: '#d1d5db' };
+  const cor = CORES[st] || CORES.sem;
+  const tituloHover = tipo + ': ' + (achado ? (achado.d.emissao ? 'emitido em ' + new Date(achado.d.emissao + 'T00:00:00').toLocaleDateString('pt-BR') : 'sem data de emissão') : 'sem registro — clique para adicionar');
+  const onclickBadge = achado
+    ? `gdAbrirModalDocColab('${colabId}','${nomeEsc}',${achado.i})`
+    : `gdAbrirModalDocColab('${colabId}','${nomeEsc}',undefined,'${tipo.replace(/'/g, "\\'")}')`;
+  const podeEmitir = cfgCert && achado && achado.d.emissao;
+  const botaoEmitir = podeEmitir ? `<span onclick="event.stopPropagation();gdGerarCertificado('${colabId}',${achado.i})" title="Emitir certificado ${cfgCert.sigla}" style="cursor:pointer;margin-left:1px">🖨️</span>` : '';
+  return `<span onclick="event.stopPropagation();${onclickBadge}" title="${tituloHover}" style="display:inline-flex;align-items:center;gap:3px;background:#f3f4f6;border-radius:12px;padding:2px 7px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;color:#4b5563">`
+    + `<span style="width:7px;height:7px;border-radius:50%;background:${cor};flex-shrink:0"></span>${rotulo}${botaoEmitir}</span>`;
+}
+
+/* -- Badges de status por documento, direto no card colapsado do colaborador —
+   pedido em 17/08/2026 ("acho que fica melhor" + "fazer para todo restante de
+   documentação"). Dois grupos:
+   1) Os 4 certificáveis (NR-01/06/18/25) — sempre aparecem, mesmo sem registro
+      ainda (⚪), pra deixar a lacuna visível; têm o ícone 🖨️ quando dá pra emitir.
+   2) Todo o resto da documentação que o colaborador já tem cadastrada (ASO, CNH,
+      NR-35 etc.) — só aparece o que já existe (não lista os ~20 tipos possíveis
+      em branco, senão vira poluição visual); um badge por tipo, o mais recente.
+   O clique abre o documento (ou um novo, já com o tipo certo). Pra ver a lista
+   completa/tabela detalhada, o card inteiro continua clicável pra expandir,
+   como já era antes. -- */
 function gdBadgesCertificacoes(colabId, colabNome, docs) {
   const nomeEsc = colabNome.replace(/'/g, "\\'");
-  return '<div style="display:flex;gap:4px;flex-wrap:wrap">' + Object.keys(CERTIFICADOS_TREINAMENTO).map(tipo => {
-    const cfg = CERTIFICADOS_TREINAMENTO[tipo];
+  const tiposCert = Object.keys(CERTIFICADOS_TREINAMENTO);
+
+  const badgesCert = tiposCert.map(tipo => {
     const candidatos = docs.map((d, i) => ({ d, i })).filter(o => o.d.tipo === tipo).sort((a, b) => (b.d.emissao || '').localeCompare(a.d.emissao || ''));
-    const achado = candidatos[0];
-    const st = achado ? gdStatusDocumento(achado.d) : 'sem';
-    const CORES = { ok: '#10b981', alerta30: '#dc2626', alerta90: '#f59e0b', vencido: '#7f1d1d', sem: '#d1d5db' };
-    const cor = CORES[st] || CORES.sem;
-    const tituloHover = cfg.sigla + ': ' + (achado ? (achado.d.emissao ? 'emitido em ' + new Date(achado.d.emissao + 'T00:00:00').toLocaleDateString('pt-BR') : 'sem data de emissão') : 'sem registro — clique para adicionar');
-    const onclickBadge = achado
-      ? `gdAbrirModalDocColab('${colabId}','${nomeEsc}',${achado.i})`
-      : `gdAbrirModalDocColab('${colabId}','${nomeEsc}',undefined,'${tipo.replace(/'/g, "\\'")}')`;
-    const podeEmitir = achado && achado.d.emissao;
-    const botaoEmitir = podeEmitir ? `<span onclick="event.stopPropagation();gdGerarCertificado('${colabId}',${achado.i})" title="Emitir certificado ${cfg.sigla}" style="cursor:pointer;margin-left:1px">🖨️</span>` : '';
-    return `<span onclick="event.stopPropagation();${onclickBadge}" title="${tituloHover}" style="display:inline-flex;align-items:center;gap:3px;background:#f3f4f6;border-radius:12px;padding:2px 7px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;color:#4b5563">`
-      + `<span style="width:7px;height:7px;border-radius:50%;background:${cor};flex-shrink:0"></span>${cfg.sigla}${botaoEmitir}</span>`;
-  }).join('') + '</div>';
+    return _gdBadgeDoc(colabId, nomeEsc, tipo, candidatos[0], CERTIFICADOS_TREINAMENTO[tipo]);
+  });
+
+  // Demais tipos: agrupa por tipo (excluindo os 4 já cobertos acima), pega o mais
+  // recente de cada, em ordem alfabética.
+  const outrosTipos = Array.from(new Set(docs.map(d => d.tipo).filter(t => t && !tiposCert.includes(t)))).sort();
+  const badgesOutros = outrosTipos.map(tipo => {
+    const candidatos = docs.map((d, i) => ({ d, i })).filter(o => o.d.tipo === tipo).sort((a, b) => (b.d.emissao || '').localeCompare(a.d.emissao || ''));
+    return _gdBadgeDoc(colabId, nomeEsc, tipo, candidatos[0], null);
+  });
+
+  return '<div style="display:flex;gap:4px;flex-wrap:wrap">' + badgesCert.join('') + badgesOutros.join('') + '</div>';
 }
 
 function pageGestaoDocumental() {
