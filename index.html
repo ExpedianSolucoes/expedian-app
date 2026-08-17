@@ -33881,6 +33881,46 @@ function epiAbrirJanelaImpressao(html) {
   w.document.close();
 }
 
+/* -- Menu rápido da Ficha de EPI — pedido em 17/08/2026 ("mesma ideia do ASO, ao
+   clicar abrir qual opção deseja fazer, botão ver a ficha, nova entrega,
+   devolução/troca"). Ponto de entrada único (badge/lista suspensa): sempre abre
+   esse menu com as 3 ações possíveis, desabilitando as que não fazem sentido
+   ainda (sem entrega registrada = nada pra ver ou devolver). -- */
+function epiAbrirMenu(cIdx) {
+  const colab = window._gdDados && window._gdDados.colaboradores[cIdx];
+  if (!colab) { showToast('⚠️ Colaborador não encontrado.'); return; }
+  const hist = gdEpiObter(colab.id);
+  const temHistorico = hist.entregas.length > 0;
+  const emPosse = gdEpiItensEmPosse(colab.id);
+
+  const modal = document.getElementById('modal-epi-menu');
+  if (modal) modal.remove();
+
+  const item = (habilitado, cor, onclick, label, sub) => '<button '
+    + (habilitado ? `onclick="document.getElementById('modal-epi-menu').remove();${onclick}"` : 'disabled')
+    + ' style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:12px 14px;border-radius:10px;text-align:left;width:100%;border:1.5px solid '
+    + (habilitado ? cor : '#e5e7eb') + ';background:' + (habilitado ? '#fff' : '#f9fafb') + ';cursor:' + (habilitado ? 'pointer' : 'not-allowed') + ';margin-bottom:8px">'
+    + '<span style="font-weight:700;font-size:.85rem;color:' + (habilitado ? cor : '#9ca3af') + '">' + label + '</span>'
+    + (sub ? '<span style="font-size:.68rem;color:#9ca3af">' + sub + '</span>' : '')
+    + '</button>';
+
+  const el = document.createElement('div');
+  el.id = 'modal-epi-menu';
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
+  el.innerHTML = '<div style="background:#fff;border-radius:16px;width:100%;max-width:360px;box-shadow:0 24px 80px rgba(0,0,0,.3)">'
+    + '<div style="padding:18px 22px 0;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #eee;padding-bottom:14px">'
+    + '<div><div style="font-weight:800;font-size:1rem">🦺 Ficha de EPI — ' + colab.nome + '</div>'
+    + '<div style="font-size:.75rem;color:#666;margin-top:2px">O que deseja fazer?</div></div>'
+    + '<button onclick="document.getElementById(\'modal-epi-menu\').remove()" style="border:none;background:#f0f0f0;border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>'
+    + '</div>'
+    + '<div style="padding:18px 22px">'
+    + item(temHistorico, '#78350f', `epiVerFicha(${cIdx})`, '👁️ Ver Ficha', temHistorico ? '' : 'Sem entregas registradas ainda')
+    + item(true, '#b45309', `gerarEPI(${cIdx})`, '🦺 Nova Entrega', '')
+    + item(emPosse.length > 0, '#92400e', `gdAbrirDevolucaoEpi(${cIdx})`, '🔄 Devolução/Troca', emPosse.length > 0 ? (emPosse.length + ' item(ns) em posse') : 'Nada em posse pra devolver')
+    + '</div></div>';
+  document.body.appendChild(el);
+}
+
 /* -- Visualiza/imprime a Ficha de EPI com o histórico acumulado do colaborador SEM
       registrar uma nova entrega — pra isso existe o botão "Nova Entrega" separado. -- */
 /* -- Abre a tela de visualização da Ficha de EPI: mostra um campo de Data de Entrega
@@ -34714,6 +34754,94 @@ function gdGerarCertificado(colabId, docIdx) {
   w.document.close();
 }
 
+/* -- "Visualizar / Exportar PDF" de um documento do colaborador — pedido em
+   17/08/2026. A maioria dos tipos cadastrados em docsColab não tem um arquivo
+   anexado (são só dados: tipo, número, emissão, vencimento), então "visualizar"
+   e "exportar PDF" viram uma única ação: abre uma ficha-resumo impressa (mesmo
+   padrão visual do ASO/Certificado — cabeçalho com logo, rodapé da empresa,
+   botão de imprimir/salvar PDF). Nos tipos que já têm um documento "de
+   verdade" gerável (os 4 certificáveis e o ASO), reaproveita o gerador
+   específico em vez de duplicar. -- */
+function gdVisualizarDocColab(colabId, docIdx, cIdx) {
+  const colab = (window._gdDados.colaboradores || []).find(c => c.id === colabId);
+  if (!colab) { showToast('⚠️ Colaborador não encontrado.'); return; }
+  const doc = (window._gdDados.docsColab[colabId] || [])[docIdx];
+  if (!doc) { showToast('⚠️ Documento não encontrado.'); return; }
+
+  if (CERTIFICADOS_TREINAMENTO[doc.tipo]) { gdGerarCertificado(colabId, docIdx); return; }
+  if (doc.tipo === 'ASO' && cIdx != null) { gerarASO(cIdx); return; }
+
+  const seed = GD_SEED_COLABORADORES.find(s => s.nome.toLowerCase() === colab.nome.toLowerCase());
+  const cpf = colab.cpf || (seed && seed.cpf) || '';
+  const dataFmt = v => v ? new Date(v + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const st = gdStatusDocumento(doc);
+
+  const linha = (rotulo, valor) => valor ? '<tr><td class="fd-rot">' + rotulo + '</td><td class="fd-val">' + valor + '</td></tr>' : '';
+
+  const html = ASO_FONT_CSS + '<html><head><meta charset="utf-8"><title>' + doc.tipo + ' — ' + colab.nome + '</title><style>'
+    + '* { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; color-adjust:exact; }'
+    + 'body { font-family:"Mont",sans-serif; color:#3F261F; }'
+    + '.fd-wrap { width:100%; max-width:760px; margin:0 auto; }'
+    + '.fd-wrap > thead { display:table-header-group; } .fd-wrap > tfoot { display:table-footer-group; }'
+    + '.fd-wrap > thead > tr > td, .fd-wrap > tfoot > tr > td, .fd-wrap > tbody > tr > td { padding:0; border:none; }'
+    + '.fd-header-wrap { position:relative; min-height:96px; }'
+    + '.fd-corner-shape { position:absolute; top:0; left:0; width:130px; height:96px; background:#3F261F; clip-path:polygon(0 0,100% 0,0 100%); }'
+    + '.fd-header { position:relative; display:flex; justify-content:space-between; align-items:center; padding:18px 30px 14px 30px; }'
+    + '.fd-title { font-weight:800; font-size:17px; color:#5a9e50; text-transform:uppercase; letter-spacing:.4px; line-height:1.25; padding-left:112px; }'
+    + '.fd-logo img { height:36px; }'
+    + '.fd-body { padding:16px 30px 0 30px; }'
+    + '.fd-nome { font-size:18px; font-weight:800; margin-bottom:2px; }'
+    + '.fd-sub { font-size:11.5px; color:#5a5a5a; margin-bottom:18px; }'
+    + '.fd-status { display:inline-block; font-weight:700; font-size:10.5px; padding:3px 11px; border-radius:20px; margin-bottom:18px; }'
+    + 'table.fd-tabela { width:100%; border-collapse:collapse; margin-bottom:10px; }'
+    + 'table.fd-tabela td { padding:9px 6px; border-bottom:1px solid #eee; font-size:12px; vertical-align:top; }'
+    + 'table.fd-tabela .fd-rot { color:#7a7a7a; font-weight:700; width:34%; text-transform:uppercase; font-size:9.5px; letter-spacing:.3px; padding-top:11px; }'
+    + 'table.fd-tabela .fd-val { font-weight:600; }'
+    + '.doc-footer { background:#fff; border-top:2px solid #3F261F; margin-top:20px; padding:6px 18px; text-align:center; font-family:"Mont",sans-serif; font-size:7px; color:#3F261F; line-height:1.5; }'
+    + '.doc-footer .footer-empresa { font-weight:700; font-size:7.5px; text-transform:uppercase; }'
+    + '.print-btn { position:fixed; top:10px; right:10px; background:#3a7030; color:#fff; border:none; padding:8px 18px; border-radius:8px; font-size:12px; font-weight:700; cursor:pointer; font-family:"Mont",sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.2); z-index:99; }'
+    + '@media print { .print-btn { display:none; } body { padding:0; } }'
+    + '@page { size: A4 portrait; margin: 12mm; }'
+    + '</style></head><body>'
+    + '<button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>'
+
+    + '<table class="fd-wrap"><thead><tr><td>'
+    + '<div class="fd-header-wrap"><div class="fd-corner-shape"></div><div class="fd-header">'
+    + '<div class="fd-title">' + doc.tipo + '</div>'
+    + '<div class="fd-logo"><img src="' + ASO_LOGO_B64 + '" alt="Expedian"></div>'
+    + '</div></div>'
+    + '</td></tr></thead>'
+
+    + '<tfoot><tr><td>'
+    + '<div class="doc-footer">'
+    + '<div class="footer-empresa">EXPEDIAN – SOLUÇÕES AMBIENTAIS</div>'
+    + '<div>Rua Salgado Filho, nº 1596 – Sala 02 – Bairro Nossa Senhora das Graças, CEP 76.804-118, Porto Velho – RO</div>'
+    + '<div>E-mail: atendimento@expediansolucoes.com.br | Fone (69) 9.9964-9406 | CNPJ: 37.553.680/0001-80</div>'
+    + '</div>'
+    + '</td></tr></tfoot>'
+
+    + '<tbody><tr><td>'
+    + '<div class="fd-body">'
+    + '<div class="fd-nome">' + colab.nome + '</div>'
+    + '<div class="fd-sub">' + (colab.cargo || '—') + (cpf ? ' · CPF: ' + cpf : '') + '</div>'
+    + '<span class="fd-status" style="background:' + (st === 'ok' ? '#d1fae5' : st === 'vencido' ? '#fee2e2' : (st === 'alerta30' || st === 'alerta90') ? '#fef3c7' : '#f3f4f6') + ';color:' + (st === 'ok' ? '#065f46' : st === 'vencido' ? '#991b1b' : (st === 'alerta30' || st === 'alerta90') ? '#92400e' : '#6b7280') + '">' + gdStatusBadge(st, gdDiasStr(doc.vencimento)) + '</span>'
+    + '<table class="fd-tabela">'
+    + linha('Número / Identificação', doc.numero)
+    + linha('Data de Emissão', dataFmt(doc.emissao))
+    + linha('Data de Vencimento', dataFmt(doc.vencimento))
+    + linha('Observações', doc.obs)
+    + '</table>'
+    + '<div style="font-size:10px;color:#9ca3af;margin-top:6px">Ficha gerada em ' + new Date().toLocaleDateString('pt-BR') + ' a partir dos dados cadastrados na Gestão Documental — não substitui o documento original.</div>'
+    + '</div>'
+    + '</td></tr></tbody></table>'
+    + '</body></html>';
+
+  const w = window.open('', '_blank', 'width=780,height=680,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para visualizar o documento.'); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
 function gdExportarExcel() {
   const d = window._gdDados;
   if (!d) { showToast('⚠️ Dados não carregados.'); return; }
@@ -34794,7 +34922,7 @@ function _gdBadgeDoc(colabId, nomeEsc, tipo, achado, cfgCert, emitirOverride) {
       em branco, senão vira poluição visual); um badge por tipo, o mais recente.
    O clique abre o documento (ou um novo, já com o tipo certo). Pra ver a lista
    completa/tabela detalhada, o card inteiro continua clicável pra expandir, e
-   agora também tem a lista suspensa (ver _gdSelectDocsColab) logo ao lado. -- */
+   agora também tem a lista suspensa (ver _gdSelectAcoesDocs) logo ao lado. -- */
 function gdBadgesCertificacoes(colabId, colabNome, docs, cIdx) {
   const nomeEsc = colabNome.replace(/'/g, "\\'");
   const tiposCert = Object.keys(CERTIFICADOS_TREINAMENTO);
@@ -34816,12 +34944,12 @@ function gdBadgesCertificacoes(colabId, colabNome, docs, cIdx) {
     const temHistorico = hist.entregas.length > 0;
     const cor = emPosse.length > 0 ? '#10b981' : (temHistorico ? '#f59e0b' : '#d1d5db');
     const tituloHover = temHistorico
-      ? ('Ficha de EPI: ' + emPosse.length + ' item(ns) em posse — clique para ver/imprimir')
-      : 'Ficha de EPI: sem entregas registradas — clique para registrar a 1ª entrega';
-    const onclickBadge = temHistorico ? `epiVerFicha(${cIdx})` : `gerarEPI(${cIdx})`;
-    const botaoEmitir = temHistorico ? `<span onclick="event.stopPropagation();epiVerFicha(${cIdx})" title="Ver / Imprimir Ficha de EPI" style="cursor:pointer;margin-left:1px">🖨️</span>` : '';
-    badgeEpi = `<span onclick="event.stopPropagation();${onclickBadge}" title="${tituloHover}" style="display:inline-flex;align-items:center;gap:3px;background:#f3f4f6;border-radius:12px;padding:2px 7px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;color:#4b5563">`
-      + `<span style="width:7px;height:7px;border-radius:50%;background:${cor};flex-shrink:0"></span>Ficha EPI${botaoEmitir}</span>`;
+      ? ('Ficha de EPI: ' + emPosse.length + ' item(ns) em posse — clique para ver ficha / nova entrega / devolução')
+      : 'Ficha de EPI: sem entregas registradas — clique para ver as opções';
+    // Ponto de entrada único: sempre abre o menu (Ver Ficha / Nova Entrega / Devolução),
+    // que já desabilita as opções que não fazem sentido ainda.
+    badgeEpi = `<span onclick="event.stopPropagation();epiAbrirMenu(${cIdx})" title="${tituloHover}" style="display:inline-flex;align-items:center;gap:3px;background:#f3f4f6;border-radius:12px;padding:2px 7px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;color:#4b5563">`
+      + `<span style="width:7px;height:7px;border-radius:50%;background:${cor};flex-shrink:0"></span>Ficha EPI</span>`;
   }
 
   // Demais tipos: agrupa por tipo (excluindo os 4 certificáveis e o ASO, que já
@@ -34835,22 +34963,199 @@ function gdBadgesCertificacoes(colabId, colabNome, docs, cIdx) {
   return '<div style="display:flex;gap:4px;flex-wrap:wrap">' + badgesCert.join('') + badgeAso + badgeEpi + badgesOutros.join('') + '</div>';
 }
 
-/* -- Lista suspensa (select) com TODA a documentação já cadastrada do colaborador —
-   pedido em 17/08/2026 ("a lista suspensa das documentação completa por
-   colaborador"). Complementa os badges: escolher um item abre direto aquele
-   documento pra ver/editar, sem precisar expandir o card inteiro. -- */
-function _gdSelectDocsColab(colabId, nomeEsc, docs) {
-  if (!docs.length) return '';
+/* -- Lista suspensa (select) com Ações Rápidas + TODA a documentação já cadastrada
+   do colaborador — pedido em 17/08/2026 ("a lista suspensa das documentação
+   completa por colaborador" + "esses [ASO/Nova Entrega/Ficha EPI/Devolução]
+   devem ficar como botão na lista suspensa"). Substitui os botões grandes que
+   ficavam ao lado do nome: emitir ASO e o menu da Ficha de EPI viram itens
+   dessa lista, junto com cada documento cadastrado (escolher um item abre
+   direto aquele documento pra ver/editar, sem precisar expandir o card). -- */
+function _gdSelectAcoesDocs(colabId, nomeEsc, docs, cIdx) {
   const STATUS_LABEL = { ok: 'Em dia', alerta30: 'Vence em breve', alerta90: 'Atenção', vencido: 'Vencido', sem: 'Sem info' };
   const STATUS_EMOJI = { ok: '🟢', alerta30: '🔴', alerta90: '🟠', vencido: '⚫', sem: '⚪' };
+
+  const acoesOpts = (cIdx != null) ? [
+    { v: 'acao:aso', label: '📋 Emitir ASO' },
+    { v: 'acao:epi', label: '🦺 Ficha de EPI (ver/entrega/devolução)' },
+  ].map(o => `<option value="${o.v}">${o.label}</option>`).join('') : '';
+
   const ordenados = docs.map((d, i) => ({ d, i })).sort((a, b) => (a.d.tipo || '').localeCompare(b.d.tipo || '') || (b.d.emissao || '').localeCompare(a.d.emissao || ''));
-  const opts = ordenados.map(({ d, i }) => {
+  const docOpts = ordenados.map(({ d, i }) => {
     const st = gdStatusDocumento(d);
     const dataStr = d.emissao ? new Date(d.emissao + 'T00:00:00').toLocaleDateString('pt-BR') : 'sem data';
-    return `<option value="${i}">${STATUS_EMOJI[st] || '⚪'} ${d.tipo} — ${dataStr} (${STATUS_LABEL[st] || ''})</option>`;
+    return `<option value="doc:${i}">${STATUS_EMOJI[st] || '⚪'} ${d.tipo} — ${dataStr} (${STATUS_LABEL[st] || ''})</option>`;
   }).join('');
-  return `<select onchange="event.stopPropagation();if(this.value!=='')gdAbrirModalDocColab('${colabId}','${nomeEsc}',parseInt(this.value));this.selectedIndex=0" onclick="event.stopPropagation()" style="font-size:.65rem;border:1px solid #e5e7eb;border-radius:12px;padding:2px 6px;color:#4b5563;background:#f9fafb;cursor:pointer;max-width:210px">`
-    + `<option value="">📄 Documentação completa (${docs.length})</option>${opts}</select>`;
+
+  const onchange = `event.stopPropagation();const v=this.value;this.selectedIndex=0;if(!v)return;`
+    + `if(v==='acao:aso')gerarASO(${cIdx});`
+    + `else if(v==='acao:epi')epiAbrirMenu(${cIdx});`
+    + `else if(v.indexOf('doc:')===0)gdAbrirModalDocColab('${colabId}','${nomeEsc}',parseInt(v.slice(4)));`;
+
+  return `<select onchange="${onchange}" onclick="event.stopPropagation()" style="font-size:.65rem;border:1px solid #e5e7eb;border-radius:12px;padding:2px 6px;color:#4b5563;background:#f9fafb;cursor:pointer;max-width:230px">`
+    + `<option value="">⚙️ Ações e documentação (${docs.length})</option>`
+    + (acoesOpts ? `<optgroup label="Ações rápidas">${acoesOpts}</optgroup>` : '')
+    + (docOpts ? `<optgroup label="Documentação (${docs.length})">${docOpts}</optgroup>` : '')
+    + `</select>`;
+}
+
+/* -- Calcula e renderiza a lista de colaboradores da Gestão Documental —
+   reorganização pedida em 17/08/2026 (visão de RH/organização):
+     1) "⚠️ Precisa de Ação" fixo no topo — quem tem doc vencido, doc em alerta,
+        fim de experiência urgente (83-90d/vencida) ou está em desligamento.
+        Ordenado por gravidade (vencido > desligamento > experiência) e, dentro
+        da mesma gravidade, por nome.
+     2) O restante agrupado por função de risco (GHE, já usado no PGR/ASO/EPI):
+        Administrativo / Campo-Operacional / Motoristas e Máquinas / Sem função
+        classificada — cada grupo em ordem alfabética.
+     3) Inativos (só aparecem com o checkbox "Mostrar inativos" marcado), numa
+        seção própria ao final, também alfabética.
+   Quando há busca de texto ou o filtro de KPI (vencido/alerta) está ativo, a
+   lista some com o agrupamento e vira uma lista simples, só em ordem alfabética
+   (o próprio filtro já reduziu aos relevantes, agrupar de novo só atrapalharia).
+   Também monta o header de cada card, já sem os botões grandes de ação (ASO/
+   Nova Entrega/Ver Ficha EPI/Devolução) — essas viraram itens da lista suspensa
+   "Ações e documentação" (_gdSelectAcoesDocs); ao lado do nome ficou só função,
+   admissão, quantidade de vencidos e o botão Desligar, como pedido. -- */
+function _gdComputarListaColabsHtml() {
+  const d = window._gdDados;
+  if (!d) return '';
+  const filtroKpi = window._gdFiltroKpi || null;
+  const mostrarInativos = !!window._gdMostrarInativos;
+  const busca = (window._gdBuscaColab || '').toLowerCase().trim();
+  const todosColabsComInativos = d.colaboradores || [];
+  const todosColabs = mostrarInativos ? todosColabsComInativos : todosColabsComInativos.filter(c => (c.situacao || 'ativo') !== 'inativo');
+  const colabIdxMap = new Map(todosColabsComInativos.map((c, i) => [c.id, i]));
+
+  let colabsFiltrados = todosColabs;
+  if (busca) {
+    colabsFiltrados = colabsFiltrados.filter(c =>
+      (c.nome || '').toLowerCase().includes(busca) ||
+      (c.cargo || '').toLowerCase().includes(busca) ||
+      (c.cpf || '').toLowerCase().includes(busca)
+    );
+  }
+  if (filtroKpi === 'vencido') {
+    colabsFiltrados = colabsFiltrados.filter(c => (d.docsColab[c.id] || []).some(doc => gdStatusDocumento(doc) === 'vencido'));
+  } else if (filtroKpi === 'alerta') {
+    colabsFiltrados = colabsFiltrados.filter(c => (d.docsColab[c.id] || []).some(doc => ['alerta30', 'alerta90'].includes(gdStatusDocumento(doc))));
+  }
+
+  if (colabsFiltrados.length === 0) {
+    return `<div style="padding:32px;text-align:center;color:var(--text-muted)">${(busca || filtroKpi) ? 'Nenhum colaborador encontrado com esse filtro.' : 'Nenhum colaborador cadastrado. Clique em "+ Colaborador".'}</div>`;
+  }
+
+  const renderCard = (colab) => {
+    const cIdx = colabIdxMap.get(colab.id);
+    const docs = d.docsColab[colab.id] || [];
+    const vencidos = docs.filter(doc => gdStatusDocumento(doc) === 'vencido').length;
+    const alertas = docs.filter(doc => ['alerta30', 'alerta90'].includes(gdStatusDocumento(doc))).length;
+    const ok = docs.filter(doc => gdStatusDocumento(doc) === 'ok').length;
+    const initials = colab.nome.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+    const resumo = vencidos > 0 ? `<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">❌ ${vencidos} vencido(s)</span>`
+      : alertas > 0 ? `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">⚠️ ${alertas} atenção</span>`
+      : ok > 0 ? `<span style="background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">✅ ${ok} ok</span>`
+      : `<span style="background:#f3f4f6;color:#6b7280;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">— Sem docs</span>`;
+    const expandido = (filtroKpi !== null || busca) ? 'block' : 'none';
+    const tabelaDocs = docs.length === 0
+      ? '<div style="padding:12px;color:var(--text-muted);font-size:.78rem;text-align:center">Nenhum documento cadastrado.</div>'
+      : `<table class="data-table" style="font-size:.78rem"><thead><tr><th>Tipo</th><th>Número</th><th>Emissão</th><th>Vencimento</th><th>Status</th><th></th></tr></thead><tbody>${
+        docs.map((doc, dIdx) => {
+          const st = gdStatusDocumento(doc);
+          const hl = (filtroKpi === 'vencido' && st === 'vencido') || (filtroKpi === 'alerta' && ['alerta30', 'alerta90'].includes(st));
+          return `<tr${hl ? ' style="background:#fffbe6"' : ''}>
+            <td><strong>${doc.tipo}</strong>${doc.obs ? `<div style="font-size:.65rem;color:var(--text-muted)">${doc.obs}</div>` : ''}</td>
+            <td style="color:var(--text-muted)">${doc.numero || '—'}</td>
+            <td>${doc.emissao ? new Date(doc.emissao + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
+            <td>${doc.vencimento ? new Date(doc.vencimento + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
+            <td>${gdStatusBadge(st, gdDiasStr(doc.vencimento))}</td>
+            <td style="white-space:nowrap"><button class="btn-secondary" style="padding:2px 7px;font-size:.65rem" title="Visualizar / Exportar PDF" onclick="gdVisualizarDocColab('${colab.id}',${dIdx},${cIdx})">👁️</button> <button class="btn-secondary" style="padding:2px 7px;font-size:.65rem" title="Editar" onclick="gdAbrirModalDocColab('${colab.id}','${colab.nome.replace(/'/g, "\\'")}',${dIdx})">✏️</button> <button class="btn-secondary" style="padding:2px 7px;font-size:.65rem;color:var(--red)" title="Excluir" onclick="gdExcluirDocColab('${colab.id}',${dIdx})">🗑️</button></td>
+          </tr>`;
+        }).join('')
+      }</tbody></table>`;
+    const nomeEsc = colab.nome.replace(/'/g, "\\'");
+    const sitInfo = gdSituacaoInfo(colab);
+    const situacaoBadge = `<span style="background:${sitInfo.bg};color:${sitInfo.cor};padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">${sitInfo.label}</span>`;
+    const alertaExperiencia = sitInfo.alerta ? `<div style="font-size:.68rem;font-weight:700;color:${sitInfo.alerta.urgente ? '#b91c1c' : '#92400e'};margin-top:2px">${sitInfo.alerta.texto}</div>` : '';
+    const btnDesligar = sitInfo.situacao !== 'inativo' ? `<button class="btn-secondary" style="padding:2px 8px;font-size:.64rem;background:#b91c1c;color:#fff;border:none" onclick="event.stopPropagation();gdAbrirModalDesligamento(${cIdx})">🚪 ${sitInfo.situacao === 'desligamento' ? 'Continuar Desligamento' : 'Desligar'}</button>` : '';
+    return `<div class="card" style="margin-bottom:12px;padding:0;overflow:hidden${sitInfo.situacao === 'inativo' ? ';opacity:.6' : ''}">
+      <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer" onclick="const p=this.nextElementSibling;p.style.display=p.style.display==='none'?'block':'none'">
+        <div style="width:40px;height:40px;border-radius:50%;background:var(--green-pale);border:2px solid var(--green-main);display:flex;align-items:center;justify-content:center;font-size:.78rem;font-weight:800;color:var(--green-main);flex-shrink:0">${initials}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:.88rem">${colab.nome}</div>
+          <div style="font-size:.7rem;color:var(--text-muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:2px" onclick="event.stopPropagation()">
+            <span>${colab.cargo || '—'}${colab.admissao ? ' · Admitido em ' + new Date(colab.admissao + 'T00:00:00').toLocaleDateString('pt-BR') : ''}</span>
+            ${situacaoBadge}
+            ${resumo}
+            ${btnDesligar}
+          </div>
+          ${alertaExperiencia}
+          <div style="margin-top:5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap" onclick="event.stopPropagation()">${gdBadgesCertificacoes(colab.id, colab.nome, docs, cIdx)}${_gdSelectAcoesDocs(colab.id, nomeEsc, docs, cIdx)}</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+          <button class="btn-primary" style="padding:4px 10px;font-size:.68rem" onclick="event.stopPropagation();gdAbrirModalDocColab('${colab.id}','${nomeEsc}')">+ Doc</button>
+          <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="event.stopPropagation();gdAbrirModalColaborador(${cIdx})">✏️</button>
+          <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:var(--red)" onclick="event.stopPropagation();gdExcluirColaborador(${cIdx})">🗑️</button>
+        </div>
+      </div>
+      <div style="display:${expandido};border-top:1px solid var(--border)">${tabelaDocs}</div>
+    </div>`;
+  };
+
+  // Com busca ou filtro de KPI ativo, não agrupa — só ordena alfabeticamente.
+  if (busca || filtroKpi) {
+    return colabsFiltrados.slice().sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')).map(renderCard).join('');
+  }
+
+  const ativos = colabsFiltrados.filter(c => (c.situacao || 'ativo') !== 'inativo');
+  const inativosGrp = colabsFiltrados.filter(c => (c.situacao || 'ativo') === 'inativo').sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+
+  const precisaAcao = [];
+  const restante = [];
+  ativos.forEach(c => {
+    const docs = d.docsColab[c.id] || [];
+    const temVencido = docs.some(doc => gdStatusDocumento(doc) === 'vencido');
+    const temAlerta = docs.some(doc => ['alerta30', 'alerta90'].includes(gdStatusDocumento(doc)));
+    const info = gdSituacaoInfo(c);
+    const expUrgente = !!(info.alerta && info.alerta.urgente);
+    const emDesligamento = info.situacao === 'desligamento';
+    if (temVencido || temAlerta || expUrgente || emDesligamento) {
+      const peso = temVencido ? 4 : emDesligamento ? 3 : expUrgente ? 2 : 1;
+      precisaAcao.push({ c, peso });
+    } else {
+      restante.push(c);
+    }
+  });
+  precisaAcao.sort((a, b) => b.peso - a.peso || a.c.nome.localeCompare(b.c.nome, 'pt-BR'));
+
+  const gruposGhe = { ghe01: [], ghe02: [], ghe03: [], outros: [] };
+  restante.forEach(c => {
+    const f = pgrFuncaoPorNome(c.cargo);
+    const g = (f && gruposGhe[f.ghe]) ? f.ghe : 'outros';
+    gruposGhe[g].push(c);
+  });
+  Object.values(gruposGhe).forEach(arr => arr.sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')));
+
+  const secao = (titulo, lista, cor) => lista.length ? (
+    `<div style="font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:${cor || 'var(--text-muted)'};margin:18px 0 8px 2px">${titulo} (${lista.length})</div>`
+    + lista.map(renderCard).join('')
+  ) : '';
+
+  return secao('⚠️ Precisa de Ação', precisaAcao.map(x => x.c), '#b91c1c')
+    + secao('🏢 Administrativo', gruposGhe.ghe01)
+    + secao('🌳 Campo / Operacional', gruposGhe.ghe02)
+    + secao('🚚 Motoristas e Operadores de Máquina', gruposGhe.ghe03)
+    + secao('📁 Sem Função Classificada', gruposGhe.outros)
+    + secao('⚪ Inativos', inativosGrp);
+}
+
+/* -- Atualiza só o container da lista de colaboradores (sem re-renderizar a
+   página inteira) — usado pela busca por nome/cargo/CPF, pra não perder o foco
+   do campo de texto a cada letra digitada (mesmo padrão usado em outras buscas
+   ao vivo do app, ex. Licenças Ambientais). -- */
+function gdRenderizarListaColabs() {
+  const el = document.getElementById('gd-colabs-lista');
+  if (!el) return;
+  el.innerHTML = _gdComputarListaColabsHtml();
 }
 
 function pageGestaoDocumental() {
@@ -34990,74 +35295,9 @@ function pageGestaoDocumental() {
 
       }).join('');
 
-  // Filtra colaboradores pelo KPI clicado
-  let colabsFiltrados = todosColabs;
-  if (filtroKpi === 'vencido') {
-    colabsFiltrados = todosColabs.filter(c => (d.docsColab[c.id]||[]).some(doc=>gdStatusDocumento(doc)==='vencido'));
-  } else if (filtroKpi === 'alerta') {
-    colabsFiltrados = todosColabs.filter(c => (d.docsColab[c.id]||[]).some(doc=>['alerta30','alerta90'].includes(gdStatusDocumento(doc))));
-  }
-  const colabIdxMap = new Map(todosColabsComInativos.map((c,i)=>[c.id,i]));
-
-  const cardsColabs = colabsFiltrados.length===0
-    ? `<div style="padding:32px;text-align:center;color:var(--text-muted)">${filtroKpi?'Nenhum colaborador com documentos nesta situação.':'Nenhum colaborador cadastrado. Clique em "+ Colaborador".'}</div>`
-    : colabsFiltrados.map((colab)=>{
-        const cIdx = colabIdxMap.get(colab.id);
-        const docs=d.docsColab[colab.id]||[];
-        const vencidos=docs.filter(doc=>gdStatusDocumento(doc)==='vencido').length;
-        const alertas=docs.filter(doc=>['alerta30','alerta90'].includes(gdStatusDocumento(doc))).length;
-        const ok=docs.filter(doc=>gdStatusDocumento(doc)==='ok').length;
-        const initials=colab.nome.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase();
-        const resumo=vencidos>0?`<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">❌ ${vencidos} vencido(s)</span>`
-          :alertas>0?`<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">⚠️ ${alertas} atenção</span>`
-          :ok>0?`<span style="background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">✅ ${ok} ok</span>`
-          :`<span style="background:#f3f4f6;color:#6b7280;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">— Sem docs</span>`;
-        const expandido = filtroKpi !== null ? 'block' : 'none';
-        const tabelaDocs=docs.length===0
-          ? '<div style="padding:12px;color:var(--text-muted);font-size:.78rem;text-align:center">Nenhum documento cadastrado.</div>'
-          : `<table class="data-table" style="font-size:.78rem"><thead><tr><th>Tipo</th><th>Número</th><th>Emissão</th><th>Vencimento</th><th>Status</th><th></th></tr></thead><tbody>${
-            docs.map((doc,dIdx)=>{
-              const st=gdStatusDocumento(doc);
-              const hl=(filtroKpi==='vencido'&&st==='vencido')||(filtroKpi==='alerta'&&['alerta30','alerta90'].includes(st));
-              return `<tr${hl?' style="background:#fffbe6"':''}>
-                <td><strong>${doc.tipo}</strong>${doc.obs?`<div style="font-size:.65rem;color:var(--text-muted)">${doc.obs}</div>`:''}</td>
-                <td style="color:var(--text-muted)">${doc.numero||'—'}</td>
-                <td>${doc.emissao?new Date(doc.emissao+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
-                <td>${doc.vencimento?new Date(doc.vencimento+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
-                <td>${gdStatusBadge(st,gdDiasStr(doc.vencimento))}</td>
-                <td><button class="btn-secondary" style="padding:2px 7px;font-size:.65rem" onclick="gdAbrirModalDocColab('${colab.id}','${colab.nome.replace(/'/g,"\\'")}',${dIdx})">✏️</button> <button class="btn-secondary" style="padding:2px 7px;font-size:.65rem;color:var(--red)" onclick="gdExcluirDocColab('${colab.id}',${dIdx})">🗑️</button></td>
-              </tr>`;
-            }).join('')
-          }</tbody></table>`;
-        const nomeEsc=colab.nome.replace(/'/g,"\\'");
-        const sitInfo = gdSituacaoInfo(colab);
-        const situacaoBadge = `<span style="background:${sitInfo.bg};color:${sitInfo.cor};padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">${sitInfo.label}</span>`;
-        const alertaExperiencia = sitInfo.alerta ? `<div style="font-size:.68rem;font-weight:700;color:${sitInfo.alerta.urgente?'#b91c1c':'#92400e'};margin-top:2px">${sitInfo.alerta.texto}</div>` : '';
-        return `<div class="card" style="margin-bottom:12px;padding:0;overflow:hidden${sitInfo.situacao==='inativo'?';opacity:.6':''}">
-          <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer" onclick="const p=this.nextElementSibling;p.style.display=p.style.display==='none'?'block':'none'">
-            <div style="width:40px;height:40px;border-radius:50%;background:var(--green-pale);border:2px solid var(--green-main);display:flex;align-items:center;justify-content:center;font-size:.78rem;font-weight:800;color:var(--green-main);flex-shrink:0">${initials}</div>
-            <div style="flex:1">
-              <div style="font-weight:700;font-size:.88rem">${colab.nome}</div>
-              <div style="font-size:.7rem;color:var(--text-muted)">${colab.cargo||'—'}${colab.admissao?' · Admitido em '+new Date(colab.admissao+'T00:00:00').toLocaleDateString('pt-BR'):''}</div>
-              ${alertaExperiencia}
-              <div style="margin-top:5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap" onclick="event.stopPropagation()">${gdBadgesCertificacoes(colab.id, colab.nome, docs, cIdx)}${_gdSelectDocsColab(colab.id, nomeEsc, docs)}</div>
-            </div>
-            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-              ${situacaoBadge}
-              ${resumo}
-              <button class="btn-primary" style="padding:4px 10px;font-size:.68rem" onclick="event.stopPropagation();gdAbrirModalDocColab('${colab.id}','${nomeEsc}')">+ Doc</button>
-              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:var(--blue,#3b82f6);color:#fff" onclick="event.stopPropagation();gerarASO(${cIdx})">📋 ASO</button>
-              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#b45309;color:#fff" onclick="event.stopPropagation();gerarEPI(${cIdx})">🦺 Nova Entrega</button>
-              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#78350f;color:#fff" onclick="event.stopPropagation();epiVerFicha(${cIdx})">👁️ Ver Ficha EPI</button>
-              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#92400e;color:#fff" onclick="event.stopPropagation();gdAbrirDevolucaoEpi(${cIdx})">🔄 Devolução/Troca</button>
-              ${sitInfo.situacao!=='inativo' ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;background:#b91c1c;color:#fff" onclick="event.stopPropagation();gdAbrirModalDesligamento(${cIdx})">🚪 ${sitInfo.situacao==='desligamento'?'Continuar Desligamento':'Desligar'}</button>` : ''}
-              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="event.stopPropagation();gdAbrirModalColaborador(${cIdx})">✏️</button>
-              <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:var(--red)" onclick="event.stopPropagation();gdExcluirColaborador(${cIdx})">🗑️</button>
-            </div>
-          </div>
-          <div style="display:${expandido};border-top:1px solid var(--border)">${tabelaDocs}</div>
-        </div>`;
-      }).join('');
+  // Lista de colaboradores: cálculo + renderização vivem em _gdComputarListaColabsHtml
+  // (reorganização pedida em 17/08/2026 — ver comentário na definição da função).
+  const cardsColabs = _gdComputarListaColabsHtml();
 
   const filtroBanner = filtroKpi ? `
     <div style="background:${filtroKpi==='vencido'?'#fee2e2':'#fef3c7'};border:1px solid ${filtroKpi==='vencido'?'#fca5a5':'#fcd34d'};border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between">
@@ -35089,12 +35329,15 @@ function pageGestaoDocumental() {
     </div>
   `:`
     ${filtroBanner}
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;align-items:center">
-      <label style="display:flex;align-items:center;gap:5px;font-size:.75rem;color:var(--text-muted);cursor:pointer"><input type="checkbox" ${mostrarInativos?'checked':''} onchange="window._gdMostrarInativos=this.checked;navigate('docs')"> Mostrar inativos (${todosColabsComInativos.filter(c=>(c.situacao||'ativo')==='inativo').length})</label>
-      <button class="btn-secondary" style="font-size:.78rem;padding:7px 14px;color:var(--green-main);border-color:var(--green-main)" onclick="gdSeedDocumentosLidos()">📥 Importar dados lidos</button>
-      <button class="btn-primary" style="font-size:.78rem;padding:7px 14px" onclick="gdAbrirModalColaborador()">+ Colaborador</button>
+    <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <input type="text" id="gd-busca-colab" value="${(window._gdBuscaColab||'').replace(/"/g,'&quot;')}" placeholder="🔍 Buscar por nome, cargo ou CPF..." oninput="window._gdBuscaColab=this.value;gdRenderizarListaColabs()" style="flex:1;min-width:200px;max-width:320px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:5px;font-size:.75rem;color:var(--text-muted);cursor:pointer"><input type="checkbox" ${mostrarInativos?'checked':''} onchange="window._gdMostrarInativos=this.checked;gdRenderizarListaColabs()"> Mostrar inativos (${todosColabsComInativos.filter(c=>(c.situacao||'ativo')==='inativo').length})</label>
+        <button class="btn-secondary" style="font-size:.78rem;padding:7px 14px;color:var(--green-main);border-color:var(--green-main)" onclick="gdSeedDocumentosLidos()">📥 Importar dados lidos</button>
+        <button class="btn-primary" style="font-size:.78rem;padding:7px 14px" onclick="gdAbrirModalColaborador()">+ Colaborador</button>
+      </div>
     </div>
-    ${cardsColabs}
+    <div id="gd-colabs-lista">${cardsColabs}</div>
   `}`;
 }
 
