@@ -16059,9 +16059,16 @@ function pageConfig() {
 
   setTimeout(() => carregarPainelEquipe(isGestorGeral), 200);
   setTimeout(() => carregarSyncLog(), 150);
+  setTimeout(() => carregarPendenciasSync(), 150);
 
   return `
   <div class="page-header"><h1>Configurações</h1></div>
+
+  <div class="card" style="margin-bottom:24px;border-left:4px solid var(--red)">
+    <div class="card-title" style="font-size:.88rem;font-weight:700;margin-bottom:4px">⚠️ Pendências de Sincronização</div>
+    <p style="font-size:.76rem;color:var(--text-muted);margin:0 0 12px">Documentos salvos NESTE dispositivo/navegador que ainda não chegaram ao OneDrive — cada aparelho tem a sua própria fila.</p>
+    <div id="cfg-pendencias-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
 
   <div class="card" style="margin-bottom:24px">
     <div class="card-title" style="font-size:.88rem;font-weight:700;margin-bottom:4px">☁️ Últimos Sincronizados</div>
@@ -30153,15 +30160,35 @@ function markSynced(id) {
   };
 }
 
-function markAttempt(id) {
+// motivo (opcional): grava o motivo do erro NESTE item específico — antes só contava
+// tentativas, sem guardar por quê falhava, então não dava pra saber o que estava
+// preso na fila sem abrir o console do navegador da pessoa afetada.
+function markAttempt(id, motivo) {
   if (!db) return;
   const tx    = db.transaction('pendingSync', 'readwrite');
   const store = tx.objectStore('pendingSync');
   const req   = store.get(id);
   req.onsuccess = e => {
     const item = e.target.result;
-    if (item) { item.attempts = (item.attempts||0)+1; store.put(item); }
+    if (item) {
+      item.attempts = (item.attempts||0)+1;
+      if (motivo) item.ultimoErro = motivo;
+      store.put(item);
+    }
   };
+}
+
+// Remove um item preso na fila offline (ex.: registro que nunca vai sincronizar
+// porque foi excluído no meio do caminho) — usado pelo painel "Pendências de
+// Sincronização" em Configurações (ver renderPendenciasSync).
+function descartarPendencia(id) {
+  return new Promise(resolve => {
+    if (!db) return resolve(false);
+    const tx = db.transaction('pendingSync', 'readwrite');
+    tx.objectStore('pendingSync').delete(id);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => resolve(false);
+  });
 }
 
 /* ===============================
@@ -30204,11 +30231,14 @@ async function syncPending() {
         markSynced(item.id);
         ok++;
       } else {
-        markAttempt(item.id);
+        // window._lastSyncError é setado por dbSalvar/dbInserir/dbAtualizar (ver
+        // _setSyncError) no MESMO await acima — como o for é sequencial (não
+        // paralelo), reflete o motivo real desta falha específica, não de outro item.
+        markAttempt(item.id, window._lastSyncError || 'Falha ao sincronizar (motivo não detalhado)');
         fail++;
       }
     } catch(e) {
-      markAttempt(item.id);
+      markAttempt(item.id, (e && e.message) || 'Erro inesperado ao sincronizar');
       fail++;
     }
   }
@@ -34120,7 +34150,14 @@ async function dbAtualizar(tabela, id, campos) {
   let atualizado = null;
   const { ok } = await _dbGravarComRetry(tabela, lista => {
     const idx = lista.findIndex(r => r.Id === id);
-    if (idx < 0) { console.warn('[DB] Registro nao encontrado:', tabela, id); return null; }
+    if (idx < 0) {
+      console.warn('[DB] Registro nao encontrado:', tabela, id);
+      // Causa comum de item preso na fila offline: a atualização foi feita em cima de
+      // um registro que, nesse meio-tempo, foi excluído (por outra pessoa, ou porque
+      // era um Id provisório de uma inserção offline que nunca chegou a sincronizar).
+      _setSyncError('registro não encontrado em ' + tabela + ' (Id ' + id + ') — pode já ter sido excluído, ou a inserção original ainda não sincronizou');
+      return null;
+    }
     lista[idx] = { ...lista[idx], ...campos, ModificadoEm: new Date().toISOString() };
     atualizado = lista[idx];
     return lista;
@@ -34149,16 +34186,22 @@ async function dbRemover(tabela, id) {
    centralizado entre usuários/dispositivos — é local por natureza, assim
    como a fila offline. */
 const DB_TABELA_LABEL = {
-  contratos:             'Gestão de Contratos',
-  PrestacaoContas:       'Prestação de Contas',
-  ContasPagar:           'Contas a Pagar',
-  Adiantamentos:         'Solicitação de Adiantamento',
-  ChecklistBombeamento:  'Teste de Bombeamento',
-  Equipamentos:          'Equipamentos',
-  TermosEquipamento:     'Termo de Equipamento',
-  ChecklistVeicular:     'Checklist Veicular',
-  APRs:                  'APR',
-  ChecklistERO:          'Checklist ERO',
+  contratos:                  'Gestão de Contratos',
+  PrestacaoContas:            'Prestação de Contas',
+  ContasPagar:                'Contas a Pagar',
+  Adiantamentos:              'Solicitação de Adiantamento',
+  ChecklistBombeamento:       'Teste de Bombeamento',
+  Equipamentos:               'Equipamentos',
+  TermosEquipamento:          'Termo de Equipamento',
+  ChecklistVeicular:          'Checklist Veicular',
+  APRs:                       'APR',
+  ChecklistERO:               'Checklist ERO',
+  FlashReportsEnergisa:       'Flash Report Energisa',
+  NotificacoesEnergisa:       'Notificação de NC Energisa',
+  MedicoesContratosEnergisa:  'Medição de Contrato Energisa',
+  OrdensServicoEnergisa:      'Ordem de Serviço Energisa',
+  MedicoesEnergisa:           'Medição Energisa',
+  SolicitacoesGerais:         'Solicitação Geral',
 };
 
 function _dbResumoRegistro(registro) {
@@ -34198,6 +34241,60 @@ async function carregarSyncLog() {
       '<div style="font-size:.72rem;color:var(--text-muted);white-space:nowrap">☁️ ' + dataFmt + '</div>' +
     '</div>';
   }).join('');
+}
+
+/* == PENDÊNCIAS DE SINCRONIZAÇÃO ==
+   Mostra o CONTEÚDO da fila offline deste dispositivo/navegador (IndexedDB
+   "pendingSync") — antes disso só existia a barra genérica "N com erro (será
+   reprocessado)" no topo, sem nenhum jeito de ver O QUE estava preso ou por quê
+   (pedido em 15/08/2026, depois de um caso real: fila do Marcelo Marafon com 2
+   itens presos). Local por natureza, assim como o log de sincronizados — cada
+   pessoa só vê a própria fila, no próprio aparelho. */
+async function carregarPendenciasSync() {
+  const el = document.getElementById('cfg-pendencias-lista');
+  if (!el) return;
+  const pendentes = await getPending();
+  if (!pendentes.length) {
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma pendência neste dispositivo — tudo sincronizado. 🎉</div>';
+    return;
+  }
+  el.innerHTML = pendentes.map(item => {
+    const label = (DB_TABELA_LABEL[item.listName] || item.listName || '—');
+    const acaoLabel = (item.payload && item.payload.op === 'atualizar') ? 'Atualização' : 'Novo registro';
+    const dt = item.createdAt ? new Date(item.createdAt) : null;
+    const dataFmt = dt ? (dt.toLocaleDateString('pt-BR') + ' ' + dt.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' })) : '—';
+    const tentativas = item.attempts || 0;
+    const erro = item.ultimoErro || (tentativas === 0 ? 'Ainda não tentou sincronizar (aguardando conexão/login)' : 'Motivo não registrado');
+    return '<div style="padding:10px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start">' +
+        '<div style="min-width:0">' +
+          '<div style="font-size:.82rem;font-weight:600">' + label + '</div>' +
+          '<div style="font-size:.7rem;color:var(--text-muted)">' + acaoLabel + ' · criado em ' + dataFmt + (tentativas ? ' · ' + tentativas + ' tentativa(s)' : '') + '</div>' +
+          (tentativas > 0 ? '<div style="font-size:.72rem;color:var(--red);margin-top:4px">⚠️ ' + String(erro).replace(/</g,'&lt;') + '</div>' : '') +
+        '</div>' +
+        '<div style="display:flex;gap:6px;flex-shrink:0">' +
+          '<button class="btn-secondary" style="padding:3px 10px;font-size:.68rem" onclick="_retentarPendenciaUnica(' + item.id + ')">🔄 Tentar agora</button>' +
+          '<button class="btn-secondary" style="padding:3px 10px;font-size:.68rem;color:var(--red)" onclick="_descartarPendenciaConfirmar(' + item.id + ')">🗑️ Descartar</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+// Tenta sincronizar tudo (mais simples que isolar um item só, já que syncPending()
+// processa a fila inteira em ordem — reaproveita a mesma lógica/mensagens de sempre).
+function _retentarPendenciaUnica(id) {
+  showToast('🔄 Tentando sincronizar...');
+  syncPending().then(() => carregarPendenciasSync());
+}
+
+async function _descartarPendenciaConfirmar(id) {
+  if (!confirm('Descartar esse item da fila de sincronização deste aparelho?\n\nEle NÃO será enviado ao OneDrive — use só se tiver certeza de que esse dado já foi perdido/duplicado/excluído em outro lugar.')) return;
+  const ok = await descartarPendencia(id);
+  pendingCount = (await getPending()).length;
+  updatePendingBadge();
+  showToast(ok ? '🗑️ Pendência descartada.' : '❌ Erro ao descartar.');
+  carregarPendenciasSync();
 }
 
 /* == NUMERAÇÃO AUTOMÁTICA SEQUENCIAL (compartilhada entre todos os usuários, via OneDrive central) ==
