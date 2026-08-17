@@ -20343,7 +20343,584 @@ function painelGeralCardFrente(p) {
         <span style="font-size:.72rem;font-weight:700;color:${mitNaoAceitavel > 0 ? 'var(--red)' : 'inherit'}">${mitDaFrente.length ? (mitMediaPct === null ? '—' : mitMediaPct.toFixed(0) + '%') + (mitNaoAceitavel ? ` · 🔴${mitNaoAceitavel}` : '') + (mitAcoesPendentes ? ` · ⏳${mitAcoesPendentes}` : '') : 'sem registros'}</span>
       </div>
     </div>
+    <button class="btn-secondary" style="width:100%;margin-top:10px;font-size:.72rem;padding:6px" onclick="painelGeralAbrirRelatorio('${fr.id}')">📄 Relatório Mensal</button>
   </div>`;
+}
+
+/* =====================================================================
+   RELATÓRIO MENSAL DE FISCALIZAÇÃO AMBIENTAL POR EMPREENDIMENTO
+   Consolida Flash Report + Notificação de NC + Kit de Mitigação de UM
+   circuito elétrico (empreendimento) num único PDF formal (capa, sumário,
+   apresentação, identificação, objetivo, justificativa, embasamento legal
+   e os registros do mês) — pedido em 17/08/2026, botão em cada card do
+   Painel Geral. Reaproveita os mesmos históricos já usados pelos cards
+   (_flashHistorico/_ncHistorico/_mitHistorico), só filtrando por mês/ano.
+   ===================================================================== */
+const PAINEL_MESES_NOMES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+
+function painelGeralAbrirRelatorio(frenteId) {
+  const fr = FLASH_FRENTES.find(f => f.id === frenteId);
+  if (!fr) return;
+  const hoje = new Date();
+  window._relMensalPend = { frenteId, mes: hoje.getMonth() + 1, ano: hoje.getFullYear() };
+  window._relMensalMostrarForm = true;
+  navigate('painel_geral_ero');
+  setTimeout(() => { const el = document.getElementById('rel-mensal-form'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 150);
+}
+
+function painelGeralFecharRelatorio() {
+  window._relMensalMostrarForm = false;
+  window._relMensalPend = null;
+  navigate('painel_geral_ero');
+}
+
+function painelGeralHtmlRelatorioForm() {
+  if (!window._relMensalMostrarForm || !window._relMensalPend) return '';
+  const fr = FLASH_FRENTES.find(f => f.id === window._relMensalPend.frenteId);
+  if (!fr) return '';
+  const anoAtual = new Date().getFullYear();
+  const anos = [anoAtual, anoAtual - 1, anoAtual - 2];
+  return `
+  <div class="card" id="rel-mensal-form" style="margin-bottom:18px;border-left:4px solid var(--green-main)">
+    <div class="card-title">📄 Relatório Mensal — ${fr.nome}</div>
+    <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">Gera um relatório formal (capa, sumário, apresentação, identificação, objetivo, justificativa, embasamento legal e os registros do período) consolidando Flash Report, Notificação de NC e Kit de Mitigação deste empreendimento no mês selecionado. O PDF é o formato final; o Word é editável, caso seja necessário ajustar algum texto antes de enviar.</div>
+    <div class="form-row">
+      <div class="form-group"><label>Mês</label>
+        <select id="rel_mensal_mes">
+          ${PAINEL_MESES_NOMES.map((m, i) => `<option value="${i + 1}" ${window._relMensalPend.mes === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Ano</label>
+        <select id="rel_mensal_ano">
+          ${anos.map(a => `<option value="${a}" ${window._relMensalPend.ano === a ? 'selected' : ''}>${a}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn-primary" onclick="painelGeralGerarRelatorioMensal()">🖨️ Gerar Relatório PDF</button>
+      <button class="btn-secondary" onclick="painelGeralGerarRelatorioMensalWord()">📝 Gerar em Word (editável)</button>
+      <button class="btn-secondary" onclick="painelGeralFecharRelatorio()">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+/* -- Tabela simples reaproveitável pelas 3 listas de registros do relatório mensal
+   (Flash Report / NC / Kit de Mitigação) — larguras de coluna proporcionais em cm,
+   quebra de página automática (reaproveita _pdfNovaPagina), célula com quebra de
+   linha (splitTextToSize) e mensagem padrão quando não há registros no período. -- */
+function _relTabela(doc, y, pageW, pageH, ML, CW, titulo, subtitulo, colunas, linhas) {
+  const somaW = colunas.reduce((s, c) => s + c.w, 0);
+  const escala = CW / somaW;
+  const colsX = [];
+  let x = ML;
+  colunas.forEach(c => { colsX.push(x); x += c.w * escala; });
+  const desenharHeader = () => {
+    doc.setFillColor(240, 244, 240);
+    doc.rect(ML, y - 0.38, CW, 0.48, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(63, 38, 31);
+    colunas.forEach((c, i) => doc.text(c.label, colsX[i] + 0.08, y - 0.06));
+    y += 0.28;
+  };
+  desenharHeader();
+  if (!linhas.length) {
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(120, 120, 120);
+    doc.text('Nenhum registro neste período.', ML + 0.1, y + 0.3);
+    return y + 0.7;
+  }
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(30, 30, 30);
+  linhas.forEach(linha => {
+    const wrapped = linha.map((val, i) => doc.splitTextToSize(String(val == null ? '—' : val), colunas[i].w * escala - 0.16));
+    const maxLinhas = Math.max(...wrapped.map(w => w.length));
+    const rowH = 0.34 * maxLinhas + 0.14;
+    if (y + rowH > pageH - 1.5) {
+      y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+      desenharHeader();
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(30, 30, 30);
+    }
+    wrapped.forEach((linhasTxt, i) => doc.text(linhasTxt, colsX[i] + 0.08, y + 0.26));
+    y += rowH;
+    doc.setDrawColor(226, 226, 220);
+    doc.line(ML, y - 0.06, ML + CW, y - 0.06);
+  });
+  return y + 0.35;
+}
+
+/* -- Parágrafo justificado simples com quebra de página automática — usado nas
+   seções em prosa (Apresentação/Objetivo/Justificativa) do relatório mensal. -- */
+function _relParagrafo(doc, y, pageW, pageH, ML, CW, titulo, subtitulo, texto) {
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(40, 40, 40);
+  const linhas = doc.splitTextToSize(texto, CW);
+  linhas.forEach(linha => {
+    if (y > pageH - 1.6) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(40, 40, 40); }
+    doc.text(linha, ML, y);
+    y += 0.44;
+  });
+  return y + 0.25;
+}
+
+/* -- Coleta e consolida os dados do Relatório Mensal (filtragem por
+   empreendimento+mês/ano, resumo consolidado) — reaproveitada tanto pelo
+   gerador de PDF quanto pelo gerador de Word, para não duplicar a lógica. --
+   Retorna null (mostrando o toast de erro) se o empreendimento/mês não
+   puderem ser lidos do form. */
+async function _relColetarDados() {
+  if (!window._relMensalPend) return null;
+  const mesEl = document.getElementById('rel_mensal_mes');
+  const anoEl = document.getElementById('rel_mensal_ano');
+  const mes = mesEl ? Number(mesEl.value) : window._relMensalPend.mes;
+  const ano = anoEl ? Number(anoEl.value) : window._relMensalPend.ano;
+  const fr = FLASH_FRENTES.find(f => f.id === window._relMensalPend.frenteId);
+  if (!fr) { showToast('❌ Empreendimento não encontrado.'); return null; }
+
+  // Garante que os 3 históricos usados pelo Painel Geral já estão carregados.
+  await Promise.all([
+    window._flashHistorico === null ? flashCarregarHistorico(true, true) : Promise.resolve(),
+    window._ncHistorico === null ? ncCarregarHistorico(true, true) : Promise.resolve(),
+    window._mitHistorico === null ? painelGeralCarregarMitigacaoSemNavegar() : Promise.resolve(),
+  ]);
+
+  const mesStr = String(mes).padStart(2, '0');
+  const inicioMes = ano + '-' + mesStr + '-01';
+  const ultimoDia = new Date(ano, mes, 0).getDate();
+  const fimMes = ano + '-' + mesStr + '-' + String(ultimoDia).padStart(2, '0');
+  const noMes = d => d && d >= inicioMes && d <= fimMes;
+  const refMesAno = PAINEL_MESES_NOMES[mes - 1] + '/' + ano;
+
+  const flashMes = (window._flashHistorico || []).filter(f => f.FrenteId === fr.id && noMes(f.Data)).sort((a, b) => (a.Data || '').localeCompare(b.Data || ''));
+  const ncMes = (window._ncHistorico || []).filter(n => n.FrenteId === fr.id && noMes(n.Data)).sort((a, b) => (a.Data || '').localeCompare(b.Data || ''));
+  const mitMes = (window._mitHistorico || []).filter(r => (r.local || '').trim() === fr.nome && noMes(r.data)).sort((a, b) => (a.data || '').localeCompare(b.data || ''));
+
+  // ---- Resumo consolidado do período (mesma lógica dos cards do Painel Geral) ----
+  const flashPont = flashMes.map(f => flashCalcularPontuacao(f));
+  const flashComPct = flashPont.filter(r => typeof r.pct === 'number');
+  const flashMediaIda = flashComPct.length ? (flashComPct.reduce((s, r) => s + r.pct, 0) / flashComPct.length) : null;
+  const flashComOcorr = flashPont.filter(r => r.temOcorr).length;
+  const ncAbertas = ncMes.filter(n => n.Status === 'Aberta').length;
+  const ncForaPrazo = ncMes.filter(n => n.AtendimentoPrazoStatus === 'Fora do Prazo').length;
+  const mitComPct = mitMes.filter(r => typeof r.pontuacaoPct === 'number');
+  const mitMediaPct = mitComPct.length ? (mitComPct.reduce((s, r) => s + r.pontuacaoPct, 0) / mitComPct.length) : null;
+  const mitNaoAceitavel = mitMes.filter(r => r.pontuacaoLabel === 'Não Aceitável').length;
+  const mitAcoesPendentes = mitMes.filter(r => r.acaoNecessaria === 'sim' && r.acaoStatus !== 'concluida').length;
+
+  const programasCitados = new Set();
+  ncMes.forEach(n => { if (n.Programa) programasCitados.add(n.Programa); (n.ProgramasExtras || []).forEach(p => p && programasCitados.add(p)); });
+  const legislacaoEspecifica = Array.from(programasCitados).filter(p => NC_PROGRAMA_LEGISLACAO[p]).map(p => p + ' — ' + NC_PROGRAMA_LEGISLACAO[p]);
+
+  return {
+    fr, mes, ano, mesStr, refMesAno, flashMes, ncMes, mitMes,
+    flashMediaIda, flashComOcorr, ncAbertas, ncForaPrazo,
+    mitMediaPct, mitNaoAceitavel, mitAcoesPendentes,
+    legislacaoEspecifica,
+    dc: CONTRATO_ENERGISA_OBRAS,
+  };
+}
+
+async function painelGeralGerarRelatorioMensal() {
+  if (!window._relMensalPend) return;
+  showToast('🔄 Gerando relatório mensal... aguarde, pode levar alguns segundos.');
+  await _garantirJsPDF();
+  const d = await _relColetarDados();
+  if (!d) return;
+  const { fr, mesStr, ano, refMesAno, flashMes, ncMes, mitMes,
+    flashMediaIda, flashComOcorr, ncAbertas, ncForaPrazo,
+    mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, legislacaoEspecifica, dc } = d;
+
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7, ML = 1.4, CW = pageW - 2.8;
+  const titPdf = 'RELATÓRIO MENSAL';
+  const subPdf = fr.nome + ' · ' + refMesAno;
+
+  // ===== CAPA =====
+  doc.setFillColor(63, 38, 31);
+  doc.rect(0, 0, pageW, pageH, 'F');
+  try { doc.addImage(EXPEDIAN_LOGO_HOR_B64, 'PNG', (pageW - 6) / 2, 3.2, 6, 2.1); } catch(ex) {}
+  doc.setDrawColor(128, 196, 118); doc.setLineWidth(0.03);
+  doc.line(pageW / 2 - 3.2, 6.1, pageW / 2 + 3.2, 6.1);
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(20);
+  doc.text('RELATÓRIO MENSAL DE', pageW / 2, 10.5, { align: 'center' });
+  doc.text('FISCALIZAÇÃO AMBIENTAL', pageW / 2, 11.4, { align: 'center' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(13);
+  doc.text(fr.nome, pageW / 2, 13.2, { align: 'center' });
+  doc.setFontSize(10);
+  doc.text(fr.empreiteira, pageW / 2, 13.9, { align: 'center' });
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
+  doc.setTextColor(128, 196, 118);
+  doc.text('Período de Referência: ' + refMesAno, pageW / 2, 15.6, { align: 'center' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  doc.setTextColor(255, 255, 255);
+  doc.text('Contrato Expedian nº ' + dc.numero, pageW / 2, pageH - 5.2, { align: 'center' });
+  doc.text('Contratante: ' + dc.contratante.nome, pageW / 2, pageH - 4.7, { align: 'center' });
+  doc.text('CNPJ ' + dc.contratante.cnpj, pageW / 2, pageH - 4.2, { align: 'center' });
+  doc.setFontSize(8); doc.setTextColor(200, 210, 198);
+  doc.text('Elaborado por Expedian Soluções Ambientais', pageW / 2, pageH - 2.6, { align: 'center' });
+  doc.text('Documento emitido em ' + new Date().toLocaleDateString('pt-BR'), pageW / 2, pageH - 2.2, { align: 'center' });
+
+  // ===== SUMÁRIO — títulos desenhados agora; nº de página real preenchido no
+  // final (2º passe, voltando pra essa página com doc.setPage) =====
+  doc.addPage();
+  const paginaSumario = doc.internal.getNumberOfPages();
+  _pdfCabecalhoRodape(doc, pageW, pageH, titPdf, subPdf);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(63, 38, 31);
+  doc.text('SUMÁRIO', ML, 2.3);
+  const secoesSumario = [
+    '1. Apresentação',
+    '2. Identificação do Empreendimento',
+    '3. Objetivo',
+    '4. Justificativa',
+    '5. Embasamento Legal',
+    '6. Resumo Consolidado do Período',
+    '7. Flash Reports do Período',
+    '8. Notificações de Não Conformidade do Período',
+    '9. Kit de Mitigação Ambiental do Período',
+  ];
+  const sumarioYs = [];
+  let ySum = 3.3;
+  secoesSumario.forEach(titulo => {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(30, 30, 30);
+    doc.text(titulo, ML, ySum);
+    sumarioYs.push(ySum);
+    ySum += 0.65;
+  });
+  const paginasSecoes = [];
+
+  // ===== 1. APRESENTAÇÃO =====
+  let y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf);
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('1. APRESENTAÇÃO', ML, y); y += 0.6;
+  y = _relParagrafo(doc, y, pageW, pageH, ML, CW, titPdf, subPdf,
+    'A Expedian Soluções Ambientais foi contratada pela ' + dc.contratante.nome + ' para a prestação de serviços de gestão e fiscalização ambiental de suas obras e instalações, conforme Contrato nº ' + dc.numero + '. O presente relatório apresenta, de forma consolidada, os resultados das atividades de fiscalização ambiental realizadas no empreendimento "' + fr.nome + '" (' + fr.empreiteira + ') durante o período de referência de ' + refMesAno + ', compreendendo os registros de Flash Report (fiscalização diária de campo), Notificações de Não Conformidade Ambiental e verificações do Kit de Mitigação Ambiental.');
+
+  // ===== 2. IDENTIFICAÇÃO DO EMPREENDIMENTO =====
+  if (y > pageH - 6) { y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('2. IDENTIFICAÇÃO DO EMPREENDIMENTO', ML, y); y += 0.55;
+  const identLinhas = [
+    ['Empreendimento', fr.nome],
+    ['Empreiteira Executora', fr.empreiteira],
+    ['Contratante', dc.contratante.nome + ' — CNPJ ' + dc.contratante.cnpj],
+    ['Contrato Expedian', dc.numero],
+    ['Objeto do Contrato', dc.objeto],
+    ['Vigência Contratual', (dc.vigenciaInicio ? new Date(dc.vigenciaInicio + 'T12:00').toLocaleDateString('pt-BR') : '—') + ' a ' + (dc.vigenciaFim ? new Date(dc.vigenciaFim + 'T12:00').toLocaleDateString('pt-BR') : '—')],
+    ['Período de Referência deste Relatório', refMesAno],
+  ];
+  y = _relTabela(doc, y, pageW, pageH, ML, CW, titPdf, subPdf,
+    [{ label: 'CAMPO', w: 0.32 }, { label: 'DESCRIÇÃO', w: 0.68 }],
+    identLinhas);
+
+  // ===== 3. OBJETIVO =====
+  if (y > pageH - 5) { y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('3. OBJETIVO', ML, y); y += 0.6;
+  y = _relParagrafo(doc, y, pageW, pageH, ML, CW, titPdf, subPdf,
+    'O presente relatório tem por objetivo apresentar, de forma consolidada, os resultados das atividades de fiscalização e monitoramento ambiental realizadas no empreendimento "' + fr.nome + '" no período de ' + refMesAno + ', subsidiando o acompanhamento do cumprimento das condicionantes ambientais, dos programas ambientais aplicáveis e das ações corretivas e preventivas identificadas em campo.');
+
+  // ===== 4. JUSTIFICATIVA =====
+  if (y > pageH - 5) { y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('4. JUSTIFICATIVA', ML, y); y += 0.6;
+  y = _relParagrafo(doc, y, pageW, pageH, ML, CW, titPdf, subPdf,
+    'A elaboração deste relatório se justifica pela necessidade de comprovar, perante a contratante e os órgãos ambientais competentes, o cumprimento das obrigações contratuais e legais de monitoramento ambiental estabelecidas no Contrato nº ' + dc.numero + ', bem como subsidiar a tomada de decisão quanto a ações corretivas e preventivas frente às não conformidades ambientais eventualmente identificadas durante a execução das obras.');
+
+  // ===== 5. EMBASAMENTO LEGAL =====
+  // Base legal fixa (aplicável a qualquer empreendimento) + legislação específica dos
+  // programas ambientais efetivamente citados nas NCs deste mês (NC_PROGRAMA_LEGISLACAO).
+  if (y > pageH - 5) { y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('5. EMBASAMENTO LEGAL', ML, y); y += 0.6;
+  const baseLegalFixa = [
+    'Lei Federal nº 6.938/1981 — Política Nacional do Meio Ambiente.',
+    'Resolução CONAMA nº 237/1997 — Licenciamento Ambiental.',
+    'Lei Federal nº 12.651/2012 — Código Florestal.',
+    'Lei Federal nº 9.605/1998 — Lei de Crimes Ambientais.',
+  ];
+  const todasLeis = baseLegalFixa.concat(legislacaoEspecifica);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  todasLeis.forEach(lei => {
+    const linhas = doc.splitTextToSize('• ' + lei, CW - 0.2);
+    linhas.forEach((linha, i) => {
+      if (y > pageH - 1.6) { y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf); doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(40, 40, 40); }
+      doc.setTextColor(40, 40, 40);
+      doc.text(linha, ML + (i > 0 ? 0.25 : 0), y);
+      y += 0.42;
+    });
+  });
+  y += 0.3;
+
+  // ===== 6. RESUMO CONSOLIDADO DO PERÍODO =====
+  y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf);
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('6. RESUMO CONSOLIDADO DO PERÍODO', ML, y); y += 0.55;
+  y = _relTabela(doc, y, pageW, pageH, ML, CW, titPdf, subPdf,
+    [{ label: 'INDICADOR', w: 0.55 }, { label: 'RESULTADO NO PERÍODO', w: 0.45 }],
+    [
+      ['Flash Reports registrados', String(flashMes.length)],
+      ['IDA% médio (Flash Report)', flashMediaIda === null ? '—' : flashMediaIda.toFixed(0) + '%'],
+      ['Flash Reports com não conformidade', String(flashComOcorr)],
+      ['Notificações de NC emitidas', String(ncMes.length)],
+      ['Notificações em aberto', String(ncAbertas)],
+      ['Notificações fora do prazo de atendimento', String(ncForaPrazo)],
+      ['Verificações de Kit de Mitigação', String(mitMes.length)],
+      ['Pontuação média (Kit de Mitigação)', mitMediaPct === null ? '—' : mitMediaPct.toFixed(0) + '%'],
+      ['Verificações "Não Aceitável"', String(mitNaoAceitavel)],
+      ['Ações corretivas pendentes (Mitigação)', String(mitAcoesPendentes)],
+    ]);
+
+  // ===== 7. FLASH REPORTS DO PERÍODO =====
+  if (y > pageH - 5) { y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('7. FLASH REPORTS DO PERÍODO', ML, y); y += 0.55;
+  y = _relTabela(doc, y, pageW, pageH, ML, CW, titPdf, subPdf,
+    [{ label: 'DATA', w: 0.14 }, { label: 'RESPONSÁVEL TÉCNICO', w: 0.28 }, { label: 'IDA% / SITUAÇÃO', w: 0.24 }, { label: 'STATUS', w: 0.34 }],
+    flashMes.map(f => {
+      const p = flashCalcularPontuacao(f);
+      return [
+        f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—',
+        f.ResponsavelTecnico || '—',
+        p.pct == null ? '—' : p.pct.toFixed(0) + '%',
+        p.temOcorr ? 'Não Conforme' : 'Conforme',
+      ];
+    }));
+
+  // ===== 8. NOTIFICAÇÕES DE NC DO PERÍODO =====
+  if (y > pageH - 5) { y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('8. NOTIFICAÇÕES DE NÃO CONFORMIDADE DO PERÍODO', ML, y); y += 0.55;
+  y = _relTabela(doc, y, pageW, pageH, ML, CW, titPdf, subPdf,
+    [{ label: 'Nº', w: 0.12 }, { label: 'DATA', w: 0.12 }, { label: 'DESCRIÇÃO', w: 0.38 }, { label: 'STATUS', w: 0.15 }, { label: 'PRAZO', w: 0.23 }],
+    ncMes.map(n => [
+      n.Numero || '—',
+      n.Data ? new Date(n.Data + 'T12:00').toLocaleDateString('pt-BR') : '—',
+      n.Descricao || '—',
+      n.Status || '—',
+      n.AtendimentoPrazoStatus || (n.Prazo ? 'Aguardando (até ' + new Date(n.Prazo + 'T12:00').toLocaleDateString('pt-BR') + ')' : '—'),
+    ]));
+
+  // ===== 9. KIT DE MITIGAÇÃO DO PERÍODO =====
+  if (y > pageH - 5) { y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('9. KIT DE MITIGAÇÃO AMBIENTAL DO PERÍODO', ML, y); y += 0.55;
+  y = _relTabela(doc, y, pageW, pageH, ML, CW, titPdf, subPdf,
+    [{ label: 'DATA', w: 0.14 }, { label: 'RESPONSÁVEL', w: 0.24 }, { label: 'PONTUAÇÃO', w: 0.18 }, { label: 'AÇÃO CORRETIVA', w: 0.44 }],
+    mitMes.map(r => [
+      r.data ? new Date(r.data + 'T12:00').toLocaleDateString('pt-BR') : '—',
+      r.responsavel || '—',
+      (r.pontuacaoIcone || '') + ' ' + (r.pontuacaoPct != null ? r.pontuacaoPct.toFixed(0) + '%' : (r.pontuacaoLabel || '—')),
+      r.acaoNecessaria === 'sim' ? (r.acaoStatus === 'concluida' ? '✅ Concluída' : '⏳ Pendente') : 'Não necessária',
+    ]));
+
+  // ===== 2º passe: volta na página do Sumário e escreve o nº de página real de
+  // cada seção (calculado durante a montagem acima, em paginasSecoes) =====
+  doc.setPage(paginaSumario);
+  secoesSumario.forEach((titulo, i) => {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(90, 90, 90);
+    doc.text(String(paginasSecoes[i]), pageW - ML, sumarioYs[i], { align: 'right' });
+  });
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+
+  const nomeArquivo = 'Relatorio_Mensal_' + fr.nome.replace(/\s+/g, '_') + '_' + mesStr + '-' + ano + '.pdf';
+  doc.save(nomeArquivo);
+  showToast('✅ Relatório mensal gerado!');
+  painelGeralFecharRelatorio();
+}
+
+/* -- Versão editável (.docx) do Relatório Mensal — mesma estrutura do PDF
+   (capa, sumário, 9 seções), reaproveitando _relColetarDados(). Gerada com
+   docx.js (lazy-load via CDN, mesmo padrão do jsPDF/SheetJS). Diferente do
+   PDF (documento final), o Word pode ser aberto e ajustado normalmente antes
+   de enviar — pedido em 17/08/2026. -- */
+async function painelGeralGerarRelatorioMensalWord() {
+  if (!window._relMensalPend) return;
+  showToast('🔄 Gerando versão em Word... aguarde, pode levar alguns segundos.');
+  await _garantirDocxJs();
+  const d = await _relColetarDados();
+  if (!d) return;
+  const { fr, mesStr, ano, refMesAno, flashMes, ncMes, mitMes,
+    flashMediaIda, flashComOcorr, ncAbertas, ncForaPrazo,
+    mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, legislacaoEspecifica, dc } = d;
+
+  const D = window.docx;
+  const COR_MARROM = '3F261F';
+  const CW_DXA = 9026; // largura útil A4 com margens padrão (1" cada lado)
+
+  const tabelaSimples = (colunas, linhas) => {
+    const somaW = colunas.reduce((s, c) => s + c.w, 0);
+    const widths = colunas.map(c => Math.round(CW_DXA * c.w / somaW));
+    const headerRow = new D.TableRow({
+      tableHeader: true,
+      children: colunas.map((c, i) => new D.TableCell({
+        width: { size: widths[i], type: D.WidthType.DXA },
+        shading: { type: D.ShadingType.CLEAR, fill: 'F0F4F0' },
+        children: [new D.Paragraph({ children: [new D.TextRun({ text: c.label, bold: true, size: 16, color: COR_MARROM })] })],
+      })),
+    });
+    const bodyRows = linhas.length ? linhas.map(linha => new D.TableRow({
+      children: linha.map((val, i) => new D.TableCell({
+        width: { size: widths[i], type: D.WidthType.DXA },
+        children: [new D.Paragraph({ children: [new D.TextRun({ text: val == null ? '—' : String(val), size: 16 })] })],
+      })),
+    })) : [new D.TableRow({
+      children: [new D.TableCell({
+        columnSpan: colunas.length,
+        width: { size: CW_DXA, type: D.WidthType.DXA },
+        children: [new D.Paragraph({ children: [new D.TextRun({ text: 'Nenhum registro neste período.', italics: true, color: '787878', size: 16 })] })],
+      })],
+    })];
+    return new D.Table({ width: { size: CW_DXA, type: D.WidthType.DXA }, columnWidths: widths, rows: [headerRow, ...bodyRows] });
+  };
+  const tituloSecao = texto => new D.Paragraph({ heading: D.HeadingLevel.HEADING_1, spacing: { before: 240, after: 160 }, children: [new D.TextRun({ text: texto, color: COR_MARROM })] });
+  const paragrafo = texto => new D.Paragraph({ spacing: { after: 200 }, alignment: D.AlignmentType.JUSTIFIED, children: [new D.TextRun({ text: texto, size: 21 })] });
+
+  const children = [];
+
+  // ===== CAPA =====
+  children.push(
+    new D.Paragraph({ spacing: { before: 1600 }, alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ text: 'RELATÓRIO MENSAL DE FISCALIZAÇÃO AMBIENTAL', bold: true, size: 32, color: COR_MARROM })] }),
+    new D.Paragraph({ spacing: { before: 300 }, alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ text: fr.nome, size: 26 })] }),
+    new D.Paragraph({ alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ text: fr.empreiteira, size: 20, color: '555555' })] }),
+    new D.Paragraph({ spacing: { before: 400 }, alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ text: 'Período de Referência: ' + refMesAno, bold: true, size: 24, color: '4C8C3C' })] }),
+    new D.Paragraph({ spacing: { before: 800 }, alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ text: 'Contrato Expedian nº ' + dc.numero, size: 18 })] }),
+    new D.Paragraph({ alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ text: 'Contratante: ' + dc.contratante.nome + ' — CNPJ ' + dc.contratante.cnpj, size: 18 })] }),
+    new D.Paragraph({ spacing: { before: 600 }, alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ text: 'Elaborado por Expedian Soluções Ambientais', size: 16, italics: true, color: '787878' })] }),
+    new D.Paragraph({ alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ text: 'Documento emitido em ' + new Date().toLocaleDateString('pt-BR'), size: 16, italics: true, color: '787878' })] }),
+    new D.Paragraph({ children: [new D.PageBreak()] }),
+  );
+
+  // ===== SUMÁRIO ===== (campo de TOC do Word — os nºs de página se atualizam
+  // ao abrir/imprimir; se não atualizar sozinho, clique nele com o botão
+  // direito e escolha "Atualizar campo")
+  children.push(
+    new D.Paragraph({ heading: D.HeadingLevel.HEADING_1, children: [new D.TextRun({ text: 'SUMÁRIO', color: COR_MARROM })] }),
+    new D.Paragraph({ spacing: { after: 160 }, children: [new D.TextRun({ text: 'O Word normalmente atualiza os números de página abaixo automaticamente ao abrir. Se aparecerem em branco, clique sobre o sumário e pressione F9 (ou botão direito → Atualizar campo).', italics: true, size: 16, color: '787878' })] }),
+    new D.TableOfContents('Sumário', { hyperlink: true, headingStyleRange: '1-1' }),
+    new D.Paragraph({ children: [new D.PageBreak()] }),
+  );
+
+  children.push(
+    tituloSecao('1. Apresentação'),
+    paragrafo('A Expedian Soluções Ambientais foi contratada pela ' + dc.contratante.nome + ' para a prestação de serviços de gestão e fiscalização ambiental de suas obras e instalações, conforme Contrato nº ' + dc.numero + '. O presente relatório apresenta, de forma consolidada, os resultados das atividades de fiscalização ambiental realizadas no empreendimento "' + fr.nome + '" (' + fr.empreiteira + ') durante o período de referência de ' + refMesAno + ', compreendendo os registros de Flash Report (fiscalização diária de campo), Notificações de Não Conformidade Ambiental e verificações do Kit de Mitigação Ambiental.'),
+  );
+
+  children.push(
+    tituloSecao('2. Identificação do Empreendimento'),
+    tabelaSimples(
+      [{ label: 'CAMPO', w: 0.32 }, { label: 'DESCRIÇÃO', w: 0.68 }],
+      [
+        ['Empreendimento', fr.nome],
+        ['Empreiteira Executora', fr.empreiteira],
+        ['Contratante', dc.contratante.nome + ' — CNPJ ' + dc.contratante.cnpj],
+        ['Contrato Expedian', dc.numero],
+        ['Objeto do Contrato', dc.objeto],
+        ['Vigência Contratual', (dc.vigenciaInicio ? new Date(dc.vigenciaInicio + 'T12:00').toLocaleDateString('pt-BR') : '—') + ' a ' + (dc.vigenciaFim ? new Date(dc.vigenciaFim + 'T12:00').toLocaleDateString('pt-BR') : '—')],
+        ['Período de Referência deste Relatório', refMesAno],
+      ]),
+    new D.Paragraph({ spacing: { after: 200 } }),
+  );
+
+  children.push(
+    tituloSecao('3. Objetivo'),
+    paragrafo('O presente relatório tem por objetivo apresentar, de forma consolidada, os resultados das atividades de fiscalização e monitoramento ambiental realizadas no empreendimento "' + fr.nome + '" no período de ' + refMesAno + ', subsidiando o acompanhamento do cumprimento das condicionantes ambientais, dos programas ambientais aplicáveis e das ações corretivas e preventivas identificadas em campo.'),
+  );
+
+  children.push(
+    tituloSecao('4. Justificativa'),
+    paragrafo('A elaboração deste relatório se justifica pela necessidade de comprovar, perante a contratante e os órgãos ambientais competentes, o cumprimento das obrigações contratuais e legais de monitoramento ambiental estabelecidas no Contrato nº ' + dc.numero + ', bem como subsidiar a tomada de decisão quanto a ações corretivas e preventivas frente às não conformidades ambientais eventualmente identificadas durante a execução das obras.'),
+  );
+
+  const baseLegalFixa = [
+    'Lei Federal nº 6.938/1981 — Política Nacional do Meio Ambiente.',
+    'Resolução CONAMA nº 237/1997 — Licenciamento Ambiental.',
+    'Lei Federal nº 12.651/2012 — Código Florestal.',
+    'Lei Federal nº 9.605/1998 — Lei de Crimes Ambientais.',
+  ];
+  children.push(tituloSecao('5. Embasamento Legal'));
+  baseLegalFixa.concat(legislacaoEspecifica).forEach(lei => {
+    children.push(new D.Paragraph({ bullet: { level: 0 }, spacing: { after: 100 }, children: [new D.TextRun({ text: lei, size: 20 })] }));
+  });
+  children.push(new D.Paragraph({ spacing: { after: 200 } }));
+
+  children.push(
+    tituloSecao('6. Resumo Consolidado do Período'),
+    tabelaSimples(
+      [{ label: 'INDICADOR', w: 0.55 }, { label: 'RESULTADO NO PERÍODO', w: 0.45 }],
+      [
+        ['Flash Reports registrados', String(flashMes.length)],
+        ['IDA% médio (Flash Report)', flashMediaIda === null ? '—' : flashMediaIda.toFixed(0) + '%'],
+        ['Flash Reports com não conformidade', String(flashComOcorr)],
+        ['Notificações de NC emitidas', String(ncMes.length)],
+        ['Notificações em aberto', String(ncAbertas)],
+        ['Notificações fora do prazo de atendimento', String(ncForaPrazo)],
+        ['Verificações de Kit de Mitigação', String(mitMes.length)],
+        ['Pontuação média (Kit de Mitigação)', mitMediaPct === null ? '—' : mitMediaPct.toFixed(0) + '%'],
+        ['Verificações "Não Aceitável"', String(mitNaoAceitavel)],
+        ['Ações corretivas pendentes (Mitigação)', String(mitAcoesPendentes)],
+      ]),
+    new D.Paragraph({ spacing: { after: 200 } }),
+  );
+
+  children.push(
+    tituloSecao('7. Flash Reports do Período'),
+    tabelaSimples(
+      [{ label: 'DATA', w: 0.14 }, { label: 'RESPONSÁVEL TÉCNICO', w: 0.28 }, { label: 'IDA% / SITUAÇÃO', w: 0.24 }, { label: 'STATUS', w: 0.34 }],
+      flashMes.map(f => {
+        const p = flashCalcularPontuacao(f);
+        return [
+          f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—',
+          f.ResponsavelTecnico || '—',
+          p.pct == null ? '—' : p.pct.toFixed(0) + '%',
+          p.temOcorr ? 'Não Conforme' : 'Conforme',
+        ];
+      })),
+    new D.Paragraph({ spacing: { after: 200 } }),
+  );
+
+  children.push(
+    tituloSecao('8. Notificações de Não Conformidade do Período'),
+    tabelaSimples(
+      [{ label: 'Nº', w: 0.12 }, { label: 'DATA', w: 0.12 }, { label: 'DESCRIÇÃO', w: 0.38 }, { label: 'STATUS', w: 0.15 }, { label: 'PRAZO', w: 0.23 }],
+      ncMes.map(n => [
+        n.Numero || '—',
+        n.Data ? new Date(n.Data + 'T12:00').toLocaleDateString('pt-BR') : '—',
+        n.Descricao || '—',
+        n.Status || '—',
+        n.AtendimentoPrazoStatus || (n.Prazo ? 'Aguardando (até ' + new Date(n.Prazo + 'T12:00').toLocaleDateString('pt-BR') + ')' : '—'),
+      ])),
+    new D.Paragraph({ spacing: { after: 200 } }),
+  );
+
+  children.push(
+    tituloSecao('9. Kit de Mitigação Ambiental do Período'),
+    tabelaSimples(
+      [{ label: 'DATA', w: 0.14 }, { label: 'RESPONSÁVEL', w: 0.24 }, { label: 'PONTUAÇÃO', w: 0.18 }, { label: 'AÇÃO CORRETIVA', w: 0.44 }],
+      mitMes.map(r => [
+        r.data ? new Date(r.data + 'T12:00').toLocaleDateString('pt-BR') : '—',
+        r.responsavel || '—',
+        (r.pontuacaoIcone || '') + ' ' + (r.pontuacaoPct != null ? r.pontuacaoPct.toFixed(0) + '%' : (r.pontuacaoLabel || '—')),
+        r.acaoNecessaria === 'sim' ? (r.acaoStatus === 'concluida' ? '✅ Concluída' : '⏳ Pendente') : 'Não necessária',
+      ])),
+  );
+
+  const documento = new D.Document({ features: { updateFields: true }, sections: [{ properties: {}, children }] });
+  const blob = await D.Packer.toBlob(documento);
+  const nomeArquivo = 'Relatorio_Mensal_' + fr.nome.replace(/\s+/g, '_') + '_' + mesStr + '-' + ano + '.docx';
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = nomeArquivo;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+  showToast('✅ Versão em Word gerada! Abra no Word para revisar/editar antes de enviar.');
+  painelGeralFecharRelatorio();
 }
 
 function pagePainelGeralEro() {
@@ -20371,6 +20948,8 @@ function pagePainelGeralEro() {
       <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
     </div>
   </div>
+
+  ${painelGeralHtmlRelatorioForm()}
 
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px">
     <div class="kpi-card red" style="padding:12px">
@@ -30698,6 +31277,19 @@ async function _garantirJsPDF() {
   await new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+/* -- Garante que a biblioteca docx.js (geração de .docx no navegador) esteja
+   carregada (lazy-load via CDN, mesmo padrão do jsPDF/SheetJS acima). Usada
+   para exportar o Relatório Mensal em Word, editável, além do PDF. -- */
+async function _garantirDocxJs() {
+  if (window.docx && window.docx.Document) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js';
     s.onload = resolve; s.onerror = reject;
     document.head.appendChild(s);
   });
