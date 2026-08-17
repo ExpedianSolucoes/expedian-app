@@ -20383,7 +20383,7 @@ function painelGeralHtmlRelatorioForm() {
   return `
   <div class="card" id="rel-mensal-form" style="margin-bottom:18px;border-left:4px solid var(--green-main)">
     <div class="card-title">📄 Relatório Mensal — ${fr.nome}</div>
-    <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">Gera um relatório formal (capa, sumário, apresentação, identificação, objetivo, justificativa, embasamento legal e os registros do período) consolidando Flash Report, Notificação de NC e Kit de Mitigação deste empreendimento no mês selecionado. O PDF é o formato final; o Word é editável, caso seja necessário ajustar algum texto antes de enviar.</div>
+    <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">Gera um relatório formal (capa, sumário, apresentação, identificação, objetivo, justificativa, embasamento legal, os registros do período e até 4 fotos por registro) consolidando Flash Report, Notificação de NC e Kit de Mitigação deste empreendimento no mês selecionado. O PDF é o formato final; o Word é editável, caso seja necessário ajustar algum texto antes de enviar — mas lembre-se: edições feitas direto no Word não voltam pro app, então se o ajuste precisar valer sempre, corrija na fonte (o registro no app) e gere de novo.</div>
     <div class="form-row">
       <div class="form-group"><label>Mês</label>
         <select id="rel_mensal_mes">
@@ -20458,6 +20458,47 @@ function _relParagrafo(doc, y, pageW, pageH, ML, CW, titulo, subtitulo, texto) {
   return y + 0.25;
 }
 
+/* -- Seção de registros fotográficos do relatório mensal: para cada grupo
+   (um registro de Flash Report/NC/Mitigação com fotos), desenha o título e
+   uma grade de até 4 fotos (2 colunas), preservando a proporção real da foto
+   (4:3 ou 3:4, conforme "horizontal" — todas as fotos do app já saem
+   padronizadas nessa proporção por _eroRedimensionarFoto). Quebra de página
+   por grupo (não corta uma foto ao meio) e por linha da grade. -- */
+function _relFotos(doc, y, pageW, pageH, ML, CW, titulo, subtitulo, grupos) {
+  if (!grupos.length) {
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(120, 120, 120);
+    doc.text('Nenhum registro fotográfico disponível neste período.', ML, y + 0.2);
+    return y + 0.7;
+  }
+  const gap = 0.3;
+  const cellW = (CW - gap) / 2;
+  const cellH = 5.6;
+  grupos.forEach(grupo => {
+    // altura necessária pro título + 1ª linha de fotos (garante que não corte o grupo no meio)
+    if (y + 0.55 + cellH > pageH - 1.5) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
+    doc.text(grupo.titulo, ML, y); y += 0.45;
+    for (let linha = 0; linha < Math.ceil(grupo.fotos.length / 2); linha++) {
+      if (y + cellH > pageH - 1.5) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); }
+      for (let col = 0; col < 2; col++) {
+        const foto = grupo.fotos[linha * 2 + col];
+        if (!foto || !foto.dataUrl) continue;
+        const x = ML + col * (cellW + gap);
+        doc.setDrawColor(226, 226, 220);
+        doc.rect(x, y, cellW, cellH);
+        const aspect = foto.horizontal ? 4 / 3 : 3 / 4;
+        let dw = cellW - 0.2, dh = dw / aspect;
+        if (dh > cellH - 0.2) { dh = cellH - 0.2; dw = dh * aspect; }
+        const dx = x + (cellW - dw) / 2, dy = y + (cellH - dh) / 2;
+        try { doc.addImage(foto.dataUrl, 'JPEG', dx, dy, dw, dh); } catch (ex) { /* foto corrompida/formato inesperado — pula sem quebrar o relatório */ }
+      }
+      y += cellH + 0.25;
+    }
+    y += 0.15;
+  });
+  return y;
+}
+
 /* -- Coleta e consolida os dados do Relatório Mensal (filtragem por
    empreendimento+mês/ano, resumo consolidado) — reaproveitada tanto pelo
    gerador de PDF quanto pelo gerador de Word, para não duplicar a lógica. --
@@ -20506,13 +20547,69 @@ async function _relColetarDados() {
   ncMes.forEach(n => { if (n.Programa) programasCitados.add(n.Programa); (n.ProgramasExtras || []).forEach(p => p && programasCitados.add(p)); });
   const legislacaoEspecifica = Array.from(programasCitados).filter(p => NC_PROGRAMA_LEGISLACAO[p]).map(p => p + ' — ' + NC_PROGRAMA_LEGISLACAO[p]);
 
+  // ---- Fotos do Kit de Mitigação: diferente do Flash Report/NC, essas fotos
+  // não vêm no histórico resumido (window._mitHistorico) — só existem no
+  // snapshot completo de cada registro, salvo à parte no OneDrive. Busca até
+  // 4 por registro (fotos da ação corretiva primeiro, depois fotos de item),
+  // pedido em 17/08/2026. Falha em buscar um snapshot não interrompe o
+  // relatório — só aquele registro fica sem fotos. -- */
+  const mitFotosPorId = {};
+  await Promise.all(mitMes.map(async r => {
+    try {
+      const texto = await baixarArquivoCentral('Checklists/Mitigacao/dados/' + r.Id + '.json');
+      if (!texto) return;
+      const dados = JSON.parse(texto);
+      const fotos = [];
+      if (Array.isArray(dados.fotosAcao)) {
+        dados.fotosAcao.forEach(f => { if (f && f.url && fotos.length < 4) fotos.push({ dataUrl: f.url, horizontal: !!f.h }); });
+      }
+      if (fotos.length < 4) {
+        Object.keys(dados).filter(k => /^foto_mit\d+_\d$/.test(k)).sort().forEach(k => {
+          if (fotos.length >= 4) return;
+          fotos.push({ dataUrl: dados[k], horizontal: !!dados[k + '_h'] });
+        });
+      }
+      if (fotos.length) mitFotosPorId[r.Id] = fotos;
+    } catch (e) { /* snapshot ausente/inacessível — segue sem fotos desse registro */ }
+  }));
+
   return {
     fr, mes, ano, mesStr, refMesAno, flashMes, ncMes, mitMes,
     flashMediaIda, flashComOcorr, ncAbertas, ncForaPrazo,
     mitMediaPct, mitNaoAceitavel, mitAcoesPendentes,
-    legislacaoEspecifica,
+    legislacaoEspecifica, mitFotosPorId,
     dc: CONTRATO_ENERGISA_OBRAS,
   };
+}
+
+/* -- Normaliza as fotos do período (Flash Report + NC + Kit de Mitigação, até
+   4 por registro) num único formato de "grupos" reaproveitado tanto pelo PDF
+   quanto pelo Word: [{ titulo, fotos: [{dataUrl, horizontal}] }]. Grupos sem
+   nenhuma foto são omitidos. -- */
+function _relGruposFotos(d) {
+  const grupos = [];
+  d.flashMes.forEach(f => {
+    const fotos = (f.fotos || []).filter(x => x && x.dataUrl).slice(0, 4);
+    if (fotos.length) grupos.push({
+      titulo: 'Flash Report — ' + (f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—'),
+      fotos,
+    });
+  });
+  d.ncMes.forEach(n => {
+    const fotos = (n.Fotos || []).filter(x => x && x.dataUrl).slice(0, 4);
+    if (fotos.length) grupos.push({
+      titulo: 'Notificação de NC ' + (n.Numero || '') + ' — ' + (n.Data ? new Date(n.Data + 'T12:00').toLocaleDateString('pt-BR') : '—'),
+      fotos,
+    });
+  });
+  d.mitMes.forEach(r => {
+    const fotos = d.mitFotosPorId[r.Id] || [];
+    if (fotos.length) grupos.push({
+      titulo: 'Kit de Mitigação — ' + (r.data ? new Date(r.data + 'T12:00').toLocaleDateString('pt-BR') : '—'),
+      fotos,
+    });
+  });
+  return grupos;
 }
 
 async function painelGeralGerarRelatorioMensal() {
@@ -20573,6 +20670,7 @@ async function painelGeralGerarRelatorioMensal() {
     '7. Flash Reports do Período',
     '8. Notificações de Não Conformidade do Período',
     '9. Kit de Mitigação Ambiental do Período',
+    '10. Registros Fotográficos do Período',
   ];
   const sumarioYs = [];
   let ySum = 3.3;
@@ -20717,6 +20815,13 @@ async function painelGeralGerarRelatorioMensal() {
       (r.pontuacaoIcone || '') + ' ' + (r.pontuacaoPct != null ? r.pontuacaoPct.toFixed(0) + '%' : (r.pontuacaoLabel || '—')),
       r.acaoNecessaria === 'sim' ? (r.acaoStatus === 'concluida' ? '✅ Concluída' : '⏳ Pendente') : 'Não necessária',
     ]));
+
+  // ===== 10. REGISTROS FOTOGRÁFICOS DO PERÍODO =====
+  y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf);
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('10. REGISTROS FOTOGRÁFICOS DO PERÍODO', ML, y); y += 0.55;
+  y = _relFotos(doc, y, pageW, pageH, ML, CW, titPdf, subPdf, _relGruposFotos(d));
 
   // ===== 2º passe: volta na página do Sumário e escreve o nº de página real de
   // cada seção (calculado durante a montagem acima, em paginasSecoes) =====
@@ -20909,6 +21014,40 @@ async function painelGeralGerarRelatorioMensalWord() {
         r.acaoNecessaria === 'sim' ? (r.acaoStatus === 'concluida' ? '✅ Concluída' : '⏳ Pendente') : 'Não necessária',
       ])),
   );
+
+  // ===== 10. REGISTROS FOTOGRÁFICOS DO PERÍODO — até 4 fotos por registro
+  // (Flash Report + NC + Kit de Mitigação), em grade de 2 colunas. Todas as
+  // fotos do app já saem padronizadas em 4:3 (horizontal) ou 3:4 (vertical)
+  // via _eroRedimensionarFoto, então a proporção é conhecida sem precisar
+  // sondar as dimensões reais da imagem. -- */
+  const FOTO_ALTURA_PX = 200;
+  const imagemParagrafo = foto => {
+    if (!foto || !foto.dataUrl) return new D.Paragraph({});
+    const aspecto = foto.horizontal ? 4 / 3 : 3 / 4;
+    const h = FOTO_ALTURA_PX, w = Math.round(h * aspecto);
+    try {
+      return new D.Paragraph({ alignment: D.AlignmentType.CENTER, spacing: { after: 60 }, children: [new D.ImageRun({ data: foto.dataUrl, transformation: { width: w, height: h } })] });
+    } catch (ex) {
+      return new D.Paragraph({ children: [new D.TextRun({ text: '[foto indisponível]', italics: true, size: 16, color: '787878' })] });
+    }
+  };
+  const celulaFoto = foto => new D.TableCell({ width: { size: Math.round(CW_DXA / 2), type: D.WidthType.DXA }, children: [imagemParagrafo(foto)] });
+
+  const gruposFotos = _relGruposFotos(d);
+  children.push(tituloSecao('10. Registros Fotográficos do Período'));
+  if (!gruposFotos.length) {
+    children.push(new D.Paragraph({ children: [new D.TextRun({ text: 'Nenhum registro fotográfico disponível neste período.', italics: true, size: 18, color: '787878' })] }));
+  } else {
+    gruposFotos.forEach(grupo => {
+      children.push(new D.Paragraph({ spacing: { before: 160, after: 80 }, children: [new D.TextRun({ text: grupo.titulo, bold: true, size: 18, color: COR_MARROM })] }));
+      const linhasFotos = [];
+      for (let i = 0; i < grupo.fotos.length; i += 2) {
+        linhasFotos.push(new D.TableRow({ children: [celulaFoto(grupo.fotos[i]), celulaFoto(grupo.fotos[i + 1])] }));
+      }
+      children.push(new D.Table({ width: { size: CW_DXA, type: D.WidthType.DXA }, columnWidths: [Math.round(CW_DXA / 2), Math.round(CW_DXA / 2)], rows: linhasFotos }));
+      children.push(new D.Paragraph({ spacing: { after: 120 } }));
+    });
+  }
 
   const documento = new D.Document({ features: { updateFields: true }, sections: [{ properties: {}, children }] });
   const blob = await D.Packer.toBlob(documento);
