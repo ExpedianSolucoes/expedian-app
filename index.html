@@ -34753,7 +34753,10 @@ function gdExportarExcel() {
 // documento existente (mais recente daquele tipo) ou um novo já com o tipo
 // pré-selecionado. cfgCert (opcional) só existe pros 4 tipos certificáveis, e é o
 // que decide se aparece o ícone 🖨️ de emissão junto do badge.
-function _gdBadgeDoc(colabId, nomeEsc, tipo, achado, cfgCert) {
+// emitirOverride (opcional) substitui a lógica padrão de emissão (que só existe pros
+// 4 certificáveis) por uma ação própria — usado pro ASO, cujo "emitir" não gera um
+// certificado padrão e sim abre o formulário de exames já pronto pra gerar o PDF.
+function _gdBadgeDoc(colabId, nomeEsc, tipo, achado, cfgCert, emitirOverride) {
   const rotulo = cfgCert ? cfgCert.sigla : (tipo.length > 16 ? tipo.slice(0, 15) + '…' : tipo);
   const st = achado ? gdStatusDocumento(achado.d) : 'sem';
   const CORES = { ok: '#10b981', alerta30: '#dc2626', alerta90: '#f59e0b', vencido: '#7f1d1d', sem: '#d1d5db' };
@@ -34762,24 +34765,37 @@ function _gdBadgeDoc(colabId, nomeEsc, tipo, achado, cfgCert) {
   const onclickBadge = achado
     ? `gdAbrirModalDocColab('${colabId}','${nomeEsc}',${achado.i})`
     : `gdAbrirModalDocColab('${colabId}','${nomeEsc}',undefined,'${tipo.replace(/'/g, "\\'")}')`;
-  const podeEmitir = cfgCert && achado && achado.d.emissao;
-  const botaoEmitir = podeEmitir ? `<span onclick="event.stopPropagation();gdGerarCertificado('${colabId}',${achado.i})" title="Emitir certificado ${cfgCert.sigla}" style="cursor:pointer;margin-left:1px">🖨️</span>` : '';
+  let botaoEmitir = '';
+  if (emitirOverride) {
+    botaoEmitir = `<span onclick="event.stopPropagation();${emitirOverride.onclick}" title="${emitirOverride.titulo}" style="cursor:pointer;margin-left:1px">${emitirOverride.icone}</span>`;
+  } else {
+    const podeEmitir = cfgCert && achado && achado.d.emissao;
+    botaoEmitir = podeEmitir ? `<span onclick="event.stopPropagation();gdGerarCertificado('${colabId}',${achado.i})" title="Emitir certificado ${cfgCert.sigla}" style="cursor:pointer;margin-left:1px">🖨️</span>` : '';
+  }
   return `<span onclick="event.stopPropagation();${onclickBadge}" title="${tituloHover}" style="display:inline-flex;align-items:center;gap:3px;background:#f3f4f6;border-radius:12px;padding:2px 7px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;color:#4b5563">`
     + `<span style="width:7px;height:7px;border-radius:50%;background:${cor};flex-shrink:0"></span>${rotulo}${botaoEmitir}</span>`;
 }
 
 /* -- Badges de status por documento, direto no card colapsado do colaborador —
    pedido em 17/08/2026 ("acho que fica melhor" + "fazer para todo restante de
-   documentação"). Dois grupos:
+   documentação" + "badge para todos os documentos, aso ficha de epi"). Grupos:
    1) Os 4 certificáveis (NR-01/06/18/25) — sempre aparecem, mesmo sem registro
       ainda (⚪), pra deixar a lacuna visível; têm o ícone 🖨️ quando dá pra emitir.
-   2) Todo o resto da documentação que o colaborador já tem cadastrada (ASO, CNH,
+   2) ASO — tem registro normal em docsColab, mas o ícone 🖨️ não gera um
+      certificado padrão: abre o formulário de exames do ASO (gerarASO) já pronto
+      pra emitir, igual ao botão que já existe na tela de Gestão Documental.
+   3) Ficha de EPI — não é um "documento" com data de emissão/vencimento (é o
+      histórico acumulado de entregas/devoluções), então tem badge próprio:
+      verde se há item em posse, âmbar se há histórico mas nada em posse
+      (tudo devolvido), cinza se nunca houve entrega. Clique abre a ficha (ou
+      inicia a 1ª entrega, se ainda não houver nenhuma).
+   4) Todo o resto da documentação que o colaborador já tem cadastrada (CNH,
       NR-35 etc.) — só aparece o que já existe (não lista os ~20 tipos possíveis
       em branco, senão vira poluição visual); um badge por tipo, o mais recente.
    O clique abre o documento (ou um novo, já com o tipo certo). Pra ver a lista
-   completa/tabela detalhada, o card inteiro continua clicável pra expandir,
-   como já era antes. -- */
-function gdBadgesCertificacoes(colabId, colabNome, docs) {
+   completa/tabela detalhada, o card inteiro continua clicável pra expandir, e
+   agora também tem a lista suspensa (ver _gdSelectDocsColab) logo ao lado. -- */
+function gdBadgesCertificacoes(colabId, colabNome, docs, cIdx) {
   const nomeEsc = colabNome.replace(/'/g, "\\'");
   const tiposCert = Object.keys(CERTIFICADOS_TREINAMENTO);
 
@@ -34788,15 +34804,53 @@ function gdBadgesCertificacoes(colabId, colabNome, docs) {
     return _gdBadgeDoc(colabId, nomeEsc, tipo, candidatos[0], CERTIFICADOS_TREINAMENTO[tipo]);
   });
 
-  // Demais tipos: agrupa por tipo (excluindo os 4 já cobertos acima), pega o mais
-  // recente de cada, em ordem alfabética.
-  const outrosTipos = Array.from(new Set(docs.map(d => d.tipo).filter(t => t && !tiposCert.includes(t)))).sort();
+  const asoCandidatos = docs.map((d, i) => ({ d, i })).filter(o => o.d.tipo === 'ASO').sort((a, b) => (b.d.emissao || '').localeCompare(a.d.emissao || ''));
+  const badgeAso = _gdBadgeDoc(colabId, nomeEsc, 'ASO', asoCandidatos[0], null, (cIdx != null) ? {
+    icone: '🖨️', titulo: 'Emitir ASO (abrir formulário de exames)', onclick: `gerarASO(${cIdx})`
+  } : null);
+
+  let badgeEpi = '';
+  if (cIdx != null) {
+    const hist = gdEpiObter(colabId);
+    const emPosse = gdEpiItensEmPosse(colabId);
+    const temHistorico = hist.entregas.length > 0;
+    const cor = emPosse.length > 0 ? '#10b981' : (temHistorico ? '#f59e0b' : '#d1d5db');
+    const tituloHover = temHistorico
+      ? ('Ficha de EPI: ' + emPosse.length + ' item(ns) em posse — clique para ver/imprimir')
+      : 'Ficha de EPI: sem entregas registradas — clique para registrar a 1ª entrega';
+    const onclickBadge = temHistorico ? `epiVerFicha(${cIdx})` : `gerarEPI(${cIdx})`;
+    const botaoEmitir = temHistorico ? `<span onclick="event.stopPropagation();epiVerFicha(${cIdx})" title="Ver / Imprimir Ficha de EPI" style="cursor:pointer;margin-left:1px">🖨️</span>` : '';
+    badgeEpi = `<span onclick="event.stopPropagation();${onclickBadge}" title="${tituloHover}" style="display:inline-flex;align-items:center;gap:3px;background:#f3f4f6;border-radius:12px;padding:2px 7px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;color:#4b5563">`
+      + `<span style="width:7px;height:7px;border-radius:50%;background:${cor};flex-shrink:0"></span>Ficha EPI${botaoEmitir}</span>`;
+  }
+
+  // Demais tipos: agrupa por tipo (excluindo os 4 certificáveis e o ASO, que já
+  // têm tratamento especial acima), pega o mais recente de cada, em ordem alfabética.
+  const outrosTipos = Array.from(new Set(docs.map(d => d.tipo).filter(t => t && t !== 'ASO' && !tiposCert.includes(t)))).sort();
   const badgesOutros = outrosTipos.map(tipo => {
     const candidatos = docs.map((d, i) => ({ d, i })).filter(o => o.d.tipo === tipo).sort((a, b) => (b.d.emissao || '').localeCompare(a.d.emissao || ''));
     return _gdBadgeDoc(colabId, nomeEsc, tipo, candidatos[0], null);
   });
 
-  return '<div style="display:flex;gap:4px;flex-wrap:wrap">' + badgesCert.join('') + badgesOutros.join('') + '</div>';
+  return '<div style="display:flex;gap:4px;flex-wrap:wrap">' + badgesCert.join('') + badgeAso + badgeEpi + badgesOutros.join('') + '</div>';
+}
+
+/* -- Lista suspensa (select) com TODA a documentação já cadastrada do colaborador —
+   pedido em 17/08/2026 ("a lista suspensa das documentação completa por
+   colaborador"). Complementa os badges: escolher um item abre direto aquele
+   documento pra ver/editar, sem precisar expandir o card inteiro. -- */
+function _gdSelectDocsColab(colabId, nomeEsc, docs) {
+  if (!docs.length) return '';
+  const STATUS_LABEL = { ok: 'Em dia', alerta30: 'Vence em breve', alerta90: 'Atenção', vencido: 'Vencido', sem: 'Sem info' };
+  const STATUS_EMOJI = { ok: '🟢', alerta30: '🔴', alerta90: '🟠', vencido: '⚫', sem: '⚪' };
+  const ordenados = docs.map((d, i) => ({ d, i })).sort((a, b) => (a.d.tipo || '').localeCompare(b.d.tipo || '') || (b.d.emissao || '').localeCompare(a.d.emissao || ''));
+  const opts = ordenados.map(({ d, i }) => {
+    const st = gdStatusDocumento(d);
+    const dataStr = d.emissao ? new Date(d.emissao + 'T00:00:00').toLocaleDateString('pt-BR') : 'sem data';
+    return `<option value="${i}">${STATUS_EMOJI[st] || '⚪'} ${d.tipo} — ${dataStr} (${STATUS_LABEL[st] || ''})</option>`;
+  }).join('');
+  return `<select onchange="event.stopPropagation();if(this.value!=='')gdAbrirModalDocColab('${colabId}','${nomeEsc}',parseInt(this.value));this.selectedIndex=0" onclick="event.stopPropagation()" style="font-size:.65rem;border:1px solid #e5e7eb;border-radius:12px;padding:2px 6px;color:#4b5563;background:#f9fafb;cursor:pointer;max-width:210px">`
+    + `<option value="">📄 Documentação completa (${docs.length})</option>${opts}</select>`;
 }
 
 function pageGestaoDocumental() {
@@ -34986,7 +35040,7 @@ function pageGestaoDocumental() {
               <div style="font-weight:700;font-size:.88rem">${colab.nome}</div>
               <div style="font-size:.7rem;color:var(--text-muted)">${colab.cargo||'—'}${colab.admissao?' · Admitido em '+new Date(colab.admissao+'T00:00:00').toLocaleDateString('pt-BR'):''}</div>
               ${alertaExperiencia}
-              <div style="margin-top:5px" onclick="event.stopPropagation()">${gdBadgesCertificacoes(colab.id, colab.nome, docs)}</div>
+              <div style="margin-top:5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap" onclick="event.stopPropagation()">${gdBadgesCertificacoes(colab.id, colab.nome, docs, cIdx)}${_gdSelectDocsColab(colab.id, nomeEsc, docs)}</div>
             </div>
             <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               ${situacaoBadge}
