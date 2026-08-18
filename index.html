@@ -18275,6 +18275,91 @@ async function custosCarregarFinanceiro(forcar) {
   navigate('custos');
 }
 
+/* -- Calcula o próximo código CC-XXX livre, a partir do maior sufixo numérico
+      já usado em centrosCustoData (ignora buracos como CC-003/007/009, que
+      não existem — isso não importa, sempre soma a partir do maior id real).
+      Corrige o bug em que o código era gerado por centrosCustoData.length+1,
+      o que colidia com códigos já em uso assim que havia qualquer buraco na
+      numeração (ex: gerava CC-002, que já era "ERO - Gestão de Obras"). -- */
+function _custosProximoId() {
+  let max = 0;
+  centrosCustoData.forEach(c => {
+    const m = /^CC-(\d+)$/.exec(c.id || '');
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return 'CC-' + String(max + 1).padStart(3, '0');
+}
+
+let _custosExtrasCarregados = false;
+
+/* -- Carrega os Centros de Custo cadastrados pela própria tela (persistidos
+      na tabela 'CentrosCusto') e mescla em centrosCustoData — que antes só
+      guardava os CCs "de fábrica" (hardcoded acima) e nunca era recarregado,
+      então CCs novos somem ao recarregar a página. Cada linha persistida
+      agora carrega um campo CCId explícito (usado para casar com o item já
+      existente em memória), além de continuar guardando o código dentro do
+      Title por compatibilidade com registros antigos.
+
+      Também detecta e corrige automaticamente o bug antigo: até esta
+      correção, CCs novos podiam ser criados com um código já em uso (ex:
+      CC-002), fazendo Despesas/Receitas/Medições do contrato novo aparecerem
+      misturadas com as do contrato antigo, já que o casamento é feito por
+      igualdade exata de string no campo CentroCusto. -- */
+async function custosCarregarExtras(forcar) {
+  if (_custosExtrasCarregados && !forcar) return;
+  _custosExtrasCarregados = true;
+  try {
+    const linhas = await dbLer('CentrosCusto').catch(() => []);
+    const lista = Array.isArray(linhas) ? linhas : [];
+    for (const l of lista) {
+      const ccId = l.CCId || (l.Title ? l.Title.split(' · ')[0].trim() : null);
+      if (!ccId) continue;
+
+      // Já mesclado antes (mesma linha do SharePoint) — apenas atualiza os campos.
+      const jaMesclado = centrosCustoData.find(c => c._spId === l.Id);
+      if (jaMesclado) {
+        Object.assign(jaMesclado, {
+          contrato: l.Contrato || jaMesclado.contrato,
+          cliente: l.Cliente || jaMesclado.cliente,
+          empresa: l.Empresa || jaMesclado.empresa,
+          gestor: l.Gestor || jaMesclado.gestor,
+          categoria: l.Categoria || jaMesclado.categoria,
+          status: l.Status || jaMesclado.status,
+        });
+        continue;
+      }
+
+      // Colide com um CC de fábrica (hardcoded, sem _spId) de outro contrato -> bug antigo, corrigir.
+      const colisao = centrosCustoData.find(c => c.id === ccId && c._spId == null && c.contrato !== l.Contrato);
+      if (colisao) {
+        const novoId = _custosProximoId();
+        console.warn('[Centros de Custo] Corrigindo colisão de código: "' + l.Contrato + '" estava usando ' + ccId + ' (já era de "' + colisao.contrato + '"). Novo código: ' + novoId);
+        centrosCustoData.push({
+          id: novoId, contrato: l.Contrato, cliente: l.Cliente || '—', empresa: l.Empresa,
+          status: l.Status || 'ativo', gestor: l.Gestor, categoria: l.Categoria, _spId: l.Id,
+        });
+        dbAtualizar('CentrosCusto', l.Id, { CCId: novoId, Title: novoId + ' · ' + l.Contrato });
+        showToast('⚠️ Corrigido: "' + l.Contrato + '" tinha o mesmo código de outro contrato (' + ccId + ') — recadastrado como ' + novoId + '. Confira as Despesas/Medições desse contrato.');
+        continue;
+      }
+
+      // Já existe em memória com esse id (ex: carregado numa sessão anterior) -> só marca o vínculo.
+      const jaEmMemoria = centrosCustoData.find(c => c.id === ccId);
+      if (jaEmMemoria) {
+        jaEmMemoria._spId = l.Id;
+        continue;
+      }
+
+      centrosCustoData.push({
+        id: ccId, contrato: l.Contrato, cliente: l.Cliente || '—', empresa: l.Empresa,
+        status: l.Status || 'ativo', gestor: l.Gestor, categoria: l.Categoria, _spId: l.Id,
+      });
+    }
+  } catch (e) {
+    console.warn('[Centros de Custo] Falha ao carregar extras.', e);
+  }
+}
+
 function _custosValorAprovado(ccId) {
   const r = (_custosValoresAprovados || []).find(x => x.CentroCustoId === ccId);
   return r ? (Number(r.ValorAprovado) || 0) : 0;
@@ -18307,6 +18392,7 @@ async function custosSalvarValorAprovado(ccId, valor) {
 }
 
 function pageCustos() {
+  if (!_custosExtrasCarregados) { setTimeout(() => custosCarregarExtras().then(() => navigate('custos')), 50); }
   if (_custosReceitas === null) { setTimeout(() => custosCarregarFinanceiro(), 100); }
   const filtroEmp   = window._custosEmp   || 'todos';
   const filtroSt    = window._custosSt    || 'todos';
@@ -18356,7 +18442,7 @@ function pageCustos() {
   <div id="modal-novo-cc" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center">
     <div style="background:var(--surface);border-radius:14px;padding:24px;width:min(520px,94vw);box-shadow:0 20px 60px rgba(0,0,0,.4);max-height:90vh;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
-        <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;color:var(--green-main)">➕ Novo Centro de Custo</div>
+        <div id="novocc-titulo" style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;color:var(--green-main)">➕ Novo Centro de Custo</div>
         <button onclick="fecharModalNovoCC()" style="background:none;border:none;font-size:1.2rem;cursor:pointer;color:var(--text-muted)">✕</button>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -18415,12 +18501,12 @@ function pageCustos() {
           </select>
         </div>
         <div class="form-group">
-          <label>Código CC (opcional)</label>
-          <input type="text" id="novocc_id" placeholder="Ex: CC-038">
+          <label>Código CC (opcional — gerado automaticamente)</label>
+          <input type="text" id="novocc_id" placeholder="Gerado automaticamente">
         </div>
       </div>
       <div style="display:flex;gap:10px;margin-top:16px">
-        <button class="btn-primary" onclick="confirmarNovoCC()" style="flex:1">✅ Cadastrar Centro de Custo</button>
+        <button class="btn-primary" id="novocc-btn-confirmar" onclick="confirmarCC()" style="flex:1">✅ Cadastrar Centro de Custo</button>
         <button class="btn-secondary" onclick="fecharModalNovoCC()" style="flex:1">Cancelar</button>
       </div>
     </div>
@@ -18530,10 +18616,14 @@ function pageCustos() {
             <td style="white-space:nowrap;color:var(--red);font-size:.78rem">${fin === null ? '…' : fmt(fin.despesas)}</td>
             <td style="white-space:nowrap;font-size:.78rem;font-weight:700;color:${fin && fin.saldoAMedir<0?'var(--red)':'inherit'}">${fin === null ? '…' : fmt(fin.saldoAMedir)}</td>
             <td style="white-space:nowrap;font-size:.78rem;font-weight:700;color:${fin && fin.pctDR!==null && fin.pctDR>=100?'var(--red)':fin && fin.pctDR!==null && fin.pctDR>=80?'#d97706':'inherit'}">${fin === null ? '…' : (fin.pctDR===null?'—':fin.pctDR.toFixed(0)+'%')}</td>
-            <td>
+            <td style="white-space:nowrap">
               <button onclick="abrirDetalheCC('${c.id}')"
-                style="font-size:.68rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;white-space:nowrap">
+                style="font-size:.68rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;white-space:nowrap;margin-right:4px">
                 📋 Detalhes
+              </button>
+              <button onclick="abrirModalNovoCC('${c.id}')"
+                style="font-size:.68rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;white-space:nowrap">
+                ✏️ Editar
               </button>
             </td>
           </tr>`;
@@ -18623,6 +18713,9 @@ function abrirDetalheCC(id) {
             placeholder="Adicione observações sobre este contrato..."></textarea>
         </div>
         <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+          <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="document.getElementById('ccModal').remove();navigate('custos');setTimeout(()=>abrirModalNovoCC('${cc.id}'),50)">
+            ✏️ Editar
+          </button>
           <button class="btn-primary" style="font-size:.8rem;padding:8px 16px" onclick="showToast('Lançando no centro de custo ${cc.id}...');document.getElementById('ccModal').remove()">
             ➕ Lançar Serviço
           </button>
@@ -18757,21 +18850,51 @@ async function atualizarStatusMedicaoCC(id, novoStatus) {
   if (ok && m) carregarMedicoesCC(m.CentroCusto);
 }
 
-/* -- Funções Modal Novo Centro de Custo -- */
-function abrirModalNovoCC() {
+/* -- Funções Modal Novo/Editar Centro de Custo -- */
+function abrirModalNovoCC(idParaEditar) {
   const m = document.getElementById('modal-novo-cc');
-  if (m) m.style.display = 'flex';
+  if (!m) return;
+  window._custosEditandoId = idParaEditar || null;
+  const titulo = document.getElementById('novocc-titulo');
+  const btnConfirmar = document.getElementById('novocc-btn-confirmar');
+  const idField = document.getElementById('novocc_id');
+  if (idParaEditar) {
+    const cc = centrosCustoData.find(c => c.id === idParaEditar);
+    if (!cc) { showToast('❌ Centro de custo não encontrado.'); return; }
+    if (titulo) titulo.textContent = '✏️ Editar Centro de Custo — ' + cc.id;
+    if (btnConfirmar) btnConfirmar.textContent = '💾 Salvar Alterações';
+    document.getElementById('novocc_contrato').value = cc.contrato;
+    document.getElementById('novocc_empresa').value  = cc.empresa;
+    document.getElementById('novocc_cliente').value  = cc.cliente === '—' ? '' : cc.cliente;
+    document.getElementById('novocc_gestor').value   = cc.gestor;
+    document.getElementById('novocc_categoria').value= cc.categoria;
+    document.getElementById('novocc_status').value   = cc.status;
+    if (idField) { idField.value = cc.id; idField.disabled = true; }
+  } else {
+    if (titulo) titulo.textContent = '➕ Novo Centro de Custo';
+    if (btnConfirmar) btnConfirmar.textContent = '✅ Cadastrar Centro de Custo';
+    ['novocc_contrato','novocc_cliente','novocc_id'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+    ['novocc_empresa','novocc_gestor','novocc_categoria','novocc_status'].forEach(id=>{ const e=document.getElementById(id); if(e) e.selectedIndex=0; });
+    if (idField) idField.disabled = false;
+  }
+  m.style.display = 'flex';
 }
 
 function fecharModalNovoCC() {
   const m = document.getElementById('modal-novo-cc');
   if (m) m.style.display = 'none';
+  window._custosEditandoId = null;
   ['novocc_contrato','novocc_cliente','novocc_id'].forEach(id=>{
-    const e=document.getElementById(id);if(e)e.value='';
+    const e=document.getElementById(id);if(e){e.value='';e.disabled=false;}
   });
 }
 
-function confirmarNovoCC() {
+/* -- Cadastra um novo CC ou salva as alterações de um CC existente, conforme
+      window._custosEditandoId (setado por abrirModalNovoCC). O código (id)
+      nunca é editável durante a edição — evita quebrar Despesas/Receitas/
+      Medições já lançadas com o código antigo. -- */
+async function confirmarCC() {
+  const editId   = window._custosEditandoId;
   const contrato = (document.getElementById('novocc_contrato').value||'').trim();
   const empresa  = document.getElementById('novocc_empresa').value;
   const cliente  = (document.getElementById('novocc_cliente').value||'').trim();
@@ -18782,13 +18905,40 @@ function confirmarNovoCC() {
   if (!contrato) { showToast('⚠️ Informe o nome do contrato/projeto.'); return; }
   if (!empresa)  { showToast('⚠️ Selecione a empresa.'); return; }
   if (!gestor)   { showToast('⚠️ Selecione o gestor.'); return; }
+
+  if (editId) {
+    const cc = centrosCustoData.find(c => c.id === editId);
+    if (!cc) { showToast('❌ Centro de custo não encontrado.'); return; }
+    const duplicado = centrosCustoData.some(c => c.id !== editId && c.contrato.toLowerCase() === contrato.toLowerCase());
+    if (duplicado) { showToast('⚠️ Já existe outro CC com esse nome!'); return; }
+    Object.assign(cc, { contrato, cliente: cliente||'—', empresa, status, gestor, categoria });
+    const campos = { Title: cc.id + ' · ' + contrato, CCId: cc.id, Contrato: contrato, Empresa: empresa, Cliente: cliente||'—', Gestor: gestor, Categoria: categoria, Status: status };
+    let ok;
+    if (cc._spId) {
+      ok = await dbAtualizar('CentrosCusto', cc._spId, campos);
+    } else {
+      const inserido = await dbInserir('CentrosCusto', campos);
+      ok = !!inserido;
+      if (inserido) cc._spId = inserido.Id;
+    }
+    showToast(ok ? '✅ Centro de custo "' + cc.id + '" atualizado!' : '⚠️ Alterado localmente, mas houve erro ao sincronizar.' + syncErrorDetalhe());
+    fecharModalNovoCC();
+    navigate('custos');
+    return;
+  }
+
   const jaExiste = centrosCustoData.some(c => c.contrato.toLowerCase() === contrato.toLowerCase());
   if (jaExiste) { showToast('⚠️ Já existe um CC com esse nome!'); return; }
-  const novoId = idCustom || 'CC-' + String(centrosCustoData.length + 1).padStart(3,'0');
+  let novoId = idCustom || _custosProximoId();
+  if (centrosCustoData.some(c => c.id === novoId)) {
+    if (idCustom) { showToast('⚠️ O código "' + novoId + '" já está em uso por outro contrato. Deixe em branco para gerar automaticamente.'); return; }
+    novoId = _custosProximoId();
+  }
   const novoCC = { id: novoId, contrato, cliente: cliente||'—', empresa, status, gestor, categoria };
   centrosCustoData.push(novoCC);
-  salvarNoSharePoint('CentrosCusto', { Title: novoId + ' · ' + contrato, Contrato: contrato, Empresa: empresa, Cliente: cliente||'—', Gestor: gestor, Categoria: categoria, Status: status });
-  showToast('✅ Centro de custo "' + novoId + '" cadastrado!');
+  const inserido = await dbInserir('CentrosCusto', { Title: novoId + ' · ' + contrato, CCId: novoId, Contrato: contrato, Empresa: empresa, Cliente: cliente||'—', Gestor: gestor, Categoria: categoria, Status: status });
+  if (inserido) novoCC._spId = inserido.Id;
+  showToast(inserido ? '✅ Centro de custo "' + novoId + '" cadastrado!' : '⚠️ Criado localmente, mas houve erro ao sincronizar.' + syncErrorDetalhe());
   fecharModalNovoCC();
   navigate('custos');
 }
