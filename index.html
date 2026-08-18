@@ -34666,7 +34666,7 @@ function _gdComputarListaTreinamentosHtml() {
             <strong style="font-size:.88rem">${cfg ? cfg.nomeTreinamento : t.tipo}</strong>
           </div>
           <div style="font-size:.75rem;color:var(--text-muted);margin-top:5px">📅 ${dataFmt} &nbsp;·&nbsp; 👨‍🏫 ${t.instrutorNome || '—'} &nbsp;·&nbsp; ⏱️ ${cargaHoraria !== '' ? cargaHoraria + 'h' : '—'}${t.local ? ' &nbsp;·&nbsp; 📍 ' + t.local : ''}</div>
-          <div style="font-size:.75rem;color:var(--text-muted);margin-top:3px">👥 ${participantesInfo.length} participante${participantesInfo.length === 1 ? '' : 's'}${nomesPreview ? ': ' + nomesPreview : ''}</div>
+          <div style="font-size:.75rem;color:var(--text-muted);margin-top:3px">👥 ${participantesInfo.length} participante${participantesInfo.length === 1 ? '' : 's'}${nomesPreview ? ': ' + nomesPreview : ''}${(t.fotos||[]).length ? ' &nbsp;·&nbsp; 📷 ' + t.fotos.length + ' foto' + (t.fotos.length === 1 ? '' : 's') : ''}</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn-secondary" style="font-size:.72rem;padding:5px 10px" onclick="gdGerarListaPresenca('${t.id}')">📋 Lista de Presença</button>
@@ -34687,14 +34687,63 @@ function gdAtualizarCargaHorariaTreino() {
   if (cfg && !chEl.value) chEl.value = cfg.cargaHorariaPadrao;
 }
 
-function gdAbrirModalTreinamento(idx) {
-  const t = idx !== undefined ? (window._gdDados.treinamentos[idx] || null) : null;
+// Abre o modal de treinamento. `dadosOverride` (opcional) é usado só pelo
+// gdTreinoRerenderModal() abaixo, pra reabrir o modal com os valores que o
+// usuário já tinha digitado preservados (ex.: ao adicionar/remover uma foto,
+// o que dispara um re-render do modal sem perder o resto do formulário).
+function gdAbrirModalTreinamento(idx, dadosOverride) {
+  const t = dadosOverride || (idx !== undefined ? (window._gdDados.treinamentos[idx] || null) : null);
+  window._gdTreinoIdxAtual = idx !== undefined ? idx : null;
+  if (!dadosOverride) window._gdTreinoFotosAtual = (t && t.fotos) ? JSON.parse(JSON.stringify(t.fotos)) : [];
+  document.body.insertAdjacentHTML('beforeend', _gdModalTreinoHtml(t, idx));
+}
+
+// Recria o modal a partir dos valores atuais dos campos (lidos do DOM antes de
+// fechar) — preserva tudo que o usuário já preencheu ao adicionar/remover foto.
+function gdTreinoRerenderModal() {
+  const chEl = document.getElementById('gd-tCargaHoraria');
+  const snapshot = {
+    tipo: document.getElementById('gd-tTipo').value,
+    data: document.getElementById('gd-tData').value,
+    cargaHoraria: chEl && chEl.value !== '' ? chEl.value : null,
+    local: document.getElementById('gd-tLocal').value,
+    instrutorNome: document.getElementById('gd-tInstrutorNome').value,
+    instrutorCargo: document.getElementById('gd-tInstrutorCargo').value,
+    instrutorCrea: document.getElementById('gd-tInstrutorCrea').value,
+    obs: document.getElementById('gd-tObs').value,
+    participantes: Array.from(document.querySelectorAll('.gd-tParticipante:checked')).map(el => el.value),
+  };
+  gdFecharModal();
+  gdAbrirModalTreinamento(window._gdTreinoIdxAtual, snapshot);
+}
+
+function gdTreinoAddFotos(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  if (!Array.isArray(window._gdTreinoFotosAtual)) window._gdTreinoFotosAtual = [];
+  showToast('📷 Processando ' + files.length + ' foto' + (files.length === 1 ? '' : 's') + '...');
+  Promise.all(files.map(file => _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => ({ desc: '', dataUrl, horizontal }))))
+    .then(novas => { window._gdTreinoFotosAtual.push(...novas); gdTreinoRerenderModal(); });
+}
+function gdTreinoRemFoto(i) { window._gdTreinoFotosAtual.splice(i, 1); gdTreinoRerenderModal(); }
+function gdTreinoAtualizarFotoDesc(i, valor) { if (window._gdTreinoFotosAtual[i]) window._gdTreinoFotosAtual[i].desc = valor; }
+
+function _gdModalTreinoHtml(t, idx) {
   const tipos = Object.keys(CERTIFICADOS_TREINAMENTO);
   const cfgSel = t ? CERTIFICADOS_TREINAMENTO[t.tipo] : null;
   const colabsAtivos = (window._gdDados.colaboradores || [])
     .filter(c => (c.situacao || 'ativo') !== 'inativo')
     .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
-  document.body.insertAdjacentHTML('beforeend', `
+  const fotos = window._gdTreinoFotosAtual || [];
+  const fotosHtml = fotos.map((f, i) => `
+    <div style="width:110px">
+      <div style="position:relative">
+        <img src="${f.dataUrl}" style="width:110px;height:${f.horizontal ? '82' : '110'}px;object-fit:cover;border-radius:6px;border:1px solid var(--border)">
+        <button type="button" onclick="gdTreinoRemFoto(${i})" title="Remover foto" style="position:absolute;top:-6px;right:-6px;background:var(--red);color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:.7rem;cursor:pointer;line-height:1">✕</button>
+      </div>
+      <input type="text" placeholder="Legenda..." value="${(f.desc || '').replace(/"/g, '&quot;')}" oninput="gdTreinoAtualizarFotoDesc(${i}, this.value)" style="width:100%;margin-top:3px;font-size:.65rem;padding:3px 5px;border:1px solid var(--border);border-radius:5px">
+    </div>`).join('');
+  return `
   <div id="gd-modal-overlay" onclick="if(event.target===this)gdFecharModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
     <div class="card" style="width:100%;max-width:560px;max-height:90vh;overflow-y:auto;border-radius:16px">
       <h2 style="font-family:'Mont',sans-serif;font-size:1rem;font-weight:800;margin-bottom:4px">${t ? 'Editar' : 'Novo'} Treinamento / Turma</h2>
@@ -34717,6 +34766,17 @@ function gdAbrirModalTreinamento(idx) {
       <div class="form-group"><label>Cargo / Qualificação do Instrutor</label><input id="gd-tInstrutorCargo" value="${t ? t.instrutorCargo || '' : ''}" placeholder="Ex: Engenheiro em Segurança do Trabalho"></div>
       <div class="form-group"><label>Observações</label><textarea id="gd-tObs" rows="2" style="width:100%">${t ? t.obs || '' : ''}</textarea></div>
       <div class="form-group">
+        <label>📷 Fotos / Evidências (${fotos.length})</label>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${fotosHtml}
+          <label style="width:110px;height:110px;border:1.5px dashed var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-direction:column;cursor:pointer;color:var(--text-muted);font-size:.68rem;text-align:center;gap:4px">
+            📷 Adicionar
+            <input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="gdTreinoAddFotos(event)">
+          </label>
+        </div>
+        <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">Aparecem na seção "Evidências Fotográficas" do Relatório PDF da turma.</div>
+      </div>
+      <div class="form-group">
         <label>Participantes * (${colabsAtivos.length} colaborador${colabsAtivos.length === 1 ? '' : 'es'} ativo${colabsAtivos.length === 1 ? '' : 's'})</label>
         <div style="display:flex;flex-direction:column;gap:5px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;max-height:200px;overflow-y:auto">
           ${colabsAtivos.map(c => `
@@ -34727,11 +34787,11 @@ function gdAbrirModalTreinamento(idx) {
         </div>
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
-        <button class="btn-secondary" onclick="gdFecharModal()">Cancelar</button>
-        <button class="btn-primary" onclick="gdSalvarTreinamento(${idx !== undefined ? idx : 'null'})">💾 Salvar</button>
+        <button class="btn-secondary" onclick="window._gdTreinoFotosAtual=null;gdFecharModal()">Cancelar</button>
+        <button class="btn-primary" onclick="gdSalvarTreinamento(${idx !== undefined && idx !== null ? idx : 'null'})">💾 Salvar</button>
       </div>
     </div>
-  </div>`);
+  </div>`;
 }
 
 async function gdSalvarTreinamento(idx) {
@@ -34756,6 +34816,7 @@ async function gdSalvarTreinamento(idx) {
     instrutorCrea: document.getElementById('gd-tInstrutorCrea').value.trim(),
     obs: document.getElementById('gd-tObs').value.trim(),
     participantes,
+    fotos: (window._gdTreinoFotosAtual || []).map(f => ({ desc: f.desc || '', dataUrl: f.dataUrl, horizontal: !!f.horizontal })),
     criadoEm: anterior ? anterior.criadoEm : new Date().toISOString(),
   };
 
@@ -34786,6 +34847,7 @@ async function gdSalvarTreinamento(idx) {
   }
 
   if (anterior) window._gdDados.treinamentos[idx] = treino; else window._gdDados.treinamentos.push(treino);
+  window._gdTreinoFotosAtual = null; window._gdTreinoIdxAtual = null;
   gdFecharModal(); await gdSalvar();
   showToast('🎓 Treinamento salvo — certificado vinculado a ' + participantes.length + ' colaborador(es)!');
   navigate('docs');
@@ -34920,6 +34982,13 @@ function gdGerarRelatorioTreinamento(treinamentoId) {
     '<div class="rt-conteudo-item"><strong>' + String.fromCharCode(97 + i) + ')</strong> ' + item + '</div>'
   ).join('') : '';
 
+  const fotosHtml = (t.fotos || []).map(f =>
+    '<div class="rt-foto-item">'
+    + '<img src="' + f.dataUrl + '" style="aspect-ratio:' + (f.horizontal ? '4/3' : '3/4') + '">'
+    + (f.desc ? '<div class="rt-foto-legenda">' + f.desc + '</div>' : '')
+    + '</div>'
+  ).join('');
+
   const statusLabel = { ok: '✅ Certificado em dia', alerta30: '🔴 Vence em breve', alerta90: '⚠️ Atenção', vencido: '❌ Vencido', sem: '✅ Certificado emitido' };
   const linhasParticipantes = participantes.map((c, i) => {
     const docsVinculados = (d.docsColab[c.id] || []).filter(doc => doc.treinamentoId === t.id);
@@ -34955,8 +35024,11 @@ function gdGerarRelatorioTreinamento(treinamentoId) {
     + 'table.rt-tabela { width:100%; border-collapse:collapse; }'
     + 'table.rt-tabela th { background:#f5ede8; color:#3F261F; font-size:9.5px; text-transform:uppercase; letter-spacing:.3px; padding:6px; text-align:left; border-bottom:1.5px solid #80C476; }'
     + 'table.rt-tabela td { padding:6px; border-bottom:1px solid #e5ded9; font-size:10.5px; }'
+    + '.rt-foto-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }'
+    + '.rt-foto-item img { width:100%; object-fit:cover; border:1px solid #d8cfc9; border-radius:4px; display:block; }'
+    + '.rt-foto-legenda { font-size:9px; color:#5a5a5a; margin-top:3px; text-align:center; line-height:1.3; }'
     + '.print-btn { position:fixed; top:10px; right:10px; background:#3a7030; color:#fff; border:none; padding:8px 18px; border-radius:8px; font-size:12px; font-weight:700; cursor:pointer; font-family:"Mont",sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.2); z-index:99; }'
-    + '@media print { .print-btn { display:none; } body { padding:6px 10px; } }'
+    + '@media print { .print-btn { display:none; } body { padding:6px 10px; } .rt-foto-item { page-break-inside:avoid; } }'
     + '@page { size: A4 portrait; margin: 10mm 12mm; }'
     + '</style></head><body>'
     + '<button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>'
@@ -34991,6 +35063,8 @@ function gdGerarRelatorioTreinamento(treinamentoId) {
     + '</div></div>'
 
     + (cfg ? '<div class="section"><div class="sec-title">Conteúdo Programático</div><div class="sec-body">' + conteudoHtml + '</div></div>' : '')
+
+    + (fotosHtml ? '<div class="section"><div class="sec-title">Evidências Fotográficas</div><div class="sec-body"><div class="rt-foto-grid">' + fotosHtml + '</div></div></div>' : '')
 
     + '<div class="section"><div class="sec-title">Participantes e Status do Certificado</div><div class="sec-body" style="padding:0">'
     + '<table class="rt-tabela"><thead><tr><th>#</th><th>Nome</th><th>Função</th><th>Status</th></tr></thead><tbody>'
