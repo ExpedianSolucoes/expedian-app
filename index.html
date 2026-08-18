@@ -10715,6 +10715,7 @@ function projetosAbrirProjeto(chave) {
 function projetosVoltarHub() {
   PROJETOS_PROJETO_ATIVO = null;
   PROJETOS_ENERGISA_CONTRATO_ATIVO = null;
+  PROJETOS_ENERGISA_SECAO_ATIVA = null;
   renderPage('projetos');
 }
 
@@ -10723,6 +10724,7 @@ let PROJETOS_ENERGISA_CONTRATO_ATIVO = null; // null = lista de contratos | chav
 function projetosEnergisaAbrirContrato(chave) {
   const c = PROJETOS_ENERGISA_CONTRATOS.find(x => x.chave === chave);
   if (!c) return;
+  PROJETOS_ENERGISA_SECAO_ATIVA = null;
   if (c.pronto) { PROJETOS_ENERGISA_CONTRATO_ATIVO = chave; renderPage('projetos'); return; }
   showToast('🚧 ' + c.titulo + ' ainda não foi construído aqui dentro — vamos montar esse módulo juntos.');
 }
@@ -12081,13 +12083,78 @@ function projetosHtmlEnergisaContratoCLM(chave) {
   </div>`;
 }
 
+let PROJETOS_ENERGISA_SECAO_ATIVA = null; // null = grade de seções | 'equipe' (demais ainda em construção)
+
 function projetosEnergisaAbrirSecao(chave) {
   const s = PROJETOS_ENERGISA_SECOES.find(x => x.chave === chave);
+  if (chave === 'equipe') { PROJETOS_ENERGISA_SECAO_ATIVA = 'equipe'; renderPage('projetos'); return; }
   showToast('🚧 ' + (s ? s.titulo : chave) + ' ainda não foi construído aqui dentro — vamos montar esse módulo juntos.');
+}
+function projetosEnergisaVoltarSecoes() {
+  PROJETOS_ENERGISA_SECAO_ATIVA = null;
+  renderPage('projetos');
+}
+
+/* -- Seção Equipe (compartilhada entre os 5 contratos Energisa) — pedido em
+   18/08/2026 ("vinculado há algum contrato... esse colaborador aparecer na
+   lista de equipe desse projeto"). Lê direto de window._gdDados (Gestão
+   Documental): cada contrato mostra quem tem colab.contratos incluindo sua
+   chave, com um resumo de status de documentação (vencido/atenção/em dia). O
+   vínculo em si é cadastrado no perfil do colaborador, não aqui — esta tela é
+   só leitura. -- */
+async function projetosEnergisaCarregarEquipe() {
+  if (!window._gdDados) {
+    try {
+      const dados = await dbLer('GestaoDocumental');
+      window._gdDados = (Array.isArray(dados) && dados.length) ? dados[0] : { colaboradores: [], docsEmpresa: [], docsColab: {} };
+    } catch (e) {
+      window._gdDados = window._gdDados || { colaboradores: [], docsEmpresa: [], docsColab: {} };
+    }
+  }
+  const el = document.getElementById('projetos-energisa-equipe-lista');
+  if (el) el.innerHTML = _projetosEnergisaEquipeHtml();
+}
+function _projetosEnergisaEquipeHtml() {
+  const d = window._gdDados;
+  if (!d) return '<div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">⏳ Carregando...</div>';
+  const colabsAtivos = (d.colaboradores || []).filter(c => (c.situacao || 'ativo') !== 'inativo');
+  return PROJETOS_ENERGISA_CONTRATOS.map(ct => {
+    const alocados = colabsAtivos.filter(c => (c.contratos || []).includes(ct.chave)).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+    const linhas = alocados.length ? alocados.map(c => {
+      const docs = (d.docsColab && d.docsColab[c.id]) || [];
+      const vencidos = docs.filter(doc => gdStatusDocumento(doc) === 'vencido').length;
+      const alertas = docs.filter(doc => ['alerta30', 'alerta90'].includes(gdStatusDocumento(doc))).length;
+      const pill = vencidos > 0 ? `<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">❌ ${vencidos} vencido(s)</span>`
+        : alertas > 0 ? `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">⚠️ ${alertas} atenção</span>`
+        : `<span style="background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">✅ Em dia</span>`;
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 16px;border-bottom:1px solid var(--border)">
+        <div><div style="font-weight:700;font-size:.85rem">${c.nome}</div><div style="font-size:.7rem;color:var(--text-muted)">${c.cargo || '—'}</div></div>
+        ${pill}
+      </div>`;
+    }).join('') : '<div style="padding:16px;color:var(--text-muted);font-size:.8rem;text-align:center">Nenhum colaborador vinculado a este contrato ainda — vincule em Colaboradores (aba Gestão Documental), editando o cadastro dele.</div>';
+    return `<div class="card" style="margin-bottom:14px;padding:0;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);background:var(--sidebar-bg)">
+        <div style="font-weight:800;font-size:.88rem">${ct.numero}</div>
+        <div style="font-size:.75rem;color:var(--text-muted)">${ct.titulo} · ${alocados.length} colaborador${alocados.length === 1 ? '' : 'es'}</div>
+      </div>
+      ${linhas}
+    </div>`;
+  }).join('');
+}
+function projetosHtmlEnergisaSecaoEquipe() {
+  setTimeout(() => projetosEnergisaCarregarEquipe(), 50);
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div><h1>👥 Equipe — Energisa Rondônia</h1><p>Colaboradores vinculados a cada contrato, com status de documentação (Gestão Documental)</p></div>
+    <button class="btn-secondary" onclick="projetosEnergisaVoltarSecoes()">← Seções</button>
+  </div>
+  <div id="projetos-energisa-equipe-lista">${window._gdDados ? _projetosEnergisaEquipeHtml() : '<div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">⏳ Carregando...</div>'}</div>
+  `;
 }
 
 function pageProjetos() {
   if (PROJETOS_PROJETO_ATIVO === 'energisa') {
+    if (PROJETOS_ENERGISA_SECAO_ATIVA === 'equipe') return projetosHtmlEnergisaSecaoEquipe();
     if (PROJETOS_ENERGISA_CONTRATO_ATIVO === 'obras2025022101') return projetosHtmlEnergisaObras();
     if (PROJETOS_ENERGISA_CONTRATO_ATIVO === 'ws108437' || PROJETOS_ENERGISA_CONTRATO_ATIVO === 'ws108438') return projetosHtmlEnergisaContratoWS(PROJETOS_ENERGISA_CONTRATO_ATIVO);
     if (PROJETOS_ENERGISA_CONTRATO_ATIVO === 'clm108942' || PROJETOS_ENERGISA_CONTRATO_ATIVO === 'clm108943') return projetosHtmlEnergisaContratoCLM(PROJETOS_ENERGISA_CONTRATO_ATIVO);
@@ -32568,9 +32635,11 @@ async function gdCarregarDados(forcar) {
   try {
     const dados = await dbLer('GestaoDocumental');
     window._gdDados = (Array.isArray(dados) && dados.length) ? dados[0]
-      : (window._gdDados || { colaboradores: [], docsEmpresa: [], docsColab: {} });
+      : (window._gdDados || { colaboradores: [], docsEmpresa: [], docsColab: {}, treinamentos: [] });
     // Auto-seed empresa docs se ainda não existem
     if (!window._gdDados.docsEmpresa) window._gdDados.docsEmpresa = [];
+    // Migração: garante o array de treinamentos/turmas (feature adicionada em 18/08/2026)
+    if (!window._gdDados.treinamentos) window._gdDados.treinamentos = [];
     for (const doc of GD_SEED_EMPRESA) {
       if (!window._gdDados.docsEmpresa.find(d => d.numero === doc.numero)) {
         window._gdDados.docsEmpresa.push(doc);
@@ -32605,7 +32674,7 @@ async function gdCarregarDados(forcar) {
     }
     try { localStorage.setItem('gd_dados_cache', JSON.stringify(window._gdDados)); } catch(e) {}
   } catch(e) {
-    window._gdDados = window._gdDados || { colaboradores: [], docsEmpresa: [], docsColab: {} };
+    window._gdDados = window._gdDados || { colaboradores: [], docsEmpresa: [], docsColab: {}, treinamentos: [] };
   }
   navigate('docs');
 }
@@ -34515,6 +34584,16 @@ function gdAbrirModalColaborador(idx) {
           ${Object.entries(GD_SITUACOES).map(([k,v]) => `<option value="${k}" ${(c?c.situacao||'ativo':'experiencia')===k?'selected':''}>${v.label}</option>`).join('')}
         </select>
       </div>
+      <div class="form-group">
+        <label>Contrato(s) vinculado(s) — aba Projetos</label>
+        <div style="display:flex;flex-direction:column;gap:5px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;max-height:150px;overflow-y:auto">
+          ${PROJETOS_ENERGISA_CONTRATOS.map(ct => `
+            <label style="display:flex;align-items:center;gap:7px;font-size:.8rem;cursor:pointer">
+              <input type="checkbox" class="gd-cContrato" value="${ct.chave}" ${(c && c.contratos || []).includes(ct.chave) ? 'checked' : ''} style="accent-color:var(--green-main)">
+              ${ct.numero} — ${ct.titulo}
+            </label>`).join('')}
+        </div>
+      </div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
         <button class="btn-secondary" onclick="gdFecharModal()">Cancelar</button>
         <button class="btn-primary" onclick="gdSalvarColaborador(${idx!==undefined?idx:'null'})">💾 Salvar</button>
@@ -34527,6 +34606,7 @@ async function gdSalvarColaborador(idx) {
   const nome = document.getElementById('gd-cNome').value.trim();
   if (!nome) { showToast('⚠️ Informe o nome.'); return; }
   const colabAnterior = (idx!==null&&idx!==undefined) ? window._gdDados.colaboradores[idx] : null;
+  const contratos = Array.from(document.querySelectorAll('.gd-cContrato:checked')).map(el => el.value);
   const colab = {
     id: colabAnterior ? colabAnterior.id : ('c'+Date.now()),
     nome,
@@ -34534,6 +34614,7 @@ async function gdSalvarColaborador(idx) {
     cargo: document.getElementById('gd-cCargo').value.trim(),
     admissao: document.getElementById('gd-cAdmissao').value,
     situacao: document.getElementById('gd-cSituacao').value,
+    contratos,
   };
   if (idx!==null&&idx!==undefined) window._gdDados.colaboradores[idx]=colab; else window._gdDados.colaboradores.push(colab);
   gdFecharModal(); await gdSalvar(); showToast('💾 Salvo!'); navigate('docs');
@@ -34544,6 +34625,386 @@ async function gdExcluirColaborador(idx) {
   if (!confirm(`Remover ${c.nome} e todos os seus documentos?`)) return;
   delete window._gdDados.docsColab[c.id]; window._gdDados.colaboradores.splice(idx,1);
   await gdSalvar(); navigate('docs');
+}
+
+/* =====================================================================
+   TREINAMENTOS / TURMAS — pedido em 18/08/2026 ("criar uma aba ou algo do
+   tipo treinamentos, com lista ou botão do treinamento e criar uma lista
+   de presença com os relacionados e um relatório"). Fica na aba ao lado de
+   Colaboradores, dentro de Gestão Documental (resposta do Tiago à pergunta
+   de localização). Cada treinamento é uma turma/evento — tipo (um dos 4
+   certificáveis em CERTIFICADOS_TREINAMENTO), data, instrutor e lista de
+   participantes. Ao salvar, além de guardar o registro em
+   window._gdDados.treinamentos, o app cria/atualiza AUTOMATICAMENTE um
+   documento certificável (docsColab) para cada participante, marcado com
+   treinamentoId — assim o certificado de cada um já sai pronto pela mesma
+   gdGerarCertificado usada em qualquer outro documento individual (resposta
+   do Tiago: "aquele colaborador já vai ter o certificado vinculado ao seu
+   perfil"). O relatório é 1 PDF por turma/evento (resposta do Tiago), não um
+   painel histórico geral. -- */
+
+function _gdComputarListaTreinamentosHtml() {
+  const d = window._gdDados;
+  const treinos = (d.treinamentos || []);
+  if (!treinos.length) {
+    return '<div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">Nenhum treinamento cadastrado ainda. Clique em "+ Novo Treinamento" para registrar uma turma.</div>';
+  }
+  const ordenados = treinos.slice().sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  return ordenados.map((t) => {
+    const realIdx = treinos.indexOf(t);
+    const cfg = CERTIFICADOS_TREINAMENTO[t.tipo];
+    const dataFmt = t.data ? new Date(t.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+    const cargaHoraria = t.cargaHoraria != null ? t.cargaHoraria : (cfg ? cfg.cargaHorariaPadrao : '');
+    const participantesInfo = (t.participantes || []).map(colabId => (d.colaboradores || []).find(c => c.id === colabId)).filter(Boolean);
+    const nomesPreview = participantesInfo.slice(0, 4).map(c => c.nome.split(' ')[0]).join(', ') + (participantesInfo.length > 4 ? ' e mais ' + (participantesInfo.length - 4) : '');
+    return `
+    <div class="card" style="margin-bottom:10px;padding:16px 18px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="background:#3F261F;color:#fff;font-size:.65rem;font-weight:700;padding:2px 9px;border-radius:20px">${cfg ? cfg.sigla : t.tipo}</span>
+            <strong style="font-size:.88rem">${cfg ? cfg.nomeTreinamento : t.tipo}</strong>
+          </div>
+          <div style="font-size:.75rem;color:var(--text-muted);margin-top:5px">📅 ${dataFmt} &nbsp;·&nbsp; 👨‍🏫 ${t.instrutorNome || '—'} &nbsp;·&nbsp; ⏱️ ${cargaHoraria !== '' ? cargaHoraria + 'h' : '—'}${t.local ? ' &nbsp;·&nbsp; 📍 ' + t.local : ''}</div>
+          <div style="font-size:.75rem;color:var(--text-muted);margin-top:3px">👥 ${participantesInfo.length} participante${participantesInfo.length === 1 ? '' : 's'}${nomesPreview ? ': ' + nomesPreview : ''}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn-secondary" style="font-size:.72rem;padding:5px 10px" onclick="gdGerarListaPresenca('${t.id}')">📋 Lista de Presença</button>
+          <button class="btn-secondary" style="font-size:.72rem;padding:5px 10px" onclick="gdGerarRelatorioTreinamento('${t.id}')">📄 Relatório PDF</button>
+          <button class="btn-secondary" style="font-size:.72rem;padding:5px 8px" onclick="gdAbrirModalTreinamento(${realIdx})">✏️</button>
+          <button class="btn-secondary" style="font-size:.72rem;padding:5px 8px;color:var(--red)" onclick="gdExcluirTreinamento(${realIdx})">🗑️</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function gdAtualizarCargaHorariaTreino() {
+  const tipoEl = document.getElementById('gd-tTipo');
+  const chEl = document.getElementById('gd-tCargaHoraria');
+  if (!tipoEl || !chEl) return;
+  const cfg = CERTIFICADOS_TREINAMENTO[tipoEl.value];
+  if (cfg && !chEl.value) chEl.value = cfg.cargaHorariaPadrao;
+}
+
+function gdAbrirModalTreinamento(idx) {
+  const t = idx !== undefined ? (window._gdDados.treinamentos[idx] || null) : null;
+  const tipos = Object.keys(CERTIFICADOS_TREINAMENTO);
+  const cfgSel = t ? CERTIFICADOS_TREINAMENTO[t.tipo] : null;
+  const colabsAtivos = (window._gdDados.colaboradores || [])
+    .filter(c => (c.situacao || 'ativo') !== 'inativo')
+    .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+  document.body.insertAdjacentHTML('beforeend', `
+  <div id="gd-modal-overlay" onclick="if(event.target===this)gdFecharModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+    <div class="card" style="width:100%;max-width:560px;max-height:90vh;overflow-y:auto;border-radius:16px">
+      <h2 style="font-family:'Mont',sans-serif;font-size:1rem;font-weight:800;margin-bottom:4px">${t ? 'Editar' : 'Novo'} Treinamento / Turma</h2>
+      <p style="font-size:.75rem;color:var(--text-muted);margin-bottom:16px">Ao salvar, o certificado deste treinamento fica automaticamente vinculado ao perfil de cada participante selecionado.</p>
+      <div class="form-group"><label>Tipo de Treinamento *</label>
+        <select id="gd-tTipo" style="width:100%" onchange="gdAtualizarCargaHorariaTreino()">
+          <option value="">Selecione...</option>
+          ${tipos.map(k => `<option value="${k}" ${t && t.tipo === k ? 'selected' : ''}>${CERTIFICADOS_TREINAMENTO[k].sigla} — ${CERTIFICADOS_TREINAMENTO[k].nomeTreinamento}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label>Data de Realização *</label><input type="date" id="gd-tData" value="${t ? t.data || '' : ''}"></div>
+        <div class="form-group"><label>Carga Horária (h)</label><input type="number" min="0" step="0.5" id="gd-tCargaHoraria" value="${t && t.cargaHoraria != null ? t.cargaHoraria : (cfgSel ? cfgSel.cargaHorariaPadrao : '')}" placeholder="Ex: 4"></div>
+      </div>
+      <div class="form-group"><label>Local</label><input id="gd-tLocal" value="${t ? t.local || '' : ''}" placeholder="Ex: Sede Expedian — Porto Velho/RO"></div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px">
+        <div class="form-group"><label>Instrutor / Responsável Técnico</label><input id="gd-tInstrutorNome" value="${t ? t.instrutorNome || '' : ''}" placeholder="Ex: Marcelo Marafon"></div>
+        <div class="form-group"><label>CREA (opcional)</label><input id="gd-tInstrutorCrea" value="${t ? t.instrutorCrea || '' : ''}" placeholder="Ex: 518027502-0"></div>
+      </div>
+      <div class="form-group"><label>Cargo / Qualificação do Instrutor</label><input id="gd-tInstrutorCargo" value="${t ? t.instrutorCargo || '' : ''}" placeholder="Ex: Engenheiro em Segurança do Trabalho"></div>
+      <div class="form-group"><label>Observações</label><textarea id="gd-tObs" rows="2" style="width:100%">${t ? t.obs || '' : ''}</textarea></div>
+      <div class="form-group">
+        <label>Participantes * (${colabsAtivos.length} colaborador${colabsAtivos.length === 1 ? '' : 'es'} ativo${colabsAtivos.length === 1 ? '' : 's'})</label>
+        <div style="display:flex;flex-direction:column;gap:5px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;max-height:200px;overflow-y:auto">
+          ${colabsAtivos.map(c => `
+            <label style="display:flex;align-items:center;gap:7px;font-size:.8rem;cursor:pointer">
+              <input type="checkbox" class="gd-tParticipante" value="${c.id}" ${(t && t.participantes || []).includes(c.id) ? 'checked' : ''} style="accent-color:var(--green-main)">
+              ${c.nome}${c.cargo ? ' — <span style="color:var(--text-muted)">' + c.cargo + '</span>' : ''}
+            </label>`).join('')}
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+        <button class="btn-secondary" onclick="gdFecharModal()">Cancelar</button>
+        <button class="btn-primary" onclick="gdSalvarTreinamento(${idx !== undefined ? idx : 'null'})">💾 Salvar</button>
+      </div>
+    </div>
+  </div>`);
+}
+
+async function gdSalvarTreinamento(idx) {
+  const tipo = document.getElementById('gd-tTipo').value;
+  if (!tipo) { showToast('⚠️ Selecione o tipo de treinamento.'); return; }
+  const data = document.getElementById('gd-tData').value;
+  if (!data) { showToast('⚠️ Informe a data de realização.'); return; }
+  const participantes = Array.from(document.querySelectorAll('.gd-tParticipante:checked')).map(el => el.value);
+  if (!participantes.length) { showToast('⚠️ Selecione ao menos um participante.'); return; }
+  const cfg = CERTIFICADOS_TREINAMENTO[tipo];
+  const chEl = document.getElementById('gd-tCargaHoraria');
+  const cargaHoraria = chEl && chEl.value !== '' ? Number(chEl.value) : (cfg ? cfg.cargaHorariaPadrao : null);
+  const anterior = (idx !== null && idx !== undefined) ? window._gdDados.treinamentos[idx] : null;
+
+  const treino = {
+    id: anterior ? anterior.id : ('t' + Date.now()),
+    tipo, data,
+    local: document.getElementById('gd-tLocal').value.trim(),
+    cargaHoraria,
+    instrutorNome: document.getElementById('gd-tInstrutorNome').value.trim(),
+    instrutorCargo: document.getElementById('gd-tInstrutorCargo').value.trim(),
+    instrutorCrea: document.getElementById('gd-tInstrutorCrea').value.trim(),
+    obs: document.getElementById('gd-tObs').value.trim(),
+    participantes,
+    criadoEm: anterior ? anterior.criadoEm : new Date().toISOString(),
+  };
+
+  // Se está editando, primeiro remove os documentos que este treinamento havia
+  // criado anteriormente (em todos os colaboradores que faziam parte dele) —
+  // depois recria do zero pra lista atual de participantes. Mantém tudo
+  // idempotente mesmo trocando o tipo, a data ou quem participou.
+  if (anterior) {
+    for (const colabId of anterior.participantes) {
+      if (!window._gdDados.docsColab[colabId]) continue;
+      window._gdDados.docsColab[colabId] = window._gdDados.docsColab[colabId].filter(doc => doc.treinamentoId !== treino.id);
+    }
+  }
+  const meses = GD_TREINAMENTO_PERIODICIDADE_MESES[tipo];
+  const vencimento = (() => {
+    if (meses == null) return '';
+    const dt = new Date(data + 'T00:00:00'); dt.setMonth(dt.getMonth() + meses);
+    return dt.toISOString().slice(0, 10);
+  })();
+  for (const colabId of participantes) {
+    if (!window._gdDados.docsColab[colabId]) window._gdDados.docsColab[colabId] = [];
+    window._gdDados.docsColab[colabId].push({
+      tipo, emissao: data, vencimento, numero: '',
+      obs: 'Gerado automaticamente pelo treinamento em turma — ' + (cfg ? cfg.nomeTreinamento : tipo),
+      cargaHoraria, instrutorNome: treino.instrutorNome, instrutorCargo: treino.instrutorCargo, instrutorCrea: treino.instrutorCrea,
+      treinamentoId: treino.id,
+    });
+  }
+
+  if (anterior) window._gdDados.treinamentos[idx] = treino; else window._gdDados.treinamentos.push(treino);
+  gdFecharModal(); await gdSalvar();
+  showToast('🎓 Treinamento salvo — certificado vinculado a ' + participantes.length + ' colaborador(es)!');
+  navigate('docs');
+}
+
+async function gdExcluirTreinamento(idx) {
+  const t = window._gdDados.treinamentos[idx];
+  if (!t) return;
+  if (!confirm('Excluir este treinamento? Os certificados que ele gerou nos participantes também serão removidos.')) return;
+  for (const colabId of (t.participantes || [])) {
+    if (window._gdDados.docsColab[colabId]) {
+      window._gdDados.docsColab[colabId] = window._gdDados.docsColab[colabId].filter(doc => doc.treinamentoId !== t.id);
+    }
+  }
+  window._gdDados.treinamentos.splice(idx, 1);
+  await gdSalvar(); navigate('docs');
+}
+
+/* -- Lista de presença impressa (padrão Expedian) — gerada a partir de um
+   treinamento/turma, com a tabela de participantes e uma linha em branco
+   pra assinatura física de cada um durante o treinamento. -- */
+function gdGerarListaPresenca(treinamentoId) {
+  const d = window._gdDados;
+  const t = (d.treinamentos || []).find(x => x.id === treinamentoId);
+  if (!t) { showToast('⚠️ Treinamento não encontrado.'); return; }
+  const cfg = CERTIFICADOS_TREINAMENTO[t.tipo];
+  const participantes = (t.participantes || []).map(colabId => (d.colaboradores || []).find(c => c.id === colabId)).filter(Boolean)
+    .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+  const dataFmt = t.data ? new Date(t.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const cargaHoraria = t.cargaHoraria != null ? t.cargaHoraria : (cfg ? cfg.cargaHorariaPadrao : '');
+
+  const linhasParticipantes = participantes.map((c, i) => {
+    const seed = GD_SEED_COLABORADORES.find(s => s.nome.toLowerCase() === c.nome.toLowerCase());
+    const cpf = c.cpf || (seed && seed.cpf) || '';
+    return '<tr>'
+      + '<td style="text-align:center;width:5%">' + (i + 1) + '</td>'
+      + '<td style="width:30%">' + c.nome + '</td>'
+      + '<td style="width:16%">' + (cpf || '—') + '</td>'
+      + '<td style="width:19%">' + (c.cargo || '—') + '</td>'
+      + '<td style="width:30%"><div class="lp-assinatura"></div></td>'
+      + '</tr>';
+  }).join('');
+
+  const html = ASO_FONT_CSS + '<html><head><meta charset="utf-8"><title>Lista de Presença — ' + (cfg ? cfg.sigla : t.tipo) + ' — ' + dataFmt + '</title><style>'
+    + '* { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; color-adjust:exact; }'
+    + 'body { font-family:"Mont",sans-serif; font-size:11px; color:#3F261F; max-width:1000px; margin:0 auto; }'
+    + '.doc-header-table { width:100%; border-collapse:collapse; margin-bottom:10px; table-layout:fixed; }'
+    + '.doc-header-table td { border:1px solid #3F261F; padding:4px 8px; font-family:"Mont",sans-serif; font-size:7.5px; color:#3F261F; vertical-align:middle; }'
+    + '.doc-header-table .logo-cell { width:16%; text-align:center; padding:6px; }'
+    + '.doc-header-table .titulo-cell { width:54%; background:#3F261F; color:#fff; font-weight:700; font-size:13px; text-transform:uppercase; letter-spacing:.4px; text-align:center; }'
+    + '.doc-header-table .codigo-cell { background:#3F261F; color:#fff; font-weight:700; }'
+    + '.doc-footer { background:#fff; border-top:2px solid #3F261F; margin-top:14px; padding:6px 18px; text-align:center; font-family:"Mont",sans-serif; font-size:7px; color:#3F261F; line-height:1.5; }'
+    + '.doc-footer .footer-empresa { font-weight:700; font-size:7.5px; text-transform:uppercase; }'
+    + '.lp-wrap { width:100%; border-collapse:collapse; }'
+    + '.lp-wrap > thead { display:table-header-group; }'
+    + '.lp-wrap > tfoot { display:table-footer-group; }'
+    + '.lp-wrap > thead > tr > td, .lp-wrap > tfoot > tr > td, .lp-wrap > tbody > tr > td { padding:0; border:none; }'
+    + '.section { border:1.5px solid #80C476; margin-bottom:10px; border-radius:3px; overflow:hidden; }'
+    + '.sec-title { background:#80C476; color:#fff; padding:5px 12px; font-weight:700; font-size:10px; text-transform:uppercase; letter-spacing:.6px; font-family:"Mont",sans-serif; }'
+    + '.sec-body { padding:12px 16px; }'
+    + '.lp-info-grid { display:grid; grid-template-columns:1fr 1fr; gap:4px 20px; font-size:11px; }'
+    + '.lp-info-grid strong { color:#3F261F; }'
+    + 'table.lp-tabela { width:100%; border-collapse:collapse; }'
+    + 'table.lp-tabela th { background:#f5ede8; color:#3F261F; font-size:9.5px; text-transform:uppercase; letter-spacing:.3px; padding:6px; text-align:left; border-bottom:1.5px solid #80C476; }'
+    + 'table.lp-tabela td { padding:6px; border-bottom:1px solid #e5ded9; font-size:10.5px; }'
+    + '.lp-assinatura { border-bottom:1px solid #3F261F; height:16px; }'
+    + '.print-btn { position:fixed; top:10px; right:10px; background:#3a7030; color:#fff; border:none; padding:8px 18px; border-radius:8px; font-size:12px; font-weight:700; cursor:pointer; font-family:"Mont",sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.2); z-index:99; }'
+    + '@media print { .print-btn { display:none; } body { padding:6px 10px; } tr { page-break-inside:avoid; } }'
+    + '@page { size: A4 portrait; margin: 10mm 12mm; }'
+    + '</style></head><body>'
+    + '<button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>'
+
+    + '<table class="lp-wrap"><thead><tr><td>'
+    + '<table class="doc-header-table"><tbody><tr>'
+    + '<td class="logo-cell"><img src="' + ASO_LOGO_B64 + '" style="width:100%;max-width:100px;height:auto;object-fit:contain" alt="Logo Expedian"></td>'
+    + '<td class="titulo-cell">LISTA DE PRESENÇA — ' + (cfg ? cfg.sigla : t.tipo) + '</td>'
+    + '<td class="codigo-cell">Data: ' + dataFmt + '</td>'
+    + '</tr></tbody></table>'
+    + '</td></tr></thead>'
+
+    + '<tfoot><tr><td>'
+    + '<div class="doc-footer">'
+    + '<div class="footer-empresa">EXPEDIAN – SOLUÇÕES AMBIENTAIS</div>'
+    + '<div>Rua Salgado Filho, nº 1596 – Sala 02 – Bairro Nossa Senhora das Graças, CEP 76.804-118, Porto Velho – RO</div>'
+    + '<div>E-mail: atendimento@expediansolucoes.com.br | Fone (69) 9.9964-9406 | CNPJ: 37.553.680/0001-80</div>'
+    + '</div>'
+    + '</td></tr></tfoot>'
+
+    + '<tbody><tr><td>'
+    + '<div class="section"><div class="sec-title">Dados do Treinamento</div><div class="sec-body">'
+    + '<div class="lp-info-grid">'
+    + '<div><strong>Treinamento:</strong> ' + (cfg ? cfg.nomeTreinamento : t.tipo) + '</div>'
+    + '<div><strong>Carga Horária:</strong> ' + (cargaHoraria !== '' ? cargaHoraria + 'h' : '—') + '</div>'
+    + '<div><strong>Data:</strong> ' + dataFmt + '</div>'
+    + '<div><strong>Local:</strong> ' + (t.local || '—') + '</div>'
+    + '<div><strong>Instrutor:</strong> ' + (t.instrutorNome || '—') + (t.instrutorCrea ? ' — CREA ' + t.instrutorCrea : '') + '</div>'
+    + '<div><strong>Nº de Participantes:</strong> ' + participantes.length + '</div>'
+    + '</div>'
+    + '</div></div>'
+
+    + '<div class="section"><div class="sec-title">Participantes</div><div class="sec-body" style="padding:0">'
+    + '<table class="lp-tabela"><thead><tr><th>#</th><th>Nome</th><th>CPF</th><th>Função</th><th>Assinatura</th></tr></thead><tbody>'
+    + linhasParticipantes
+    + '</tbody></table>'
+    + '</div></div>'
+
+    + '</td></tr></tbody></table>'
+    + '</body></html>';
+
+  const w = window.open('', '_blank', 'width=880,height=740,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para gerar a lista de presença.'); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
+/* -- Relatório de treinamento impresso (padrão Expedian) — 1 PDF por
+   turma/evento, com dados gerais, conteúdo programático e o status do
+   certificado de cada participante (a pedido do Tiago: relatório por turma,
+   não um painel histórico geral). -- */
+function gdGerarRelatorioTreinamento(treinamentoId) {
+  const d = window._gdDados;
+  const t = (d.treinamentos || []).find(x => x.id === treinamentoId);
+  if (!t) { showToast('⚠️ Treinamento não encontrado.'); return; }
+  const cfg = CERTIFICADOS_TREINAMENTO[t.tipo];
+  const participantes = (t.participantes || []).map(colabId => (d.colaboradores || []).find(c => c.id === colabId)).filter(Boolean)
+    .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+  const dataFmt = t.data ? new Date(t.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const cargaHoraria = t.cargaHoraria != null ? t.cargaHoraria : (cfg ? cfg.cargaHorariaPadrao : '');
+  const codigo = 'EXP-SSMA-REL-' + (cfg ? cfg.sigla : t.tipo).replace(/[^A-Z0-9]/g, '') + '-' + (t.data || '').replace(/-/g, '');
+
+  const conteudoHtml = cfg ? cfg.conteudo.map((item, i) =>
+    '<div class="rt-conteudo-item"><strong>' + String.fromCharCode(97 + i) + ')</strong> ' + item + '</div>'
+  ).join('') : '';
+
+  const statusLabel = { ok: '✅ Certificado em dia', alerta30: '🔴 Vence em breve', alerta90: '⚠️ Atenção', vencido: '❌ Vencido', sem: '✅ Certificado emitido' };
+  const linhasParticipantes = participantes.map((c, i) => {
+    const docsVinculados = (d.docsColab[c.id] || []).filter(doc => doc.treinamentoId === t.id);
+    const st = docsVinculados.length ? gdStatusDocumento(docsVinculados[0]) : 'sem';
+    return '<tr>'
+      + '<td style="text-align:center">' + (i + 1) + '</td>'
+      + '<td>' + c.nome + '</td>'
+      + '<td>' + (c.cargo || '—') + '</td>'
+      + '<td>' + (statusLabel[st] || '—') + '</td>'
+      + '</tr>';
+  }).join('');
+
+  const html = ASO_FONT_CSS + '<html><head><meta charset="utf-8"><title>Relatório de Treinamento — ' + (cfg ? cfg.sigla : t.tipo) + ' — ' + dataFmt + '</title><style>'
+    + '* { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; color-adjust:exact; }'
+    + 'body { font-family:"Mont",sans-serif; font-size:11px; color:#3F261F; max-width:1000px; margin:0 auto; }'
+    + '.doc-header-table { width:100%; border-collapse:collapse; margin-bottom:10px; table-layout:fixed; }'
+    + '.doc-header-table td { border:1px solid #3F261F; padding:4px 8px; font-family:"Mont",sans-serif; font-size:7.5px; color:#3F261F; vertical-align:middle; }'
+    + '.doc-header-table .logo-cell { width:16%; text-align:center; padding:6px; }'
+    + '.doc-header-table .titulo-cell { width:54%; background:#3F261F; color:#fff; font-weight:700; font-size:13px; text-transform:uppercase; letter-spacing:.4px; text-align:center; }'
+    + '.doc-header-table .codigo-cell { background:#3F261F; color:#fff; font-weight:700; }'
+    + '.doc-footer { background:#fff; border-top:2px solid #3F261F; margin-top:14px; padding:6px 18px; text-align:center; font-family:"Mont",sans-serif; font-size:7px; color:#3F261F; line-height:1.5; }'
+    + '.doc-footer .footer-empresa { font-weight:700; font-size:7.5px; text-transform:uppercase; }'
+    + '.rt-wrap { width:100%; border-collapse:collapse; }'
+    + '.rt-wrap > thead { display:table-header-group; }'
+    + '.rt-wrap > tfoot { display:table-footer-group; }'
+    + '.rt-wrap > thead > tr > td, .rt-wrap > tfoot > tr > td, .rt-wrap > tbody > tr > td { padding:0; border:none; }'
+    + '.section { border:1.5px solid #80C476; margin-bottom:10px; border-radius:3px; overflow:hidden; }'
+    + '.sec-title { background:#80C476; color:#fff; padding:5px 12px; font-weight:700; font-size:10px; text-transform:uppercase; letter-spacing:.6px; font-family:"Mont",sans-serif; }'
+    + '.sec-body { padding:12px 16px; }'
+    + '.rt-info-grid { display:grid; grid-template-columns:1fr 1fr; gap:4px 20px; font-size:11px; }'
+    + '.rt-info-grid strong { color:#3F261F; }'
+    + '.rt-conteudo-item { font-size:10.5px; margin-bottom:7px; line-height:1.5; }'
+    + 'table.rt-tabela { width:100%; border-collapse:collapse; }'
+    + 'table.rt-tabela th { background:#f5ede8; color:#3F261F; font-size:9.5px; text-transform:uppercase; letter-spacing:.3px; padding:6px; text-align:left; border-bottom:1.5px solid #80C476; }'
+    + 'table.rt-tabela td { padding:6px; border-bottom:1px solid #e5ded9; font-size:10.5px; }'
+    + '.print-btn { position:fixed; top:10px; right:10px; background:#3a7030; color:#fff; border:none; padding:8px 18px; border-radius:8px; font-size:12px; font-weight:700; cursor:pointer; font-family:"Mont",sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.2); z-index:99; }'
+    + '@media print { .print-btn { display:none; } body { padding:6px 10px; } }'
+    + '@page { size: A4 portrait; margin: 10mm 12mm; }'
+    + '</style></head><body>'
+    + '<button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>'
+
+    + '<table class="rt-wrap"><thead><tr><td>'
+    + '<table class="doc-header-table"><tbody><tr>'
+    + '<td class="logo-cell"><img src="' + ASO_LOGO_B64 + '" style="width:100%;max-width:100px;height:auto;object-fit:contain" alt="Logo Expedian"></td>'
+    + '<td class="titulo-cell">RELATÓRIO DE TREINAMENTO — ' + (cfg ? cfg.sigla : t.tipo) + '</td>'
+    + '<td class="codigo-cell">Código: ' + codigo + '</td>'
+    + '</tr></tbody></table>'
+    + '</td></tr></thead>'
+
+    + '<tfoot><tr><td>'
+    + '<div class="doc-footer">'
+    + '<div class="footer-empresa">EXPEDIAN – SOLUÇÕES AMBIENTAIS</div>'
+    + '<div>Rua Salgado Filho, nº 1596 – Sala 02 – Bairro Nossa Senhora das Graças, CEP 76.804-118, Porto Velho – RO</div>'
+    + '<div>E-mail: atendimento@expediansolucoes.com.br | Fone (69) 9.9964-9406 | CNPJ: 37.553.680/0001-80</div>'
+    + '</div>'
+    + '</td></tr></tfoot>'
+
+    + '<tbody><tr><td>'
+    + '<div class="section"><div class="sec-title">Dados Gerais</div><div class="sec-body">'
+    + '<div class="rt-info-grid">'
+    + '<div><strong>Treinamento:</strong> ' + (cfg ? cfg.nomeTreinamento : t.tipo) + '</div>'
+    + '<div><strong>Carga Horária:</strong> ' + (cargaHoraria !== '' ? cargaHoraria + 'h' : '—') + '</div>'
+    + '<div><strong>Data de Realização:</strong> ' + dataFmt + '</div>'
+    + '<div><strong>Local:</strong> ' + (t.local || '—') + '</div>'
+    + '<div><strong>Instrutor / Responsável Técnico:</strong> ' + (t.instrutorNome || '—') + (t.instrutorCargo ? ' — ' + t.instrutorCargo : '') + (t.instrutorCrea ? ' — CREA ' + t.instrutorCrea : '') + '</div>'
+    + '<div><strong>Nº de Participantes:</strong> ' + participantes.length + '</div>'
+    + '</div>'
+    + (t.obs ? '<div style="margin-top:8px;font-size:10.5px;color:#5a5a5a"><strong>Observações:</strong> ' + t.obs + '</div>' : '')
+    + '</div></div>'
+
+    + (cfg ? '<div class="section"><div class="sec-title">Conteúdo Programático</div><div class="sec-body">' + conteudoHtml + '</div></div>' : '')
+
+    + '<div class="section"><div class="sec-title">Participantes e Status do Certificado</div><div class="sec-body" style="padding:0">'
+    + '<table class="rt-tabela"><thead><tr><th>#</th><th>Nome</th><th>Função</th><th>Status</th></tr></thead><tbody>'
+    + linhasParticipantes
+    + '</tbody></table>'
+    + '</div></div>'
+
+    + '</td></tr></tbody></table>'
+    + '</body></html>';
+
+  const w = window.open('', '_blank', 'width=880,height=740,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para gerar o relatório.'); return; }
+  w.document.write(html);
+  w.document.close();
 }
 
 // Sugere a data de vencimento com base na periodicidade padrão do tipo de treinamento selecionado.
@@ -35104,6 +35565,15 @@ function _gdComputarListaColabsHtml() {
     const situacaoBadge = `<span style="background:${sitInfo.bg};color:${sitInfo.cor};padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">${sitInfo.label}</span>`;
     const alertaExperiencia = sitInfo.alerta ? `<div style="font-size:.68rem;font-weight:700;color:${sitInfo.alerta.urgente ? '#b91c1c' : '#92400e'};margin-top:2px">${sitInfo.alerta.texto}</div>` : '';
     const btnDesligar = sitInfo.situacao !== 'inativo' ? `<button class="btn-secondary" style="padding:2px 8px;font-size:.64rem;background:#b91c1c;color:#fff;border:none" onclick="event.stopPropagation();gdAbrirModalDesligamento(${cIdx})">🚪 ${sitInfo.situacao === 'desligamento' ? 'Continuar Desligamento' : 'Desligar'}</button>` : '';
+    // Contrato(s) vinculado(s) — mesma lista da aba Projetos (PROJETOS_ENERGISA_CONTRATOS),
+    // pedido em 18/08/2026 ("vinculado há algum contrato... esse colaborador aparecer na
+    // lista de equipe desse projeto"). Clique abre o cadastro do colaborador pra editar.
+    const contratosVinculados = (colab.contratos || []).map(chave => PROJETOS_ENERGISA_CONTRATOS.find(c => c.chave === chave)).filter(Boolean);
+    const contratosLinha = contratosVinculados.length
+      ? `<div style="margin-top:3px;display:flex;align-items:center;gap:4px;flex-wrap:wrap" onclick="event.stopPropagation();gdAbrirModalColaborador(${cIdx})">`
+        + contratosVinculados.map(ct => `<span title="${ct.titulo}" style="display:inline-flex;align-items:center;gap:3px;background:#eef2ff;color:#3730a3;border-radius:12px;padding:2px 7px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap">📁 ${ct.numero}</span>`).join('')
+        + '</div>'
+      : '';
     return `<div class="card" style="margin-bottom:12px;padding:0;overflow:hidden${sitInfo.situacao === 'inativo' ? ';opacity:.6' : ''}">
       <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer" onclick="const p=this.nextElementSibling;p.style.display=p.style.display==='none'?'block':'none'">
         <div style="width:40px;height:40px;border-radius:50%;background:var(--green-pale);border:2px solid var(--green-main);display:flex;align-items:center;justify-content:center;font-size:.78rem;font-weight:800;color:var(--green-main);flex-shrink:0">${initials}</div>
@@ -35115,6 +35585,7 @@ function _gdComputarListaColabsHtml() {
             ${resumo}
             ${btnDesligar}
           </div>
+          ${contratosLinha}
           ${alertaExperiencia}
           <div style="margin-top:5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap" onclick="event.stopPropagation()">${gdBadgesCertificacoes(colab.id, colab.nome, docs, cIdx)}${_gdSelectAcoesDocs(colab.id, nomeEsc, docs, cIdx)}</div>
         </div>
@@ -35326,11 +35797,20 @@ function pageGestaoDocumental() {
   // (reorganização pedida em 17/08/2026 — ver comentário na definição da função).
   const cardsColabs = _gdComputarListaColabsHtml();
 
-  const filtroBanner = filtroKpi ? `
+  // Nota: a contagem usada aqui precisa ser recalculada de forma independente da
+  // usada dentro de _gdComputarListaColabsHtml() (colabsFiltrados vive só naquele
+  // escopo) — bug pré-existente corrigido em 18/08/2026 (ReferenceError ao clicar
+  // nos KPIs "Vencidos"/"Atenção", pois colabsFiltrados não existia aqui fora).
+  const filtroBanner = filtroKpi ? (() => {
+    const cntFiltro = todosColabs.filter(c => (d.docsColab[c.id]||[]).some(doc =>
+      filtroKpi==='vencido' ? gdStatusDocumento(doc)==='vencido' : ['alerta30','alerta90'].includes(gdStatusDocumento(doc))
+    )).length;
+    return `
     <div style="background:${filtroKpi==='vencido'?'#fee2e2':'#fef3c7'};border:1px solid ${filtroKpi==='vencido'?'#fca5a5':'#fcd34d'};border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between">
-      <span style="font-size:.82rem;font-weight:700;color:${filtroKpi==='vencido'?'#991b1b':'#92400e'}">${filtroKpi==='vencido'?'❌ Documentos VENCIDOS':'⚠️ Documentos em ATENÇÃO'} — ${colabsFiltrados.length} colaborador(es)</span>
+      <span style="font-size:.82rem;font-weight:700;color:${filtroKpi==='vencido'?'#991b1b':'#92400e'}">${filtroKpi==='vencido'?'❌ Documentos VENCIDOS':'⚠️ Documentos em ATENÇÃO'} — ${cntFiltro} colaborador(es)</span>
       <button onclick="window._gdFiltroKpi=null;navigate('docs')" style="border:none;background:none;cursor:pointer;font-size:.82rem;font-weight:700;color:${filtroKpi==='vencido'?'#991b1b':'#92400e'}">✕ Limpar filtro</button>
-    </div>` : '';
+    </div>`;
+  })() : '';
 
   return `
   <div class="page-header">
@@ -35343,6 +35823,7 @@ function pageGestaoDocumental() {
   <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:2px solid var(--border);align-items:center">
     <button onclick="window._gdAba='empresa';window._gdFiltroKpi=null;navigate('docs')" style="padding:10px 20px;font-size:.82rem;font-weight:700;border:none;background:none;cursor:pointer;border-bottom:3px solid ${abaSel==='empresa'?'var(--green-main)':'transparent'};color:${abaSel==='empresa'?'var(--green-main)':'var(--text-muted)'}">🏢 Empresa (${todosDocEmpresa.length})</button>
     <button onclick="window._gdAba='colaboradores';navigate('docs')" style="padding:10px 20px;font-size:.82rem;font-weight:700;border:none;background:none;cursor:pointer;border-bottom:3px solid ${abaSel==='colaboradores'?'var(--green-main)':'transparent'};color:${abaSel==='colaboradores'?'var(--green-main)':'var(--text-muted)'}">👥 Colaboradores (${todosColabs.length})</button>
+    <button onclick="window._gdAba='treinamentos';navigate('docs')" style="padding:10px 20px;font-size:.82rem;font-weight:700;border:none;background:none;cursor:pointer;border-bottom:3px solid ${abaSel==='treinamentos'?'var(--green-main)':'transparent'};color:${abaSel==='treinamentos'?'var(--green-main)':'var(--text-muted)'}">🎓 Treinamentos (${(d.treinamentos||[]).length})</button>
     <div style="flex:1"></div>
     <button class="btn-secondary" style="font-size:.75rem;padding:6px 14px;margin-bottom:4px" onclick="gdExportarExcel()">📊 Exportar Excel</button>
   </div>
@@ -35354,6 +35835,12 @@ function pageGestaoDocumental() {
       </div>
       <div style="overflow-x:auto">${tabelaEmpresa}</div>
     </div>
+  `:abaSel==='treinamentos'?`
+    <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <div style="font-size:.8rem;color:var(--text-muted)">Turmas/eventos de treinamento — ao salvar, o certificado de cada participante já fica vinculado ao seu perfil.</div>
+      <button class="btn-primary" style="font-size:.78rem;padding:7px 14px" onclick="gdAbrirModalTreinamento()">+ Novo Treinamento</button>
+    </div>
+    <div id="gd-treinamentos-lista">${_gdComputarListaTreinamentosHtml()}</div>
   `:`
     ${filtroBanner}
     <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
