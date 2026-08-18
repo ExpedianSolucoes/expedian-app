@@ -3754,6 +3754,19 @@ function pagePrestacao() {
     <div id="prest-form-titulo" style="font-family:'Mont',sans-serif;font-size:.82rem;font-weight:700;color:var(--green-main);margin-bottom:16px;text-transform:uppercase;letter-spacing:.07em">➕ Nova Despesa</div>
     <div id="prest-edit-banner"></div>
 
+    <!-- Linha 0: Anexo — primeiro campo do formulário. Anexar o comprovante
+         primeiro permite ao sistema tentar identificar automaticamente o
+         fornecedor, o valor e a categoria (sempre editável a seguir). -->
+    <div class="form-row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>📎 1º passo: Anexe o Comprovante (NF / Cupom / Foto do Recibo)</label>
+        <input type="file" id="prest_anexo" accept=".pdf,.jpg,.jpeg,.png"
+          style="background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border);width:100%">
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:4px">Anexe o comprovante antes de preencher o resto — o sistema tenta identificar automaticamente o fornecedor, o valor e a categoria.</div>
+        <div id="prest_anexo_status" style="font-size:.78rem;margin-top:6px"></div>
+      </div>
+    </div>
+
     <!-- Linha 1: Data + Valor -->
     <div class="form-row">
       <div class="form-group">
@@ -3879,15 +3892,6 @@ function pagePrestacao() {
         <label>Lançado por</label>
         <input list="prest_lancadopor_dl" id="prest_lancadopor" placeholder="Nome de quem está fazendo este lançamento" value="${window._currentUser ? String(window._currentUser.name).replace(/"/g, '&quot;') : ''}">
         <datalist id="prest_lancadopor_dl">${prestListaLancadores().map(n => `<option value="${n}">`).join('')}</datalist>
-      </div>
-    </div>
-
-    <!-- Linha 6: Anexo -->
-    <div class="form-row">
-      <div class="form-group" style="grid-column:span 2">
-        <label>📎 Anexar Comprovante (NF / Cupom / Foto do Recibo)</label>
-        <input type="file" id="prest_anexo" accept=".pdf,.jpg,.jpeg,.png"
-          style="background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border);width:100%">
       </div>
     </div>
 
@@ -4489,7 +4493,7 @@ async function carregarPrestacoes() {
         <td style="display:flex;gap:4px;padding:8px 6px;flex-wrap:wrap">
           <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="pcAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
           ${podeAgirFinanceiro?`
-            <button class="btn-primary" style="padding:3px 8px;font-size:.68rem" onclick="aprovarPrestacaoFinanceiro(${i.Id})">✅ Aprovar</button>
+            <button class="btn-primary" style="padding:3px 8px;font-size:.68rem" onclick="pcAbrirVisualizar(${i.Id})">✅ Aprovar</button>
             <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`:''}
           ${i.Status==='Aprovada'&&currentProfile==='diretoria'?`
             <button class="btn-primary" style="padding:3px 8px;font-size:.68rem;background:var(--green-main)" onclick="pcAbrirVisualizar(${i.Id})">💳 Registrar Pagamento</button>`:''}
@@ -4699,9 +4703,16 @@ async function _finalizarReenvio(id, comprovanteUrl, comprovanteNome) {
   setTimeout(() => carregarPrestacoes(), 600);
 }
 
-async function aprovarPrestacaoFinanceiro(id) {
+/* -- `ajustes` (opcional) permite ao Financeiro corrigir Centro de Custo/Contrato
+      e/ou Valor no próprio momento da aprovação, sem precisar devolver ao
+      colaborador — mesmo poder de ajuste que já existe em Despesas. -- */
+async function aprovarPrestacaoFinanceiro(id, ajustes) {
   _limparSyncError();
-  const ok = await dbAtualizar('PrestacaoContas', id, { Status: 'Aprovada', DataAprovacaoFinanceiro: new Date().toISOString().split('T')[0], AprovadoPorFinanceiro: window._currentUser?.name });
+  const patch = Object.assign(
+    { Status: 'Aprovada', DataAprovacaoFinanceiro: new Date().toISOString().split('T')[0], AprovadoPorFinanceiro: window._currentUser?.name },
+    ajustes || {}
+  );
+  const ok = await dbAtualizar('PrestacaoContas', id, patch);
   if (ok) {
     try {
       const lista = await dbLer('PrestacaoContas');
@@ -4711,6 +4722,21 @@ async function aprovarPrestacaoFinanceiro(id) {
   }
   showToast(ok ? '✅ Aprovado pelo financeiro!' : ('❌ Erro' + syncErrorDetalhe()));
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
+}
+
+/* -- Lê os campos de ajuste (Centro de Custo/Contrato e Valor) do modal de
+      visualização, se o Financeiro tiver alterado algo, e só então aprova. -- */
+async function aprovarPrestacaoFinanceiroComAjustes(id) {
+  const ccEl = document.getElementById('pcv_cc');
+  const valorEl = document.getElementById('pcv_valor');
+  const ajustes = {};
+  if (ccEl && ccEl.value) ajustes.CentroCusto = ccEl.value;
+  if (valorEl && valorEl.value !== '') {
+    const v = parseFloat(valorEl.value);
+    if (!isNaN(v) && v > 0) ajustes.Valor = v;
+  }
+  const modal = document.getElementById('pc-view-modal'); if (modal) modal.remove();
+  await aprovarPrestacaoFinanceiro(id, ajustes);
 }
 
 /* -- Gera automaticamente um lançamento em "Saídas" do BPO Financeiro quando o Financeiro
@@ -4778,11 +4804,33 @@ async function pcAbrirVisualizar(id) {
 
   let acoesHtml = '';
   if ((i.Status === 'Ag. Financeiro' || i.Status === 'Ag. Aprovação Gestor') && isGestor) {
+    // Financeiro pode corrigir Centro de Custo/Contrato e Valor aqui mesmo, se o
+    // colaborador tiver errado algo no lançamento — sem precisar indeferir e
+    // esperar reenvio. Mesmo poder de ajuste que já existe em Despesas.
+    const chaveEmpresa = normalizarEmpresa(i.Empresa);
+    const ccsDisp = [...new Set([
+      ...((EMPRESAS_CC[chaveEmpresa]) || []),
+      ...((centrosCustoData||[]).filter(c => normalizarEmpresa(c.empresa) === chaveEmpresa && c.status === 'ativo').map(c => c.id + ' · ' + c.contrato))
+    ])];
     acoesHtml = `
       <div style="margin-top:16px;padding:14px;background:var(--surface2);border-radius:10px">
-        <div style="font-weight:700;font-size:.82rem;margin-bottom:10px">✅ Aprovar ou Indeferir</div>
+        <div style="font-weight:700;font-size:.82rem;margin-bottom:10px">✏️ Conferir/Ajustar antes de Aprovar</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Centro de Custo / Contrato</label>
+            <select id="pcv_cc">
+              <option value="${(i.CentroCusto||'').replace(/"/g,'&quot;')}">${i.CentroCusto || 'Selecione...'}</option>
+              ${ccsDisp.filter(c => c !== i.CentroCusto).map(c => `<option>${c}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Valor (R$)</label>
+            <input type="number" id="pcv_valor" step="0.01" value="${i.Valor||0}">
+          </div>
+        </div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:10px">Se o contrato ou o valor deste lançamento não estiverem corretos, ajuste aqui — a correção é salva junto com a aprovação.</div>
         <div style="display:flex;gap:8px">
-          <button class="btn-primary" style="flex:1" onclick="document.getElementById('pc-view-modal').remove();aprovarPrestacaoFinanceiro(${id})">✅ Aprovar</button>
+          <button class="btn-primary" style="flex:1" onclick="aprovarPrestacaoFinanceiroComAjustes(${id})">✅ Aprovar</button>
           <button class="btn-secondary" style="flex:1" onclick="document.getElementById('pc-view-modal').remove();devolverPrestacaoFinanceiro(${id})">↩️ Indeferir</button>
         </div>
       </div>`;
@@ -5039,6 +5087,21 @@ function pagePagar() {
     <div class="form-card">
     <div style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:700;color:var(--green-main);margin-bottom:14px;text-transform:uppercase;letter-spacing:.07em">➕ Novo Lançamento</div>
 
+    <!-- Linha 0: Anexo — primeiro campo do formulário. Anexar o documento
+         primeiro permite ao sistema tentar identificar automaticamente o
+         fornecedor, o valor e a categoria (sempre editável a seguir). -->
+    <div class="form-row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>📎 1º passo: Anexe o Documento (NF / Boleto / Contrato)</label>
+        <div style="display:flex;gap:10px;align-items:center">
+          <input type="file" id="pag_anexo" accept=".pdf,.jpg,.jpeg,.png" style="flex:1;background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border)">
+          <div id="pag_anexo_nome" style="font-size:.78rem;color:var(--text-muted)"></div>
+        </div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:4px">Anexe o documento antes de preencher o resto — o sistema tenta identificar automaticamente o fornecedor, o valor e a categoria.</div>
+        <div id="pag_anexo_status" style="font-size:.78rem;margin-top:6px"></div>
+      </div>
+    </div>
+
     <!-- Linha 1: Empresa + Fornecedor -->
     <div class="form-row">
       <div class="form-group">
@@ -5170,17 +5233,6 @@ function pagePagar() {
       <div class="form-group">
         <label>Observação para o Financeiro</label>
         <input type="text" id="pag_obs" placeholder="Instrução especial de pagamento...">
-      </div>
-    </div>
-
-    <!-- Linha 5: Anexo -->
-    <div class="form-row">
-      <div class="form-group" style="grid-column:span 2">
-        <label>📎 Anexar Documento (NF / Boleto / Contrato)</label>
-        <div style="display:flex;gap:10px;align-items:center">
-          <input type="file" id="pag_anexo" accept=".pdf,.jpg,.jpeg,.png" style="flex:1;background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border)">
-          <div id="pag_anexo_nome" style="font-size:.78rem;color:var(--text-muted)"></div>
-        </div>
       </div>
     </div>
 
@@ -9635,7 +9687,7 @@ async function carregarAprovacoes() {
             ${legado
               ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar</button>
                  <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Reprovar</button>`
-              : `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarPrestacaoFinanceiro(${i.Id})">✅ Aprovar</button>
+              : `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="pcAbrirVisualizar(${i.Id})">✅ Aprovar</button>
                  <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`
             }
           </td>
@@ -37368,6 +37420,111 @@ async function gerarPDFapr(id, tipoAPR) {
     showToast('⚠️ Erro ao gerar/sincronizar a APR: ' + (e.message || e));
   }
 }
+/* ===================== LEITURA AUTOMÁTICA DE COMPROVANTE =====================
+   Contas a Pagar / Prestação de Contas — ao anexar o comprovante/nota fiscal,
+   tenta identificar o fornecedor (casando por CNPJ contra o cadastro existente;
+   se não achar, pré-preenche o cadastro de novo fornecedor), o valor e a
+   categoria/subcategoria automaticamente. Reaproveita o mesmo leitor de
+   PDF/OCR (extrairTextoPDF/extrairTextoImagem) e as extrações já usadas em
+   Licenças (laExtrairCNPJouCPF/laExtrairCampoPorRotulo) e Equipamentos
+   (extrairValorNF) — é sempre uma sugestão editável, nunca substitui a
+   conferência do colaborador antes de salvar. */
+function finSugerirCategoria(texto) {
+  const base = (texto || '').toLowerCase();
+  let melhor = null, melhorScore = 0;
+  RD_CATEGORIAS.forEach(cat => {
+    rdSubcategoriasDe(cat).forEach(sub => {
+      const termos = sub.toLowerCase().replace(/\(.*?\)/g, '').split(/[^a-zà-ú0-9]+/).filter(t => t.length > 3);
+      let score = 0;
+      termos.forEach(t => { if (base.includes(t)) score++; });
+      if (score > melhorScore) { melhorScore = score; melhor = { categoria: cat, subcategoria: sub }; }
+    });
+  });
+  return melhorScore > 0 ? melhor : null;
+}
+
+function finPreencherCategoria(prefixo, sugestao) {
+  if (!sugestao) return false;
+  if (prefixo === 'prest') {
+    const catEl = document.getElementById('prest_categoria');
+    if (!catEl) return false;
+    catEl.value = sugestao.categoria;
+    pcAtualizarSubcategorias();
+    const subEl = document.getElementById('prest_subcategoria');
+    if (subEl) subEl.value = sugestao.subcategoria;
+  } else {
+    const subEl = document.getElementById('pag_subcategoria');
+    if (!subEl) return false;
+    subEl.value = sugestao.subcategoria;
+    pagAtualizarCategoriaPorSubcategoria();
+  }
+  return true;
+}
+
+function finPreencherFornecedor(prefixo, cnpj, nomeSugerido) {
+  const lista = prefixo === 'prest' ? _fornecedoresPrest : _fornecedoresCadastrados;
+  const alvo = cnpj ? cnpj.replace(/\D/g, '') : '';
+  const encontrado = alvo ? (lista || []).find(f => (f.CNPJ || '').replace(/\D/g, '') === alvo) : null;
+  if (encontrado) {
+    if (prefixo === 'prest') pcSelecionarFornecedor(encontrado.Title);
+    else pagSelecionarFornecedor(encontrado.Title);
+    return { status: 'encontrado', nome: encontrado.Title };
+  }
+  if (cnpj || nomeSugerido) {
+    if (prefixo === 'prest') {
+      abrirCadastroFornecedorPrest();
+      const nomeEl = document.getElementById('pforn_nome'); if (nomeEl && nomeSugerido) nomeEl.value = nomeSugerido;
+      const cnpjEl = document.getElementById('pforn_cnpj'); if (cnpjEl && cnpj) cnpjEl.value = cnpj;
+    } else {
+      abrirCadastroFornecedor();
+      const nomeEl = document.getElementById('forn_nome'); if (nomeEl && nomeSugerido) nomeEl.value = nomeSugerido;
+      const cnpjEl = document.getElementById('forn_cnpj'); if (cnpjEl && cnpj) cnpjEl.value = cnpj;
+    }
+    return { status: 'novo' };
+  }
+  return { status: 'nada' };
+}
+
+async function finProcessarComprovante(file, prefixo) {
+  if (!file) return;
+  const status = document.getElementById(prefixo + '_anexo_status');
+  if (status) status.innerHTML = '<span class="spinner"></span> Lendo comprovante — identificando fornecedor, valor e categoria...';
+  try {
+    const isPDF = file.type === 'application/pdf';
+    const texto = isPDF ? await extrairTextoPDF(file) : await extrairTextoImagem(file);
+    if (!texto || texto.trim().length < 10) {
+      if (status) status.innerHTML = '⚠️ Não consegui ler texto neste arquivo — o comprovante foi anexado, mas preencha os campos manualmente.';
+      return;
+    }
+    const cnpj = laExtrairCNPJouCPF(texto);
+    const valor = extrairValorNF(texto);
+    const nomeSugerido = laExtrairCampoPorRotulo(texto, ['raz[ãa]o\\s+social', 'nome\\s+fantasia', 'emitente'], 80);
+    const categoriaSugerida = finSugerirCategoria(texto);
+
+    const msgs = [];
+    const forn = finPreencherFornecedor(prefixo, cnpj, nomeSugerido);
+    if (forn.status === 'encontrado') msgs.push('fornecedor "' + forn.nome + '" identificado');
+    else if (forn.status === 'novo') msgs.push('fornecedor não cadastrado — confira e cadastre no formulário que abriu');
+
+    if (valor) {
+      const valorEl = document.getElementById(prefixo + '_valor');
+      if (valorEl) { valorEl.value = valor; msgs.push('valor R$ ' + valor); }
+    }
+
+    if (finPreencherCategoria(prefixo, categoriaSugerida)) {
+      msgs.push('categoria sugerida: ' + categoriaSugerida.categoria);
+    }
+
+    if (status) {
+      status.innerHTML = msgs.length
+        ? '✅ ' + msgs.join(' · ') + '. Confira tudo antes de salvar!'
+        : '⚠️ Não consegui identificar os dados automaticamente neste comprovante — preencha manualmente.';
+    }
+  } catch (e) {
+    if (status) status.innerHTML = '⚠️ Erro ao ler o comprovante: ' + (e.message || e);
+  }
+}
+
 function iniciarListenersAnexos() {
   // Prestação de contas — só guarda o arquivo em memória; o upload acontece ao clicar em "Enviar para aprovação"
   const prestAnexo = document.getElementById('prest_anexo');
@@ -37379,6 +37536,7 @@ function iniciarListenersAnexos() {
       window._prestAnexoFile = file;
       window._prestComprovanteUrl = null;
       window._prestComprovanteNome = null;
+      finProcessarComprovante(file, 'prest');
       // Feedback visual simples: mostra nome do arquivo selecionado
       const label = this.closest('label') || this.parentElement;
       if (label) {
@@ -37401,6 +37559,7 @@ function iniciarListenersAnexos() {
       window._pagComprovanteNome = null;
       window._pagComprovanteId = null;
       window._pagComprovanteDriveId = null;
+      finProcessarComprovante(file, 'pag');
       showToast('☁️ Enviando comprovante ao OneDrive...');
       const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.contasPagar);
       const nomeEl = document.getElementById('pag_anexo_nome');
