@@ -21031,7 +21031,7 @@ function painelGeralCalcularFrente(fr, flashList, ncList, mitList) {
 }
 
 function painelGeralCardFrente(p) {
-  const { fr, status, notaGeral, flashDaFrente, flashMediaIda, flashComOcorr, ncDaFrente, ncAbertas, ncForaPrazo, mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, fornDaFrente, fornNaoConf } = p;
+  const { fr, status, notaGeral, flashDaFrente, flashMediaIda, flashComOcorr, ncDaFrente, ncAbertas, ncForaPrazo, mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, fornDaFrente, fornConf, fornNaoConf } = p;
   const notaCorCss = notaGeral === null ? 'var(--text-muted)' : notaGeral >= 80 ? 'var(--green-main)' : notaGeral >= 50 ? '#d97706' : 'var(--red)';
   return `
   <div class="card" style="border-top:3px solid ${status.corCss}">
@@ -21061,7 +21061,7 @@ function painelGeralCardFrente(p) {
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="fornEnergisaFiltrarCircuito('${fr.id}');navigate('checklist_fornecedores')" title="Ver Fornecedores deste circuito">
         <span style="font-size:.72rem">🧾 Fornecedores</span>
-        <span style="font-size:.72rem;font-weight:700;color:${fornNaoConf > 0 ? 'var(--red)' : 'inherit'}">${fornDaFrente.length ? `${fornDaFrente.length} cadastrado${fornDaFrente.length!==1?'s':''}${fornNaoConf?` · 🔴${fornNaoConf}`:''}` : 'sem cadastro'}</span>
+        <span style="font-size:.72rem;font-weight:700">${fornDaFrente.length ? `${fornDaFrente.length} cadastrado${fornDaFrente.length!==1?'s':''} · <span style="color:var(--green-main)">✅${fornConf}</span> · <span style="color:${fornNaoConf>0?'var(--red)':'inherit'}">❌${fornNaoConf}</span>` : 'sem cadastro'}</span>
       </div>
     </div>
     <button class="btn-secondary" style="width:100%;margin-top:10px;font-size:.72rem;padding:6px" onclick="painelGeralAbrirRelatorio('${fr.id}')">📄 Relatório Mensal</button>
@@ -21811,6 +21811,10 @@ function pagePainelGeralEro() {
 
   ${painelGeralHtmlRelatorioForm()}
 
+  <div style="font-size:.72rem;color:var(--text-muted);background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:16px">
+    ℹ️ <strong>Como a Nota Geral é calculada:</strong> média entre Flash Report (% IDA), Kit de Mitigação (% de conformidade) e Fornecedores (% de documentos validados como Conforme) — só entram na média os indicadores que já têm dado. Depois é descontada uma penalidade de 5 pontos por Notificação de NC aberta e 10 pontos por NC fora do prazo. Sem nenhum indicador disponível, a nota fica em "—".
+  </div>
+
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px">
     <div class="kpi-card red" style="padding:12px">
       <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🔴 Requerem atenção</div>
@@ -21952,7 +21956,7 @@ function pageChecklistFornecedores() {
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
     <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📍 ${circuito.nome} — ${fornecedoresDoCircuito.length} fornecedor${fornecedoresDoCircuito.length!==1?'es':''}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      ${circuito.id === 'engm3' && fornecedoresDoCircuito.length === 0 ? `<button class="btn-secondary" onclick="fornEnergisaCarregarSeedPresidenteMedici()">🌱 Carregar fornecedores já levantados em campo</button>` : ''}
+      ${FORN_ENERGISA_SEEDS[circuito.id] && fornecedoresDoCircuito.length === 0 ? `<button class="btn-secondary" onclick="fornEnergisaCarregarSeed('${circuito.id}')">🌱 Carregar fornecedores já levantados em campo</button>` : ''}
       <button class="btn-primary" onclick="fornEnergisaAbrirModal('${circuito.id}')">➕ Novo Fornecedor</button>
     </div>
   </div>
@@ -22291,15 +22295,146 @@ const FORN_ENERGISA_SEED_PRESIDENTE_MEDICI = [
   },
 ];
 
-async function fornEnergisaCarregarSeedPresidenteMedici() {
-  if (!confirm('Isso vai cadastrar os 3 fornecedores levantados em campo para Presidente Médici (Concreto, Posto de Gasolina e Restaurante), com a documentação legal já identificada nos arquivos da pasta de fornecedores. Continuar?')) return;
+/* -- Seed com os fornecedores/documentação real levantados em campo para o
+      circuito "LDAT 69 kV Porto Velho / Guaporé" (id enermais), a partir da
+      pasta "03 - CLIENTES/.../02 - LDAT PVH GPO - ENERMAIS/04 - PGA/12 -
+      Gestão Fornecedores" (levantamento de 18/08/2026). Vários documentos
+      dessa pasta são digitalizados sem data de validade legível no arquivo
+      (ou são protocolos/processos ainda em andamento) — nesses casos a
+      Validade fica em branco e a Observação registra a ressalva, para o
+      fiscal confirmar no documento original. -- */
+const FORN_ENERGISA_SEED_ENERMAIS = [
+  {
+    CircuitoId: 'enermais', Nome: 'POSTO MIRIAM', Tipo: 'posto',
+    RazaoSocial: 'Miriam Porto Velho Auto Posto', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: '', Validade: '2026-08-14', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará de Funcionamento Mirian Porto Velho Auto Posto Venc 14 08 2026.pdf' },
+      { Id: 2, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: '', Validade: '2026-08-28', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'AVCIP M2 PVH - Venc 28 08 2026.pdf' },
+      { Id: 3, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '', OrgaoEmissor: 'IBAMA', Observacao: '', Validade: '2026-09-05', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CR IBAMA M2 Venc 05 09 2026.pdf' },
+      { Id: 4, Tipo: 'Licença de Operação Ambiental', Numero: '', OrgaoEmissor: 'Órgão Ambiental Estadual', Observacao: '', Validade: '2028-06-24', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LO M2 PORTO VELHO - Val 24-06-2028.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'CONCRETEIRA SUPERMIX', Tipo: 'concreteira',
+    RazaoSocial: 'Supermix Concreto', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: '', Validade: '2027-03-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'ALVARÁ SUPERMIX - VENC 31.03.2027.pdf' },
+      { Id: 2, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Vistoria de 2025 — confirmar validade/renovação no documento original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'AUTO VISTORIA BOMBEIRO 2025 AVCIP.pdf' },
+      { Id: 3, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '', OrgaoEmissor: 'IBAMA', Observacao: '', Validade: '2026-08-21', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CTF-Porto Velho-21-08-2026.pdf' },
+      { Id: 4, Tipo: 'Licença Ambiental de Operação (Concreteira)', Numero: 'LAO nº 20 SOL-DLA', OrgaoEmissor: 'Órgão Ambiental Estadual', Observacao: '', Validade: '2027-03-29', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LAO n 20 SOL-DLA - venc. 29.03.2027 (1).pdf' },
+      { Id: 5, Tipo: 'Licenças de Extração Mineral (Areia e Brita)', Numero: 'Portaria DNPM nº 476', OrgaoEmissor: 'DNPM/ANM', Observacao: 'Portaria de lavra + Licenças de Operação de Areia e Brita — sem data de vencimento identificada nos arquivos digitalizados, conferir os originais.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Portaria 476.pdf / LO - AREIA BRANCA.pdf / LO - BRITA NORTE.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'MADECON', Tipo: 'concreteira',
+    RazaoSocial: 'Madecon Engenharia', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: '', Validade: '2026-09-21', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'ALVARA MADECON ENGENHARIA 21.09.2026.pdf' },
+      { Id: 2, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: '', Validade: '2026-09-18', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'AVCIP BOMBEIROS_MADECON_18.09.2026.pdf' },
+      { Id: 3, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '', OrgaoEmissor: 'IBAMA', Observacao: '', Validade: '2026-08-19', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CR_CTF_MADECON-19.08.2026.pdf' },
+      { Id: 4, Tipo: 'Licença Ambiental de Operação (Concreteira)', Numero: '', OrgaoEmissor: 'Órgão Ambiental Estadual', Observacao: '', Validade: '2029-11-19', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LAO CONCRETERIA 19.11.2029.pdf' },
+      { Id: 5, Tipo: 'Licença Ambiental de Operação (Pedreira/Brita)', Numero: '', OrgaoEmissor: 'Órgão Ambiental Estadual', Observacao: '', Validade: '2028-08-06', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LAO PEDREIRA_MADECON_06.08.2028.pdf' },
+      { Id: 6, Tipo: 'Licenças/Outorga de Extração de Areia (Jazida)', Numero: 'LO nº 157278 / 157567', OrgaoEmissor: 'Órgão Ambiental Estadual / ANM', Observacao: 'Inclui cessão de direito minerário (DOU) — sem data de vencimento identificada nos arquivos digitalizados, conferir os originais.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LO_157278_COM ANM_AREIA BRANCA.pdf / LO_157567_AREIA BRANCA.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'RESTAURANTE SABOR DO DIA', Tipo: 'restaurante',
+    RazaoSocial: 'Restaurante Escolha do Dia / Sabor do Dia', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Licença Sanitária', Numero: '', OrgaoEmissor: 'Vigilância Sanitária — Porto Velho', Observacao: 'Sem data de vencimento identificada no arquivo digitalizado, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvara Sanitário_Restaurante Sabor do Dia.pdf' },
+      { Id: 2, Tipo: 'Auto de Vistoria do Corpo de Bombeiros', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Documento de 2026 — confirmar validade no original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CBM 2026.pdf' },
+      { Id: 3, Tipo: 'Protocolo de AVCIP (em análise)', Numero: 'PSCIP 9277', OrgaoEmissor: 'CBMRO', Observacao: 'Protocolado, aguardando emissão do AVCIP definitivo.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Protocolo PSCIP_9277_AVCIP Bombeiro.pdf' },
+      { Id: 4, Tipo: 'Protocolo de Licença Ambiental (em andamento)', Numero: '', OrgaoEmissor: 'SUL — Prefeitura de Porto Velho', Observacao: 'Processo protocolado, aguardando emissão da licença ambiental.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'SUL - PMPV _ Visualizar Processo_RESTAURANTE ESCOLHA DO DIA_PROTOCOLO LICENÇA AMBIENTAL.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'DISAGUA', Tipo: 'outro',
+    RazaoSocial: 'Disagua', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: 'Exercício 2025-2026 — conferir data exata de vencimento no original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'ALVARA DE FUNCIONAMENTO 2025-2026.pdf' },
+      { Id: 2, Tipo: 'Alvará Provisório do Corpo de Bombeiros', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Alvará provisório emitido em 08/11/2025 — confirmar emissão do definitivo.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'alvara provisorio Bombeiros 08.11.2025.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'FÁBRICA DE GELO SOUZA', Tipo: 'outro',
+    RazaoSocial: 'Fábrica de Gelo Souza', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: 'Exercício 2026.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará 2026.pdf' },
+      { Id: 2, Tipo: 'Certificado do Corpo de Bombeiros', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Exercício 2026.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Certificado Bombeiros 2026.pdf' },
+      { Id: 3, Tipo: 'Certificado Sanitário dos Veículos', Numero: '', OrgaoEmissor: 'Vigilância Sanitária', Observacao: 'Exercício 2026.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Certificado Sanitário dos Veículos 2026.pdf' },
+      { Id: 4, Tipo: 'Licença Sanitária', Numero: '', OrgaoEmissor: 'Vigilância Sanitária', Observacao: 'Exercício 2026.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Licença Sanitária 2026.pdf' },
+      { Id: 5, Tipo: 'Protocolo de Outorga de Uso de Água (em andamento)', Numero: '', OrgaoEmissor: 'Órgão Gestor de Recursos Hídricos', Observacao: 'Protocolado, aguardando emissão da outorga.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Protocolo Outorga.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'MADEIREIRA SOLTOVSKI', Tipo: 'outro',
+    RazaoSocial: 'Madeireira Soltovski', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: 'Exercício 2026.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'alvara_funcionamento 2026.pdf' },
+      { Id: 2, Tipo: 'Certificado do Corpo de Bombeiros', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Exercício 2026.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CERTIFICADO BOMBEIRO 2026.pdf' },
+      { Id: 3, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '', OrgaoEmissor: 'IBAMA', Observacao: 'Sem data de vencimento identificada no arquivo, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CTF.pdf' },
+      { Id: 4, Tipo: 'Licença de Operação', Numero: '', OrgaoEmissor: 'Órgão Ambiental Estadual', Observacao: 'Sem data de vencimento identificada no arquivo, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA OPERAÇÃO  MEL SOLTOVISKI.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'PONTO DO EPI', Tipo: 'outro',
+    RazaoSocial: 'Ponto do EPI', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: 'Sem data de vencimento identificada no arquivo, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Ponto do EPI_Alvara de Funcionamento.pdf' },
+      { Id: 2, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Sem data de vencimento identificada no arquivo, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Ponto do EPI_AVCIP Bombeiro.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'CENTRAL DIESEL PVH', Tipo: 'outro',
+    RazaoSocial: 'Central Diesel PVH', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Inscrição Municipal', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: 'Cadastro municipal — documentação de funcionamento ainda em regularização.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'INSCRICAO MUNICIPAL.pdf' },
+      { Id: 2, Tipo: 'Alvará de Localização e Funcionamento (em processo)', Numero: '', OrgaoEmissor: 'SUL — Prefeitura de Porto Velho', Observacao: 'Processo de licenciamento em andamento, ainda sem alvará definitivo emitido (consulta de viabilidade já realizada).', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'SUL - PMPV _ Visualizar Processo - CENTRAL.pdf / VIABILIDADE.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'LAPEF', Tipo: 'outro',
+    RazaoSocial: 'LAPEF — Laboratório', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: '', Validade: '2027-07-29', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará de LOCALIZAÇÃO E FUNCIONAMENTO 29.07.27.pdf' },
+      { Id: 2, Tipo: 'Certificado do Corpo de Bombeiros', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Exercício 2026.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Bombeiros 2026.pdf' },
+      { Id: 3, Tipo: 'Certificado de Acreditação (CRL)', Numero: 'CRL 1688', OrgaoEmissor: 'Rede Metrológica/Acreditação', Observacao: 'Acreditação técnica do laboratório — sem data de vencimento identificada, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Certificado de Acreditacao CRL 1688.pdf' },
+      { Id: 4, Tipo: 'Cadastramento REBLAS', Numero: '', OrgaoEmissor: 'ANVISA/REBLAS', Observacao: '', Validade: '2030-05-21', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Edital Cadastramento Reblass 21.05.2030.pdf' },
+      { Id: 5, Tipo: 'Licença Sanitária', Numero: '', OrgaoEmissor: 'Vigilância Sanitária', Observacao: '', Validade: '2027-03-11', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Licença Sanitária 11.03.27.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'enermais', Nome: 'LOC MAC', Tipo: 'locacao',
+    RazaoSocial: 'LOC MAC — Locação de Máquinas', CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: 'Exercício 2027.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'ALVARA DE FUNCIONAMENTO_LOC MAQ_2027.pdf' },
+      { Id: 2, Tipo: 'Autorização Intermunicipal de Transporte', Numero: '', OrgaoEmissor: 'Órgão de Trânsito/Transporte', Observacao: '', Validade: '2027-05-08', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'AUTORIZAÇÃO INTERMUNICIPAL VENC 08.05.2027_LOC MAQ_VEICULAR.pdf' },
+      { Id: 3, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Sem data de vencimento identificada no arquivo, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'AVCIP Bombeiro_LOC MAQ.pdf' },
+      { Id: 4, Tipo: 'Certificado de Regularidade (CR) — IBAMA', Numero: '', OrgaoEmissor: 'IBAMA', Observacao: '', Validade: '2026-09-10', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CR IBAMA VAL 10.09.2026.pdf' },
+      { Id: 5, Tipo: 'Licença Sanitária', Numero: '', OrgaoEmissor: 'Vigilância Sanitária', Observacao: 'Emitida em 03/06/2026.', Validade: '2027-06-01', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA SANITÁRIA ATUAL VENC 01.06.2027 - EMITIDA EM 03.06.26.pdf' },
+      { Id: 6, Tipo: 'Cadastro SINIR', Numero: '112829', OrgaoEmissor: 'Sistema Nacional de Informações sobre Gestão de Resíduos', Observacao: 'Cadastro sem data de vencimento aplicável.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'SINIR _CADASTRO-112829.pdf' },
+    ],
+  },
+];
+
+/* -- Mapa circuito → seed de fornecedores já levantados em campo. Adicionar
+      novos circuitos aqui conforme forem levantados. -- */
+const FORN_ENERGISA_SEEDS = {
+  engm3: FORN_ENERGISA_SEED_PRESIDENTE_MEDICI,
+  enermais: FORN_ENERGISA_SEED_ENERMAIS,
+};
+
+async function fornEnergisaCarregarSeed(circuitoId) {
+  const seed = FORN_ENERGISA_SEEDS[circuitoId];
+  if (!seed || !seed.length) return;
+  if (!confirm('Isso vai cadastrar os ' + seed.length + ' fornecedores levantados em campo para este circuito, com a documentação legal já identificada nos arquivos. Continuar?')) return;
   _limparSyncError();
   let algumFalhou = false;
-  for (const seed of FORN_ENERGISA_SEED_PRESIDENTE_MEDICI) {
-    const ok = await dbInserir('FornecedoresEnergisa', Object.assign({ CriadoPor: window._currentUser ? window._currentUser.name : '', DataCriacao: new Date().toISOString() }, seed));
+  for (const s of seed) {
+    const ok = await dbInserir('FornecedoresEnergisa', Object.assign({ CriadoPor: window._currentUser ? window._currentUser.name : '', DataCriacao: new Date().toISOString() }, s));
     if (!ok) algumFalhou = true;
   }
-  showToast(algumFalhou ? ('⚠️ Alguns fornecedores não foram salvos.' + syncErrorDetalhe()) : '✅ Fornecedores de Presidente Médici cadastrados!');
+  showToast(algumFalhou ? ('⚠️ Alguns fornecedores não foram salvos.' + syncErrorDetalhe()) : '✅ Fornecedores cadastrados!');
   await fornEnergisaCarregar(true);
 }
 
