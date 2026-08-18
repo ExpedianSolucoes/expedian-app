@@ -18245,7 +18245,69 @@ const centrosCustoData = [
   { id:'CC-036', contrato:'Ruído Ambiental CSS',                          cliente:'C.S da Silva Serviços',empresa:'EXP Brasil',     status:'finalizado', gestor:'Tiago',              categoria:'Ruídos' },
 ];
 
+/* -- Financeiro por Centro de Custo: Receitas/Despesas são somadas ao vivo
+      das tabelas já existentes (mesmo padrão de carregarMedicoesCC, mas
+      somando TODOS os lançamentos do CC, não só de uma medição). O "Valor
+      Aprovado do Contrato" não existia em lugar nenhum antes — é um dado
+      novo, editável direto na tela, persistido na tabela própria
+      'CentrosCustoValores' (uma linha por Centro de Custo). -- */
+let _custosReceitas = null;
+let _custosDespesas = null;
+let _custosValoresAprovados = null;
+
+async function custosCarregarFinanceiro(forcar) {
+  if (_custosReceitas !== null && !forcar) { navigate('custos'); return; }
+  try {
+    const [r, d, v] = await Promise.all([
+      dbLer('Receitas').catch(() => []),
+      dbLer('Despesas').catch(() => []),
+      dbLer('CentrosCustoValores').catch(() => []),
+    ]);
+    _custosReceitas = Array.isArray(r) ? r : [];
+    _custosDespesas = Array.isArray(d) ? d : [];
+    _custosValoresAprovados = Array.isArray(v) ? v : [];
+  } catch(e) {
+    console.warn('[Centros de Custo] Falha ao carregar financeiro.', e);
+    _custosReceitas = _custosReceitas || [];
+    _custosDespesas = _custosDespesas || [];
+    _custosValoresAprovados = _custosValoresAprovados || [];
+  }
+  navigate('custos');
+}
+
+function _custosValorAprovado(ccId) {
+  const r = (_custosValoresAprovados || []).find(x => x.CentroCustoId === ccId);
+  return r ? (Number(r.ValorAprovado) || 0) : 0;
+}
+
+/* -- Soma TODAS as Receitas/Despesas já lançadas com esse Centro de Custo
+      (qualquer medição), para o resumo financeiro da tela principal. -- */
+function _custosFinanceiroDoCC(ccId) {
+  const receitas = (_custosReceitas || []).filter(r => _ccIdPuro(r.CentroCusto) === ccId).reduce((s,r) => s + (Number(r.Valor)||0), 0);
+  const despesas = (_custosDespesas || []).filter(d => _ccIdPuro(d.CentroCusto) === ccId).reduce((s,d) => s + (Number(d.Valor)||0), 0);
+  const valorAprovado = _custosValorAprovado(ccId);
+  const saldoAMedir = valorAprovado - receitas;
+  const pctDR = receitas > 0 ? (despesas / receitas * 100) : null;
+  return { receitas, despesas, valorAprovado, saldoAMedir, pctDR };
+}
+
+async function custosSalvarValorAprovado(ccId, valor) {
+  const num = parseFloat(String(valor).replace(/\./g,'').replace(',','.'));
+  const v = isNaN(num) ? 0 : num;
+  const existente = (_custosValoresAprovados || []).find(x => x.CentroCustoId === ccId);
+  _limparSyncError();
+  let ok;
+  if (existente) {
+    ok = await dbAtualizar('CentrosCustoValores', existente.Id, { ValorAprovado: v });
+  } else {
+    ok = await dbInserir('CentrosCustoValores', { CentroCustoId: ccId, ValorAprovado: v });
+  }
+  if (!ok) showToast('❌ Erro ao salvar valor aprovado.' + syncErrorDetalhe());
+  await custosCarregarFinanceiro(true);
+}
+
 function pageCustos() {
+  if (_custosReceitas === null) { setTimeout(() => custosCarregarFinanceiro(), 100); }
   const filtroEmp   = window._custosEmp   || 'todos';
   const filtroSt    = window._custosSt    || 'todos';
   const filtroCat   = window._custosCat   || 'todos';
@@ -18445,12 +18507,15 @@ function pageCustos() {
         <span class="badge">${items.length} contrato${items.length>1?'s':''} · ${items.filter(i=>i.status==='ativo').length} ativo${items.filter(i=>i.status==='ativo').length!==1?'s':''}</span>
       </div>
       <div style="overflow-x:auto">
-      <table class="data-table" style="min-width:600px">
+      <table class="data-table" style="min-width:1020px">
         <thead>
-          <tr><th>Código</th><th>Contrato</th><th>Cliente</th><th>Categoria</th><th>Gestor</th><th>Status</th><th></th></tr>
+          <tr><th>Código</th><th>Contrato</th><th>Cliente</th><th>Categoria</th><th>Gestor</th><th>Status</th><th>Valor Aprovado</th><th>Receitas</th><th>Despesas</th><th>Saldo a Medir</th><th>%D/R</th><th></th></tr>
         </thead>
         <tbody>
-          ${items.map(c => `
+          ${items.map(c => {
+            const fin = _custosReceitas === null ? null : _custosFinanceiroDoCC(c.id);
+            const fmt = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2});
+            return `
           <tr>
             <td style="font-weight:700;color:${empColors[emp]};font-size:.75rem;white-space:nowrap">${c.id}</td>
             <td style="font-size:.82rem;font-weight:500">${c.contrato}</td>
@@ -18458,13 +18523,21 @@ function pageCustos() {
             <td><span style="font-size:.65rem;padding:2px 8px;border-radius:12px;background:var(--surface2);border:1px solid var(--border)">${c.categoria}</span></td>
             <td style="font-size:.78rem;font-weight:600;color:var(--text)">${c.gestor}</td>
             <td>${statusPill(c.status)}</td>
+            <td style="white-space:nowrap">
+              ${fin === null ? '—' : `<input type="number" step="0.01" value="${fin.valorAprovado||''}" placeholder="0,00" onchange="custosSalvarValorAprovado('${c.id}',this.value)" style="width:110px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-size:.75rem;background:var(--surface)">`}
+            </td>
+            <td style="white-space:nowrap;color:var(--green-main);font-size:.78rem">${fin === null ? '…' : fmt(fin.receitas)}</td>
+            <td style="white-space:nowrap;color:var(--red);font-size:.78rem">${fin === null ? '…' : fmt(fin.despesas)}</td>
+            <td style="white-space:nowrap;font-size:.78rem;font-weight:700;color:${fin && fin.saldoAMedir<0?'var(--red)':'inherit'}">${fin === null ? '…' : fmt(fin.saldoAMedir)}</td>
+            <td style="white-space:nowrap;font-size:.78rem;font-weight:700;color:${fin && fin.pctDR!==null && fin.pctDR>=100?'var(--red)':fin && fin.pctDR!==null && fin.pctDR>=80?'#d97706':'inherit'}">${fin === null ? '…' : (fin.pctDR===null?'—':fin.pctDR.toFixed(0)+'%')}</td>
             <td>
               <button onclick="abrirDetalheCC('${c.id}')"
                 style="font-size:.68rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;white-space:nowrap">
                 📋 Detalhes
               </button>
             </td>
-          </tr>`).join('')}
+          </tr>`;
+          }).join('')}
         </tbody>
       </table>
       </div>
