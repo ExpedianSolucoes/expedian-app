@@ -21870,16 +21870,26 @@ function pageChecklistFornecedores() {
     <p>Documentação legal dos fornecedores/prestadores instalados em cada circuito elétrico — validação Conforme / Não Conforme / Não Aplicável</p>
   </div>
 
+  <div style="margin-bottom:16px">
+    <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+  </div>
+
   <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
     <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">Selecione o Circuito Elétrico</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px">
       ${FLASH_FRENTES.map(f => {
         const doCirc = porCircuito[f.id] || [];
-        const naoConf = doCirc.reduce((s,x) => s + (x.Documentos||[]).filter(d => d.StatusValidacao === 'nao_conforme').length, 0);
+        const todosDocs = doCirc.reduce((arr,x) => arr.concat(x.Documentos||[]), []);
+        const conf = todosDocs.filter(d => d.StatusValidacao === 'conforme').length;
+        const naoConf = todosDocs.filter(d => d.StatusValidacao === 'nao_conforme').length;
         const ativo = _fornEnergisaCircuitoFiltro === f.id;
         return `<div class="kpi-card${ativo?' green':''}" style="padding:10px;cursor:pointer;${ativo?'border-color:var(--brand-brown,#3F261F)':''}${naoConf>0?';border-color:var(--red)':''}" onclick="fornEnergisaFiltrarCircuito('${f.id}')">
           <div style="font-size:.72rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${f.nome}">${ativo?'📍 ':''}${f.nome}</div>
-          <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">${doCirc.length} fornecedor${doCirc.length!==1?'es':''}${naoConf?` · 🔴${naoConf} doc. não conf.`:''}</div>
+          <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">${doCirc.length} fornecedor${doCirc.length!==1?'es':''}</div>
+          <div style="font-size:.65rem;margin-top:3px">
+            <span style="color:var(--green-main);font-weight:700">✅ ${conf}</span> ·
+            <span style="color:${naoConf>0?'var(--red)':'var(--text-muted)'};font-weight:700">❌ ${naoConf}</span>
+          </div>
         </div>`;
       }).join('')}
     </div>
@@ -21919,7 +21929,7 @@ function fornEnergisaCardHtml(f) {
     </div>
     ${docs.length === 0
       ? `<div style="font-size:.78rem;color:var(--text-muted);padding:8px 0">Nenhum documento cadastrado.</div>`
-      : `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Documento</th><th>Nº / Órgão / Obs.</th><th>Validade</th><th>Validação</th><th>Arquivo</th></tr></thead><tbody>
+      : `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Documento</th><th>Nº / Órgão / Obs.</th><th>Validade</th><th>Validação</th><th>Arquivo</th><th></th></tr></thead><tbody>
         ${docs.map(d => {
           const info = fornEnergisaStatusInfo(d.StatusValidacao);
           return `<tr>
@@ -21935,10 +21945,12 @@ function fornEnergisaCardHtml(f) {
               </select>
             </td>
             <td>${d.ArquivoUrl ? `<a href="${d.ArquivoUrl}" target="_blank" style="font-size:.72rem;color:var(--blue)">📎 Ver</a>` : `<label style="font-size:.68rem;color:var(--text-muted);cursor:pointer">📤 Anexar<input type="file" accept=".pdf,.jpg,.jpeg,.png" style="display:none" onchange="fornEnergisaUploadDocumento(event,${f.Id},${d.Id})"></label>`}</td>
+            <td><button type="button" title="Excluir este documento" onclick="fornEnergisaExcluirDocumento(${f.Id},${d.Id})" style="border:none;background:transparent;color:var(--red);cursor:pointer;font-size:.8rem">🗑️</button></td>
           </tr>`;
         }).join('')}
       </tbody></table></div>`
     }
+    <button class="btn-secondary" style="margin-top:8px;font-size:.72rem;padding:5px 10px" onclick="fornEnergisaAddDocumentoRapido(${f.Id})">➕ Adicionar Documento</button>
   </div>`;
 }
 
@@ -22083,6 +22095,29 @@ async function fornEnergisaAtualizarStatus(fornecedorId, docId, status) {
   navigate('checklist_fornecedores');
 }
 
+/* -- Exclui um único documento do fornecedor, sem precisar abrir o modal
+      de edição completo. -- */
+async function fornEnergisaExcluirDocumento(fornecedorId, docId) {
+  const f = (_fornEnergisaLista||[]).find(x => x.Id === fornecedorId);
+  if (!f) return;
+  if (!confirm('Excluir este documento?')) return;
+  f.Documentos = (f.Documentos||[]).filter(d => d.Id !== docId);
+  _limparSyncError();
+  const ok = await dbAtualizar('FornecedoresEnergisa', fornecedorId, { Documentos: f.Documentos });
+  showToast(ok ? '🗑️ Documento excluído.' : ('❌ Erro ao excluir.' + syncErrorDetalhe()));
+  navigate('checklist_fornecedores');
+}
+
+/* -- Atalho do card: abre o modal de edição do fornecedor já com uma linha
+      de documento em branco pronta para preencher (sem precisar clicar em
+      "Editar" e depois "Adicionar Documento" separadamente). -- */
+function fornEnergisaAddDocumentoRapido(fornecedorId) {
+  const f = (_fornEnergisaLista||[]).find(x => x.Id === fornecedorId);
+  if (!f) return;
+  fornEnergisaAbrirModal(f.CircuitoId, f.Id);
+  fornEnergisaAddDocRow();
+}
+
 async function fornEnergisaUploadDocumento(event, fornecedorId, docId) {
   const file = event.target.files[0];
   if (!file) return;
@@ -22119,17 +22154,25 @@ const FORN_ENERGISA_SEED_PRESIDENTE_MEDICI = [
   },
   {
     CircuitoId: 'engm3',
-    Nome: 'POSTO DE GASOLINA',
-    RazaoSocial: 'Postos Patrão 12 (Varea e Varea Comércio de Combustível Ltda) e Patrão 15 (Domingues Neto Comércio Varejista de Combustível Ltda)',
-    CNPJ: '',
+    Nome: 'POSTO DE GASOLINA — DOMINGUES NETO (Patrão 15)',
+    RazaoSocial: 'Domingues Neto Comércio Varejista de Combustível Ltda',
+    CNPJ: '23.036.550/0001-66',
     Documentos: [
-      { Id: 1, Tipo: 'Licença de Operação (SEDAM)', Numero: '159630', OrgaoEmissor: 'SEDAM/RO', Observacao: 'Posto Patrão 12 — Varea e Varea Comércio de Combustível Ltda (CNPJ 33.028.072/0001-04)', Validade: '2030-02-11', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: '12_LO-Patrão-12.pdf' },
-      { Id: 2, Tipo: 'Licença de Operação (SEDAM)', Numero: '159676', OrgaoEmissor: 'SEDAM/RO', Observacao: 'Posto Patrão 15 — Domingues Neto Comércio Varejista de Combustível Ltda (CNPJ 23.036.550/0001-66)', Validade: '2030-03-05', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: '15_LO-P15-Venc-03-2030.pdf' },
-      { Id: 3, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Posto Patrão 12/13', Validade: '2026-09-11', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará bombeiro 11-09-2026.pdf' },
-      { Id: 4, Tipo: 'Alvará de Localização e Funcionamento', Numero: '19/2026', OrgaoEmissor: 'Prefeitura de Presidente Médici', Observacao: 'Posto Patrão 15 — Domingues Neto', Validade: '2027-01-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará de funcionamento 31-01-2027.pdf' },
-      { Id: 5, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Presidente Médici', Observacao: 'Posto Patrão 12 — Varea e Varea', Validade: '2027-07-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará de funcionamento 31-07-2027.pdf' },
-      { Id: 6, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Posto Patrão 12', Validade: '2027-04-08', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará do bombeiro 08-04-2027.pdf' },
-      { Id: 7, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '7756846', OrgaoEmissor: 'IBAMA', Observacao: 'Posto Patrão 12 — Varea e Varea', Validade: '2026-11-07', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CR IBAMA POSTO 12 (1).pdf' },
+      { Id: 1, Tipo: 'Licença de Operação (SEDAM)', Numero: '159676', OrgaoEmissor: 'SEDAM/RO', Observacao: '', Validade: '2030-03-05', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: '15_LO-P15-Venc-03-2030.pdf' },
+      { Id: 2, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: '', Validade: '2026-09-11', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará bombeiro 11-09-2026.pdf' },
+      { Id: 3, Tipo: 'Alvará de Localização e Funcionamento', Numero: '19/2026', OrgaoEmissor: 'Prefeitura de Presidente Médici', Observacao: '', Validade: '2027-01-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará de funcionamento 31-01-2027.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'engm3',
+    Nome: 'POSTO DE GASOLINA — VAREA E VAREA (Patrão 12)',
+    RazaoSocial: 'Varea e Varea Comércio de Combustível Ltda',
+    CNPJ: '33.028.072/0001-04',
+    Documentos: [
+      { Id: 1, Tipo: 'Licença de Operação (SEDAM)', Numero: '159630', OrgaoEmissor: 'SEDAM/RO', Observacao: '', Validade: '2030-02-11', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: '12_LO-Patrão-12.pdf' },
+      { Id: 2, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Presidente Médici', Observacao: '', Validade: '2027-07-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará de funcionamento 31-07-2027.pdf' },
+      { Id: 3, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: '', Validade: '2027-04-08', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará do bombeiro 08-04-2027.pdf' },
+      { Id: 4, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '7756846', OrgaoEmissor: 'IBAMA', Observacao: '', Validade: '2026-11-07', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CR IBAMA POSTO 12 (1).pdf' },
     ],
   },
   {
