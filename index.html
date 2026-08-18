@@ -1340,6 +1340,7 @@ function renderPage(id) {
     checklist_coleta: () => pageChecklistColeta(),
     checklist_flash: () => pageChecklistFlash(),
     checklist_notif: () => pageChecklistNotif(),
+    checklist_fornecedores: () => pageChecklistFornecedores(),
     checklist_medicao: () => pageChecklistMedicao(),
     checklist_faturamento: () => pageChecklistFaturamento(),
     checklist_fauna: () => pageChecklistFauna(),
@@ -11409,6 +11410,7 @@ const PROJETOS_ENERGISA_OBRAS_COMPARTILHADO = [
   { rota: 'checklist_flash', icon: '🚧', titulo: 'Flash Report', subtitulo: 'Relatório diário de campo por frente/empreiteira' },
   { rota: 'checklist_notif', icon: '⚠️', titulo: 'Notificação de NC', subtitulo: 'Notificação de não conformidade ambiental por circuito elétrico' },
   { rota: 'checklist_mitigacao', icon: '🧯', titulo: 'Kit de Mitigação Ambiental', subtitulo: 'Checklist de vistoria do kit de contenção/mitigação ambiental' },
+  { rota: 'checklist_fornecedores', icon: '🧾', titulo: 'Fornecedores', subtitulo: 'Documentação legal dos fornecedores instalados em cada circuito — Conforme/Não Conforme/N.A.' },
 ];
 const PROJETOS_ENERGISA_OBRAS_EXCLUSIVO = [
   { rota: 'checklist_medicao', icon: '💰', titulo: 'Medição', subtitulo: 'Medições por período/BM em cada circuito elétrico' },
@@ -20910,6 +20912,7 @@ const FISCALIZACAO_ERO_CATALOGO = [
   { rota: 'checklist_flash', icon: '🚧', titulo: 'Flash Report', subtitulo: 'Relatório diário de campo por frente/empreiteira' },
   { rota: 'checklist_notif', icon: '⚠️', titulo: 'Notificação de NC', subtitulo: 'Notificação de não conformidade ambiental por circuito elétrico' },
   { rota: 'checklist_mitigacao', icon: '🧯', titulo: 'Kit de Mitigação Ambiental', subtitulo: 'Checklist de vistoria do kit de contenção/mitigação ambiental' },
+  { rota: 'checklist_fornecedores', icon: '🧾', titulo: 'Fornecedores', subtitulo: 'Documentação legal dos fornecedores instalados em cada circuito — Conforme/Não Conforme/N.A.' },
 ];
 
 function pageFiscalizacaoEro() {
@@ -20964,6 +20967,7 @@ async function painelGeralCarregarDados(forcar) {
       (window._flashHistorico === null || forcar) ? flashCarregarHistorico(true, true) : Promise.resolve(),
       (window._ncHistorico === null || forcar) ? ncCarregarHistorico(true, true) : Promise.resolve(),
       painelGeralCarregarMitigacaoSemNavegar(),
+      (_fornEnergisaLista === null || forcar) ? dbLer('FornecedoresEnergisa').then(l => { _fornEnergisaLista = Array.isArray(l) ? l : []; }).catch(() => { _fornEnergisaLista = _fornEnergisaLista || []; }) : Promise.resolve(),
     ]);
   } finally {
     window._painelGeralCarregando = false;
@@ -21026,6 +21030,10 @@ function painelGeralCardFrente(p) {
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="navigate('checklist_mitigacao')" title="Ver Kit de Mitigação">
         <span style="font-size:.72rem">🧯 Kit Mitigação</span>
         <span style="font-size:.72rem;font-weight:700;color:${mitNaoAceitavel > 0 ? 'var(--red)' : 'inherit'}">${mitDaFrente.length ? (mitMediaPct === null ? '—' : mitMediaPct.toFixed(0) + '%') + (mitNaoAceitavel ? ` · 🔴${mitNaoAceitavel}` : '') + (mitAcoesPendentes ? ` · ⏳${mitAcoesPendentes}` : '') : 'sem registros'}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="fornEnergisaFiltrarCircuito('${fr.id}');navigate('checklist_fornecedores')" title="Ver Fornecedores deste circuito">
+        <span style="font-size:.72rem">🧾 Fornecedores</span>
+        <span style="font-size:.72rem;font-weight:700">${(() => { const n = (_fornEnergisaLista||[]).filter(x => x.CircuitoId === fr.id); const nc = n.reduce((s,x)=>s+(x.Documentos||[]).filter(d=>d.StatusValidacao==='nao_conforme').length,0); return n.length ? `${n.length} cadastrado${n.length!==1?'s':''}${nc?` · 🔴${nc}`:''}` : 'sem cadastro'; })()}</span>
       </div>
     </div>
     <button class="btn-secondary" style="width:100%;margin-top:10px;font-size:.72rem;padding:6px" onclick="painelGeralAbrirRelatorio('${fr.id}')">📄 Relatório Mensal</button>
@@ -21797,6 +21805,355 @@ function pagePainelGeralEro() {
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px">
     ${porFrente.map(p => painelGeralCardFrente(p)).join('')}
   </div>`;
+}
+
+/* =====================================================================
+   FORNECEDORES POR CIRCUITO — documentação legal de fornecedores/prestadores
+   instalados em cada circuito elétrico (concreteira, posto de combustível,
+   restaurante etc.), com validação Conforme / Não Conforme / Não Aplicável
+   por documento. Pedido em 18/08/2026, começando pelo circuito Presidente
+   Médici (id 'engm3'), com dados reais levantados na pasta:
+   "03 - CLIENTES/.../Subestação Presidente Médici/Fornecedores".
+   Tabela própria 'FornecedoresEnergisa' — não mexe na tabela financeira
+   genérica 'Fornecedores'. ===================================================================== */
+let _fornEnergisaLista = null;
+let _fornEnergisaCircuitoFiltro = null;
+
+async function fornEnergisaCarregar(forcar) {
+  if (_fornEnergisaLista !== null && !forcar) { navigate('checklist_fornecedores'); return; }
+  try {
+    const lista = await dbLer('FornecedoresEnergisa');
+    _fornEnergisaLista = Array.isArray(lista) ? lista : [];
+  } catch(e) {
+    console.warn('[Fornecedores Energisa] Falha ao carregar histórico.', e);
+    _fornEnergisaLista = _fornEnergisaLista || [];
+  }
+  navigate('checklist_fornecedores');
+}
+
+function fornEnergisaFiltrarCircuito(id) {
+  _fornEnergisaCircuitoFiltro = id || null;
+  navigate('checklist_fornecedores');
+}
+
+function fornEnergisaStatusInfo(status) {
+  if (status === 'conforme') return { label: '✅ Conforme', bg: 'var(--green-pale)', color: 'var(--green-main)' };
+  if (status === 'nao_conforme') return { label: '❌ Não Conforme', bg: '#fce8e8', color: 'var(--red)' };
+  if (status === 'na') return { label: '➖ Não Aplicável', bg: '#eceef0', color: 'var(--text-muted)' };
+  return { label: '⏳ A validar', bg: '#fff8e6', color: '#d97706' };
+}
+
+/* -- Indicador automático de vencimento (independente da validação manual
+      Conforme/Não Conforme) — só avisa quando o documento está perto de
+      vencer ou já venceu, com base na data de Validade. -- */
+function _fornEnergisaVenceInfo(validade) {
+  if (!validade) return '';
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const d = new Date(validade + 'T00:00:00');
+  const dias = Math.round((d - hoje) / 86400000);
+  if (dias < 0) return `<span style="color:var(--red);font-weight:700">⏰ vencido há ${Math.abs(dias)}d</span>`;
+  if (dias <= 60) return `<span style="color:#d97706;font-weight:700">⏰ vence em ${dias}d</span>`;
+  return '';
+}
+
+function pageChecklistFornecedores() {
+  if (_fornEnergisaLista === null) { setTimeout(() => fornEnergisaCarregar(), 100); }
+  const lista = _fornEnergisaLista || [];
+  const circuito = FLASH_FRENTES.find(f => f.id === _fornEnergisaCircuitoFiltro);
+  const porCircuito = {};
+  FLASH_FRENTES.forEach(f => { porCircuito[f.id] = lista.filter(x => x.CircuitoId === f.id); });
+  const fornecedoresDoCircuito = circuito ? lista.filter(x => x.CircuitoId === circuito.id) : [];
+
+  return `
+  <div class="page-header">
+    <h1>🧾 Fornecedores</h1>
+    <p>Documentação legal dos fornecedores/prestadores instalados em cada circuito elétrico — validação Conforme / Não Conforme / Não Aplicável</p>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">Selecione o Circuito Elétrico</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px">
+      ${FLASH_FRENTES.map(f => {
+        const doCirc = porCircuito[f.id] || [];
+        const naoConf = doCirc.reduce((s,x) => s + (x.Documentos||[]).filter(d => d.StatusValidacao === 'nao_conforme').length, 0);
+        const ativo = _fornEnergisaCircuitoFiltro === f.id;
+        return `<div class="kpi-card${ativo?' green':''}" style="padding:10px;cursor:pointer;${ativo?'border-color:var(--brand-brown,#3F261F)':''}${naoConf>0?';border-color:var(--red)':''}" onclick="fornEnergisaFiltrarCircuito('${f.id}')">
+          <div style="font-size:.72rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${f.nome}">${ativo?'📍 ':''}${f.nome}</div>
+          <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">${doCirc.length} fornecedor${doCirc.length!==1?'es':''}${naoConf?` · 🔴${naoConf} doc. não conf.`:''}</div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>
+
+  ${!circuito ? `<div class="card" style="text-align:center;padding:40px 24px;color:var(--text-muted)">👆 Selecione um circuito acima para ver os fornecedores cadastrados.</div>` : `
+
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📍 ${circuito.nome} — ${fornecedoresDoCircuito.length} fornecedor${fornecedoresDoCircuito.length!==1?'es':''}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${circuito.id === 'engm3' && fornecedoresDoCircuito.length === 0 ? `<button class="btn-secondary" onclick="fornEnergisaCarregarSeedPresidenteMedici()">🌱 Carregar fornecedores já levantados em campo</button>` : ''}
+      <button class="btn-primary" onclick="fornEnergisaAbrirModal('${circuito.id}')">➕ Novo Fornecedor</button>
+    </div>
+  </div>
+
+  ${fornecedoresDoCircuito.length === 0
+    ? `<div class="card" style="text-align:center;padding:32px 24px;color:var(--text-muted)">Nenhum fornecedor cadastrado neste circuito ainda.</div>`
+    : fornecedoresDoCircuito.map(fornEnergisaCardHtml).join('')
+  }
+  `}`;
+}
+
+function fornEnergisaCardHtml(f) {
+  const docs = f.Documentos || [];
+  const naoConf = docs.filter(d => d.StatusValidacao === 'nao_conforme').length;
+  return `
+  <div class="card" style="margin-bottom:14px;border-top:3px solid ${naoConf>0?'var(--red)':'var(--green-main)'}">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <div>
+        <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:.9rem">${f.Nome}</div>
+        <div style="font-size:.72rem;color:var(--text-muted)">${f.RazaoSocial||''}${f.CNPJ?' · '+f.CNPJ:''}</div>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn-secondary" style="padding:4px 10px;font-size:.7rem" onclick="fornEnergisaAbrirModal('${f.CircuitoId}',${f.Id})">✏️ Editar</button>
+        <button class="btn-secondary" style="padding:4px 10px;font-size:.7rem;color:var(--red)" onclick="fornEnergisaExcluir(${f.Id})">🗑️ Excluir</button>
+      </div>
+    </div>
+    ${docs.length === 0
+      ? `<div style="font-size:.78rem;color:var(--text-muted);padding:8px 0">Nenhum documento cadastrado.</div>`
+      : `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Documento</th><th>Nº / Órgão / Obs.</th><th>Validade</th><th>Validação</th><th>Arquivo</th></tr></thead><tbody>
+        ${docs.map(d => {
+          const info = fornEnergisaStatusInfo(d.StatusValidacao);
+          return `<tr>
+            <td style="font-size:.78rem">${d.Tipo||'—'}</td>
+            <td style="font-size:.7rem;color:var(--text-muted)">${d.Numero||''}${d.OrgaoEmissor?' · '+d.OrgaoEmissor:''}${d.Observacao?`<br>${d.Observacao}`:''}</td>
+            <td style="font-size:.75rem">${d.Validade ? new Date(d.Validade+'T00:00:00').toLocaleDateString('pt-BR') : '—'}<br>${_fornEnergisaVenceInfo(d.Validade)}</td>
+            <td>
+              <select onchange="fornEnergisaAtualizarStatus(${f.Id},${d.Id},this.value)" style="font-size:.72rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:${info.bg};color:${info.color};font-weight:700">
+                <option value="" ${!d.StatusValidacao?'selected':''}>⏳ A validar</option>
+                <option value="conforme" ${d.StatusValidacao==='conforme'?'selected':''}>✅ Conforme</option>
+                <option value="nao_conforme" ${d.StatusValidacao==='nao_conforme'?'selected':''}>❌ Não Conforme</option>
+                <option value="na" ${d.StatusValidacao==='na'?'selected':''}>➖ Não Aplicável</option>
+              </select>
+            </td>
+            <td>${d.ArquivoUrl ? `<a href="${d.ArquivoUrl}" target="_blank" style="font-size:.72rem;color:var(--blue)">📎 Ver</a>` : `<label style="font-size:.68rem;color:var(--text-muted);cursor:pointer">📤 Anexar<input type="file" accept=".pdf,.jpg,.jpeg,.png" style="display:none" onchange="fornEnergisaUploadDocumento(event,${f.Id},${d.Id})"></label>`}</td>
+          </tr>`;
+        }).join('')}
+      </tbody></table></div>`
+    }
+  </div>`;
+}
+
+function fornEnergisaFecharModal() {
+  const el = document.getElementById('forn-energisa-modal-overlay'); if (el) el.remove();
+}
+
+function fornEnergisaAbrirModal(circuitoId, id) {
+  const existente = id ? (_fornEnergisaLista||[]).find(x => x.Id === id) : null;
+  window._fornEnergisaEditandoId = existente ? existente.Id : null;
+  window._fornEnergisaDocsAtual = existente ? JSON.parse(JSON.stringify(existente.Documentos||[])) : [];
+  window._fornEnergisaCircuitoModal = circuitoId;
+  fornEnergisaFecharModal();
+  document.body.insertAdjacentHTML('beforeend', _fornEnergisaModalHtml(existente));
+}
+
+function _fornEnergisaSnapshotHeader() {
+  return {
+    Nome: (document.getElementById('fe_nome')||{}).value || '',
+    CNPJ: (document.getElementById('fe_cnpj')||{}).value || '',
+    RazaoSocial: (document.getElementById('fe_razaosocial')||{}).value || '',
+  };
+}
+
+function fornEnergisaRerender() {
+  const snap = _fornEnergisaSnapshotHeader();
+  fornEnergisaFecharModal();
+  const base = window._fornEnergisaEditandoId ? { Id: window._fornEnergisaEditandoId } : {};
+  document.body.insertAdjacentHTML('beforeend', _fornEnergisaModalHtml(Object.assign(base, snap)));
+}
+
+function fornEnergisaAddDocRow() {
+  window._fornEnergisaDocsAtual = window._fornEnergisaDocsAtual || [];
+  window._fornEnergisaDocsAtual.push({ Id: Date.now() + Math.floor(Math.random()*1000), Tipo:'', Numero:'', OrgaoEmissor:'', Observacao:'', Validade:'', StatusValidacao:'', ArquivoUrl:'', ArquivoNomeOriginal:'' });
+  fornEnergisaRerender();
+}
+
+function fornEnergisaRemDocRow(i) {
+  if (!window._fornEnergisaDocsAtual) return;
+  window._fornEnergisaDocsAtual.splice(i,1);
+  fornEnergisaRerender();
+}
+
+function fornEnergisaAtualizarDocCampo(i, campo, valor) {
+  if (!window._fornEnergisaDocsAtual || !window._fornEnergisaDocsAtual[i]) return;
+  window._fornEnergisaDocsAtual[i][campo] = valor;
+}
+
+function _fornEnergisaDocRowHtml(d, i) {
+  return `
+  <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--surface2)">
+    <div class="form-row">
+      <div class="form-group"><label>Tipo de Documento</label><input type="text" value="${(d.Tipo||'').replace(/"/g,'&quot;')}" oninput="fornEnergisaAtualizarDocCampo(${i},'Tipo',this.value)" placeholder="Ex: Alvará de Funcionamento"></div>
+      <div class="form-group"><label>Validade</label><input type="date" value="${d.Validade||''}" onchange="fornEnergisaAtualizarDocCampo(${i},'Validade',this.value)"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Nº do Documento</label><input type="text" value="${(d.Numero||'').replace(/"/g,'&quot;')}" oninput="fornEnergisaAtualizarDocCampo(${i},'Numero',this.value)"></div>
+      <div class="form-group"><label>Órgão Emissor</label><input type="text" value="${(d.OrgaoEmissor||'').replace(/"/g,'&quot;')}" oninput="fornEnergisaAtualizarDocCampo(${i},'OrgaoEmissor',this.value)"></div>
+    </div>
+    <div class="form-group"><label>Observação</label><input type="text" value="${(d.Observacao||'').replace(/"/g,'&quot;')}" oninput="fornEnergisaAtualizarDocCampo(${i},'Observacao',this.value)" placeholder="Ex: referente a qual unidade/posto, ressalvas..."></div>
+    <div style="text-align:right"><button type="button" style="border:none;background:transparent;color:var(--red);cursor:pointer;font-size:.72rem" onclick="fornEnergisaRemDocRow(${i})">🗑️ Remover documento</button></div>
+  </div>`;
+}
+
+function _fornEnergisaModalHtml(f) {
+  const docs = window._fornEnergisaDocsAtual || [];
+  const circuito = FLASH_FRENTES.find(x => x.id === window._fornEnergisaCircuitoModal);
+  return `
+  <div id="forn-energisa-modal-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px">
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:640px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-weight:800;font-size:1rem">${f?'✏️ Editar':'➕ Novo'} Fornecedor — ${circuito?circuito.nome:''}</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="fornEnergisaFecharModal()">✕</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Nome / Estabelecimento</label><input type="text" id="fe_nome" value="${(f&&f.Nome||'').replace(/"/g,'&quot;')}" placeholder="Ex: Concreto, Posto de Gasolina..."></div>
+        <div class="form-group"><label>CNPJ</label><input type="text" id="fe_cnpj" value="${(f&&f.CNPJ||'').replace(/"/g,'&quot;')}" placeholder="00.000.000/0001-00"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:14px"><label>Razão Social</label><input type="text" id="fe_razaosocial" value="${(f&&f.RazaoSocial||'').replace(/"/g,'&quot;')}"></div>
+
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">📄 Documentação Legal</div>
+      <div id="fe-docs-list">
+        ${docs.length ? docs.map((d,i) => _fornEnergisaDocRowHtml(d,i)).join('') : '<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:10px">Nenhum documento adicionado ainda.</div>'}
+      </div>
+      <button class="btn-secondary" style="font-size:.78rem;margin-bottom:16px" onclick="fornEnergisaAddDocRow()">➕ Adicionar Documento</button>
+
+      <div style="display:flex;gap:10px">
+        <button class="btn-primary" style="flex:1" onclick="fornEnergisaSalvar()">💾 Salvar</button>
+        <button class="btn-secondary" style="flex:1" onclick="fornEnergisaFecharModal()">Cancelar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function fornEnergisaSalvar() {
+  const nome = (document.getElementById('fe_nome').value||'').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do fornecedor.'); return; }
+  const dados = {
+    CircuitoId: window._fornEnergisaCircuitoModal,
+    Nome: nome,
+    CNPJ: (document.getElementById('fe_cnpj').value||'').trim(),
+    RazaoSocial: (document.getElementById('fe_razaosocial').value||'').trim(),
+    Documentos: window._fornEnergisaDocsAtual || [],
+  };
+  _limparSyncError();
+  let ok;
+  if (window._fornEnergisaEditandoId) {
+    ok = await dbAtualizar('FornecedoresEnergisa', window._fornEnergisaEditandoId, dados);
+  } else {
+    dados.CriadoPor = window._currentUser ? window._currentUser.name : '';
+    dados.DataCriacao = new Date().toISOString();
+    ok = await dbInserir('FornecedoresEnergisa', dados);
+  }
+  fornEnergisaFecharModal();
+  window._fornEnergisaEditandoId = null;
+  window._fornEnergisaDocsAtual = null;
+  showToast(ok ? '✅ Fornecedor salvo!' : ('❌ Erro ao salvar.' + syncErrorDetalhe()));
+  await fornEnergisaCarregar(true);
+}
+
+async function fornEnergisaExcluir(id) {
+  if (!confirm('Excluir este fornecedor e toda a documentação cadastrada?')) return;
+  _limparSyncError();
+  const ok = await dbRemover('FornecedoresEnergisa', id);
+  showToast(ok ? '🗑️ Fornecedor excluído.' : ('❌ Erro ao excluir.' + syncErrorDetalhe()));
+  await fornEnergisaCarregar(true);
+}
+
+/* -- Validação de um documento específico (Conforme/Não Conforme/Não Aplicável),
+      registrando quem validou e quando. -- */
+async function fornEnergisaAtualizarStatus(fornecedorId, docId, status) {
+  const f = (_fornEnergisaLista||[]).find(x => x.Id === fornecedorId);
+  if (!f) return;
+  const doc = (f.Documentos||[]).find(d => d.Id === docId);
+  if (!doc) return;
+  doc.StatusValidacao = status;
+  doc.ValidadoPor = window._currentUser ? window._currentUser.name : '';
+  doc.DataValidacao = new Date().toISOString().split('T')[0];
+  _limparSyncError();
+  const ok = await dbAtualizar('FornecedoresEnergisa', fornecedorId, { Documentos: f.Documentos });
+  showToast(ok ? '✅ Validação salva.' : ('❌ Erro ao salvar.' + syncErrorDetalhe()));
+  navigate('checklist_fornecedores');
+}
+
+async function fornEnergisaUploadDocumento(event, fornecedorId, docId) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const f = (_fornEnergisaLista||[]).find(x => x.Id === fornecedorId);
+  const doc = f && (f.Documentos||[]).find(d => d.Id === docId);
+  if (!f || !doc) return;
+  showToast('☁️ Enviando documento...');
+  const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.fornecedoresEnergisa);
+  if (!resultado) { showToast('⚠️ Falha ao enviar documento.'); return; }
+  doc.ArquivoUrl = typeof resultado.url === 'string' ? resultado.url : '';
+  doc.ArquivoNomeOriginal = resultado.nome;
+  _limparSyncError();
+  const ok = await dbAtualizar('FornecedoresEnergisa', fornecedorId, { Documentos: f.Documentos });
+  showToast(ok ? '☁️ Documento anexado!' : ('❌ Erro ao salvar.' + syncErrorDetalhe()));
+  navigate('checklist_fornecedores');
+}
+
+/* -- Seed com os fornecedores/documentação real levantados em campo para o
+      circuito "SE Presidente Médici" (id engm3), a partir da pasta
+      "03 - CLIENTES/.../Subestação Presidente Médici/Fornecedores" (levantamento
+      de 18/08/2026). Datas de validade extraídas dos próprios documentos —
+      status de validação começa em branco, para o fiscal confirmar em campo. -- */
+const FORN_ENERGISA_SEED_PRESIDENTE_MEDICI = [
+  {
+    CircuitoId: 'engm3',
+    Nome: 'CONCRETO',
+    RazaoSocial: 'DDP Preparação de Concretos e Argamassa Industrializada Ltda - ME (Concretar Engenharia de Concreto)',
+    CNPJ: '24.701.015/0001-45',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '354/2026', OrgaoEmissor: 'Prefeitura de Ji-Paraná', Observacao: '', Validade: '2027-01-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'ALVARA DE FUNCIONAMENTO 2026.pdf' },
+      { Id: 2, Tipo: 'Auto de Conformidade do Corpo de Bombeiros (ACPS)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Documento não traz data de validade explícita — confirmar periodicidade de renovação com o fornecedor.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'BOMBEIRO 2026.pdf' },
+      { Id: 3, Tipo: 'Licença Municipal de Operação (LMO)', Numero: '09/2025/SEMEIA/PM/JP', OrgaoEmissor: 'SEMEIA — Prefeitura de Ji-Paraná', Observacao: '', Validade: '2029-03-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LMO DDP Semeia 31 03 2029.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'engm3',
+    Nome: 'POSTO DE GASOLINA',
+    RazaoSocial: 'Postos Patrão 12 (Varea e Varea Comércio de Combustível Ltda) e Patrão 15 (Domingues Neto Comércio Varejista de Combustível Ltda)',
+    CNPJ: '',
+    Documentos: [
+      { Id: 1, Tipo: 'Licença de Operação (SEDAM)', Numero: '159630', OrgaoEmissor: 'SEDAM/RO', Observacao: 'Posto Patrão 12 — Varea e Varea Comércio de Combustível Ltda (CNPJ 33.028.072/0001-04)', Validade: '2030-02-11', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: '12_LO-Patrão-12.pdf' },
+      { Id: 2, Tipo: 'Licença de Operação (SEDAM)', Numero: '159676', OrgaoEmissor: 'SEDAM/RO', Observacao: 'Posto Patrão 15 — Domingues Neto Comércio Varejista de Combustível Ltda (CNPJ 23.036.550/0001-66)', Validade: '2030-03-05', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: '15_LO-P15-Venc-03-2030.pdf' },
+      { Id: 3, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Posto Patrão 12/13', Validade: '2026-09-11', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará bombeiro 11-09-2026.pdf' },
+      { Id: 4, Tipo: 'Alvará de Localização e Funcionamento', Numero: '19/2026', OrgaoEmissor: 'Prefeitura de Presidente Médici', Observacao: 'Posto Patrão 15 — Domingues Neto', Validade: '2027-01-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará de funcionamento 31-01-2027.pdf' },
+      { Id: 5, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Presidente Médici', Observacao: 'Posto Patrão 12 — Varea e Varea', Validade: '2027-07-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará de funcionamento 31-07-2027.pdf' },
+      { Id: 6, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Posto Patrão 12', Validade: '2027-04-08', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'Alvará do bombeiro 08-04-2027.pdf' },
+      { Id: 7, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '7756846', OrgaoEmissor: 'IBAMA', Observacao: 'Posto Patrão 12 — Varea e Varea', Validade: '2026-11-07', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CR IBAMA POSTO 12 (1).pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'engm3',
+    Nome: 'RESTAURANTE',
+    RazaoSocial: 'Edson Bispo Bezerra (Lanchonete e Restaurante do Polaco)',
+    CNPJ: '24.075.149/0001-06',
+    Documentos: [
+      { Id: 1, Tipo: 'Licença de Localização e Funcionamento', Numero: '208/2026', OrgaoEmissor: 'Prefeitura de Presidente Médici', Observacao: '', Validade: '2027-01-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA DE FUNCIONAMENTO.pdf' },
+      { Id: 2, Tipo: 'Licença Sanitária', Numero: '105/2026', OrgaoEmissor: 'Vigilância Sanitária — Presidente Médici', Observacao: '', Validade: '2027-01-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA SANITARIA.pdf' },
+    ],
+  },
+];
+
+async function fornEnergisaCarregarSeedPresidenteMedici() {
+  if (!confirm('Isso vai cadastrar os 3 fornecedores levantados em campo para Presidente Médici (Concreto, Posto de Gasolina e Restaurante), com a documentação legal já identificada nos arquivos da pasta de fornecedores. Continuar?')) return;
+  _limparSyncError();
+  let algumFalhou = false;
+  for (const seed of FORN_ENERGISA_SEED_PRESIDENTE_MEDICI) {
+    const ok = await dbInserir('FornecedoresEnergisa', Object.assign({ CriadoPor: window._currentUser ? window._currentUser.name : '', DataCriacao: new Date().toISOString() }, seed));
+    if (!ok) algumFalhou = true;
+  }
+  showToast(algumFalhou ? ('⚠️ Alguns fornecedores não foram salvos.' + syncErrorDetalhe()) : '✅ Fornecedores de Presidente Médici cadastrados!');
+  await fornEnergisaCarregar(true);
 }
 
 function pageChecklistMitigacao() {
@@ -32058,6 +32415,7 @@ const OD_FOLDERS = {
   despesas:    'Despesas',
   receitas:    'Receitas',
   solicitacoes: 'Solicitacoes/Anexos',
+  fornecedoresEnergisa: 'Energisa/FornecedoresLegais',
 };
 
 /* Monta "pastaBase/AAAA-MM" (subpasta do mês corrente) — usado por todos os
