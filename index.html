@@ -10654,6 +10654,7 @@ let PROJETOS_PROJETO_ATIVO = null; // null = hub | 'outorgas' | 'energisa'
 const PROJETOS_CATALOGO = [
   { chave: 'outorgas', icone: '💧', titulo: 'Outorgas — Recursos Hídricos (RO)', subtitulo: 'Regularização de outorgas de água junto à SEDAM-RO: empreendimentos, checklist documental por tipo e orçamentos.' },
   { chave: 'energisa', icone: '⚡', titulo: 'Energisa Rondônia', subtitulo: 'Gestão dos 5 contratos ativos — OS, medições, plano de ações, seguros e inspeções.' },
+  { chave: 'treinamentos', icone: '🎓', titulo: 'Treinamentos & Eventos', subtitulo: 'Cursos e capacitações abertas ao público — programação, inscrições, patrocínio e orçamento por edição.' },
 ];
 
 /* -- ENERGISA RONDÔNIA — reconstrução 100% nativa dentro do App (o antigo
@@ -10716,6 +10717,7 @@ function projetosVoltarHub() {
   PROJETOS_PROJETO_ATIVO = null;
   PROJETOS_ENERGISA_CONTRATO_ATIVO = null;
   PROJETOS_ENERGISA_SECAO_ATIVA = null;
+  PROJETOS_TREIN_EVENTO_ATIVO = null;
   renderPage('projetos');
 }
 
@@ -12160,6 +12162,11 @@ function pageProjetos() {
     if (PROJETOS_ENERGISA_CONTRATO_ATIVO === 'clm108942' || PROJETOS_ENERGISA_CONTRATO_ATIVO === 'clm108943') return projetosHtmlEnergisaContratoCLM(PROJETOS_ENERGISA_CONTRATO_ATIVO);
     return projetosHtmlEnergisa();
   }
+  if (PROJETOS_PROJETO_ATIVO === 'treinamentos') {
+    if (!PROJETOS_TREIN_EVENTOS) { setTimeout(() => projetosTreinCarregar(), 100); return '<div class="page-header"><h1>🎓 Treinamentos & Eventos</h1></div><div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">⏳ Carregando eventos...</div>'; }
+    if (PROJETOS_TREIN_EVENTO_ATIVO) return projetosHtmlTreinEvento();
+    return projetosHtmlTreinHub();
+  }
   if (!PROJETOS_PROJETO_ATIVO) { setTimeout(() => projetosCarregarFlashPendentes(), 100); return projetosHtmlHub(); }
 
   // 'outorgas' (módulo original de Empreendimentos/Outorgas/Orçamentos)
@@ -12231,6 +12238,560 @@ function projetosHtmlEnergisa() {
 function projetosFecharModal(idModal) {
   const el = document.getElementById(idModal);
   if (el) el.remove();
+}
+
+/* =====================================================================
+   TREINAMENTOS & EVENTOS — pedido em 18/08/2026 ("dentro da aba projetos,
+   Treinamentos"). Diferente da aba Treinamentos de Gestão Documental (que
+   controla certificação/reciclagem OBRIGATÓRIA dos colaboradores da
+   Expedian), este módulo gerencia EVENTOS ABERTOS AO PÚBLICO organizados
+   pela empresa (ex.: o Treinamento de Fauna) — programação, inscrições
+   pagas, patrocinadores por cota (Ouro/Prata/Bronze) e orçamento/custos.
+   O Tiago pediu que isso sirva de MODELO reutilizável pra próximos eventos,
+   então a estrutura suporta múltiplas edições/eventos (PROJETOS_TREIN_EVENTOS
+   é uma lista), cada um com suas próprias abas internas. Persistido na
+   tabela "TreinamentosEventos" (mesmo padrão dbLer/dbSalvar já usado em
+   GestaoDocumental — o array inteiro é regravado a cada mudança). -- */
+
+let PROJETOS_TREIN_EVENTOS = null; // null = ainda não carregado da nuvem
+let PROJETOS_TREIN_EVENTO_ATIVO = null; // id do evento aberto (null = lista)
+let PROJETOS_TREIN_ABA = 'geral'; // 'geral' | 'inscricoes' | 'patrocinadores' | 'custos'
+
+// Valores de referência sugeridos pras cotas de patrocínio — usados como
+// placeholder no cadastro de patrocinador e na apresentação de captação.
+// Baseados no custo real da 1ª edição (27/09/2025, ~R$1.823 no total) — não
+// são obrigatórios, o valor real de cada patrocinador é sempre editável.
+const PROJETOS_TREIN_COTAS = {
+  ouro:   { label: '🥇 Ouro',   valorSugerido: 2000, cor: '#B8860B' },
+  prata:  { label: '🥈 Prata',  valorSugerido: 1000, cor: '#8a8a8a' },
+  bronze: { label: '🥉 Bronze', valorSugerido: 500,  cor: '#a0522d' },
+};
+
+// Semente da 2ª edição (17/10), pedida pelo Tiago — dados de programação e
+// público-alvo confirmados por ele; custos previstos replicam a 1ª edição
+// (27/09/2025, CREA/RO) como estimativa inicial, sempre editável.
+const PROJETOS_TREIN_EVENTO_SEED = {
+  id: 'trein-fauna-2edicao',
+  nome: 'Treinamento de Fauna Expedian — 2ª Edição',
+  tema: 'TREINAMENTO PRÁTICO E TEÓRICO PARA IDENTIFICAÇÃO, MANEJO, AFUGENTAMENTO E RESGATE DE FAUNA',
+  edicao: '2ª Edição',
+  data: '2026-10-17',
+  publicoAlvo: 'Estudantes e profissionais de meio ambiente',
+  local: '',
+  cargaHoraria: 5.5,
+  instrutorNome: 'Marcos Fernandes da Silva',
+  instrutorFormacao: 'Biólogo, Gestor Ambiental',
+  instrutorRegistro: 'CRBio 103933-06 D',
+  status: 'inscricoes_abertas',
+  obs: '2ª edição do treinamento — a 1ª edição foi realizada em 27/09/2025, na sede do CREA/RO, com 100% de aprovação na pesquisa de satisfação (16 respondentes, nota 5,00/5,00). Custos abaixo estimados com base naquela edição.',
+  programa: [
+    'Identificação de fauna silvestre e animais peçonhentos da região amazônica',
+    'Manejo ético e legal da fauna (legislação aplicável)',
+    'Técnicas de afugentamento seguro',
+    'Técnicas de resgate e primeiros cuidados com animais resgatados',
+  ],
+  inscricoes: [],
+  patrocinadores: [],
+  custos: [
+    { id: 'c1', categoria: 'Palestrante/Instrutor', descricao: 'Diária do instrutor', valorPrevisto: 500, valorReal: null },
+    { id: 'c2', categoria: 'Material gráfico', descricao: 'Pasta, caneta, bloco, crachá', valorPrevisto: 531, valorReal: null },
+    { id: 'c3', categoria: 'Coffee Break', descricao: '', valorPrevisto: 200, valorReal: null },
+    { id: 'c4', categoria: 'Água Mineral', descricao: '', valorPrevisto: 150, valorReal: null },
+    { id: 'c5', categoria: 'Gelo', descricao: '', valorPrevisto: 33, valorReal: null },
+    { id: 'c6', categoria: 'Autorizações', descricao: 'Fechamento de rua / prefeitura, se aplicável', valorPrevisto: 114, valorReal: null },
+    { id: 'c7', categoria: 'Brindes/Diversos', descricao: 'Adesivos, doações, outros', valorPrevisto: 295, valorReal: null },
+  ],
+};
+
+async function projetosTreinCarregar(forcar) {
+  if (PROJETOS_TREIN_EVENTOS && !forcar) { navigate('projetos'); return; }
+  try { const c = localStorage.getItem('projetos_trein_cache'); if (c) PROJETOS_TREIN_EVENTOS = JSON.parse(c); } catch (e) {}
+  try {
+    const dados = await dbLer('TreinamentosEventos');
+    PROJETOS_TREIN_EVENTOS = Array.isArray(dados) ? dados : (PROJETOS_TREIN_EVENTOS || []);
+    if (!PROJETOS_TREIN_EVENTOS.length) {
+      // Primeira vez que alguém abre o módulo — semeia a 2ª edição do Fauna.
+      PROJETOS_TREIN_EVENTOS = [JSON.parse(JSON.stringify(PROJETOS_TREIN_EVENTO_SEED))];
+      await dbSalvar('TreinamentosEventos', PROJETOS_TREIN_EVENTOS);
+    }
+    try { localStorage.setItem('projetos_trein_cache', JSON.stringify(PROJETOS_TREIN_EVENTOS)); } catch (e) {}
+  } catch (e) {
+    PROJETOS_TREIN_EVENTOS = PROJETOS_TREIN_EVENTOS || [JSON.parse(JSON.stringify(PROJETOS_TREIN_EVENTO_SEED))];
+  }
+  navigate('projetos');
+}
+
+async function projetosTreinSalvar() {
+  await dbSalvar('TreinamentosEventos', PROJETOS_TREIN_EVENTOS);
+  try { localStorage.setItem('projetos_trein_cache', JSON.stringify(PROJETOS_TREIN_EVENTOS)); } catch (e) {}
+}
+
+function projetosTreinAbrirEvento(id) {
+  PROJETOS_TREIN_EVENTO_ATIVO = id;
+  PROJETOS_TREIN_ABA = 'geral';
+  navigate('projetos');
+}
+function projetosTreinVoltarLista() {
+  PROJETOS_TREIN_EVENTO_ATIVO = null;
+  navigate('projetos');
+}
+function projetosTreinTrocarAba(aba) {
+  PROJETOS_TREIN_ABA = aba;
+  navigate('projetos');
+}
+function _projetosTreinEventoAtual() {
+  return (PROJETOS_TREIN_EVENTOS || []).find(e => e.id === PROJETOS_TREIN_EVENTO_ATIVO) || null;
+}
+function _projetosTreinStatusInfo(status) {
+  const M = {
+    planejamento: { label: '📝 Planejamento', bg: '#f3f4f6', cor: '#6b7280' },
+    inscricoes_abertas: { label: '🟢 Inscrições Abertas', bg: '#d1fae5', cor: '#065f46' },
+    realizado: { label: '✅ Realizado', bg: '#dbeafe', cor: '#1e40af' },
+    cancelado: { label: '❌ Cancelado', bg: '#fee2e2', cor: '#991b1b' },
+  };
+  return M[status] || M.planejamento;
+}
+// Totais financeiros do evento — usados no card do hub e no topo das abas
+// Inscrições/Patrocinadores/Custos.
+function _projetosTreinTotais(evento) {
+  const receitaInscricoes = (evento.inscricoes || []).filter(i => i.statusPagamento === 'pago').reduce((s, i) => s + (Number(i.valor) || 0), 0);
+  const receitaPatrocinio = (evento.patrocinadores || []).filter(p => p.statusPagamento === 'pago').reduce((s, p) => s + (Number(p.valor) || 0), 0);
+  const custoTotal = (evento.custos || []).reduce((s, c) => s + (c.valorReal != null && c.valorReal !== '' ? Number(c.valorReal) : (Number(c.valorPrevisto) || 0)), 0);
+  const receitaTotal = receitaInscricoes + receitaPatrocinio;
+  return { receitaInscricoes, receitaPatrocinio, receitaTotal, custoTotal, saldo: receitaTotal - custoTotal };
+}
+function _fmtMoeda(v) { return (Number(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
+
+/* -- HUB: lista de eventos cadastrados -- */
+function projetosHtmlTreinHub() {
+  const eventos = (PROJETOS_TREIN_EVENTOS || []).slice().sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  const cards = eventos.length ? eventos.map(ev => {
+    const st = _projetosTreinStatusInfo(ev.status);
+    const tot = _projetosTreinTotais(ev);
+    const dataFmt = ev.data ? new Date(ev.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+    return `
+    <div class="card" style="cursor:pointer;padding:16px" onclick="projetosTreinAbrirEvento('${ev.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="font-weight:800;font-size:.9rem;flex:1">${ev.nome}</div>
+        <span style="background:${st.bg};color:${st.cor};font-size:.65rem;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap">${st.label}</span>
+      </div>
+      <div style="font-size:.76rem;color:var(--text-muted);margin-top:6px">📅 ${dataFmt} ${ev.local ? ' &nbsp;·&nbsp; 📍 ' + ev.local : ''}</div>
+      <div style="font-size:.76rem;color:var(--text-muted);margin-top:2px">👥 ${(ev.inscricoes || []).length} inscrito(s) &nbsp;·&nbsp; 🤝 ${(ev.patrocinadores || []).length} patrocinador(es)</div>
+      <div style="display:flex;gap:14px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <div><div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase">Receita</div><div style="font-weight:700;font-size:.82rem;color:var(--green-main)">${_fmtMoeda(tot.receitaTotal)}</div></div>
+        <div><div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase">Custo</div><div style="font-weight:700;font-size:.82rem;color:var(--red)">${_fmtMoeda(tot.custoTotal)}</div></div>
+        <div><div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase">Saldo</div><div style="font-weight:700;font-size:.82rem;color:${tot.saldo >= 0 ? 'var(--green-main)' : 'var(--red)'}">${_fmtMoeda(tot.saldo)}</div></div>
+      </div>
+    </div>`;
+  }).join('') : '<div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">Nenhum evento cadastrado ainda.</div>';
+
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div><h1>🎓 Treinamentos & Eventos</h1><p>Cursos e capacitações abertas ao público — programação, inscrições, patrocínio e orçamento por edição</p></div>
+    <button class="btn-secondary" onclick="projetosVoltarHub()">← Todos os Projetos</button>
+  </div>
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+    <button class="btn-primary" style="font-size:.78rem;padding:7px 14px" onclick="projetosTreinAbrirModalEvento()">+ Novo Evento</button>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px">${cards}</div>`;
+}
+
+/* -- Página do evento aberto, com abas internas -- */
+function projetosHtmlTreinEvento() {
+  const ev = _projetosTreinEventoAtual();
+  if (!ev) { PROJETOS_TREIN_EVENTO_ATIVO = null; return projetosHtmlTreinHub(); }
+  const aba = PROJETOS_TREIN_ABA || 'geral';
+  const abas = [
+    { chave: 'geral', label: '📋 Visão Geral' },
+    { chave: 'inscricoes', label: '👥 Inscrições (' + (ev.inscricoes || []).length + ')' },
+    { chave: 'patrocinadores', label: '🤝 Patrocinadores (' + (ev.patrocinadores || []).length + ')' },
+    { chave: 'custos', label: '💰 Custos' },
+  ];
+  const conteudo = aba === 'geral' ? _treinGeralHtml(ev)
+    : aba === 'inscricoes' ? _treinInscricoesHtml(ev)
+    : aba === 'patrocinadores' ? _treinPatrocinadoresHtml(ev)
+    : _treinCustosHtml(ev);
+
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div><h1>🎓 ${ev.nome}</h1><p>${ev.tema || ''}</p></div>
+    <button class="btn-secondary" onclick="projetosTreinVoltarLista()">← Eventos</button>
+  </div>
+  <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:2px solid var(--border);flex-wrap:wrap">
+    ${abas.map(a => `<button onclick="projetosTreinTrocarAba('${a.chave}')" style="padding:10px 16px;font-size:.8rem;font-weight:700;border:none;background:none;cursor:pointer;border-bottom:3px solid ${aba === a.chave ? 'var(--green-main)' : 'transparent'};color:${aba === a.chave ? 'var(--green-main)' : 'var(--text-muted)'}">${a.label}</button>`).join('')}
+  </div>
+  ${conteudo}`;
+}
+
+function _treinGeralHtml(ev) {
+  const st = _projetosTreinStatusInfo(ev.status);
+  const dataFmt = ev.data ? new Date(ev.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const programaHtml = (ev.programa || []).length
+    ? '<ol style="margin:0;padding-left:18px;font-size:.82rem;line-height:1.9">' + ev.programa.map(p => `<li>${p}</li>`).join('') + '</ol>'
+    : '<div style="font-size:.8rem;color:var(--text-muted)">Programação ainda não cadastrada.</div>';
+  return `
+  <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:12px">
+      <span style="background:${st.bg};color:${st.cor};font-size:.7rem;font-weight:700;padding:3px 10px;border-radius:20px">${st.label}</span>
+      <button class="btn-secondary" style="font-size:.72rem;padding:5px 10px" onclick="projetosTreinAbrirModalEvento('${ev.id}')">✏️ Editar</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 20px;font-size:.84rem">
+      <div><strong>Edição:</strong> ${ev.edicao || '—'}</div>
+      <div><strong>Data:</strong> ${dataFmt}</div>
+      <div><strong>Público-alvo:</strong> ${ev.publicoAlvo || '—'}</div>
+      <div><strong>Local:</strong> ${ev.local || '—'}</div>
+      <div><strong>Carga Horária:</strong> ${ev.cargaHoraria != null ? ev.cargaHoraria + 'h' : '—'}</div>
+      <div><strong>Instrutor:</strong> ${ev.instrutorNome || '—'}${ev.instrutorFormacao ? ' — ' + ev.instrutorFormacao : ''}${ev.instrutorRegistro ? ' (' + ev.instrutorRegistro + ')' : ''}</div>
+    </div>
+    ${ev.obs ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:.78rem;color:var(--text-muted)">' + ev.obs + '</div>' : ''}
+  </div>
+  <div class="card">
+    <div class="card-title" style="margin-bottom:10px">Programação / Conteúdo</div>
+    ${programaHtml}
+  </div>`;
+}
+
+function _treinInscricoesHtml(ev) {
+  const lista = ev.inscricoes || [];
+  const tipoLabel = { estudante: 'Estudante', profissional: 'Profissional', cortesia: 'Cortesia', outro: 'Outro' };
+  const rows = lista.map((i, idx) => `
+    <tr>
+      <td style="font-weight:600">${i.nome}</td>
+      <td>${tipoLabel[i.tipo] || i.tipo || '—'}</td>
+      <td>${_fmtMoeda(i.valor)}</td>
+      <td>${i.formaPagamento || '—'}</td>
+      <td>${i.statusPagamento === 'pago' ? '<span style="color:var(--green-main);font-weight:700">✅ Pago</span>' : '<span style="color:var(--amber);font-weight:700">⏳ Pendente</span>'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="projetosTreinAbrirModalInscricao('${ev.id}',${idx})">✏️</button>
+        <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="projetosTreinExcluirInscricao('${ev.id}',${idx})">🗑️</button>
+      </td>
+    </tr>`).join('');
+  const totalPago = lista.filter(i => i.statusPagamento === 'pago').reduce((s, i) => s + (Number(i.valor) || 0), 0);
+  return `
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+    <div style="font-size:.8rem;color:var(--text-muted)">${lista.length} inscrito(s) &nbsp;·&nbsp; Receita paga: <strong style="color:var(--green-main)">${_fmtMoeda(totalPago)}</strong></div>
+    <button class="btn-primary" style="font-size:.78rem;padding:7px 14px" onclick="projetosTreinAbrirModalInscricao('${ev.id}')">+ Inscrição</button>
+  </div>
+  <div class="card" style="padding:0;overflow:hidden">
+    <div style="overflow-x:auto">
+      <table class="data-table"><thead><tr><th>Nome</th><th>Tipo</th><th>Valor</th><th>Forma Pgto.</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted)">Nenhuma inscrição cadastrada.</td></tr>'}</tbody></table>
+    </div>
+  </div>`;
+}
+
+function _treinPatrocinadoresHtml(ev) {
+  const lista = ev.patrocinadores || [];
+  const rows = lista.map((p, idx) => {
+    const cota = PROJETOS_TREIN_COTAS[p.cota] || { label: p.cota || '—', cor: '#6b7280' };
+    return `
+    <tr>
+      <td style="font-weight:600">${p.empresa || p.nome}</td>
+      <td style="font-size:.75rem;color:var(--text-muted)">${p.nome && p.empresa ? p.nome : ''}</td>
+      <td><span style="background:${cota.cor}20;color:${cota.cor};font-weight:700;font-size:.7rem;padding:2px 8px;border-radius:12px">${cota.label}</span></td>
+      <td>${_fmtMoeda(p.valor)}</td>
+      <td>${p.statusPagamento === 'pago' ? '<span style="color:var(--green-main);font-weight:700">✅ Pago</span>' : '<span style="color:var(--amber);font-weight:700">⏳ Pendente</span>'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="projetosTreinAbrirModalPatrocinador('${ev.id}',${idx})">✏️</button>
+        <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="projetosTreinExcluirPatrocinador('${ev.id}',${idx})">🗑️</button>
+      </td>
+    </tr>`;
+  }).join('');
+  const totalPago = lista.filter(p => p.statusPagamento === 'pago').reduce((s, p) => s + (Number(p.valor) || 0), 0);
+  const cotasResumo = ['ouro', 'prata', 'bronze'].map(k => {
+    const n = lista.filter(p => p.cota === k).length;
+    const c = PROJETOS_TREIN_COTAS[k];
+    return `<span style="font-size:.72rem;color:var(--text-muted)">${c.label}: <strong>${n}</strong></span>`;
+  }).join(' &nbsp;·&nbsp; ');
+  return `
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px">
+    <div style="font-size:.8rem;color:var(--text-muted)">${lista.length} patrocinador(es) &nbsp;·&nbsp; Receita paga: <strong style="color:var(--green-main)">${_fmtMoeda(totalPago)}</strong></div>
+    <button class="btn-primary" style="font-size:.78rem;padding:7px 14px" onclick="projetosTreinAbrirModalPatrocinador('${ev.id}')">+ Patrocinador</button>
+  </div>
+  <div style="margin-bottom:10px">${cotasResumo}</div>
+  <div class="card" style="padding:0;overflow:hidden">
+    <div style="overflow-x:auto">
+      <table class="data-table"><thead><tr><th>Empresa</th><th>Contato</th><th>Cota</th><th>Valor</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum patrocinador cadastrado ainda.</td></tr>'}</tbody></table>
+    </div>
+  </div>`;
+}
+
+function _treinCustosHtml(ev) {
+  const lista = ev.custos || [];
+  const rows = lista.map((c, idx) => `
+    <tr>
+      <td style="font-weight:600">${c.categoria}</td>
+      <td style="font-size:.75rem;color:var(--text-muted)">${c.descricao || '—'}</td>
+      <td>${_fmtMoeda(c.valorPrevisto)}</td>
+      <td>${c.valorReal != null && c.valorReal !== '' ? _fmtMoeda(c.valorReal) : '<span style="color:var(--text-muted)">—</span>'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="projetosTreinAbrirModalCusto('${ev.id}',${idx})">✏️</button>
+        <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="projetosTreinExcluirCusto('${ev.id}',${idx})">🗑️</button>
+      </td>
+    </tr>`).join('');
+  const tot = _projetosTreinTotais(ev);
+  return `
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+    <div class="card" style="text-align:center;padding:14px"><div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase">Receita Inscrições</div><div style="font-weight:800;font-size:1.05rem;color:var(--green-main)">${_fmtMoeda(tot.receitaInscricoes)}</div></div>
+    <div class="card" style="text-align:center;padding:14px"><div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase">Receita Patrocínio</div><div style="font-weight:800;font-size:1.05rem;color:var(--green-main)">${_fmtMoeda(tot.receitaPatrocinio)}</div></div>
+    <div class="card" style="text-align:center;padding:14px"><div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase">Custo Total</div><div style="font-weight:800;font-size:1.05rem;color:var(--red)">${_fmtMoeda(tot.custoTotal)}</div></div>
+    <div class="card" style="text-align:center;padding:14px"><div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase">Saldo</div><div style="font-weight:800;font-size:1.05rem;color:${tot.saldo >= 0 ? 'var(--green-main)' : 'var(--red)'}">${_fmtMoeda(tot.saldo)}</div></div>
+  </div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <div style="font-size:.8rem;color:var(--text-muted)">Valores previstos migrados da 1ª edição — ajuste "Valor Real" conforme forem pagos.</div>
+    <button class="btn-primary" style="font-size:.78rem;padding:7px 14px" onclick="projetosTreinAbrirModalCusto('${ev.id}')">+ Custo</button>
+  </div>
+  <div class="card" style="padding:0;overflow:hidden">
+    <div style="overflow-x:auto">
+      <table class="data-table"><thead><tr><th>Categoria</th><th>Descrição</th><th>Previsto</th><th>Real</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum custo cadastrado.</td></tr>'}</tbody></table>
+    </div>
+  </div>`;
+}
+
+function projetosTreinFecharModal() { const el = document.getElementById('trein-modal-overlay'); if (el) el.remove(); }
+
+/* -- Modal: Evento -- */
+function projetosTreinAbrirModalEvento(id) {
+  const ev = id ? _projetosTreinEventoAtual() : null;
+  document.body.insertAdjacentHTML('beforeend', `
+  <div id="trein-modal-overlay" onclick="if(event.target===this)projetosTreinFecharModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+    <div class="card" style="width:100%;max-width:560px;max-height:90vh;overflow-y:auto;border-radius:16px">
+      <h2 style="font-family:'Mont',sans-serif;font-size:1rem;font-weight:800;margin-bottom:16px">${ev ? 'Editar' : 'Novo'} Evento</h2>
+      <div class="form-group"><label>Nome do Evento *</label><input id="tr-eNome" value="${ev ? ev.nome || '' : ''}" placeholder="Ex: Treinamento de Fauna Expedian — 2ª Edição"></div>
+      <div class="form-group"><label>Tema / Título Completo</label><input id="tr-eTema" value="${ev ? ev.tema || '' : ''}" placeholder="Ex: TREINAMENTO PRÁTICO E TEÓRICO PARA..."></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label>Edição</label><input id="tr-eEdicao" value="${ev ? ev.edicao || '' : ''}" placeholder="Ex: 2ª Edição"></div>
+        <div class="form-group"><label>Data *</label><input type="date" id="tr-eData" value="${ev ? ev.data || '' : ''}"></div>
+      </div>
+      <div class="form-group"><label>Público-Alvo</label><input id="tr-ePublico" value="${ev ? ev.publicoAlvo || '' : ''}" placeholder="Ex: Estudantes e profissionais de meio ambiente"></div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+        <div class="form-group"><label>Local</label><input id="tr-eLocal" value="${ev ? ev.local || '' : ''}" placeholder="Ex: Auditório CREA/RO — Porto Velho"></div>
+        <div class="form-group"><label>Carga Horária (h)</label><input type="number" step="0.5" id="tr-eCarga" value="${ev && ev.cargaHoraria != null ? ev.cargaHoraria : ''}"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px">
+        <div class="form-group"><label>Instrutor</label><input id="tr-eInstrutor" value="${ev ? ev.instrutorNome || '' : ''}"></div>
+        <div class="form-group"><label>Registro</label><input id="tr-eRegistro" value="${ev ? ev.instrutorRegistro || '' : ''}" placeholder="Ex: CRBio..."></div>
+      </div>
+      <div class="form-group"><label>Formação do Instrutor</label><input id="tr-eFormacao" value="${ev ? ev.instrutorFormacao || '' : ''}"></div>
+      <div class="form-group"><label>Status</label>
+        <select id="tr-eStatus">
+          ${Object.entries({ planejamento: '📝 Planejamento', inscricoes_abertas: '🟢 Inscrições Abertas', realizado: '✅ Realizado', cancelado: '❌ Cancelado' }).map(([k, v]) => `<option value="${k}" ${ev && ev.status === k ? 'selected' : (!ev && k === 'planejamento' ? 'selected' : '')}>${v}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Programação (um item por linha)</label><textarea id="tr-ePrograma" rows="4" style="width:100%">${ev && ev.programa ? ev.programa.join('\n') : ''}</textarea></div>
+      <div class="form-group"><label>Observações</label><textarea id="tr-eObs" rows="2" style="width:100%">${ev ? ev.obs || '' : ''}</textarea></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+        <button class="btn-secondary" onclick="projetosTreinFecharModal()">Cancelar</button>
+        <button class="btn-primary" onclick="projetosTreinSalvarEvento(${ev ? `'${ev.id}'` : 'null'})">💾 Salvar</button>
+      </div>
+    </div>
+  </div>`);
+}
+
+async function projetosTreinSalvarEvento(id) {
+  const nome = document.getElementById('tr-eNome').value.trim();
+  if (!nome) { showToast('⚠️ Informe o nome do evento.'); return; }
+  const data = document.getElementById('tr-eData').value;
+  if (!data) { showToast('⚠️ Informe a data.'); return; }
+  const chEl = document.getElementById('tr-eCarga');
+  const programaTxt = document.getElementById('tr-ePrograma').value;
+  const anterior = id ? (PROJETOS_TREIN_EVENTOS || []).find(e => e.id === id) : null;
+  const evento = {
+    id: anterior ? anterior.id : ('trein-' + Date.now()),
+    nome, tema: document.getElementById('tr-eTema').value.trim(),
+    edicao: document.getElementById('tr-eEdicao').value.trim(),
+    data,
+    publicoAlvo: document.getElementById('tr-ePublico').value.trim(),
+    local: document.getElementById('tr-eLocal').value.trim(),
+    cargaHoraria: chEl.value !== '' ? Number(chEl.value) : null,
+    instrutorNome: document.getElementById('tr-eInstrutor').value.trim(),
+    instrutorFormacao: document.getElementById('tr-eFormacao').value.trim(),
+    instrutorRegistro: document.getElementById('tr-eRegistro').value.trim(),
+    status: document.getElementById('tr-eStatus').value,
+    programa: programaTxt.split('\n').map(l => l.trim()).filter(Boolean),
+    obs: document.getElementById('tr-eObs').value.trim(),
+    inscricoes: anterior ? anterior.inscricoes || [] : [],
+    patrocinadores: anterior ? anterior.patrocinadores || [] : [],
+    custos: anterior ? anterior.custos || [] : [],
+  };
+  if (!PROJETOS_TREIN_EVENTOS) PROJETOS_TREIN_EVENTOS = [];
+  if (anterior) {
+    const idx = PROJETOS_TREIN_EVENTOS.findIndex(e => e.id === id);
+    PROJETOS_TREIN_EVENTOS[idx] = evento;
+  } else {
+    PROJETOS_TREIN_EVENTOS.push(evento);
+  }
+  projetosTreinFecharModal(); await projetosTreinSalvar();
+  showToast('💾 Evento salvo!'); navigate('projetos');
+}
+
+/* -- Modal: Inscrição -- */
+function projetosTreinAbrirModalInscricao(eventoId, idx) {
+  const ev = (PROJETOS_TREIN_EVENTOS || []).find(e => e.id === eventoId);
+  const i = idx !== undefined ? (ev.inscricoes || [])[idx] : null;
+  document.body.insertAdjacentHTML('beforeend', `
+  <div id="trein-modal-overlay" onclick="if(event.target===this)projetosTreinFecharModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+    <div class="card" style="width:100%;max-width:420px;border-radius:16px">
+      <h2 style="font-family:'Mont',sans-serif;font-size:1rem;font-weight:800;margin-bottom:16px">${i ? 'Editar' : 'Nova'} Inscrição</h2>
+      <div class="form-group"><label>Nome *</label><input id="tr-iNome" value="${i ? i.nome || '' : ''}"></div>
+      <div class="form-group"><label>Tipo</label>
+        <select id="tr-iTipo">
+          ${Object.entries({ estudante: 'Estudante', profissional: 'Profissional', cortesia: 'Cortesia', outro: 'Outro' }).map(([k, v]) => `<option value="${k}" ${i && i.tipo === k ? 'selected' : ''}>${v}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label>Valor (R$)</label><input type="number" step="0.01" id="tr-iValor" value="${i && i.valor != null ? i.valor : ''}"></div>
+        <div class="form-group"><label>Forma de Pagamento</label><input id="tr-iForma" value="${i ? i.formaPagamento || '' : ''}" placeholder="PIX, cartão..."></div>
+      </div>
+      <div class="form-group"><label>Status</label>
+        <select id="tr-iStatus">
+          <option value="pendente" ${i && i.statusPagamento === 'pendente' ? 'selected' : ''}>⏳ Pendente</option>
+          <option value="pago" ${!i || i.statusPagamento === 'pago' ? 'selected' : ''}>✅ Pago</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Observações</label><input id="tr-iObs" value="${i ? i.obs || '' : ''}"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+        <button class="btn-secondary" onclick="projetosTreinFecharModal()">Cancelar</button>
+        <button class="btn-primary" onclick="projetosTreinSalvarInscricao('${eventoId}',${idx !== undefined ? idx : 'null'})">💾 Salvar</button>
+      </div>
+    </div>
+  </div>`);
+}
+
+async function projetosTreinSalvarInscricao(eventoId, idx) {
+  const nome = document.getElementById('tr-iNome').value.trim();
+  if (!nome) { showToast('⚠️ Informe o nome.'); return; }
+  const ev = PROJETOS_TREIN_EVENTOS.find(e => e.id === eventoId);
+  if (!ev.inscricoes) ev.inscricoes = [];
+  const valorEl = document.getElementById('tr-iValor');
+  const registro = {
+    id: (idx !== null && idx !== undefined && ev.inscricoes[idx]) ? ev.inscricoes[idx].id : ('insc-' + Date.now()),
+    nome, tipo: document.getElementById('tr-iTipo').value,
+    valor: valorEl.value !== '' ? Number(valorEl.value) : 0,
+    formaPagamento: document.getElementById('tr-iForma').value.trim(),
+    statusPagamento: document.getElementById('tr-iStatus').value,
+    obs: document.getElementById('tr-iObs').value.trim(),
+  };
+  if (idx !== null && idx !== undefined) ev.inscricoes[idx] = registro; else ev.inscricoes.push(registro);
+  projetosTreinFecharModal(); await projetosTreinSalvar();
+  showToast('💾 Inscrição salva!'); navigate('projetos');
+}
+async function projetosTreinExcluirInscricao(eventoId, idx) {
+  if (!confirm('Excluir esta inscrição?')) return;
+  const ev = PROJETOS_TREIN_EVENTOS.find(e => e.id === eventoId);
+  ev.inscricoes.splice(idx, 1);
+  await projetosTreinSalvar(); navigate('projetos');
+}
+
+/* -- Modal: Patrocinador -- */
+function projetosTreinAbrirModalPatrocinador(eventoId, idx) {
+  const ev = (PROJETOS_TREIN_EVENTOS || []).find(e => e.id === eventoId);
+  const p = idx !== undefined ? (ev.patrocinadores || [])[idx] : null;
+  document.body.insertAdjacentHTML('beforeend', `
+  <div id="trein-modal-overlay" onclick="if(event.target===this)projetosTreinFecharModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+    <div class="card" style="width:100%;max-width:440px;border-radius:16px">
+      <h2 style="font-family:'Mont',sans-serif;font-size:1rem;font-weight:800;margin-bottom:16px">${p ? 'Editar' : 'Novo'} Patrocinador</h2>
+      <div class="form-group"><label>Empresa *</label><input id="tr-pEmpresa" value="${p ? p.empresa || '' : ''}"></div>
+      <div class="form-group"><label>Pessoa de Contato</label><input id="tr-pNome" value="${p ? p.nome || '' : ''}"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label>Cota</label>
+          <select id="tr-pCota" onchange="const cfg={ouro:${PROJETOS_TREIN_COTAS.ouro.valorSugerido},prata:${PROJETOS_TREIN_COTAS.prata.valorSugerido},bronze:${PROJETOS_TREIN_COTAS.bronze.valorSugerido}};const v=document.getElementById('tr-pValor');if(!v.value)v.value=cfg[this.value]||''">
+            <option value="ouro" ${p && p.cota === 'ouro' ? 'selected' : ''}>🥇 Ouro (sugestão ${_fmtMoeda(PROJETOS_TREIN_COTAS.ouro.valorSugerido)})</option>
+            <option value="prata" ${!p || p.cota === 'prata' ? 'selected' : ''}>🥈 Prata (sugestão ${_fmtMoeda(PROJETOS_TREIN_COTAS.prata.valorSugerido)})</option>
+            <option value="bronze" ${p && p.cota === 'bronze' ? 'selected' : ''}>🥉 Bronze (sugestão ${_fmtMoeda(PROJETOS_TREIN_COTAS.bronze.valorSugerido)})</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Valor (R$)</label><input type="number" step="0.01" id="tr-pValor" value="${p && p.valor != null ? p.valor : ''}"></div>
+      </div>
+      <div class="form-group"><label>Status</label>
+        <select id="tr-pStatus">
+          <option value="pendente" ${!p || p.statusPagamento === 'pendente' ? 'selected' : ''}>⏳ Pendente</option>
+          <option value="pago" ${p && p.statusPagamento === 'pago' ? 'selected' : ''}>✅ Pago</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Benefícios combinados</label><textarea id="tr-pBeneficios" rows="2" style="width:100%" placeholder="Ex: Logo no banner, menção na abertura, 2 ingressos cortesia">${p ? (p.beneficios || []).join(', ') : ''}</textarea></div>
+      <div class="form-group"><label>Observações</label><input id="tr-pObs" value="${p ? p.obs || '' : ''}"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+        <button class="btn-secondary" onclick="projetosTreinFecharModal()">Cancelar</button>
+        <button class="btn-primary" onclick="projetosTreinSalvarPatrocinador('${eventoId}',${idx !== undefined ? idx : 'null'})">💾 Salvar</button>
+      </div>
+    </div>
+  </div>`);
+}
+
+async function projetosTreinSalvarPatrocinador(eventoId, idx) {
+  const empresa = document.getElementById('tr-pEmpresa').value.trim();
+  if (!empresa) { showToast('⚠️ Informe a empresa.'); return; }
+  const ev = PROJETOS_TREIN_EVENTOS.find(e => e.id === eventoId);
+  if (!ev.patrocinadores) ev.patrocinadores = [];
+  const valorEl = document.getElementById('tr-pValor');
+  const beneficiosTxt = document.getElementById('tr-pBeneficios').value;
+  const registro = {
+    id: (idx !== null && idx !== undefined && ev.patrocinadores[idx]) ? ev.patrocinadores[idx].id : ('patr-' + Date.now()),
+    empresa, nome: document.getElementById('tr-pNome').value.trim(),
+    cota: document.getElementById('tr-pCota').value,
+    valor: valorEl.value !== '' ? Number(valorEl.value) : 0,
+    statusPagamento: document.getElementById('tr-pStatus').value,
+    beneficios: beneficiosTxt.split(',').map(b => b.trim()).filter(Boolean),
+    obs: document.getElementById('tr-pObs').value.trim(),
+  };
+  if (idx !== null && idx !== undefined) ev.patrocinadores[idx] = registro; else ev.patrocinadores.push(registro);
+  projetosTreinFecharModal(); await projetosTreinSalvar();
+  showToast('💾 Patrocinador salvo!'); navigate('projetos');
+}
+async function projetosTreinExcluirPatrocinador(eventoId, idx) {
+  if (!confirm('Excluir este patrocinador?')) return;
+  const ev = PROJETOS_TREIN_EVENTOS.find(e => e.id === eventoId);
+  ev.patrocinadores.splice(idx, 1);
+  await projetosTreinSalvar(); navigate('projetos');
+}
+
+/* -- Modal: Custo -- */
+function projetosTreinAbrirModalCusto(eventoId, idx) {
+  const ev = (PROJETOS_TREIN_EVENTOS || []).find(e => e.id === eventoId);
+  const c = idx !== undefined ? (ev.custos || [])[idx] : null;
+  document.body.insertAdjacentHTML('beforeend', `
+  <div id="trein-modal-overlay" onclick="if(event.target===this)projetosTreinFecharModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+    <div class="card" style="width:100%;max-width:420px;border-radius:16px">
+      <h2 style="font-family:'Mont',sans-serif;font-size:1rem;font-weight:800;margin-bottom:16px">${c ? 'Editar' : 'Novo'} Custo</h2>
+      <div class="form-group"><label>Categoria *</label><input id="tr-cCategoria" value="${c ? c.categoria || '' : ''}" placeholder="Ex: Coffee Break"></div>
+      <div class="form-group"><label>Descrição</label><input id="tr-cDescricao" value="${c ? c.descricao || '' : ''}"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label>Valor Previsto (R$)</label><input type="number" step="0.01" id="tr-cPrevisto" value="${c && c.valorPrevisto != null ? c.valorPrevisto : ''}"></div>
+        <div class="form-group"><label>Valor Real (R$)</label><input type="number" step="0.01" id="tr-cReal" value="${c && c.valorReal != null ? c.valorReal : ''}"></div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+        <button class="btn-secondary" onclick="projetosTreinFecharModal()">Cancelar</button>
+        <button class="btn-primary" onclick="projetosTreinSalvarCusto('${eventoId}',${idx !== undefined ? idx : 'null'})">💾 Salvar</button>
+      </div>
+    </div>
+  </div>`);
+}
+
+async function projetosTreinSalvarCusto(eventoId, idx) {
+  const categoria = document.getElementById('tr-cCategoria').value.trim();
+  if (!categoria) { showToast('⚠️ Informe a categoria.'); return; }
+  const ev = PROJETOS_TREIN_EVENTOS.find(e => e.id === eventoId);
+  if (!ev.custos) ev.custos = [];
+  const prevEl = document.getElementById('tr-cPrevisto');
+  const realEl = document.getElementById('tr-cReal');
+  const registro = {
+    id: (idx !== null && idx !== undefined && ev.custos[idx]) ? ev.custos[idx].id : ('custo-' + Date.now()),
+    categoria, descricao: document.getElementById('tr-cDescricao').value.trim(),
+    valorPrevisto: prevEl.value !== '' ? Number(prevEl.value) : 0,
+    valorReal: realEl.value !== '' ? Number(realEl.value) : null,
+  };
+  if (idx !== null && idx !== undefined) ev.custos[idx] = registro; else ev.custos.push(registro);
+  projetosTreinFecharModal(); await projetosTreinSalvar();
+  showToast('💾 Custo salvo!'); navigate('projetos');
+}
+async function projetosTreinExcluirCusto(eventoId, idx) {
+  if (!confirm('Excluir este custo?')) return;
+  const ev = PROJETOS_TREIN_EVENTOS.find(e => e.id === eventoId);
+  ev.custos.splice(idx, 1);
+  await projetosTreinSalvar(); navigate('projetos');
 }
 
 /* -- SOLAR (solar.sistemas.ro.gov.br) é hoje o sistema oficial da SEDAM
