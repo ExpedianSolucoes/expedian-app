@@ -20992,8 +20992,15 @@ function painelGeralCalcularFrente(fr, flashList, ncList, mitList) {
   const mitNaoAceitavel = mitDaFrente.filter(r => r.pontuacaoLabel === 'Não Aceitável').length;
   const mitAcoesPendentes = mitDaFrente.filter(r => r.acaoNecessaria === 'sim' && r.acaoStatus !== 'concluida').length;
 
-  const temDados = flashDaFrente.length > 0 || ncDaFrente.length > 0 || mitDaFrente.length > 0;
-  const critico = ncAbertas > 0 || ncForaPrazo > 0 || mitNaoAceitavel > 0 || mitAcoesPendentes > 0;
+  const fornDaFrente = (_fornEnergisaLista||[]).filter(x => x.CircuitoId === fr.id);
+  const fornDocs = fornDaFrente.reduce((arr,x) => arr.concat(x.Documentos||[]), []);
+  const fornConf = fornDocs.filter(d => d.StatusValidacao === 'conforme').length;
+  const fornNaoConf = fornDocs.filter(d => d.StatusValidacao === 'nao_conforme').length;
+  const fornValidados = fornConf + fornNaoConf;
+  const fornConformePct = fornValidados ? (fornConf / fornValidados) * 100 : null;
+
+  const temDados = flashDaFrente.length > 0 || ncDaFrente.length > 0 || mitDaFrente.length > 0 || fornDaFrente.length > 0;
+  const critico = ncAbertas > 0 || ncForaPrazo > 0 || mitNaoAceitavel > 0 || mitAcoesPendentes > 0 || fornNaoConf > 0;
   const atencao = !critico && flashComOcorr > 0;
   const status = !temDados
     ? { cor: '⚪', label: 'Sem dados ainda', corCss: 'var(--border)' }
@@ -21003,20 +21010,41 @@ function painelGeralCalcularFrente(fr, flashList, ncList, mitList) {
         ? { cor: '🟡', label: 'Acompanhar', corCss: '#d97706' }
         : { cor: '🟢', label: 'Em conformidade', corCss: 'var(--green-main)' };
 
+  /* -- Nota Geral: média dos indicadores que tiverem dado (Flash Report,
+        Kit de Mitigação, % de documentos de Fornecedores conformes),
+        descontando uma penalidade por NC aberta/fora do prazo. Se nenhum
+        indicador tiver dado ainda, fica null (mostra "—" no card). -- */
+  const notasDisponiveis = [flashMediaIda, mitMediaPct, fornConformePct].filter(n => typeof n === 'number');
+  let notaGeral = notasDisponiveis.length ? (notasDisponiveis.reduce((s,n) => s+n, 0) / notasDisponiveis.length) : null;
+  if (notaGeral !== null) {
+    const penalidade = (ncAbertas * 5) + (ncForaPrazo * 10);
+    notaGeral = Math.max(0, Math.min(100, notaGeral - penalidade));
+  }
+
   return {
-    fr, temDados, status,
+    fr, temDados, status, notaGeral,
     flashDaFrente, flashMediaIda, flashComOcorr,
     ncDaFrente, ncAbertas, ncForaPrazo,
     mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes,
+    fornDaFrente, fornConf, fornNaoConf, fornConformePct,
   };
 }
 
 function painelGeralCardFrente(p) {
-  const { fr, status, flashDaFrente, flashMediaIda, flashComOcorr, ncDaFrente, ncAbertas, ncForaPrazo, mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes } = p;
+  const { fr, status, notaGeral, flashDaFrente, flashMediaIda, flashComOcorr, ncDaFrente, ncAbertas, ncForaPrazo, mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, fornDaFrente, fornNaoConf } = p;
+  const notaCorCss = notaGeral === null ? 'var(--text-muted)' : notaGeral >= 80 ? 'var(--green-main)' : notaGeral >= 50 ? '#d97706' : 'var(--red)';
   return `
   <div class="card" style="border-top:3px solid ${status.corCss}">
-    <div style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:800">${status.cor} ${fr.nome}</div>
-    <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:6px">${fr.empreiteira}</div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+      <div style="min-width:0">
+        <div style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${fr.nome}">${status.cor} ${fr.nome}</div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:6px">${fr.empreiteira}</div>
+      </div>
+      <div style="text-align:center;flex-shrink:0" title="Nota Geral — média de Flash Report, Kit de Mitigação e Fornecedores conformes, descontando NC em aberto/fora do prazo">
+        <div style="font-size:.58rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Nota Geral</div>
+        <div style="font-family:'Mont',sans-serif;font-size:1.25rem;font-weight:800;color:${notaCorCss}">${notaGeral===null?'—':notaGeral.toFixed(0)+'%'}</div>
+      </div>
+    </div>
     <div style="font-size:.7rem;font-weight:700;margin-bottom:10px;color:${status.corCss}">${status.label}</div>
     <div style="display:flex;flex-direction:column;gap:6px">
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="navigate('checklist_flash')" title="Ver Flash Reports">
@@ -21033,7 +21061,7 @@ function painelGeralCardFrente(p) {
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="fornEnergisaFiltrarCircuito('${fr.id}');navigate('checklist_fornecedores')" title="Ver Fornecedores deste circuito">
         <span style="font-size:.72rem">🧾 Fornecedores</span>
-        <span style="font-size:.72rem;font-weight:700">${(() => { const n = (_fornEnergisaLista||[]).filter(x => x.CircuitoId === fr.id); const nc = n.reduce((s,x)=>s+(x.Documentos||[]).filter(d=>d.StatusValidacao==='nao_conforme').length,0); return n.length ? `${n.length} cadastrado${n.length!==1?'s':''}${nc?` · 🔴${nc}`:''}` : 'sem cadastro'; })()}</span>
+        <span style="font-size:.72rem;font-weight:700;color:${fornNaoConf > 0 ? 'var(--red)' : 'inherit'}">${fornDaFrente.length ? `${fornDaFrente.length} cadastrado${fornDaFrente.length!==1?'s':''}${fornNaoConf?` · 🔴${fornNaoConf}`:''}` : 'sem cadastro'}</span>
       </div>
     </div>
     <button class="btn-secondary" style="width:100%;margin-top:10px;font-size:.72rem;padding:6px" onclick="painelGeralAbrirRelatorio('${fr.id}')">📄 Relatório Mensal</button>
@@ -21836,6 +21864,30 @@ function fornEnergisaFiltrarCircuito(id) {
   navigate('checklist_fornecedores');
 }
 
+/* -- Taxonomia de tipos de fornecedor, com a documentação legal MÍNIMA
+      exigida por tipo — baseada nos documentos reais já levantados em
+      campo (concreteira/posto/restaurante) e em exigências usuais para os
+      demais tipos comuns em obras de circuito elétrico. Usada para sugerir
+      automaticamente o checklist ao cadastrar um novo fornecedor. -- */
+const FORN_ENERGISA_TIPOS = [
+  { valor: 'concreteira', label: 'Concreteira / Fornecedor de Concreto e Argamassa', docs: ['Alvará de Localização e Funcionamento', 'Auto de Vistoria do Corpo de Bombeiros (AVCIP/ACPS)', 'Licença Ambiental de Operação'] },
+  { valor: 'posto', label: 'Posto de Combustível', docs: ['Licença de Operação Ambiental (órgão estadual)', 'Alvará de Localização e Funcionamento', 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', 'Certificado de Regularidade — CTF/APP (IBAMA)'] },
+  { valor: 'restaurante', label: 'Restaurante / Fornecimento de Alimentação', docs: ['Licença de Localização e Funcionamento', 'Licença Sanitária', 'Auto de Vistoria do Corpo de Bombeiros (conforme porte)'] },
+  { valor: 'residuos', label: 'Transportadora de Resíduos', docs: ['Licença Ambiental de Operação para Transporte de Resíduos', 'Autorização/Manifesto de Transporte de Resíduos (MTR)', 'Registro ANTT (RNTRC)'] },
+  { valor: 'locacao', label: 'Locação de Máquinas e Equipamentos', docs: ['Alvará de Localização e Funcionamento', 'Certificados de Manutenção/Calibração dos Equipamentos (NR-12)', 'Apólice de Seguro (se aplicável)'] },
+  { valor: 'hospedagem', label: 'Hospedagem', docs: ['Alvará de Localização e Funcionamento', 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', 'Licença Sanitária (se servir alimentação)'] },
+  { valor: 'transporte', label: 'Transporte de Passageiros / Fretamento', docs: ['Alvará de Localização e Funcionamento', 'Registro ANTT', 'CRLV dos Veículos e Apólice de Seguro'] },
+  { valor: 'outro', label: 'Outro', docs: ['Alvará de Localização e Funcionamento'] },
+];
+function fornEnergisaDocsSugeridos(tipo) {
+  const t = FORN_ENERGISA_TIPOS.find(x => x.valor === tipo);
+  return t ? t.docs : [];
+}
+function fornEnergisaTipoLabel(tipo) {
+  const t = FORN_ENERGISA_TIPOS.find(x => x.valor === tipo);
+  return t ? t.label : '';
+}
+
 function fornEnergisaStatusInfo(status) {
   if (status === 'conforme') return { label: '✅ Conforme', bg: 'var(--green-pale)', color: 'var(--green-main)' };
   if (status === 'nao_conforme') return { label: '❌ Não Conforme', bg: '#fce8e8', color: 'var(--red)' };
@@ -21919,7 +21971,7 @@ function fornEnergisaCardHtml(f) {
   <div class="card" style="margin-bottom:14px;border-top:3px solid ${naoConf>0?'var(--red)':'var(--green-main)'}">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
       <div>
-        <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:.9rem">${f.Nome}</div>
+        <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:.9rem">${f.Nome}${f.Tipo?` <span style="font-weight:600;font-size:.68rem;color:var(--green-main);background:var(--green-pale);padding:2px 7px;border-radius:5px;vertical-align:middle">${fornEnergisaTipoLabel(f.Tipo)}</span>`:''}</div>
         <div style="font-size:.72rem;color:var(--text-muted)">${f.RazaoSocial||''}${f.CNPJ?' · '+f.CNPJ:''}</div>
       </div>
       <div style="display:flex;gap:6px">
@@ -21970,9 +22022,44 @@ function fornEnergisaAbrirModal(circuitoId, id) {
 function _fornEnergisaSnapshotHeader() {
   return {
     Nome: (document.getElementById('fe_nome')||{}).value || '',
+    Tipo: (document.getElementById('fe_tipo')||{}).value || '',
     CNPJ: (document.getElementById('fe_cnpj')||{}).value || '',
     RazaoSocial: (document.getElementById('fe_razaosocial')||{}).value || '',
   };
+}
+
+/* -- Chamada ao trocar o Tipo de Fornecedor: se ainda não há nenhum
+      documento na lista (fornecedor novo), já preenche automaticamente com
+      a documentação mínima daquele tipo. Se já houver documentos (edição),
+      não sobrescreve — o botão "🌱 Adicionar documentação mínima sugerida"
+      fica disponível para completar o que faltar. -- */
+function fornEnergisaTipoAlterado(tipo) {
+  const sugeridos = fornEnergisaDocsSugeridos(tipo);
+  if (sugeridos.length && (!window._fornEnergisaDocsAtual || window._fornEnergisaDocsAtual.length === 0)) {
+    window._fornEnergisaDocsAtual = sugeridos.map((tipoDoc, i) => ({ Id: Date.now()+i, Tipo: tipoDoc, Numero:'', OrgaoEmissor:'', Observacao:'', Validade:'', StatusValidacao:'', ArquivoUrl:'', ArquivoNomeOriginal:'' }));
+  }
+  fornEnergisaRerender();
+}
+
+/* -- Adiciona só os documentos mínimos do tipo selecionado que AINDA não
+      estão na lista (compara pelo nome do tipo de documento) — usado tanto
+      para completar um cadastro existente quanto como alternativa ao
+      preenchimento automático de fornecedor novo. -- */
+function fornEnergisaSugerirDocs() {
+  const tipo = (document.getElementById('fe_tipo')||{}).value || '';
+  const sugeridos = fornEnergisaDocsSugeridos(tipo);
+  if (!sugeridos.length) { showToast('⚠️ Selecione um Tipo de Fornecedor primeiro.'); return; }
+  window._fornEnergisaDocsAtual = window._fornEnergisaDocsAtual || [];
+  const existentes = new Set(window._fornEnergisaDocsAtual.map(d => (d.Tipo||'').trim().toLowerCase()));
+  let adicionados = 0;
+  sugeridos.forEach((tipoDoc, i) => {
+    if (!existentes.has(tipoDoc.trim().toLowerCase())) {
+      window._fornEnergisaDocsAtual.push({ Id: Date.now()+i+adicionados, Tipo: tipoDoc, Numero:'', OrgaoEmissor:'', Observacao:'', Validade:'', StatusValidacao:'', ArquivoUrl:'', ArquivoNomeOriginal:'' });
+      adicionados++;
+    }
+  });
+  fornEnergisaRerender();
+  showToast(adicionados ? ('🌱 ' + adicionados + ' documento(s) mínimo(s) adicionado(s) — confira e preencha.') : 'Todos os documentos mínimos sugeridos já estão na lista.');
 }
 
 function fornEnergisaRerender() {
@@ -22027,15 +22114,27 @@ function _fornEnergisaModalHtml(f) {
       </div>
       <div class="form-row">
         <div class="form-group"><label>Nome / Estabelecimento</label><input type="text" id="fe_nome" value="${(f&&f.Nome||'').replace(/"/g,'&quot;')}" placeholder="Ex: Concreto, Posto de Gasolina..."></div>
-        <div class="form-group"><label>CNPJ</label><input type="text" id="fe_cnpj" value="${(f&&f.CNPJ||'').replace(/"/g,'&quot;')}" placeholder="00.000.000/0001-00"></div>
+        <div class="form-group"><label>Tipo de Fornecedor</label>
+          <select id="fe_tipo" onchange="fornEnergisaTipoAlterado(this.value)">
+            <option value="">Selecione...</option>
+            ${FORN_ENERGISA_TIPOS.map(t => `<option value="${t.valor}" ${f&&f.Tipo===t.valor?'selected':''}>${t.label}</option>`).join('')}
+          </select>
+        </div>
       </div>
-      <div class="form-group" style="margin-bottom:14px"><label>Razão Social</label><input type="text" id="fe_razaosocial" value="${(f&&f.RazaoSocial||'').replace(/"/g,'&quot;')}"></div>
+      <div class="form-row">
+        <div class="form-group"><label>CNPJ</label><input type="text" id="fe_cnpj" value="${(f&&f.CNPJ||'').replace(/"/g,'&quot;')}" placeholder="00.000.000/0001-00"></div>
+        <div class="form-group"><label>Razão Social</label><input type="text" id="fe_razaosocial" value="${(f&&f.RazaoSocial||'').replace(/"/g,'&quot;')}"></div>
+      </div>
+      <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:14px">🌱 Ao escolher o tipo, a documentação legal mínima já é sugerida abaixo (sempre editável).</div>
 
       <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">📄 Documentação Legal</div>
       <div id="fe-docs-list">
         ${docs.length ? docs.map((d,i) => _fornEnergisaDocRowHtml(d,i)).join('') : '<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:10px">Nenhum documento adicionado ainda.</div>'}
       </div>
-      <button class="btn-secondary" style="font-size:.78rem;margin-bottom:16px" onclick="fornEnergisaAddDocRow()">➕ Adicionar Documento</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+        <button class="btn-secondary" style="font-size:.78rem" onclick="fornEnergisaAddDocRow()">➕ Adicionar Documento</button>
+        <button class="btn-secondary" style="font-size:.78rem" onclick="fornEnergisaSugerirDocs()">🌱 Adicionar documentação mínima sugerida</button>
+      </div>
 
       <div style="display:flex;gap:10px">
         <button class="btn-primary" style="flex:1" onclick="fornEnergisaSalvar()">💾 Salvar</button>
@@ -22051,6 +22150,7 @@ async function fornEnergisaSalvar() {
   const dados = {
     CircuitoId: window._fornEnergisaCircuitoModal,
     Nome: nome,
+    Tipo: (document.getElementById('fe_tipo').value||'').trim(),
     CNPJ: (document.getElementById('fe_cnpj').value||'').trim(),
     RazaoSocial: (document.getElementById('fe_razaosocial').value||'').trim(),
     Documentos: window._fornEnergisaDocsAtual || [],
@@ -22144,6 +22244,7 @@ const FORN_ENERGISA_SEED_PRESIDENTE_MEDICI = [
   {
     CircuitoId: 'engm3',
     Nome: 'CONCRETO',
+    Tipo: 'concreteira',
     RazaoSocial: 'DDP Preparação de Concretos e Argamassa Industrializada Ltda - ME (Concretar Engenharia de Concreto)',
     CNPJ: '24.701.015/0001-45',
     Documentos: [
@@ -22155,6 +22256,7 @@ const FORN_ENERGISA_SEED_PRESIDENTE_MEDICI = [
   {
     CircuitoId: 'engm3',
     Nome: 'POSTO DE GASOLINA — DOMINGUES NETO (Patrão 15)',
+    Tipo: 'posto',
     RazaoSocial: 'Domingues Neto Comércio Varejista de Combustível Ltda',
     CNPJ: '23.036.550/0001-66',
     Documentos: [
@@ -22166,6 +22268,7 @@ const FORN_ENERGISA_SEED_PRESIDENTE_MEDICI = [
   {
     CircuitoId: 'engm3',
     Nome: 'POSTO DE GASOLINA — VAREA E VAREA (Patrão 12)',
+    Tipo: 'posto',
     RazaoSocial: 'Varea e Varea Comércio de Combustível Ltda',
     CNPJ: '33.028.072/0001-04',
     Documentos: [
@@ -22178,6 +22281,7 @@ const FORN_ENERGISA_SEED_PRESIDENTE_MEDICI = [
   {
     CircuitoId: 'engm3',
     Nome: 'RESTAURANTE',
+    Tipo: 'restaurante',
     RazaoSocial: 'Edson Bispo Bezerra (Lanchonete e Restaurante do Polaco)',
     CNPJ: '24.075.149/0001-06',
     Documentos: [
