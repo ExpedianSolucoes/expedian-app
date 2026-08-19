@@ -35646,6 +35646,7 @@ function epiAbrirMenu(cIdx) {
     + '<div style="padding:18px 22px">'
     + item(temHistorico, '#78350f', `epiVerFicha(${cIdx})`, '👁️ Ver Ficha', temHistorico ? '' : 'Sem entregas registradas ainda')
     + item(true, '#b45309', `gerarEPI(${cIdx})`, '🦺 Nova Entrega', '')
+    + item(emPosse.length > 0, '#2563eb', `gdAbrirEditarEpi(${cIdx})`, '✏️ Editar/Excluir Itens', emPosse.length > 0 ? 'Corrigir informação errada ou remover item' : 'Nada em posse pra editar')
     + item(emPosse.length > 0, '#92400e', `gdAbrirDevolucaoEpi(${cIdx})`, '🔄 Devolução/Troca', emPosse.length > 0 ? (emPosse.length + ' item(ns) em posse') : 'Nada em posse pra devolver')
     + '</div></div>';
   document.body.appendChild(el);
@@ -35845,6 +35846,99 @@ async function gdSalvarDevolucaoEpi(cIdx) {
   document.getElementById('modal-epi-dev').remove();
   epiAbrirJanelaImpressao(html);
   showToast('💾 Devolução/troca registrada — nada do histórico anterior foi apagado!');
+}
+
+/* -- Edita/exclui itens já entregues e ainda em posse (a "ficha em vigor") —
+      corrige informação lançada errada (descrição, C.A., validade,
+      quantidade) ou remove um item cadastrado por engano. Diferente da
+      Devolução/Troca (que registra o item como devolvido mas mantém o
+      histórico), aqui o item é apagado como se nunca tivesse existido. -- */
+function gdAbrirEditarEpi(cIdx) {
+  const colab = window._gdDados && window._gdDados.colaboradores[cIdx];
+  if (!colab) { showToast('⚠️ Colaborador não encontrado.'); return; }
+  _epiColabIdx = cIdx;
+
+  const emPosse = gdEpiItensEmPosse(colab.id);
+  if (!emPosse.length) {
+    showToast('📭 Nenhum item em posse pra editar. Use "🦺 Nova Entrega" pra registrar um.');
+    return;
+  }
+
+  const modal = document.getElementById('modal-epi-edit');
+  if (modal) modal.remove();
+
+  const lid = (entregaId, itemId) => (entregaId + '__' + itemId).replace(/[^a-zA-Z0-9_]/g, '');
+
+  const itensHtml = emPosse.map(it => `
+    <div data-entrega-id="${it.entregaId}" data-item-id="${it.itemId}" style="display:grid;grid-template-columns:1fr 56px 90px 120px 30px;gap:6px;align-items:center;margin-bottom:6px">
+      <input id="epiedit-desc-${lid(it.entregaId,it.itemId)}" value="${(it.desc||'').replace(/"/g,'&quot;')}" list="epi_dl_itens_edit" placeholder="Descrição" style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 8px;font-size:.78rem">
+      <input id="epiedit-qtd-${lid(it.entregaId,it.itemId)}" type="number" min="1" value="${it.qtd||1}" style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 6px;font-size:.78rem;text-align:center">
+      <input id="epiedit-ca-${lid(it.entregaId,it.itemId)}" value="${(it.ca||'').replace(/"/g,'&quot;')}" placeholder="C.A." style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 6px;font-size:.78rem">
+      <input id="epiedit-venc-${lid(it.entregaId,it.itemId)}" type="date" value="${it.venc||''}" style="height:32px;border:1.5px solid #ddd;border-radius:6px;padding:0 6px;font-size:.72rem">
+      <button onclick="gdExcluirItemEpi(${cIdx},'${it.entregaId}','${it.itemId}')" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:.95rem" title="Excluir item">🗑️</button>
+    </div>`).join('');
+
+  const el = document.createElement('div');
+  el.id = 'modal-epi-edit';
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
+  el.innerHTML = '<div style="background:#fff;border-radius:16px;width:100%;max-width:640px;max-height:92vh;overflow-y:auto;box-shadow:0 24px 80px rgba(0,0,0,.3)">'
+    + '<div style="padding:18px 22px 0;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #eee;padding-bottom:14px">'
+    + '<div><div style="font-weight:800;font-size:1rem">✏️ Editar/Excluir Itens de EPI — ' + colab.nome + '</div>'
+    + '<div style="font-size:.75rem;color:#666;margin-top:2px">Corrija informação errada ou remova um item lançado por engano</div></div>'
+    + '<button onclick="document.getElementById(\'modal-epi-edit\').remove()" style="border:none;background:#f0f0f0;border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>'
+    + '</div>'
+    + '<div style="padding:18px 22px">'
+    + '<datalist id="epi_dl_itens_edit">' + epiListaItensPadrao().map(d => `<option value="${d}">`).join('') + '</datalist>'
+    + '<div style="background:#f0f7ff;border:1px solid #cde3fb;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:.78rem;color:#2a5d8f">Isso corrige o cadastro salvo. Se precisar de uma via impressa atualizada depois de salvar, use "👁️ Ver Ficha".</div>'
+    + '<div>' + itensHtml + '</div>'
+    + '<div style="display:flex;gap:10px;justify-content:flex-end;padding-top:12px;border-top:1px solid #eee;margin-top:6px">'
+    + '<button onclick="document.getElementById(\'modal-epi-edit\').remove()" style="padding:9px 20px;border:1.5px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;font-size:.85rem">Cancelar</button>'
+    + '<button onclick="gdSalvarEdicaoEpi(' + cIdx + ')" style="padding:9px 24px;border:none;border-radius:8px;background:#2563eb;color:#fff;font-weight:700;font-size:.85rem;cursor:pointer">💾 Salvar Alterações</button>'
+    + '</div>'
+    + '</div></div>';
+  document.body.appendChild(el);
+}
+
+async function gdSalvarEdicaoEpi(cIdx) {
+  const colab = window._gdDados && window._gdDados.colaboradores[cIdx];
+  if (!colab) return;
+  const hist = gdEpiObter(colab.id);
+  const linhas = document.querySelectorAll('#modal-epi-edit [data-entrega-id]');
+  linhas.forEach(row => {
+    const entregaId = row.dataset.entregaId, itemId = row.dataset.itemId;
+    const key = (entregaId + '__' + itemId).replace(/[^a-zA-Z0-9_]/g, '');
+    const entrega = hist.entregas.find(e => e.id === entregaId);
+    const item = entrega && entrega.itens.find(it => it.itemId === itemId);
+    if (!item) return;
+    const descEl = document.getElementById('epiedit-desc-'+key);
+    const qtdEl  = document.getElementById('epiedit-qtd-'+key);
+    const caEl   = document.getElementById('epiedit-ca-'+key);
+    const vencEl = document.getElementById('epiedit-venc-'+key);
+    if (descEl) item.desc = (descEl.value||'').trim();
+    if (qtdEl)  item.qtd  = qtdEl.value || 1;
+    if (caEl)   item.ca   = (caEl.value||'').trim();
+    if (vencEl) item.venc = vencEl.value || '';
+  });
+  await gdSalvar();
+  const modal = document.getElementById('modal-epi-edit');
+  if (modal) modal.remove();
+  showToast('💾 Ficha de EPI atualizada!');
+  navigate('docs');
+}
+
+async function gdExcluirItemEpi(cIdx, entregaId, itemId) {
+  if (!confirm('Excluir este item da ficha de EPI? Diferente da devolução, o item some do histórico — essa ação não pode ser desfeita.')) return;
+  const colab = window._gdDados && window._gdDados.colaboradores[cIdx];
+  if (!colab) return;
+  const hist = gdEpiObter(colab.id);
+  const entrega = hist.entregas.find(e => e.id === entregaId);
+  if (!entrega) return;
+  entrega.itens = entrega.itens.filter(it => it.itemId !== itemId);
+  // Se a entrega ficou sem nenhum item, remove a entrega inteira do histórico.
+  hist.entregas = hist.entregas.filter(e => e.itens.length > 0);
+  await gdSalvar();
+  showToast('🗑️ Item excluído da ficha.');
+  gdAbrirEditarEpi(cIdx);
 }
 // ─────────────────────────────────────────────────────────────
 
