@@ -18389,8 +18389,7 @@ function _custosFinanceiroDoCC(ccId) {
 }
 
 async function custosSalvarValorAprovado(ccId, valor) {
-  const num = parseFloat(String(valor).replace(/\./g,'').replace(',','.'));
-  const v = isNaN(num) ? 0 : num;
+  const v = rdMoedaParaNumero(valor);
   const existente = (_custosValoresAprovados || []).find(x => x.CentroCustoId === ccId);
   _limparSyncError();
   let ok;
@@ -18410,6 +18409,8 @@ function pageCustos() {
   const filtroSt    = window._custosSt    || 'todos';
   const filtroCat   = window._custosCat   || 'todos';
   const busca       = window._custosBusca || '';
+  const filtroValorMin = rdMoedaParaNumero(window._custosFiltroValorMin || '');
+  const filtroValorMax = rdMoedaParaNumero(window._custosFiltroValorMax || '');
 
   const empresas  = [...new Set(centrosCustoData.map(c => c.empresa))];
   const categorias= [...new Set(centrosCustoData.map(c => c.categoria))];
@@ -18421,7 +18422,13 @@ function pageCustos() {
     const okBus = !busca || c.contrato.toLowerCase().includes(busca.toLowerCase())
                          || c.cliente.toLowerCase().includes(busca.toLowerCase())
                          || c.gestor.toLowerCase().includes(busca.toLowerCase());
-    return okEmp && okSt && okCat && okBus;
+    let okValor = true;
+    if ((filtroValorMin > 0 || filtroValorMax > 0) && _custosReceitas !== null) {
+      const va = _custosValorAprovado(c.id);
+      if (filtroValorMin > 0 && va < filtroValorMin) okValor = false;
+      if (filtroValorMax > 0 && va > filtroValorMax) okValor = false;
+    }
+    return okEmp && okSt && okCat && okBus && okValor;
   });
 
   const total   = dados.length;
@@ -18586,7 +18593,19 @@ function pageCustos() {
           ${categorias.sort().map(c=>`<option value="${c}" ${filtroCat===c?'selected':''}>${c}</option>`).join('')}
         </select>
       </div>
-      <button onclick="window._custosEmp='todos';window._custosSt='todos';window._custosCat='todos';window._custosBusca='';navigate('custos')"
+      <div style="flex:1;min-width:110px">
+        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:5px">Valor Aprovado mín.</div>
+        <input type="text" inputmode="decimal" value="${window._custosFiltroValorMin||''}" placeholder="R$ 0,00"
+          oninput="rdFormatarMoedaInput(this);window._custosFiltroValorMin=this.value;navigate('custos')"
+          style="width:100%;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.82rem;font-family:'Mont',sans-serif;outline:none;background:var(--surface2)">
+      </div>
+      <div style="flex:1;min-width:110px">
+        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:5px">Valor Aprovado máx.</div>
+        <input type="text" inputmode="decimal" value="${window._custosFiltroValorMax||''}" placeholder="R$ 0,00"
+          oninput="rdFormatarMoedaInput(this);window._custosFiltroValorMax=this.value;navigate('custos')"
+          style="width:100%;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.82rem;font-family:'Mont',sans-serif;outline:none;background:var(--surface2)">
+      </div>
+      <button onclick="window._custosEmp='todos';window._custosSt='todos';window._custosCat='todos';window._custosBusca='';window._custosFiltroValorMin='';window._custosFiltroValorMax='';navigate('custos')"
         style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);font-size:.78rem;cursor:pointer;font-family:'Mont',sans-serif;white-space:nowrap">
         🔄 Limpar
       </button>
@@ -18622,7 +18641,7 @@ function pageCustos() {
             <td style="font-size:.78rem;font-weight:600;color:var(--text)">${c.gestor}</td>
             <td>${statusPill(c.status)}</td>
             <td style="white-space:nowrap">
-              ${fin === null ? '—' : `<input type="number" step="0.01" value="${fin.valorAprovado||''}" placeholder="0,00" onchange="custosSalvarValorAprovado('${c.id}',this.value)" style="width:110px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-size:.75rem;background:var(--surface)">`}
+              ${fin === null ? '—' : `<input type="text" inputmode="decimal" value="${fin.valorAprovado ? rdNumeroParaMoeda(fin.valorAprovado) : ''}" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)" onchange="custosSalvarValorAprovado('${c.id}',this.value)" style="width:120px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-size:.75rem;background:var(--surface)">`}
             </td>
             <td style="white-space:nowrap;color:var(--green-main);font-size:.78rem">${fin === null ? '…' : fmt(fin.receitas)}</td>
             <td style="white-space:nowrap;color:var(--red);font-size:.78rem">${fin === null ? '…' : fmt(fin.despesas)}</td>
@@ -18634,8 +18653,12 @@ function pageCustos() {
                 📋 Detalhes
               </button>
               <button onclick="abrirModalNovoCC('${c.id}')"
-                style="font-size:.68rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;white-space:nowrap">
+                style="font-size:.68rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;white-space:nowrap;margin-right:4px">
                 ✏️ Editar
+              </button>
+              <button onclick="excluirCC('${c.id}')"
+                style="font-size:.68rem;padding:4px 10px;border:1px solid var(--red);border-radius:6px;background:var(--surface2);color:var(--red);cursor:pointer;white-space:nowrap">
+                🗑️ Excluir
               </button>
             </td>
           </tr>`;
@@ -18733,6 +18756,9 @@ function abrirDetalheCC(id) {
           </button>
           <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="showToast('Relatório gerado!')">
             📊 Relatório
+          </button>
+          <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px;color:var(--red);border-color:var(--red)" onclick="document.getElementById('ccModal').remove();excluirCC('${cc.id}')">
+            🗑️ Excluir
           </button>
           <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="document.getElementById('ccModal').remove()">
             Fechar
@@ -18952,6 +18978,42 @@ async function confirmarCC() {
   if (inserido) novoCC._spId = inserido.Id;
   showToast(inserido ? '✅ Centro de custo "' + novoId + '" cadastrado!' : '⚠️ Criado localmente, mas houve erro ao sincronizar.' + syncErrorDetalhe());
   fecharModalNovoCC();
+  navigate('custos');
+}
+
+/* -- Exclui um Centro de Custo. Antes de excluir, checa se há Despesas,
+      Receitas ou Medições já lançadas com esse código e avisa (a exclusão do
+      CC não apaga esses lançamentos — eles continuam existindo, só ficam sem
+      um Centro de Custo correspondente na lista). CCs "de fábrica"
+      (hardcoded no código, sem _spId) só saem da lista em memória, válido
+      pra esta sessão/navegador; CCs persistidos são removidos também do
+      SharePoint. -- */
+async function excluirCC(id) {
+  const cc = centrosCustoData.find(c => c.id === id);
+  if (!cc) return;
+  let aviso = '';
+  try {
+    const [desp, rec, med] = await Promise.all([
+      dbLer('Despesas').catch(()=>[]), dbLer('Receitas').catch(()=>[]), dbLer('Medicoes').catch(()=>[])
+    ]);
+    const nDesp = (desp||[]).filter(d => _ccIdPuro(d.CentroCusto) === id).length;
+    const nRec  = (rec||[]).filter(r => _ccIdPuro(r.CentroCusto) === id).length;
+    const nMed  = (med||[]).filter(m => m.CentroCusto === id).length;
+    if (nDesp || nRec || nMed) {
+      aviso = '\n\n⚠️ Atenção: existem ' + nDesp + ' despesa(s), ' + nRec + ' receita(s) e ' + nMed + ' medição(ões) lançadas com o código ' + id + '. Elas não serão apagadas, mas ficarão sem um Centro de Custo correspondente.';
+    }
+  } catch (e) { /* segue sem o aviso se não conseguir checar */ }
+  if (!confirm('Excluir o Centro de Custo "' + cc.contrato + '" (' + id + ')?' + aviso)) return;
+
+  const idx = centrosCustoData.findIndex(c => c.id === id);
+  if (idx >= 0) centrosCustoData.splice(idx, 1);
+
+  if (cc._spId) {
+    const { ok } = await dbRemover('CentrosCusto', cc._spId);
+    showToast(ok ? '🗑️ Centro de custo excluído.' : '⚠️ Removido localmente, mas houve erro ao sincronizar a exclusão.');
+  } else {
+    showToast('🗑️ Centro de custo removido desta lista.');
+  }
   navigate('custos');
 }
 
