@@ -5153,19 +5153,23 @@ function pagePagar() {
          a partir dela — mais rápido do que navegar a categoria genérica primeiro.
          A Categoria continua editável manualmente, caso precise ajustar. -->
     <div class="form-row">
-      <div class="form-group">
+      <div class="form-group" style="position:relative">
         <label>Subcategoria</label>
-        <select id="pag_subcategoria" onchange="pagAtualizarCategoriaPorSubcategoria()">
-          <option value="">Selecione...</option>
-          ${RD_CATEGORIAS.map(c => `<optgroup label="${c}">${(rdSubcategoriasDe(c)).map(s => `<option>${s}</option>`).join('')}</optgroup>`).join('')}
-        </select>
+        <input type="text" id="pag_subcategoria_input" placeholder="Digite para buscar..." autocomplete="off"
+          oninput="pagFiltrarSubcategorias(this.value)" onfocus="pagFiltrarSubcategorias(this.value)"
+          onblur="setTimeout(()=>pagFecharDropdownSubcategoria(),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
+        <input type="hidden" id="pag_subcategoria">
+        <div id="pag_subcategoria_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
       </div>
-      <div class="form-group">
-        <label>Categoria <span style="font-size:.7rem;color:var(--text-muted)">(automática pela subcategoria)</span></label>
-        <select id="pag_categoria">
-          <option value="">—</option>
-          ${RD_CATEGORIAS.map(c => `<option>${c}</option>`).join('')}
-        </select>
+      <div class="form-group" style="position:relative">
+        <label>Categoria <span style="font-size:.7rem;color:var(--text-muted)">(automática pela subcategoria — digite para ajustar)</span></label>
+        <input type="text" id="pag_categoria_input" placeholder="Digite para buscar..." autocomplete="off"
+          oninput="pagFiltrarCategorias(this.value)" onfocus="pagFiltrarCategorias(this.value)"
+          onblur="setTimeout(()=>pagFecharDropdownCategoria(),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
+        <input type="hidden" id="pag_categoria">
+        <div id="pag_categoria_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
       </div>
     </div>
 
@@ -5538,10 +5542,72 @@ function pagAtualizarParcela(i, campo, valor) {
    (mapa reverso RD_CATEGORIA_DE_SUBCATEGORIA). -- */
 function pagAtualizarCategoriaPorSubcategoria() {
   const sub = (document.getElementById('pag_subcategoria')||{}).value || '';
-  const catSel = document.getElementById('pag_categoria');
-  if (!catSel) return;
+  const catHid = document.getElementById('pag_categoria');
+  const catInp = document.getElementById('pag_categoria_input');
+  if (!catHid) return;
   const cat = rdCategoriaDeSubcategoria(sub);
-  if (cat) catSel.value = cat;
+  if (cat) { catHid.value = cat; if (catInp) catInp.value = cat; }
+}
+
+/* -- Combobox pesquisável de Subcategoria em Contas a Pagar (digita e filtra
+      entre TODAS as subcategorias de todas as categorias — mesma taxonomia
+      usada em Despesas: RD_CATEGORIAS/RD_SUBCATEGORIAS). Ao selecionar,
+      preenche a Categoria automaticamente. -- */
+function pagFiltrarSubcategorias(texto) {
+  const dd = document.getElementById('pag_subcategoria_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  const todas = [];
+  RD_CATEGORIAS.forEach(cat => rdSubcategoriasDe(cat).forEach(sub => todas.push({ sub, cat })));
+  let matches = t ? todas.filter(x => x.sub.toLowerCase().includes(t)) : todas;
+  matches = matches.slice(0, 40);
+  let html = matches.map(x => {
+    const esc = String(x.sub).replace(/'/g,"\\'");
+    return '<div onclick="pagSelecionarSubcategoria(\''+esc+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>'+x.sub+'</strong> <span style="color:var(--text-muted);font-size:.72rem">· '+x.cat+'</span>' +
+    '</div>';
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhuma subcategoria encontrada.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function pagFecharDropdownSubcategoria() {
+  const dd = document.getElementById('pag_subcategoria_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+function pagSelecionarSubcategoria(sub) {
+  const inp = document.getElementById('pag_subcategoria_input'); if (inp) inp.value = sub;
+  const hid = document.getElementById('pag_subcategoria'); if (hid) hid.value = sub;
+  pagFecharDropdownSubcategoria();
+  pagAtualizarCategoriaPorSubcategoria();
+}
+
+/* -- Combobox pesquisável de Categoria em Contas a Pagar (digita e filtra) —
+      normalmente preenchida automaticamente pela Subcategoria, mas continua
+      ajustável manualmente digitando e escolhendo outra categoria. -- */
+function pagFiltrarCategorias(texto) {
+  const dd = document.getElementById('pag_categoria_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  let matches = t ? RD_CATEGORIAS.filter(c => c.toLowerCase().includes(t)) : RD_CATEGORIAS;
+  let html = matches.map(c => {
+    const esc = String(c).replace(/'/g,"\\'");
+    return '<div onclick="pagSelecionarCategoria(\''+esc+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">'+c+'</div>';
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhuma categoria encontrada.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function pagFecharDropdownCategoria() {
+  const dd = document.getElementById('pag_categoria_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+function pagSelecionarCategoria(cat) {
+  const inp = document.getElementById('pag_categoria_input'); if (inp) inp.value = cat;
+  const hid = document.getElementById('pag_categoria'); if (hid) hid.value = cat;
+  pagFecharDropdownCategoria();
 }
 
 async function salvarContaPagar(enviarFinanceiro=false) {
@@ -5608,8 +5674,7 @@ async function salvarContaPagar(enviarFinanceiro=false) {
   showToast(ok?(enviarFinanceiro?'📤 Enviado ao Financeiro!':'✅ Lançamento salvo!'):'✅ Salvo localmente!');
   ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_vencimento','pag_valor','pag_obs','pag_num_parcelas','pag_venc_1parcela'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   ['pag_fornecedor_input','pag_fornecedor_sel'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
-  const pagCatSel=document.getElementById('pag_categoria');if(pagCatSel)pagCatSel.selectedIndex=0;
-  const pagSubcatSel=document.getElementById('pag_subcategoria');if(pagSubcatSel)pagSubcatSel.selectedIndex=0;
+  ['pag_categoria','pag_categoria_input','pag_subcategoria','pag_subcategoria_input'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const formaSel=document.getElementById('pag_forma_pgto');if(formaSel)formaSel.selectedIndex=0;
   const parcSel=document.getElementById('pag_parcelamento');if(parcSel){parcSel.selectedIndex=0;pagToggleParcelas();}
   window._pagParcelas = null;
@@ -38393,6 +38458,8 @@ function finPreencherCategoria(prefixo, sugestao) {
     const subEl = document.getElementById('pag_subcategoria');
     if (!subEl) return false;
     subEl.value = sugestao.subcategoria;
+    const subInp = document.getElementById('pag_subcategoria_input');
+    if (subInp) subInp.value = sugestao.subcategoria;
     pagAtualizarCategoriaPorSubcategoria();
   }
   return true;
