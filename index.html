@@ -35942,6 +35942,198 @@ async function gdExcluirItemEpi(cIdx, entregaId, itemId) {
 }
 // ─────────────────────────────────────────────────────────────
 
+/* -- ORDEM DE SERVIÇO (NR-01, item 1.4.4.1) POR FUNÇÃO — pedido em 19/08/2026
+      ("ainda consegue criar uma Ordem de Serviço de acordo com PGR para cada
+      função?"). Diferente da Ficha de EPI (que acumula histórico de
+      entregas/devoluções), a OS é um documento ESTÁTICO: sempre reflete os
+      riscos/GHE/EPIs cadastrados em PGR_FUNCOES para o cargo ATUAL do
+      colaborador no momento em que é gerada — não fica salva/acumulada em
+      lugar nenhum, é só reimpressa do zero cada vez (igual o botão "Ver
+      Ficha" faz com o histórico da Ficha de EPI). -- */
+
+/* -- Descrição do risco (o que é) e medida de controle correspondente —
+      complementa o que já está em PGR_FUNCOES[].riscos (que só tem o nome
+      da categoria de risco) pra compor o corpo da Ordem de Serviço. -- */
+const PGR_RISCO_INFO = {
+  'Acidentes/Mecânicos': {
+    desc: 'Cortes, prensamentos, quedas de mesmo/diferente nível, atropelamentos e contato com partes móveis de máquinas, veículos e ferramentas em campo.',
+    medida: 'Uso obrigatório dos EPIs indicados, atenção redobrada em deslocamentos e manuseio de equipamentos, respeito à sinalização e à distância de segurança de máquinas/veículos em operação.',
+  },
+  'Ergonômicos': {
+    desc: 'Posturas inadequadas, esforço físico, levantamento e transporte manual de peso, jornadas prolongadas em campo ou em atividades administrativas.',
+    medida: 'Pausas periódicas, alternância de posturas, uso correto de mobiliário/equipamentos e comunicação imediata de qualquer desconforto musculoesquelético.',
+  },
+  'Físicos': {
+    desc: 'Exposição a ruído, radiação solar (calor e raios UV) e variações de temperatura em atividades realizadas a céu aberto.',
+    medida: 'Uso de protetor solar, hidratação constante, protetor auricular quando aplicável e organização das atividades evitando os horários de maior exposição ao sol.',
+  },
+  'Biológicos': {
+    desc: 'Contato com animais peçonhentos, insetos, vetores de doenças e agentes biológicos presentes no ambiente de campo.',
+    medida: 'Uso de EPI apropriado (botas, luvas, perneiras), atenção constante ao ambiente ao redor, vacinação em dia e comunicação imediata de qualquer acidente com animais/agentes biológicos.',
+  },
+};
+
+/* -- Monta o HTML impresso da Ordem de Serviço, com os riscos, medidas de
+      controle e EPIs da função do colaborador (mesma fonte usada pra
+      sugerir EPI e exames de ASO: PGR_FUNCOES). -- */
+function osPgrConstruirHtml(colab, funcao) {
+  const hoje = new Date().toLocaleDateString('pt-BR');
+  const seed = GD_SEED_COLABORADORES.find(s => s.nome.toLowerCase() === colab.nome.toLowerCase());
+  const cpf = (seed && seed.cpf) || colab.cpf || '';
+  const admissaoFmt = colab.admissao ? new Date(colab.admissao + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const riscos = funcao.riscos || [];
+  const epis = funcao.epis || [];
+
+  const linhasRiscos = riscos.map(r => {
+    const info = PGR_RISCO_INFO[r] || { desc: '—', medida: 'Uso dos EPIs indicados e cumprimento dos procedimentos de segurança.' };
+    return '<tr><td style="font-weight:700;white-space:nowrap">' + r + '</td><td>' + info.desc + '</td><td>' + info.medida + '</td></tr>';
+  }).join('') || '<tr><td colspan="3" style="text-align:center;color:#999">Nenhum risco específico cadastrado para esta função.</td></tr>';
+
+  const listaEpis = epis.length ? ('<ul class="decl">' + epis.map(e => '<li>' + e + '</li>').join('') + '</ul>') : '<p style="font-size:9.5px">Sem EPI específico cadastrado para esta função.</p>';
+
+  return '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Ordem de Serviço — ' + colab.nome + '</title>'
+    + ASO_FONT_CSS
+    + '<style>'
+    + '* { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; color-adjust:exact; }'
+    + 'body { font-family: "Mont", sans-serif; font-size: 11px; color: #3F261F; padding: 14px 18px; max-width: 800px; margin: 0 auto; }'
+    + '.doc-header-table { width:100%; border-collapse:collapse; margin-bottom:10px; table-layout:fixed; }'
+    + '.doc-header-table td { border:1px solid #3F261F; padding:4px 8px; font-family:"Mont",sans-serif; font-size:7.5px; color:#3F261F; vertical-align:middle; }'
+    + '.doc-header-table .logo-cell { width:19%; text-align:center; padding:6px; }'
+    + '.doc-header-table .titulo-cell { width:52%; background:#3F261F; color:#fff; font-weight:700; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }'
+    + '.doc-header-table .codigo-cell { background:#3F261F; color:#fff; font-weight:700; }'
+    + '.doc-footer { background:#fff; border-top:2px solid #3F261F; margin-top:10px; padding:6px 18px; text-align:center; font-family:"Mont",sans-serif; font-size:7px; color:#3F261F; line-height:1.5; }'
+    + '.doc-footer .footer-empresa { font-weight:700; font-size:7.5px; text-transform:uppercase; }'
+    + '.doc-wrap { width:100%; border-collapse:collapse; }'
+    + '.doc-wrap > thead { display:table-header-group; }'
+    + '.doc-wrap > tfoot { display:table-footer-group; }'
+    + '.doc-wrap > thead > tr > td, .doc-wrap > tfoot > tr > td, .doc-wrap > tbody > tr > td { padding:0; border:none; }'
+    + '.doc-wrap > thead > tr > td { padding-bottom:8px; }'
+    + '.doc-wrap > tfoot > tr > td { padding-top:8px; }'
+    + '.section { border:1.5px solid #80C476; margin-bottom:6px; border-radius:3px; overflow:hidden; }'
+    + '.sec-title { background:#80C476; color:#fff; padding:4px 10px; font-weight:700; font-size:9px; text-transform:uppercase; letter-spacing:.6px; font-family:"Mont",sans-serif; }'
+    + '.sec-body { padding:6px 10px; }'
+    + '.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }'
+    + '.grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }'
+    + '.field label { font-size:7.5px; text-transform:uppercase; color:#6b3d33; font-weight:700; display:block; margin-bottom:1px; letter-spacing:.4px; font-family:"Mont",sans-serif; }'
+    + '.field span { display:block; border-bottom:1px solid #80C476; min-height:14px; font-size:11px; padding:1px 0; color:#3F261F; }'
+    + 'ul.decl { margin:4px 0 0 16px; padding:0; font-size:9.5px; line-height:1.55; }'
+    + 'ul.decl li { margin-bottom:1px; }'
+    + 'table { width:100%; border-collapse:collapse; font-size:9.5px; }'
+    + 'th { background:#5a9e50; color:#fff; padding:3px 5px; text-align:left; font-size:8px; font-weight:700; text-transform:uppercase; font-family:"Mont",sans-serif; }'
+    + 'td { padding:4px 5px; border-bottom:1px solid #eef7ec; vertical-align:top; color:#3F261F; }'
+    + '.sign-grid { display:grid; grid-template-columns:1fr 1fr; margin-top:6px; }'
+    + '.sign-box { border:1.5px solid #80C476; padding:7px 10px; }'
+    + '.sign-box:first-child { border-right:none; }'
+    + '.sign-line { border-bottom:1.5px solid #80C476; height:32px; margin:5px 0 3px; }'
+    + '.sign-name { font-size:9px; color:#3F261F; }'
+    + '.print-btn { position:fixed; top:10px; right:10px; background:#b45309; color:#fff; border:none; padding:8px 18px; border-radius:8px; font-size:12px; font-weight:700; cursor:pointer; font-family:"Mont",sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.2); }'
+    + '@media print { .print-btn { display:none; } body { padding:6px 10px; } }'
+    + '</style></head><body>'
+    + '<button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>'
+
+    + '<table class="doc-wrap"><thead><tr><td>'
+    + '<table class="doc-header-table"><tbody>'
+    + '<tr>'
+    + '<td class="logo-cell" rowspan="5"><img src="' + ASO_LOGO_B64 + '" style="width:100%;max-width:110px;height:auto;object-fit:contain" alt="Logo Expedian"></td>'
+    + '<td class="titulo-cell">ORDEM DE SERVIÇO — NR-01</td>'
+    + '<td class="codigo-cell">Código: EXP-SSMA-REG-SEG-004</td>'
+    + '</tr>'
+    + '<tr><td>Elaborado por: Tiago Tavares</td><td>Emissão Inicial: ' + hoje + '</td></tr>'
+    + '<tr><td>Aprovação: Diretoria</td><td>Revisão: 00</td></tr>'
+    + '<tr><td>Setor: SSMA</td><td>Base normativa: NR-01, item 1.4.4.1</td></tr>'
+    + '<tr><td>GHE: ' + pgrGheLabel(funcao.ghe) + '</td><td>Data de emissão: ' + hoje + '</td></tr>'
+    + '</tbody></table>'
+    + '</td></tr></thead>'
+
+    + '<tfoot><tr><td>'
+    + '<div class="doc-footer">'
+    + '<div class="footer-empresa">EXPEDIAN – SOLUÇÕES AMBIENTAIS</div>'
+    + '<div>Rua Salgado Filho, nº 1596 – Sala 02 – Bairro Nossa Senhora das Graças, CEP 76.804-118, Porto Velho – RO</div>'
+    + '<div>E-mail: atendimento@expediansolucoes.com.br | Fone (69) 9.9964-9406 | CNPJ: 37.553.680/0001-80</div>'
+    + '</div>'
+    + '</td></tr></tfoot>'
+
+    + '<tbody><tr><td>'
+
+    + '<div class="section"><div class="sec-title">Objetivo</div>'
+    + '<div class="sec-body"><p style="font-size:9.5px">Informar formalmente ao colaborador, conforme NR-01 item 1.4.4.1, os riscos existentes no ambiente e nas atividades da sua função, as medidas de prevenção adotadas, os procedimentos a serem seguidos e sua obrigatoriedade quanto ao cumprimento das normas de segurança.</p></div></div>'
+
+    + '<div class="section"><div class="sec-title">Identificação da Empresa</div>'
+    + '<div class="sec-body grid2">'
+    + '<div class="field"><label>Razão Social</label><span>Expedian Soluções Ambientais Ltda</span></div>'
+    + '<div class="field"><label>CNPJ</label><span>37.553.680/0001-80</span></div>'
+    + '</div></div>'
+
+    + '<div class="section"><div class="sec-title">Identificação do Colaborador</div>'
+    + '<div class="sec-body grid3">'
+    + '<div class="field"><label>Nome</label><span>' + colab.nome + '</span></div>'
+    + '<div class="field"><label>Função</label><span>' + (colab.cargo||'') + '</span></div>'
+    + '<div class="field"><label>CPF</label><span>' + cpf + '</span></div>'
+    + '<div class="field"><label>Admissão</label><span>' + admissaoFmt + '</span></div>'
+    + '<div class="field"><label>CBO</label><span>' + (funcao.cbo || '—') + '</span></div>'
+    + '<div class="field"><label>GHE (PGR)</label><span>' + pgrGheLabel(funcao.ghe) + '</span></div>'
+    + '</div></div>'
+
+    + '<div class="section"><div class="sec-title">Riscos Identificados na Função (conforme PGR)</div>'
+    + '<table><thead><tr><th style="width:120px">Risco</th><th>Descrição</th><th>Medidas de Prevenção/Controle</th></tr></thead><tbody>' + linhasRiscos + '</tbody></table></div>'
+
+    + '<div class="section"><div class="sec-title">Equipamentos de Proteção Individual (EPI) Exigidos</div>'
+    + '<div class="sec-body">' + listaEpis + '</div></div>'
+
+    + '<div class="section"><div class="sec-title">Procedimentos e Obrigações do Colaborador</div>'
+    + '<div class="sec-body">'
+    + '<ul class="decl">'
+    + '<li>Cumprir as disposições legais e regulamentares sobre segurança e saúde no trabalho, inclusive as ordens de serviço expedidas pelo empregador (Art. 158, I, CLT);</li>'
+    + '<li>Utilizar corretamente e conservar os EPIs fornecidos, comunicando qualquer dano, extravio ou necessidade de substituição;</li>'
+    + '<li>Submeter-se aos exames médicos previstos no PCMSO e participar dos treinamentos oferecidos pela empresa;</li>'
+    + '<li>Colaborar com a empresa na aplicação das normas de segurança e saúde no trabalho (Art. 158, II, CLT);</li>'
+    + '<li>Comunicar imediatamente ao superior qualquer condição de risco não prevista nesta Ordem de Serviço;</li>'
+    + '<li>Não operar máquinas, equipamentos ou instalações para os quais não esteja capacitado e/ou autorizado.</li>'
+    + '</ul>'
+    + '<p style="font-size:9.5px;margin-top:5px">Declaro estar ciente dos riscos e medidas de controle acima descritos, das obrigações desta Ordem de Serviço, e de que o descumprimento poderá caracterizar ato faltoso (Art. 158, parágrafo único, CLT).</p>'
+    + '</div></div>'
+
+    + '<div class="sign-grid">'
+    + '<div class="sign-box"><div style="font-weight:700;font-size:9px;text-transform:uppercase;margin-bottom:3px">Assinatura do Colaborador</div>'
+    + '<div class="sign-line"></div>'
+    + '<div class="sign-name">' + colab.nome + ' — Data: ____/____/________</div>'
+    + '</div>'
+    + '<div class="sign-box"><div style="font-weight:700;font-size:9px;text-transform:uppercase;margin-bottom:3px">Responsável pela Emissão (SSMA)</div>'
+    + '<div class="sign-line"></div>'
+    + '<div class="sign-name">Data: ____/____/________</div>'
+    + '</div></div>'
+
+    + '<div style="text-align:center;font-size:7px;color:#bbb;margin:6px 0 0">'
+    + 'Gerado pelo APP Expedian em ' + hoje + ' · PGR REV04 · GHE ' + pgrGheLabel(funcao.ghe)
+    + '</div>'
+
+    + '</td></tr></tbody></table>'
+    + '</body></html>';
+}
+
+function osPgrAbrirJanela(html) {
+  const w = window.open('', '_blank', 'width=880,height=740,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para gerar a Ordem de Serviço.'); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
+/* -- Ponto de entrada da Ordem de Serviço no card do colaborador — pega a
+      função classificada em PGR_FUNCOES a partir do cargo cadastrado; se o
+      cargo não bater com nenhuma função conhecida, avisa em vez de gerar um
+      documento incompleto (mesma checagem que já existe pra EPI/ASO). -- */
+function osPgrGerar(cIdx) {
+  const colab = window._gdDados && window._gdDados.colaboradores[cIdx];
+  if (!colab) { showToast('⚠️ Colaborador não encontrado.'); return; }
+  const funcao = pgrFuncaoPorNome(colab.cargo);
+  if (!funcao) {
+    showToast('⚠️ A função "' + (colab.cargo||'—') + '" ainda não está classificada no PGR (sem GHE/riscos cadastrados) — ajuste o cargo do colaborador ou cadastre a função em PGR_FUNCOES antes de gerar a Ordem de Serviço.');
+    return;
+  }
+  osPgrAbrirJanela(osPgrConstruirHtml(colab, funcao));
+}
+// ─────────────────────────────────────────────────────────────
+
 const GD_SITUACOES = {
   experiencia: { label: 'Em Experiência', cor: '#d97706', bg: '#fef3c7' },
   ativo:       { label: 'Ativo',          cor: '#065f46', bg: '#d1fae5' },
@@ -37259,6 +37451,18 @@ function gdBadgesCertificacoes(colabId, colabNome, docs, cIdx) {
       + `<span style="width:7px;height:7px;border-radius:50%;background:${cor};flex-shrink:0"></span>Ficha EPI</span>`;
   }
 
+  // Ordem de Serviço (NR-01) — documento estático (não acumula histórico como a
+  // Ficha de EPI): verde se a função do colaborador já está classificada no PGR
+  // (dá pra gerar), cinza se o cargo não bate com nenhuma função conhecida ainda.
+  let badgeOs = '';
+  if (cIdx != null) {
+    const funcaoOs = pgrFuncaoPorNome((window._gdDados.colaboradores[cIdx]||{}).cargo);
+    const corOs = funcaoOs ? '#10b981' : '#d1d5db';
+    const tituloOs = funcaoOs ? 'Ordem de Serviço (NR-01): riscos e medidas da função — clique para gerar' : 'Ordem de Serviço: função não classificada no PGR — não é possível gerar ainda';
+    badgeOs = `<span onclick="event.stopPropagation();osPgrGerar(${cIdx})" title="${tituloOs}" style="display:inline-flex;align-items:center;gap:3px;background:#f3f4f6;border-radius:12px;padding:2px 7px;font-size:.62rem;font-weight:700;cursor:pointer;white-space:nowrap;color:#4b5563">`
+      + `<span style="width:7px;height:7px;border-radius:50%;background:${corOs};flex-shrink:0"></span>OS (PGR)</span>`;
+  }
+
   // Demais tipos: agrupa por tipo (excluindo os 4 certificáveis e o ASO, que já
   // têm tratamento especial acima), pega o mais recente de cada, em ordem alfabética.
   const outrosTipos = Array.from(new Set(docs.map(d => d.tipo).filter(t => t && t !== 'ASO' && !tiposCert.includes(t)))).sort();
@@ -37267,7 +37471,7 @@ function gdBadgesCertificacoes(colabId, colabNome, docs, cIdx) {
     return _gdBadgeDoc(colabId, nomeEsc, tipo, candidatos[0], null);
   });
 
-  return '<div style="display:flex;gap:4px;flex-wrap:wrap">' + badgesCert.join('') + badgeAso + badgeEpi + badgesOutros.join('') + '</div>';
+  return '<div style="display:flex;gap:4px;flex-wrap:wrap">' + badgesCert.join('') + badgeAso + badgeEpi + badgeOs + badgesOutros.join('') + '</div>';
 }
 
 /* -- Lista suspensa (select) com Ações Rápidas + TODA a documentação já cadastrada
@@ -37284,6 +37488,7 @@ function _gdSelectAcoesDocs(colabId, nomeEsc, docs, cIdx) {
   const acoesOpts = (cIdx != null) ? [
     { v: 'acao:aso', label: '📋 Emitir ASO' },
     { v: 'acao:epi', label: '🦺 Ficha de EPI (ver/entrega/devolução)' },
+    { v: 'acao:os', label: '📄 Ordem de Serviço (PGR)' },
   ].map(o => `<option value="${o.v}">${o.label}</option>`).join('') : '';
 
   const ordenados = docs.map((d, i) => ({ d, i })).sort((a, b) => (a.d.tipo || '').localeCompare(b.d.tipo || '') || (b.d.emissao || '').localeCompare(a.d.emissao || ''));
@@ -37296,6 +37501,7 @@ function _gdSelectAcoesDocs(colabId, nomeEsc, docs, cIdx) {
   const onchange = `event.stopPropagation();const v=this.value;this.selectedIndex=0;if(!v)return;`
     + `if(v==='acao:aso')gerarASO(${cIdx});`
     + `else if(v==='acao:epi')epiAbrirMenu(${cIdx});`
+    + `else if(v==='acao:os')osPgrGerar(${cIdx});`
     + `else if(v.indexOf('doc:')===0)gdAbrirModalDocColab('${colabId}','${nomeEsc}',parseInt(v.slice(4)));`;
 
   return `<select onchange="${onchange}" onclick="event.stopPropagation()" style="font-size:.65rem;border:1px solid #e5e7eb;border-radius:12px;padding:2px 6px;color:#4b5563;background:#f9fafb;cursor:pointer;max-width:230px">`
