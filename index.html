@@ -6838,6 +6838,19 @@ function renderReceitasTab() {
 
     <div id="rc-form-campos" style="display:${window._rcFormAberto ? 'block' : 'none'}">
     <div class="form-row">
+      <div class="form-group" style="grid-column:span 2;padding:12px 14px;background:var(--surface2);border:1px dashed var(--border);border-radius:10px">
+        <label>📎 Anexar Nota Fiscal (PDF ou foto) <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">— lê e preenche cliente, data de emissão, valor, vencimento, ISS retido, Centro de Custo e Boletim de Medição automaticamente. Anexe primeiro, confira os campos abaixo depois.</span></label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button type="button" onclick="document.getElementById('rc_comprovante_scan').click()" style="flex:1;min-width:130px;background:var(--surface);padding:8px;border-radius:8px;border:1px dashed var(--border);cursor:pointer;color:var(--text)">📷 Escanear</button>
+          <button type="button" onclick="document.getElementById('rc_comprovante_galeria').click()" style="flex:1;min-width:130px;background:var(--surface);padding:8px;border-radius:8px;border:1px dashed var(--border);cursor:pointer;color:var(--text)">🖼️ Galeria/Arquivo</button>
+          <input type="file" id="rc_comprovante_scan" accept=".pdf,.jpg,.jpeg,.png" capture="environment" onchange="rcAnexarComprovante(this)" style="display:none">
+          <input type="file" id="rc_comprovante_galeria" accept=".pdf,.jpg,.jpeg,.png" onchange="rcAnexarComprovante(this)" style="display:none">
+          <div id="rc_comprovante_status" style="font-size:.78rem;color:var(--text-muted);white-space:nowrap;width:100%"></div>
+          <div id="rc_nf_status" style="font-size:.76rem;width:100%"></div>
+        </div>
+      </div>
+    </div>
+    <div class="form-row">
       <div class="form-group">
         <label>Data de Emissão</label>
         <input type="date" id="rc_data_emissao" value="${new Date().toISOString().split('T')[0]}">
@@ -6951,20 +6964,6 @@ function renderReceitasTab() {
         <select id="rc_status">
           ${RC_STATUS.map(s => `<option>${s}</option>`).join('')}
         </select>
-      </div>
-    </div>
-
-    <div class="form-row">
-      <div class="form-group" style="grid-column:span 2">
-        <label>📎 Nota Fiscal / Comprovante (upload ou digitalizar) <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">— lê e preenche cliente, valor, vencimento, ISS retido, Centro de Custo e Boletim de Medição automaticamente</span></label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <button type="button" onclick="document.getElementById('rc_comprovante_scan').click()" style="flex:1;min-width:130px;background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border);cursor:pointer;color:var(--text)">📷 Escanear</button>
-          <button type="button" onclick="document.getElementById('rc_comprovante_galeria').click()" style="flex:1;min-width:130px;background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border);cursor:pointer;color:var(--text)">🖼️ Galeria/Arquivo</button>
-          <input type="file" id="rc_comprovante_scan" accept=".pdf,.jpg,.jpeg,.png" capture="environment" onchange="rcAnexarComprovante(this)" style="display:none">
-          <input type="file" id="rc_comprovante_galeria" accept=".pdf,.jpg,.jpeg,.png" onchange="rcAnexarComprovante(this)" style="display:none">
-          <div id="rc_comprovante_status" style="font-size:.78rem;color:var(--text-muted);white-space:nowrap;width:100%"></div>
-          <div id="rc_nf_status" style="font-size:.76rem;width:100%"></div>
-        </div>
       </div>
     </div>
 
@@ -7129,24 +7128,33 @@ function rcLimparFiltros() {
    ao anexar a NF emitida para o cliente, tenta identificar Cliente, Valor, Nº da NF,
    Vencimento, ISS Retido e Boletim de Medição. Sempre uma sugestão editável — nunca
    substitui a conferência antes de salvar. -- */
-async function rcIdentificarClientePorTexto(texto) {
-  try {
-    const todas = await dbLer('Receitas');
-    const upper = texto.toUpperCase();
-    const vistos = new Set();
-    const candidatos = (todas || []).slice().sort((a, b) => (b.Id || 0) - (a.Id || 0)).filter(r => {
-      const c = (r.Cliente || '').trim();
-      if (!c || vistos.has(c.toUpperCase())) return false;
-      vistos.add(c.toUpperCase());
-      return true;
-    });
-    for (const r of candidatos) {
-      const nome = (r.Cliente || '').trim();
-      if (nome.length >= 4 && upper.includes(nome.toUpperCase())) {
-        return { cliente: nome, cc: r.CentroCusto || '' };
+/* Casa o texto da nota contra o cadastro-mestre de Centros de Custo (centrosCustoData) —
+   muito mais confiável que procurar em lançamentos antigos, porque já cobre contratos
+   novos (sem nenhuma Receita lançada ainda) e porque o campo "cliente" ali é o nome
+   curto que tende a aparecer literalmente dentro do texto da NF (ex: "Energisa" é
+   substring de "ENERGISA RONDÔNIA - DISTRIBUIDORA DE ENERGIA S/A"). Procura primeiro
+   dentro da empresa (aba) ativa; se não achar, procura em todas as empresas — se achar
+   em outra, avisa que o usuário está na aba errada em vez de preencher errado. */
+function rcIdentificarCCPorTexto(texto) {
+  const upper = texto.toUpperCase();
+  const buscarEm = (lista) => {
+    let melhor = null, melhorLen = 0;
+    (lista || []).forEach(c => {
+      if (c.cliente && c.cliente !== '—' && c.cliente.length >= 3 && upper.includes(c.cliente.toUpperCase())) {
+        if (c.cliente.length > melhorLen) { melhor = c; melhorLen = c.cliente.length; }
       }
+    });
+    if (!melhor) {
+      (lista || []).forEach(c => { if (!melhor && c.contrato && c.contrato.length >= 6 && upper.includes(c.contrato.toUpperCase())) melhor = c; });
     }
-  } catch (e) { /* segue sem sugestão de cliente */ }
+    return melhor;
+  };
+  const empresaAtiva = normalizarEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]);
+  const doEmpresaAtiva = (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === empresaAtiva && c.status === 'ativo');
+  let achado = buscarEm(doEmpresaAtiva);
+  if (achado) return { cliente: achado.cliente !== '—' ? achado.cliente : '', cc: achado.id + ' · ' + achado.contrato, empresaDiferente: null };
+  achado = buscarEm(centrosCustoData || []);
+  if (achado) return { cliente: achado.cliente !== '—' ? achado.cliente : '', cc: achado.id + ' · ' + achado.contrato, empresaDiferente: achado.empresa };
   return null;
 }
 
@@ -7194,14 +7202,24 @@ async function rcProcessarNotaFiscal(file) {
 
     const msgs = [];
 
-    const clienteEl = document.getElementById('rc_cliente');
-    const clienteAchado = await rcIdentificarClientePorTexto(texto);
-    if (clienteAchado && clienteEl && !clienteEl.value) {
-      clienteEl.value = clienteAchado.cliente;
-      msgs.push('cliente "' + clienteAchado.cliente + '" identificado');
-      if (clienteAchado.cc) {
-        rcSelecionarCC(clienteAchado.cc);
-        msgs.push('Centro de Custo sugerido: ' + clienteAchado.cc);
+    const achadoCC = rcIdentificarCCPorTexto(texto);
+    if (achadoCC && achadoCC.empresaDiferente) {
+      msgs.push(`⚠️ este contrato parece ser da empresa "${achadoCC.empresaDiferente}" — troque a aba de empresa (🏢 acima) e anexe a nota de novo`);
+    } else if (achadoCC) {
+      const clienteEl = document.getElementById('rc_cliente');
+      if (achadoCC.cliente && clienteEl && !clienteEl.value) {
+        clienteEl.value = achadoCC.cliente;
+        msgs.push('cliente "' + achadoCC.cliente + '" identificado');
+      }
+      rcSelecionarCC(achadoCC.cc);
+      msgs.push('Centro de Custo sugerido: ' + achadoCC.cc);
+    }
+
+    if (typeof extrairDataCompraNF === 'function') {
+      const dataEmissao = extrairDataCompraNF(texto);
+      if (dataEmissao) {
+        const el = document.getElementById('rc_data_emissao');
+        if (el) { el.value = dataEmissao; msgs.push('emissão ' + new Date(dataEmissao + 'T00:00:00').toLocaleDateString('pt-BR')); }
       }
     }
 
@@ -29978,15 +29996,25 @@ function equipNormalizarValorMonetario(s) {
 }
 
 function extrairValorNF(texto) {
-  const alvo = texto.match(/VALOR\s+TOTAL\s+(?:DA\s+NOTA|DA\s+NF-?E|DOS\s+PRODUTOS)?\s*[:\-]?\s*R?\$?\s*([\d.,]+)/i);
+  const alvo = texto.match(/VALOR\s+(?:TOTAL|L[ÍI]QUIDO)\s+(?:DA\s+NOTA|DA\s+NF-?E|DA\s+NFS-?E|DO\s+SERVI[ÇC]O|DOS\s+SERVI[ÇC]OS|DOS\s+PRODUTOS|DO\s+DOCUMENTO)?\s*[:\-=]?\s*R?\$?\s*([\d.,]+)/i);
   if (alvo) { const v = equipNormalizarValorMonetario(alvo[1]); if (v !== null) return v.toFixed(2); }
-  const todos = [...texto.matchAll(/R\$\s*([\d]{1,3}(?:\.\d{3})*,\d{2})/g)].map(m => equipNormalizarValorMonetario(m[1])).filter(v => v !== null);
-  return todos.length ? Math.max(...todos).toFixed(2) : '';
+  const comRS = [...texto.matchAll(/R\$\s*([\d]{1,3}(?:\.\d{3})*,\d{2})/g)].map(m => equipNormalizarValorMonetario(m[1])).filter(v => v !== null);
+  if (comRS.length) return Math.max(...comRS).toFixed(2);
+  // Fallback final: números no padrão monetário brasileiro (1.234,56) sem "R$" na frente —
+  // comum em NFS-e que só mostram a coluna de valor. Ignora percentuais (5,00%).
+  const semRS = [...texto.matchAll(/\b(\d{1,3}(?:\.\d{3})*,\d{2})\b(?!\s*%)/g)].map(m => equipNormalizarValorMonetario(m[1])).filter(v => v !== null && v > 0);
+  return semRS.length ? Math.max(...semRS).toFixed(2) : '';
 }
 
 function extrairNumeroNF(texto) {
-  const m = texto.match(/N[ºO°]\s*[:.]?\s*(\d{3,9})\b/) || texto.match(/N[uú]mero\s*[:.]?\s*(\d{3,9})\b/i);
-  return m ? m[1] : '';
+  const padroes = [
+    /N(?:FS-?E)?\s*N[ºO°]\s*[:.]?\s*(\d{2,9})\b/i,
+    /N[ºO°]\s*(?:da\s+)?(?:nota|nfs-?e)?\s*[:.]?\s*(\d{2,9})\b/i,
+    /N[uú]mero\s+d[ae]\s+nota[^\d]{0,12}(\d{2,9})\b/i,
+    /N[uú]mero\s*[:.]?\s*(\d{2,9})\b/i,
+  ];
+  for (const re of padroes) { const m = texto.match(re); if (m) return m[1]; }
+  return '';
 }
 
 function extrairDataCompraNF(texto) {
