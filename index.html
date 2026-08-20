@@ -16824,6 +16824,7 @@ function pageConfig() {
   setTimeout(() => carregarPainelEquipe(isGestorGeral), 200);
   setTimeout(() => carregarSyncLog(), 150);
   setTimeout(() => carregarPendenciasSync(), 150);
+  setTimeout(() => cfgAtualizarStatusBackup(), 150);
 
   return `
   <div class="page-header"><h1>Configurações</h1></div>
@@ -16838,6 +16839,13 @@ function pageConfig() {
     <div class="card-title" style="font-size:.88rem;font-weight:700;margin-bottom:4px">☁️ Últimos Sincronizados</div>
     <p style="font-size:.76rem;color:var(--text-muted);margin:0 0 12px">Registros enviados com sucesso ao OneDrive a partir deste dispositivo/navegador</p>
     <div id="cfg-sync-log-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:24px;border-left:4px solid var(--green-main)">
+    <div class="card-title" style="font-size:.88rem;font-weight:700;margin-bottom:4px">🗄️ Backup Completo</div>
+    <p style="font-size:.76rem;color:var(--text-muted);margin:0 0 12px">Cópia diária de todas as tabelas do app — Fauna, Fiscalização (Energisa), Resíduos, Financeiro, RH/Documental, Equipamentos, Treinamentos e demais módulos — guardada numa pasta separada por data (independente dos arquivos "vivos"), na pasta <b>db_backups</b> de cada área. Roda sozinho 1x por dia (Diretoria) e guarda os últimos 30 dias.</p>
+    <div id="cfg-backup-status" style="font-size:.78rem;color:var(--text-muted);margin-bottom:10px">Carregando...</div>
+    <button class="btn-secondary" onclick="cfgFazerBackupAgora()">🗄️ Fazer backup agora</button>
   </div>
 
   <div class="form-card" style="margin-bottom:24px">
@@ -17050,6 +17058,7 @@ function applyLogin(user) {
   }, 3000);
   if (window._notifPollingInterval) clearInterval(window._notifPollingInterval);
   window._notifPollingInterval = setInterval(() => atualizarBadgeNotificacoes(), 90000); // a cada 90s
+  setTimeout(() => backupAutomaticoSeNecessario(), 8000);
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('profileSelect').value = user.profile;
   document.getElementById('avatarInitials').querySelector('img')
@@ -33576,6 +33585,142 @@ async function deletarArquivoCentral(caminhoRelativo) {
     console.warn('[OD] Erro ao apagar arquivo:', e);
     return false;
   }
+}
+
+/* ============================================================
+   BACKUP COMPLETO — cópia diária de TODAS as tabelas do app
+   (Fauna, Fiscalização/Energisa, Resíduos, Financeiro, RH,
+   Equipamentos, Treinamentos etc.) numa pasta separada por data
+   ("db_backups/AAAA-MM-DD/"), independente do arquivo "vivo" que
+   pode ser sobrescrito por engano ou por condição de corrida entre
+   dois dispositivos gravando ao mesmo tempo. Cada tabela é salva
+   na mesma raiz (central/restrita ou operacional) que ela já usa
+   hoje, então o nível de acesso/restrição de cada uma não muda.
+============================================================ */
+const BACKUP_TABELAS = [
+  'APRs','Adiantamentos','Agenda','AsoRegistros','AtividadeApp','CentrosCusto','CentrosCustoValores',
+  'ChecklistBombeamento','ChecklistColeta','ChecklistERO','ChecklistFauna','ChecklistLinha','ChecklistMitigacao',
+  'ChecklistVeicular','Contadores','ContasPagar','ContasReceber','Despesas','Empreendimentos','EpiRegistros',
+  'Equipamentos','EscopoMedidoEnergisa','FaturamentoEnergisa','FlashReportsEnergisa','FlashReportsFauna',
+  'Fornecedores','FornecedoresEnergisa','GestaoDocumental','Inspecoes','Lancamentos_Servicos','Licencas',
+  'Medicoes','MedicoesContratosEnergisa','MedicoesEnergisa','NotificacoesEnergisa','OrcamentosProjetos',
+  'OrdensServicoEnergisa','Outorgas','PerfilUsuario','Prazos','PrestacaoContas','Receitas','ServicosCatalogo',
+  'SolicitacoesGerais','TermosEquipamento','TreinamentosEventos','bpo_saidas_v4','contratos',
+];
+const BACKUP_DIAS_RETENCAO = 30;
+
+/* -- Copia uma tabela para db_backups/{AAAA-MM-DD}/{tabela}.json, na mesma
+      raiz (central/restrita ou operacional) que a tabela já usa hoje. -- */
+async function _backupUmaTabela(tabela, token, pastaDataStr) {
+  try {
+    const dados = await dbLer(tabela);
+    if (!Array.isArray(dados) || !dados.length) return true; // nada pra copiar, não conta como falha
+    const pasta = await _resolverRaizPara(tabela, true, token);
+    if (!pasta) return false;
+    const { driveId, itemId } = pasta;
+    const bkId = await garantirPastaOneDrive(token, driveId, itemId, 'db_backups/' + pastaDataStr);
+    if (!bkId) return false;
+    const json = JSON.stringify(dados, null, 2);
+    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${bkId}:/${tabela}.json:/content`;
+    const r = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: json
+    });
+    return r.ok;
+  } catch (e) {
+    console.warn('[Backup] Falha ao copiar', tabela, e);
+    return false;
+  }
+}
+
+/* -- Apaga pastas de backup com mais de BACKUP_DIAS_RETENCAO dias, numa das
+      duas raízes (central/restrita ou operacional). -- */
+async function _backupLimparAntigos(token, ehRestrita) {
+  try {
+    const pasta = ehRestrita ? await resolverPastaAppExpedian(token) : await resolverPastaOperacional(token);
+    if (!pasta) return;
+    const { driveId, itemId } = pasta;
+    const bkId = await garantirPastaOneDrive(token, driveId, itemId, 'db_backups');
+    if (!bkId) return;
+    const r = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${bkId}/children?$select=id,name,folder&$top=200`, {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    const pastas = (d.value || []).filter(i => i.folder && /^\d{4}-\d{2}-\d{2}$/.test(i.name));
+    const limite = new Date();
+    limite.setDate(limite.getDate() - BACKUP_DIAS_RETENCAO);
+    const limiteStr = limite.toISOString().slice(0, 10);
+    for (const p of pastas) {
+      if (p.name < limiteStr) {
+        await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${p.id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + token }
+        }).catch(() => {});
+      }
+    }
+  } catch (e) { console.warn('[Backup] Falha ao limpar backups antigos', e); }
+}
+
+/* -- Executa o backup completo de todas as tabelas do app. silencioso=true
+      pula toasts/status (usado no disparo automático diário). -- */
+async function executarBackupCompleto(silencioso) {
+  const token = await getOneDriveToken();
+  if (!token) {
+    if (!silencioso) showToast('⚠️ Faça login com a Microsoft para fazer backup.');
+    return { ok: 0, falha: 0 };
+  }
+  if (!silencioso) showSyncStatus('Fazendo backup completo...');
+  const pastaDataStr = new Date().toISOString().slice(0, 10);
+  let ok = 0, falha = 0;
+  for (const tabela of BACKUP_TABELAS) {
+    const sucesso = await _backupUmaTabela(tabela, token, pastaDataStr);
+    if (sucesso) ok++; else falha++;
+  }
+  try {
+    localStorage.setItem('backupCompleto_ultimo', new Date().toISOString());
+    localStorage.setItem('backupCompleto_resultado', JSON.stringify({ ok, falha, data: pastaDataStr }));
+  } catch (e) {}
+  if (!silencioso) {
+    showSyncStatus(falha === 0 ? 'Backup concluído!' : 'Backup concluído com falhas', falha === 0 ? 'ok' : 'err', 5000);
+    showToast('🗄️ Backup concluído: ' + ok + ' tabela(s) salvas' + (falha ? ', ' + falha + ' com falha' : '') + '.');
+    cfgAtualizarStatusBackup();
+  }
+  await _backupLimparAntigos(token, false).catch(() => {});
+  await _backupLimparAntigos(token, true).catch(() => {});
+  return { ok, falha };
+}
+
+/* -- Roda o backup completo automaticamente uma vez por dia, em silêncio, só
+      quando quem está logado é da Diretoria (evita disparar em todo login de
+      colaborador/coordenador — o backup cobre tudo de qualquer forma). -- */
+async function backupAutomaticoSeNecessario() {
+  try {
+    if (!window._currentUser || window._currentUser.profile !== 'diretoria') return;
+    const hoje = new Date().toISOString().slice(0, 10);
+    const ultimo = localStorage.getItem('backupCompleto_ultimo') || '';
+    if (ultimo.slice(0, 10) === hoje) return; // já rodou hoje neste dispositivo
+    await executarBackupCompleto(true);
+  } catch (e) { console.warn('[Backup] Falha no backup automático', e); }
+}
+
+/* -- Botão manual em Configurações -- */
+async function cfgFazerBackupAgora() {
+  await executarBackupCompleto(false);
+}
+
+/* -- Atualiza o texto de status do card de Backup em Configurações -- */
+function cfgAtualizarStatusBackup() {
+  const el = document.getElementById('cfg-backup-status');
+  if (!el) return;
+  const ultimo = localStorage.getItem('backupCompleto_ultimo');
+  if (!ultimo) { el.innerHTML = 'Nenhum backup completo feito neste dispositivo ainda.'; return; }
+  let resumo = {};
+  try { resumo = JSON.parse(localStorage.getItem('backupCompleto_resultado') || '{}'); } catch (e) {}
+  const dt = new Date(ultimo);
+  el.innerHTML = 'Último backup: ' + dt.toLocaleString('pt-BR') +
+    (resumo.ok != null ? ' — ' + resumo.ok + ' tabela(s) salvas' + (resumo.falha ? ', ' + resumo.falha + ' com falha' : '') : '');
 }
 
 async function uploadParaOneDrive(blob, subpasta, nomeArquivo, opts) {
