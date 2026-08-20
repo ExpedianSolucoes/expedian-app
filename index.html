@@ -3724,6 +3724,12 @@ function prestListaLancadores() {
   const doLogin = (typeof users === 'object' && users) ? Object.values(users).map(u => u.name) : [];
   return [...new Set([...doLogin, ...PREST_LANCADORES_EXTRA])].filter(Boolean).sort();
 }
+// Diz se um nome de "Lançado por" é de alguém sem login próprio (usa o login de
+// outra pessoa, ex.: estagiário) — usado pra destacar esses lançamentos em Contas
+// a Pagar/Despesas, já que o autor real não aparece em CriadoPorNome/CriadoPorEmail.
+function ehLancadorExtra(nome) {
+  return !!nome && PREST_LANCADORES_EXTRA.includes(nome);
+}
 
 function pagePrestacao() {
   setTimeout(()=>{ carregarFornecedoresListaPrest().then(()=>carregarPrestacoes()); }, 200);
@@ -5125,6 +5131,31 @@ function pagePagar() {
       </div>
     </div>
 
+    <!-- Linha 1b: Dividir esta conta entre mais de um Centro de Custo (opcional) —
+         mesma lógica usada em Nova Despesa: 1 lançamento só, valor rateado entre
+         contratos diferentes pro relatório de Centros de Custo bater certinho. -->
+    <div class="form-row" id="pag_divisaocc_row">
+      <div class="form-group" style="grid-column:span 2">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:700">
+          <input type="checkbox" id="pag_tem_divisaocc" onchange="pagToggleDivisaoCC()" style="width:auto">
+          🧩 Dividir esta conta entre mais de um Centro de Custo
+        </label>
+        <div id="pag_divisaocc_bloqueado" style="display:none;font-size:.72rem;color:var(--text-muted);margin-top:4px">Divisão de Centro de Custo não está disponível para lançamentos parcelados — lance como à vista.</div>
+        <div id="pag_divisaocc_editor" style="display:none;margin-top:10px;background:var(--surface2);border-radius:10px;padding:12px">
+          <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Quanto vai pra cada Centro de Custo:</div>
+          <div id="pag_divisaocc_lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+            <select id="pag_divcc_sel" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;flex:1;min-width:180px">
+              <option value="">Selecione a empresa acima primeiro...</option>
+            </select>
+            <input type="text" id="pag_divcc_valor" placeholder="Valor R$" inputmode="decimal" oninput="rdFormatarMoedaInput(this)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px">
+            <button type="button" class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="pagAdicionarDivisaoCC()">+ Adicionar</button>
+          </div>
+          <div id="pag_divisaocc_total" style="font-size:.75rem;margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Linha 2: Fornecedor (busca digitável + cadastro) -->
     <div class="form-row">
       <div class="form-group" style="position:relative">
@@ -5217,7 +5248,7 @@ function pagePagar() {
       </div>
       <div class="form-group">
         <label id="pag_valor_label">Valor (R$)</label>
-        <input type="number" id="pag_valor" placeholder="0,00" step="0.01" oninput="pagGerarParcelas()">
+        <input type="number" id="pag_valor" placeholder="0,00" step="0.01" oninput="pagGerarParcelas();pagRenderizarDivisaoCC()">
       </div>
     </div>
 
@@ -5238,6 +5269,17 @@ function pagePagar() {
       <div class="form-group">
         <label>Observação para o Financeiro</label>
         <input type="text" id="pag_obs" placeholder="Instrução especial de pagamento...">
+      </div>
+    </div>
+
+    <!-- Linha 5b: Lançado por — quem de fato preencheu este lançamento (mesmo padrão
+         da Prestação de Contas), pra diferenciar lançamentos feitos por quem usa o
+         login de outra pessoa (ex.: estagiário sem login próprio no sistema). -->
+    <div class="form-row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Lançado por</label>
+        <input list="pag_lancadopor_dl" id="pag_lancadopor" placeholder="Nome de quem está fazendo este lançamento" value="${window._currentUser ? String(window._currentUser.name).replace(/"/g, '&quot;') : ''}">
+        <datalist id="pag_lancadopor_dl">${prestListaLancadores().map(n => `<option value="${n}">`).join('')}</datalist>
       </div>
     </div>
 
@@ -5289,6 +5331,7 @@ function pagePagar() {
     <div class="kpi-card blue" id="pag-kpi-card-pagamento" onclick="pagFiltrarKpi('pagamento')" style="cursor:pointer" title="Filtrar: aguardando pagamento"><div class="kpi-label">Aguardando Pagamento</div><div class="kpi-value" id="pag-kpi-pagamento">—</div><div class="kpi-icon">💳</div></div>
     <div class="kpi-card green" id="pag-kpi-card-pago" onclick="pagFiltrarKpi('pago')" style="cursor:pointer" title="Filtrar: pagos"><div class="kpi-label">Pagos</div><div class="kpi-value" id="pag-kpi-pago">—</div><div class="kpi-icon">✅</div></div>
     <div class="kpi-card red" id="pag-kpi-card-atraso" onclick="pagFiltrarKpi('atraso')" style="cursor:pointer" title="Filtrar: em atraso"><div class="kpi-label">Em Atraso</div><div class="kpi-value" id="pag-kpi-atraso">—</div><div class="kpi-icon">⚠️</div></div>
+    <div class="kpi-card amber" id="pag-kpi-card-estagiario" onclick="pagFiltrarKpi('estagiario')" style="cursor:pointer" title="Lançamentos feitos por quem usa outro login (ex.: estagiário), aguardando sua aprovação"><div class="kpi-label">🎓 Do Estagiário — Ag. Aprovação</div><div class="kpi-value" id="pag-kpi-estagiario">—</div><div class="kpi-icon">🎓</div></div>
   </div>
 
   <!-- BARRA DE FILTROS -->
@@ -5310,6 +5353,7 @@ function pagePagar() {
       <option value="Pago">Pago</option>
       <option value="Rejeitada">Rejeitada</option>
     </select>
+    <input type="text" id="pag_filtro_lancadopor" placeholder="Lançado por..." oninput="carregarContasPagar()" list="pag_lancadopor_dl" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:140px">
     <button onclick="pagLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
   </div>
 
@@ -5330,6 +5374,84 @@ function atualizarCCsEmpresa() {
   const inp = document.getElementById('pag_cc_input'); if (inp) inp.value = '';
   const hid = document.getElementById('pag_cc'); if (hid) hid.value = '';
   pagFecharDropdownCC();
+  pagAtualizarSelectDivisaoCC();
+}
+
+/* -- Divisão por Centro de Custo em Contas a Pagar: mesma mecânica de Nova
+   Despesa. O <select> de CC precisa ser repopulado sempre que a empresa muda
+   (diferente de Nova Despesa, aqui a empresa é escolhida dentro do próprio
+   formulário, não por aba fixa da página). -- */
+function pagAtualizarSelectDivisaoCC() {
+  const sel = document.getElementById('pag_divcc_sel');
+  if (!sel) return;
+  const disponiveis = _pagCCsDisponiveis();
+  if (!disponiveis.length) {
+    sel.innerHTML = '<option value="">Selecione a empresa acima primeiro...</option>';
+    return;
+  }
+  sel.innerHTML = '<option value="">Selecione o Centro de Custo...</option>' +
+    disponiveis.map(c => `<option value="${(c.id+' · '+c.contrato).replace(/"/g,'&quot;')}">${c.id} · ${c.contrato}</option>`).join('');
+}
+
+function pagToggleDivisaoCC() {
+  const chk = document.getElementById('pag_tem_divisaocc');
+  const editor = document.getElementById('pag_divisaocc_editor');
+  if (chk && chk.checked) {
+    if (editor) editor.style.display = 'block';
+    pagAtualizarSelectDivisaoCC();
+    pagRenderizarDivisaoCC();
+  } else {
+    if (editor) editor.style.display = 'none';
+  }
+}
+
+function pagAdicionarDivisaoCC() {
+  const cc = (document.getElementById('pag_divcc_sel')||{}).value;
+  const valor = rdMoedaParaNumero((document.getElementById('pag_divcc_valor')||{}).value);
+  if (!cc) { showToast('⚠️ Selecione o Centro de Custo.'); return; }
+  if (!valor) { showToast('⚠️ Informe o valor deste Centro de Custo.'); return; }
+  window._pagDivisaoCC = window._pagDivisaoCC || [];
+  if (window._pagDivisaoCC.some(d => d.cc === cc)) { showToast('⚠️ Esse Centro de Custo já está na divisão — remova antes de adicionar de novo.'); return; }
+  window._pagDivisaoCC.push({ cc, valor });
+  const selEl = document.getElementById('pag_divcc_sel'); if (selEl) selEl.selectedIndex = 0;
+  const valorEl = document.getElementById('pag_divcc_valor'); if (valorEl) valorEl.value = '';
+  pagRenderizarDivisaoCC();
+}
+
+function pagRemoverDivisaoCC(i) {
+  if (!window._pagDivisaoCC) return;
+  window._pagDivisaoCC.splice(i, 1);
+  pagRenderizarDivisaoCC();
+}
+
+function pagRenderizarDivisaoCC() {
+  const lista = document.getElementById('pag_divisaocc_lista');
+  const totalEl = document.getElementById('pag_divisaocc_total');
+  if (!lista) return;
+  const itens = window._pagDivisaoCC || [];
+  lista.innerHTML = itens.map((d,i) => `
+    <div style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:6px 10px;border-radius:8px;font-size:.8rem">
+      <span style="flex:1">🧩 ${d.cc}</span>
+      <span style="font-weight:700">R$ ${rdNumeroParaMoeda(d.valor)}</span>
+      <span style="cursor:pointer;color:var(--text-muted)" onclick="pagRemoverDivisaoCC(${i})" title="Remover">✕</span>
+    </div>`).join('') || '<div style="font-size:.75rem;color:var(--text-muted)">Nenhum Centro de Custo adicionado ainda.</div>';
+  const soma = itens.reduce((s,d)=>s+(d.valor||0),0);
+  const valorTotalAtual = parseFloat(document.getElementById('pag_valor').value) || 0;
+  const diff = Math.round((valorTotalAtual - soma)*100)/100;
+  if (totalEl) {
+    if (!valorTotalAtual) {
+      totalEl.style.color = 'var(--text-muted)';
+      totalEl.textContent = `Dividido: R$ ${rdNumeroParaMoeda(soma)} — informe o Valor acima para conferir.`;
+    } else if (Math.abs(diff) < 0.01) {
+      totalEl.style.color = 'var(--green-main)';
+      totalEl.textContent = `✅ Dividido: R$ ${rdNumeroParaMoeda(soma)} de R$ ${rdNumeroParaMoeda(valorTotalAtual)} — bate certinho.`;
+    } else {
+      totalEl.style.color = 'var(--red)';
+      totalEl.textContent = diff > 0
+        ? `⚠️ Faltam R$ ${rdNumeroParaMoeda(diff)} para completar o valor (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`
+        : `⚠️ Divisão passou R$ ${rdNumeroParaMoeda(Math.abs(diff))} do valor (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`;
+    }
+  }
 }
 
 function _pagCCsDisponiveis() {
@@ -5486,6 +5608,15 @@ function pagToggleParcelas() {
   } else {
     pagGerarParcelas();
   }
+  // Divisão por Centro de Custo só faz sentido pra um lançamento único —
+  // no parcelado, cada parcela teria que ratear individualmente (fora de escopo).
+  const divccChk = document.getElementById('pag_tem_divisaocc');
+  const divccBloqueado = document.getElementById('pag_divisaocc_bloqueado');
+  if (divccChk) {
+    divccChk.disabled = (v === 'parcelado');
+    if (v === 'parcelado' && divccChk.checked) { divccChk.checked = false; pagToggleDivisaoCC(); }
+  }
+  if (divccBloqueado) divccBloqueado.style.display = (v === 'parcelado') ? 'block' : 'none';
 }
 
 function pagGerarParcelas() {
@@ -5622,9 +5753,18 @@ async function salvarContaPagar(enviarFinanceiro=false) {
   const vencimento=document.getElementById('pag_vencimento').value;
   const valor=parseFloat(document.getElementById('pag_valor').value)||0;
   const obs=(document.getElementById('pag_obs').value||'').trim();
+  const lancadoPor=(document.getElementById('pag_lancadopor')||{}).value?.trim()||(window._currentUser?window._currentUser.name:'');
+  const temDivisaoCC=(document.getElementById('pag_tem_divisaocc')||{}).checked||false;
+  const divisaoCC=temDivisaoCC?(window._pagDivisaoCC||[]):[];
   if(!fornecedor){showToast('⚠️ Selecione um fornecedor.');return;}
   if(!valor){showToast('⚠️ Informe o valor.');return;}
   if(!empresa){showToast('⚠️ Selecione a empresa.');return;}
+  if(temDivisaoCC){
+    if(divisaoCC.length<2){showToast('⚠️ Adicione pelo menos 2 Centros de Custo na divisão, ou desmarque a opção.');return;}
+    const somaDivisao=divisaoCC.reduce((s,d)=>s+(d.valor||0),0);
+    const diffDivisao=Math.round((somaDivisao-valor)*100)/100;
+    if(Math.abs(diffDivisao)>0.01){showToast(`⚠️ A soma da divisão de Centro de Custo (R$ ${rdNumeroParaMoeda(somaDivisao)}) não bate com o valor (R$ ${rdNumeroParaMoeda(valor)}).`);return;}
+  }
 
   // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/fornecedor definitivos
   let comprovanteUrlFinal = window._pagComprovanteUrl || '';
@@ -5637,11 +5777,12 @@ async function salvarContaPagar(enviarFinanceiro=false) {
   }
 
   const base = {
-    Fornecedor:fornecedor, Descricao:desc, Empresa:empresa, CentroCusto:cc,
+    Fornecedor:fornecedor, Descricao:desc, Empresa:empresa, CentroCusto: temDivisaoCC ? divisaoCC.map(d=>d.cc).join(' + ') : cc,
     Categoria: categoria, Subcategoria: subcategoria, NaturezaEconomica: rdNaturezaDeSubcategoria(subcategoria),
     FormaPagamento:formaPgto, Observacao:obs, EnviadoFinanceiro:enviarFinanceiro,
-    LancadoPor:window._currentUser?window._currentUser.name:'',
+    LancadoPor:lancadoPor,
     ComprovanteUrl: comprovanteUrlFinal, ComprovanteNome: comprovanteNomeFinal,
+    DivisaoCC: temDivisaoCC ? divisaoCC : [],
   };
   const statusFinal = enviarFinanceiro ? 'Aguardando Aprovação' : (document.getElementById('pag_status').value || null);
 
@@ -5673,6 +5814,12 @@ async function salvarContaPagar(enviarFinanceiro=false) {
 
   showToast(ok?(enviarFinanceiro?'📤 Enviado ao Financeiro!':'✅ Lançamento salvo!'):'✅ Salvo localmente!');
   ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_vencimento','pag_valor','pag_obs','pag_num_parcelas','pag_venc_1parcela'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  const pagLancEl=document.getElementById('pag_lancadopor');if(pagLancEl)pagLancEl.value=window._currentUser?window._currentUser.name:'';
+  const pagDivccChkReset=document.getElementById('pag_tem_divisaocc');if(pagDivccChkReset)pagDivccChkReset.checked=false;
+  window._pagDivisaoCC=[];
+  const pagDivccListaReset=document.getElementById('pag_divisaocc_lista');if(pagDivccListaReset)pagDivccListaReset.innerHTML='';
+  const pagDivccTotalReset=document.getElementById('pag_divisaocc_total');if(pagDivccTotalReset)pagDivccTotalReset.textContent='';
+  pagToggleDivisaoCC();
   ['pag_fornecedor_input','pag_fornecedor_sel'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   ['pag_categoria','pag_categoria_input','pag_subcategoria','pag_subcategoria_input'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const formaSel=document.getElementById('pag_forma_pgto');if(formaSel)formaSel.selectedIndex=0;
@@ -5846,6 +5993,7 @@ async function pagSincronizarDespesa(id, dataPag, banco) {
       ComprovanteUrl: i.ComprovanteUrl || '', ComprovanteNome: i.ComprovanteNome || '',
       LancadoPor: window._currentUser ? window._currentUser.name : '',
       ContaPagarId: i.Id, OrigemContaPagar: true, Distribuicoes: [],
+      DivisaoCC: i.DivisaoCC || [],
     });
     if (despesa && despesa.Id) await dbAtualizar('ContasPagar', id, { DespesaId: despesa.Id });
   } catch (e) { console.warn('[ContasPagar] Falha ao sincronizar com Despesas', e); }
@@ -6130,7 +6278,7 @@ function pagFiltrarKpi(tipo) {
 }
 
 function pagLimparFiltros() {
-  ['pag_filtro_mes','pag_filtro_fornecedor','pag_filtro_cc','pag_filtro_valor_min','pag_filtro_valor_max'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['pag_filtro_mes','pag_filtro_fornecedor','pag_filtro_cc','pag_filtro_valor_min','pag_filtro_valor_max','pag_filtro_lancadopor'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const statusSel = document.getElementById('filtro-status-pagar'); if (statusSel) statusSel.value = '';
   PAG_FILTRO_KPI = '';
   carregarContasPagar();
@@ -6157,6 +6305,7 @@ async function carregarContasPagar() {
     setKpi('pag-kpi-pagamento', items.filter(r=>r.Status==='Aprovado — Aguardando Pagamento').length);
     setKpi('pag-kpi-pago', items.filter(r=>r.Status==='Pago').length);
     setKpi('pag-kpi-atraso', items.filter(r=>r.Status==='Em atraso').length);
+    setKpi('pag-kpi-estagiario', items.filter(r=>r.Status==='Aguardando Aprovação' && ehLancadorExtra(r.LancadoPor)).length);
 
     const setActiveKpi = (cardId, ativo, cor) => {
       const e = document.getElementById(cardId); if (!e) return;
@@ -6168,6 +6317,7 @@ async function carregarContasPagar() {
     setActiveKpi('pag-kpi-card-pagamento', PAG_FILTRO_KPI==='pagamento', '#0d6efd');
     setActiveKpi('pag-kpi-card-pago', PAG_FILTRO_KPI==='pago', '#28a745');
     setActiveKpi('pag-kpi-card-atraso', PAG_FILTRO_KPI==='atraso', '#dc3545');
+    setActiveKpi('pag-kpi-card-estagiario', PAG_FILTRO_KPI==='estagiario', '#e0a800');
 
     // Filtros de busca
     const fMes = (document.getElementById('pag_filtro_mes')||{}).value||'';
@@ -6176,8 +6326,10 @@ async function carregarContasPagar() {
     const fValorMin = parseFloat((document.getElementById('pag_filtro_valor_min')||{}).value);
     const fValorMax = parseFloat((document.getElementById('pag_filtro_valor_max')||{}).value);
     const filtroStatus = (document.getElementById('filtro-status-pagar')||{}).value||'';
+    const fLancadoPor = ((document.getElementById('pag_filtro_lancadopor')||{}).value||'').trim().toLowerCase();
 
     if (fMes) items = items.filter(r => (r.Vencimento||'').slice(0,7) === fMes);
+    if (fLancadoPor) items = items.filter(r => (r.LancadoPor||'').toLowerCase().includes(fLancadoPor));
     if (fForn) items = items.filter(r => (r.Fornecedor||'').toLowerCase().includes(fForn));
     if (fCc) items = items.filter(r => (r.CentroCusto||'').toLowerCase().includes(fCc));
     if (!isNaN(fValorMin)) items = items.filter(r => (r.Valor||0) >= fValorMin);
@@ -6187,6 +6339,7 @@ async function carregarContasPagar() {
     else if (PAG_FILTRO_KPI === 'pagamento') items = items.filter(r=>r.Status==='Aprovado — Aguardando Pagamento');
     else if (PAG_FILTRO_KPI === 'pago') items = items.filter(r=>r.Status==='Pago');
     else if (PAG_FILTRO_KPI === 'atraso') items = items.filter(r=>r.Status==='Em atraso');
+    else if (PAG_FILTRO_KPI === 'estagiario') items = items.filter(r=>r.Status==='Aguardando Aprovação' && ehLancadorExtra(r.LancadoPor));
 
     items = items.slice().sort((a,b)=>(b.Id||0)-(a.Id||0)).slice(0,200);
     window._pagFiltradas = items;
@@ -6199,9 +6352,9 @@ async function carregarContasPagar() {
         const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}` : (i.FormaPagamento||'—');
         return `<tr>
           <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
-          <td><strong>${i.Fornecedor||'—'}</strong></td>
+          <td><strong>${i.Fornecedor||'—'}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}</td>
           <td style="font-size:.78rem">${i.Descricao||'—'}${i.ComprovanteUrl?`<br><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.68rem">📎 Ver comprovante</a>`:''}</td>
-          <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}</td>
+          <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}${(i.DivisaoCC&&i.DivisaoCC.length)?`<div style="color:var(--blue)">🧩 dividido (${i.DivisaoCC.length})</div>`:''}</td>
           <td style="font-size:.72rem">${pgtoTxt}</td>
           <td style="font-size:.8rem">${i.Vencimento?new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
@@ -7562,6 +7715,33 @@ function renderDespesasTab() {
       </div>
     </div>
 
+    <!-- Linha 2c: Dividir esta despesa entre mais de um Centro de Custo (opcional) —
+         mesma lógica da distribuição interna (Caju/Ticket Log): 1 lançamento só
+         (bate com o extrato bancário), mas com o valor rateado entre contratos
+         diferentes pro relatório de Centros de Custo bater certinho com cada um. -->
+    <div class="form-row" id="rd_divisaocc_row">
+      <div class="form-group" style="grid-column:span 2">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:700">
+          <input type="checkbox" id="rd_tem_divisaocc" onchange="rdToggleDivisaoCC()" style="width:auto">
+          🧩 Dividir esta despesa entre mais de um Centro de Custo
+        </label>
+        <div id="rd_divisaocc_bloqueado" style="display:none;font-size:.72rem;color:var(--text-muted);margin-top:4px">Divisão de Centro de Custo não está disponível para despesas parceladas — cada parcela já tem seu próprio contrato.</div>
+        <div id="rd_divisaocc_editor" style="display:none;margin-top:10px;background:var(--surface2);border-radius:10px;padding:12px">
+          <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Quanto vai pra cada Centro de Custo:</div>
+          <div id="rd_divisaocc_lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+            <select id="rd_divcc_sel" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;flex:1;min-width:180px">
+              <option value="">Selecione o Centro de Custo...</option>
+              ${_rdCCsDisponiveis().map(c => `<option value="${(c.id+' · '+c.contrato).replace(/"/g,'&quot;')}">${c.id} · ${c.contrato}</option>`).join('')}
+            </select>
+            <input type="text" id="rd_divcc_valor" placeholder="Valor R$" inputmode="decimal" oninput="rdFormatarMoedaInput(this)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px">
+            <button type="button" class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="rdAdicionarDivisaoCC()">+ Adicionar</button>
+          </div>
+          <div id="rd_divisaocc_total" style="font-size:.75rem;margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Linha 2b: Serviço OU Fornecedor — mutuamente exclusivos, cada um ocupando a linha inteira -->
     <div class="form-row">
       <div class="form-group" id="rd_servico_row" style="display:none;grid-column:span 2">
@@ -7639,7 +7819,7 @@ function renderDespesasTab() {
     <div class="form-row">
       <div class="form-group">
         <label id="rd_valor_label">Valor Total (R$)</label>
-        <input type="text" inputmode="decimal" id="rd_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rdGerarParcelas();rdRenderizarDistribuicoes()">
+        <input type="text" inputmode="decimal" id="rd_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rdGerarParcelas();rdRenderizarDistribuicoes();rdRenderizarDivisaoCC()">
       </div>
       <div class="form-group">
         <label>Tipo de Pagamento</label>
@@ -7691,6 +7871,18 @@ function renderDespesasTab() {
           <option value="">Selecione...</option>
           ${responsaveis.map(n => `<option>${n}</option>`).join('')}
         </select>
+      </div>
+    </div>
+
+    <!-- Linha 5b: Lançado por — quem de fato preencheu este lançamento (diferente do
+         "Responsável pelo Lançamento" acima, que é o gestor pelo qual o gasto responde).
+         Mesmo padrão da Prestação de Contas e Contas a Pagar, pra diferenciar lançamentos
+         feitos por quem usa o login de outra pessoa (ex.: estagiário sem login próprio). -->
+    <div class="form-row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Lançado por</label>
+        <input list="rd_lancadopor_dl" id="rd_lancadopor" placeholder="Nome de quem está fazendo este lançamento" value="${window._currentUser ? String(window._currentUser.name).replace(/"/g, '&quot;') : ''}">
+        <datalist id="rd_lancadopor_dl">${prestListaLancadores().map(n => `<option value="${n}">`).join('')}</datalist>
       </div>
     </div>
 
@@ -8196,6 +8388,15 @@ function rdTogglePagamento() {
     if (v === 'parcelado' && distChk.checked) { distChk.checked = false; rdToggleDistribuicao(); }
   }
   if (distBloqueado) distBloqueado.style.display = (v === 'parcelado') ? 'block' : 'none';
+  // Divisão por Centro de Custo também só faz sentido pra uma despesa única —
+  // no parcelado, cada parcela já escolhe seu próprio contrato individualmente.
+  const divccChk = document.getElementById('rd_tem_divisaocc');
+  const divccBloqueado = document.getElementById('rd_divisaocc_bloqueado');
+  if (divccChk) {
+    divccChk.disabled = (v === 'parcelado');
+    if (v === 'parcelado' && divccChk.checked) { divccChk.checked = false; rdToggleDivisaoCC(); }
+  }
+  if (divccBloqueado) divccBloqueado.style.display = (v === 'parcelado') ? 'block' : 'none';
 }
 
 /* -- Distribuição interna: recarga de plataformas como Caju/Ticket Log lançada como
@@ -8266,6 +8467,69 @@ function rdRenderizarDistribuicoes() {
       totalEl.textContent = diff > 0
         ? `⚠️ Faltam R$ ${rdNumeroParaMoeda(diff)} para completar o valor total (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`
         : `⚠️ Distribuição passou R$ ${rdNumeroParaMoeda(Math.abs(diff))} do valor total (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`;
+    }
+  }
+}
+
+/* -- Divisão por Centro de Custo: mesma mecânica da distribuição interna
+   acima (rd_tem_distribuicao), mas ratear o valor da despesa entre
+   contratos/CCs diferentes em vez de entre pessoas/veículos. -- */
+function rdToggleDivisaoCC() {
+  const chk = document.getElementById('rd_tem_divisaocc');
+  const editor = document.getElementById('rd_divisaocc_editor');
+  if (chk && chk.checked) {
+    if (editor) editor.style.display = 'block';
+    rdRenderizarDivisaoCC();
+  } else {
+    if (editor) editor.style.display = 'none';
+  }
+}
+
+function rdAdicionarDivisaoCC() {
+  const cc = (document.getElementById('rd_divcc_sel')||{}).value;
+  const valor = rdMoedaParaNumero((document.getElementById('rd_divcc_valor')||{}).value);
+  if (!cc) { showToast('⚠️ Selecione o Centro de Custo.'); return; }
+  if (!valor) { showToast('⚠️ Informe o valor deste Centro de Custo.'); return; }
+  window._rdDivisaoCC = window._rdDivisaoCC || [];
+  if (window._rdDivisaoCC.some(d => d.cc === cc)) { showToast('⚠️ Esse Centro de Custo já está na divisão — remova antes de adicionar de novo.'); return; }
+  window._rdDivisaoCC.push({ cc, valor });
+  const selEl = document.getElementById('rd_divcc_sel'); if (selEl) selEl.selectedIndex = 0;
+  const valorEl = document.getElementById('rd_divcc_valor'); if (valorEl) valorEl.value = '';
+  rdRenderizarDivisaoCC();
+}
+
+function rdRemoverDivisaoCC(i) {
+  if (!window._rdDivisaoCC) return;
+  window._rdDivisaoCC.splice(i, 1);
+  rdRenderizarDivisaoCC();
+}
+
+function rdRenderizarDivisaoCC() {
+  const lista = document.getElementById('rd_divisaocc_lista');
+  const totalEl = document.getElementById('rd_divisaocc_total');
+  if (!lista) return;
+  const itens = window._rdDivisaoCC || [];
+  lista.innerHTML = itens.map((d,i) => `
+    <div style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:6px 10px;border-radius:8px;font-size:.8rem">
+      <span style="flex:1">🧩 ${d.cc}</span>
+      <span style="font-weight:700">R$ ${rdNumeroParaMoeda(d.valor)}</span>
+      <span style="cursor:pointer;color:var(--text-muted)" onclick="rdRemoverDivisaoCC(${i})" title="Remover">✕</span>
+    </div>`).join('') || '<div style="font-size:.75rem;color:var(--text-muted)">Nenhum Centro de Custo adicionado ainda.</div>';
+  const soma = itens.reduce((s,d)=>s+(d.valor||0),0);
+  const valorTotalAtual = rdMoedaParaNumero((document.getElementById('rd_valor')||{}).value);
+  const diff = Math.round((valorTotalAtual - soma)*100)/100;
+  if (totalEl) {
+    if (!valorTotalAtual) {
+      totalEl.style.color = 'var(--text-muted)';
+      totalEl.textContent = `Dividido: R$ ${rdNumeroParaMoeda(soma)} — informe o Valor Total acima para conferir.`;
+    } else if (Math.abs(diff) < 0.01) {
+      totalEl.style.color = 'var(--green-main)';
+      totalEl.textContent = `✅ Dividido: R$ ${rdNumeroParaMoeda(soma)} de R$ ${rdNumeroParaMoeda(valorTotalAtual)} — bate certinho.`;
+    } else {
+      totalEl.style.color = 'var(--red)';
+      totalEl.textContent = diff > 0
+        ? `⚠️ Faltam R$ ${rdNumeroParaMoeda(diff)} para completar o valor total (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`
+        : `⚠️ Divisão passou R$ ${rdNumeroParaMoeda(Math.abs(diff))} do valor total (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`;
     }
   }
 }
@@ -8413,6 +8677,7 @@ async function salvarDespesa() {
   const tipoPagamento = document.getElementById('rd_tipo_pagamento').value;
   const formaPgto = (document.getElementById('rd_forma_pgto')||{}).value || '';
   const responsavel = document.getElementById('rd_responsavel').value;
+  const lancadoPor = (document.getElementById('rd_lancadopor')||{}).value?.trim() || (window._currentUser?window._currentUser.name:'');
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   const dataPagamento = (document.getElementById('rd_data_pagamento')||{}).value || '';
   const banco = (document.getElementById('rd_banco')||{}).value || '';
@@ -8423,6 +8688,8 @@ async function salvarDespesa() {
   const semana = _rdSemanaDoAno(dataLancamento);
   const temDistribuicao = (document.getElementById('rd_tem_distribuicao')||{}).checked || false;
   const distribuicoes = temDistribuicao ? (window._rdDistribuicoes||[]) : [];
+  const temDivisaoCC = (document.getElementById('rd_tem_divisaocc')||{}).checked || false;
+  const divisaoCC = temDivisaoCC ? (window._rdDivisaoCC||[]) : [];
 
   if (!dataLancamento) { showToast('⚠️ Informe a data de lançamento.'); return; }
   if (!categoria) { showToast('⚠️ Selecione a categoria.'); return; }
@@ -8432,8 +8699,9 @@ async function salvarDespesa() {
   if (modalidade === 'servicos' && ehServicoVeiculo && !veiculo) { showToast('⚠️ Selecione o veículo da empresa usado nessa diária.'); return; }
   if (modalidade === 'fornecedor' && !fornecedor) { showToast('⚠️ Selecione o fornecedor.'); return; }
   // No parcelado o Contrato é escolhido por parcela (campo do topo fica oculto),
-  // então só exige o campo do topo fora do parcelado.
-  if (tipoPagamento !== 'parcelado' && !cc) { showToast('⚠️ Selecione o contrato (centro de custo).'); return; }
+  // então só exige o campo do topo fora do parcelado. Com divisão de CC marcada,
+  // o contrato é escolhido linha a linha no editor de divisão, não no campo do topo.
+  if (tipoPagamento !== 'parcelado' && !temDivisaoCC && !cc) { showToast('⚠️ Selecione o contrato (centro de custo).'); return; }
   if (tipoPagamento === 'parcelado' && (window._rdParcelas||[]).some(p => !p.cc)) { showToast('⚠️ Selecione o contrato de cada parcela.'); return; }
   if (!valorTotal) { showToast('⚠️ Informe o valor total.'); return; }
   if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
@@ -8443,6 +8711,12 @@ async function salvarDespesa() {
     const somaDistrib = distribuicoes.reduce((s,d)=>s+(d.valor||0),0);
     const diffDistrib = Math.round((somaDistrib - valorTotal)*100)/100;
     if (Math.abs(diffDistrib) > 0.01) { showToast(`⚠️ A soma da distribuição (R$ ${rdNumeroParaMoeda(somaDistrib)}) não bate com o valor total (R$ ${rdNumeroParaMoeda(valorTotal)}).`); return; }
+  }
+  if (temDivisaoCC) {
+    if (divisaoCC.length < 2) { showToast('⚠️ Adicione pelo menos 2 Centros de Custo na divisão, ou desmarque a opção.'); return; }
+    const somaDivisao = divisaoCC.reduce((s,d)=>s+(d.valor||0),0);
+    const diffDivisao = Math.round((somaDivisao - valorTotal)*100)/100;
+    if (Math.abs(diffDivisao) > 0.01) { showToast(`⚠️ A soma da divisão de Centro de Custo (R$ ${rdNumeroParaMoeda(somaDivisao)}) não bate com o valor total (R$ ${rdNumeroParaMoeda(valorTotal)}).`); return; }
   }
 
   const descricao = modalidade === 'servicos' ? (servicoOpt ? servicoOpt.id+' · '+servicoOpt.desc : '') : fornecedor;
@@ -8460,12 +8734,13 @@ async function salvarDespesa() {
     ServicoId: modalidade==='servicos' ? servicoId : '', ServicoDesc: modalidade==='servicos' ? (servicoOpt?servicoOpt.desc:'') : '',
     Fornecedor: modalidade==='fornecedor' ? fornecedor : '', Beneficiario: modalidade==='servicos' ? beneficiario : '',
     Veiculo: (modalidade==='servicos' && ehServicoVeiculo) ? veiculo : '',
-    CentroCusto: cc, Local: local, TipoPagamento: tipoPagamento, FormaPagamento: formaPgto,
+    CentroCusto: temDivisaoCC ? divisaoCC.map(d=>d.cc).join(' + ') : cc, Local: local, TipoPagamento: tipoPagamento, FormaPagamento: formaPgto,
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: dataPagamento, Banco: banco,
     NumMedicao: medicao, Comprovante: comprovanteUrl ? 'Sim' : 'Não',
     ComprovanteUrl: comprovanteUrl, ComprovanteNome: comprovanteNome, ValorTotal: valorTotal,
-    LancadoPor: window._currentUser ? window._currentUser.name : '',
+    LancadoPor: lancadoPor,
     Distribuicoes: [],
+    DivisaoCC: temDivisaoCC ? divisaoCC : [],
   };
 
   showSyncStatus('Salvando despesa...');
@@ -8507,6 +8782,7 @@ async function salvarDespesa() {
   ['rd_categoria','rd_local','rd_valor','rd_forma_pgto',
    'rd_num_parcelas','rd_venc_1parcela','rd_vencimento','rd_responsavel','rd_data_pagamento',
    'rd_banco','rd_medicao','rd_beneficiario','rd_veiculo'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
+  const rdLancEl=document.getElementById('rd_lancadopor');if(rdLancEl)rdLancEl.value=window._currentUser?window._currentUser.name:'';
   const subcatSel = document.getElementById('rd_subcategoria'); if (subcatSel) subcatSel.innerHTML = '<option value="">Selecione a categoria primeiro...</option>';
   ['rd_servico_input','rd_servico_sel','rd_beneficiario_input','rd_veiculo_input',
    'rd_fornecedor_input','rd_fornecedor_sel'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
@@ -8530,6 +8806,11 @@ async function salvarDespesa() {
   const distListaReset = document.getElementById('rd_distribuicao_lista'); if (distListaReset) distListaReset.innerHTML = '';
   const distTotalReset = document.getElementById('rd_distribuicao_total'); if (distTotalReset) distTotalReset.textContent = '';
   rdToggleDistribuicao();
+  const divccChkReset = document.getElementById('rd_tem_divisaocc'); if (divccChkReset) divccChkReset.checked = false;
+  window._rdDivisaoCC = [];
+  const divccListaReset = document.getElementById('rd_divisaocc_lista'); if (divccListaReset) divccListaReset.innerHTML = '';
+  const divccTotalReset = document.getElementById('rd_divisaocc_total'); if (divccTotalReset) divccTotalReset.textContent = '';
+  rdToggleDivisaoCC();
   rdAtualizarSemana();
   rdToggleModalidade();
   rdTogglePagamento();
@@ -8628,8 +8909,8 @@ async function carregarDespesas() {
         return `<tr>
           <td style="font-size:.78rem">${i.DataLancamento ? new Date(i.DataLancamento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td style="font-size:.76rem">${i.Categoria||'—'}${i.Subcategoria?`<div style="font-size:.66rem;color:var(--text-muted)">${i.Subcategoria}</div>`:''}</td>
-          <td style="font-size:.78rem"><strong>${desc}</strong>${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}${i.Veiculo?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.Veiculo}</div>`:''}${(i.TotalParcelas||1)<=1 ? ((i.Distribuicoes&&i.Distribuicoes.length) ? `<div style="font-size:.68rem;color:var(--blue);cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="rdVerDistribuicao(${i.Id})">👥 Distribuído (${i.Distribuicoes.length})</div>` : `<div style="font-size:.68rem;color:var(--text-muted);cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="rdVerDistribuicao(${i.Id})">+ Distribuir</div>`) : ''}</td>
-          <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}</td>
+          <td style="font-size:.78rem"><strong>${desc}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}${i.Veiculo?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.Veiculo}</div>`:''}${(i.TotalParcelas||1)<=1 ? ((i.Distribuicoes&&i.Distribuicoes.length) ? `<div style="font-size:.68rem;color:var(--blue);cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="rdVerDistribuicao(${i.Id})">👥 Distribuído (${i.Distribuicoes.length})</div>` : `<div style="font-size:.68rem;color:var(--text-muted);cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="rdVerDistribuicao(${i.Id})">+ Distribuir</div>`) : ''}</td>
+          <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}${(i.DivisaoCC&&i.DivisaoCC.length)?`<div style="color:var(--blue)">🧩 dividido (${i.DivisaoCC.length})</div>`:''}</td>
           <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
           <td style="font-size:.72rem">${pgtoCel}</td>
           <td style="font-size:.8rem">${i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
@@ -18453,9 +18734,20 @@ function _custosValorAprovado(ccId) {
 
 /* -- Soma TODAS as Receitas/Despesas já lançadas com esse Centro de Custo
       (qualquer medição), para o resumo financeiro da tela principal. -- */
+// Soma o Valor de um lançamento (Despesa ou Receita) que cabe a um Centro de
+// Custo específico. Lançamentos "normais" contam o valor inteiro se o CC bater;
+// lançamentos divididos entre vários CCs (campo DivisaoCC, preenchido em Nova
+// Despesa/Contas a Pagar quando a divisão é usada) contam só a fatia daquele CC.
+function _custosValorParaCC(registro, ccId) {
+  if (registro.DivisaoCC && registro.DivisaoCC.length) {
+    return registro.DivisaoCC.filter(d => _ccIdPuro(d.cc) === ccId).reduce((s,d) => s + (Number(d.valor)||0), 0);
+  }
+  return _ccIdPuro(registro.CentroCusto) === ccId ? (Number(registro.Valor)||0) : 0;
+}
+
 function _custosFinanceiroDoCC(ccId) {
-  const receitas = (_custosReceitas || []).filter(r => _ccIdPuro(r.CentroCusto) === ccId).reduce((s,r) => s + (Number(r.Valor)||0), 0);
-  const despesas = (_custosDespesas || []).filter(d => _ccIdPuro(d.CentroCusto) === ccId).reduce((s,d) => s + (Number(d.Valor)||0), 0);
+  const receitas = (_custosReceitas || []).reduce((s,r) => s + _custosValorParaCC(r, ccId), 0);
+  const despesas = (_custosDespesas || []).reduce((s,d) => s + _custosValorParaCC(d, ccId), 0);
   const valorAprovado = _custosValorAprovado(ccId);
   const saldoAMedir = valorAprovado - receitas;
   const pctDR = receitas > 0 ? (despesas / receitas * 100) : null;
@@ -31086,15 +31378,28 @@ async function atualizarBadgeNotificacoes() {
     }
     _ultimaContagemNotifPrestDiretoria = prestsAbertas.length;
 
-    // Detectar NOVAS Contas a Pagar aguardando aprovação -> som + push específico
+    // Detectar NOVAS Contas a Pagar aguardando aprovação -> som + push específico.
+    // Se o lançamento novo foi feito por alguém sem login próprio (ex.: estagiário
+    // usando o login de outra pessoa), nomeia quem lançou na própria mensagem —
+    // é o único jeito de saber quem foi, já que o CriadoPor sempre mostra o dono
+    // da conta logada.
     if (_ultimaContagemNotifContasPagar !== null && contasPagarAprovacao.length > _ultimaContagemNotifContasPagar) {
       const novas = contasPagarAprovacao.length - _ultimaContagemNotifContasPagar;
+      const novasOrdenadas = contasPagarAprovacao.slice().sort((a,b)=>(b.Id||0)-(a.Id||0)).slice(0, novas);
+      const deEstagiario = novasOrdenadas.filter(r => ehLancadorExtra(r.LancadoPor));
       _notifTocarSom();
-      _notifMostrarPush(
-        '💰 EXPEDIAN — Conta a Pagar',
-        novas === 1 ? 'Uma Conta a Pagar está aguardando sua aprovação.' : `${novas} Contas a Pagar estão aguardando aprovação.`,
-        'aprovacoes'
-      );
+      let corpo;
+      if (deEstagiario.length === novas && novas === 1) {
+        corpo = `${deEstagiario[0].LancadoPor} lançou uma Conta a Pagar — falta sua aprovação.`;
+      } else if (deEstagiario.length) {
+        const nomes = [...new Set(deEstagiario.map(r => r.LancadoPor))].join(', ');
+        corpo = novas === 1
+          ? `Uma Conta a Pagar (lançada por ${nomes}) está aguardando sua aprovação.`
+          : `${novas} Contas a Pagar estão aguardando aprovação (${deEstagiario.length} lançadas por ${nomes}).`;
+      } else {
+        corpo = novas === 1 ? 'Uma Conta a Pagar está aguardando sua aprovação.' : `${novas} Contas a Pagar estão aguardando aprovação.`;
+      }
+      _notifMostrarPush('💰 EXPEDIAN — Conta a Pagar', corpo, 'aprovacoes');
     }
     _ultimaContagemNotifContasPagar = contasPagarAprovacao.length;
 
