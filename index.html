@@ -24220,6 +24220,7 @@ async function faunaCarregarHistorico(forcar) {
       essa exclusão regravava a lista inteira baseada numa leitura já
       desatualizada e apagava silenciosamente a ficha nova junto. -- */
 async function faunaExcluirRegistro(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão direta restrita à Diretoria. Use "Solicitar exclusão".'); return; }
   if (!confirm('Tem certeza que deseja excluir esta Ficha de Campo?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo ficha...');
   const { ok, lista } = await dbRemover('ChecklistFauna', id);
@@ -24227,6 +24228,50 @@ async function faunaExcluirRegistro(id) {
   showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
   if (ok && lista) { try { localStorage.setItem('fauna_historico_cache', JSON.stringify(lista)); } catch (e) {} }
   await faunaCarregarHistorico(true);
+}
+
+/* -- Colaborador/Coordenador não excluem Ficha de Campo direto: enviam uma
+      solicitação com motivo, que fica pendente até a Diretoria aprovar ou
+      rejeitar (mesmo padrão de flashSolicitarExclusao/equipSolicitarExclusao). -- */
+async function faunaSolicitarExclusao(id) {
+  const motivo = prompt('Por que esta Ficha de Campo deve ser excluída?\n\nIsso vai ser enviado pra Diretoria aprovar.');
+  if (motivo === null) return;
+  if (!motivo.trim()) { showToast('⚠️ Informe o motivo da solicitação.'); return; }
+  showSyncStatus('Enviando solicitação...');
+  const solicitacao = {
+    motivo: motivo.trim(),
+    solicitadoPorNome: window._currentUser ? window._currentUser.name : '',
+    solicitadoPorEmail: window._currentUser ? window._currentUser.email : '',
+    data: new Date().toISOString(),
+    status: 'pendente',
+  };
+  const ok = await dbAtualizar('ChecklistFauna', id, { SolicitacaoExclusao: solicitacao });
+  showToast(ok ? '📨 Solicitação de exclusão enviada à Diretoria.' : '❌ Erro ao enviar solicitação.');
+  showSyncStatus(ok ? 'Enviada!' : 'Falha ao enviar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) await faunaCarregarHistorico(true);
+}
+
+async function faunaResponderSolicitacaoExclusao(id, aprovar) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Apenas a Diretoria pode responder solicitações de exclusão.'); return; }
+  const f = (window._faunaHistorico || []).find(r => r.Id === id);
+  if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  const sol = f.SolicitacaoExclusao || {};
+  if (aprovar) {
+    if (!confirm('Aprovar exclusão desta Ficha de Campo?\n\nSolicitado por: ' + (sol.solicitadoPorNome || '—') + '\nMotivo: ' + (sol.motivo || '—') + '\n\nEssa ação não pode ser desfeita.')) return;
+    showSyncStatus('Excluindo ficha...');
+    const { ok, lista } = await dbRemover('ChecklistFauna', id);
+    showToast(ok ? '🗑️ Ficha excluída.' : '❌ Erro ao excluir.');
+    showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+    if (ok && lista) { try { localStorage.setItem('fauna_historico_cache', JSON.stringify(lista)); } catch (e) {} }
+    await faunaCarregarHistorico(true);
+    return;
+  }
+  if (!confirm('Rejeitar esta solicitação de exclusão?\n\nA ficha continua no histórico.')) return;
+  showSyncStatus('Rejeitando solicitação...');
+  const ok = await dbAtualizar('ChecklistFauna', id, { SolicitacaoExclusao: null });
+  showToast(ok ? '✅ Solicitação rejeitada — registro mantido.' : '❌ Erro ao rejeitar.');
+  showSyncStatus(ok ? 'Rejeitada!' : 'Falha', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) await faunaCarregarHistorico(true);
 }
 
 async function faunaSalvar() {
@@ -24543,10 +24588,24 @@ function faunaHtmlHistorico() {
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         <span class="status-pill ${tipoCor}" style="font-size:.62rem">${f.tipoRegistro || '—'}</span>
-        <div style="display:flex;gap:4px">
+        <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaVerRegistro(${f.Id})">👁️ Ver</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaEditarRegistro(${f.Id})">✏️ Editar</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaExportarRegistro(${f.Id})">🖨️ Exportar PDF</button>
+          ${(() => {
+            // Só a Diretoria exclui direto; colaborador/coordenador precisam solicitar
+            // com motivo, e a Diretoria aprova/rejeita.
+            const pendente = f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente';
+            if (currentProfile === 'diretoria') {
+              return pendente
+                ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:#fff;background:var(--red);border-color:var(--red)" onclick="faunaResponderSolicitacaoExclusao(${f.Id}, true)" title="Solicitado por ${(f.SolicitacaoExclusao.solicitadoPorNome||'').replace(/"/g,'&quot;')} — motivo: ${(f.SolicitacaoExclusao.motivo||'').replace(/"/g,'&quot;')}">🗑️ Aprovar exclusão</button>
+                   <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaResponderSolicitacaoExclusao(${f.Id}, false)">✋ Rejeitar</button>`
+                : `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="faunaExcluirRegistro(${f.Id})">🗑️ Excluir</button>`;
+            }
+            return pendente
+              ? `<span class="status-pill" style="font-size:.62rem;background:#fff8e6;color:#d97706;border:1px solid #d97706">⏳ Exclusão solicitada</span>`
+              : `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="faunaSolicitarExclusao(${f.Id})">🗑️ Solicitar exclusão</button>`;
+          })()}
         </div>
       </div>
     </div>`;
@@ -24789,6 +24848,7 @@ async function faunaFlashCarregarHistorico(forcar) {
 }
 
 async function faunaFlashExcluirRegistro(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão direta restrita à Diretoria. Use "Solicitar exclusão".'); return; }
   if (!confirm('Tem certeza que deseja excluir este Flash Report de Fauna?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo Flash Report...');
   const { ok, lista } = await dbRemover('FlashReportsFauna', id);
@@ -24796,6 +24856,50 @@ async function faunaFlashExcluirRegistro(id) {
   showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
   if (ok && lista) { try { localStorage.setItem('fauna_flash_historico_cache', JSON.stringify(lista)); } catch (e) {} }
   await faunaFlashCarregarHistorico(true);
+}
+
+/* -- Colaborador/Coordenador não excluem Flash Report de Fauna direto: enviam
+      uma solicitação com motivo, que fica pendente até a Diretoria aprovar ou
+      rejeitar (mesmo padrão de flashSolicitarExclusao/equipSolicitarExclusao). -- */
+async function faunaFlashSolicitarExclusao(id) {
+  const motivo = prompt('Por que este Flash Report de Fauna deve ser excluído?\n\nIsso vai ser enviado pra Diretoria aprovar.');
+  if (motivo === null) return;
+  if (!motivo.trim()) { showToast('⚠️ Informe o motivo da solicitação.'); return; }
+  showSyncStatus('Enviando solicitação...');
+  const solicitacao = {
+    motivo: motivo.trim(),
+    solicitadoPorNome: window._currentUser ? window._currentUser.name : '',
+    solicitadoPorEmail: window._currentUser ? window._currentUser.email : '',
+    data: new Date().toISOString(),
+    status: 'pendente',
+  };
+  const ok = await dbAtualizar('FlashReportsFauna', id, { SolicitacaoExclusao: solicitacao });
+  showToast(ok ? '📨 Solicitação de exclusão enviada à Diretoria.' : '❌ Erro ao enviar solicitação.');
+  showSyncStatus(ok ? 'Enviada!' : 'Falha ao enviar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) await faunaFlashCarregarHistorico(true);
+}
+
+async function faunaFlashResponderSolicitacaoExclusao(id, aprovar) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Apenas a Diretoria pode responder solicitações de exclusão.'); return; }
+  const f = (window._faunaFlashHistorico || []).find(r => r.Id === id);
+  if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  const sol = f.SolicitacaoExclusao || {};
+  if (aprovar) {
+    if (!confirm('Aprovar exclusão deste Flash Report de Fauna?\n\nSolicitado por: ' + (sol.solicitadoPorNome || '—') + '\nMotivo: ' + (sol.motivo || '—') + '\n\nEssa ação não pode ser desfeita.')) return;
+    showSyncStatus('Excluindo Flash Report...');
+    const { ok, lista } = await dbRemover('FlashReportsFauna', id);
+    showToast(ok ? '🗑️ Flash Report excluído.' : '❌ Erro ao excluir.');
+    showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+    if (ok && lista) { try { localStorage.setItem('fauna_flash_historico_cache', JSON.stringify(lista)); } catch (e) {} }
+    await faunaFlashCarregarHistorico(true);
+    return;
+  }
+  if (!confirm('Rejeitar esta solicitação de exclusão?\n\nO Flash Report continua no histórico.')) return;
+  showSyncStatus('Rejeitando solicitação...');
+  const ok = await dbAtualizar('FlashReportsFauna', id, { SolicitacaoExclusao: null });
+  showToast(ok ? '✅ Solicitação rejeitada — registro mantido.' : '❌ Erro ao rejeitar.');
+  showSyncStatus(ok ? 'Rejeitada!' : 'Falha', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) await faunaFlashCarregarHistorico(true);
 }
 
 async function faunaFlashSalvar() {
@@ -25023,11 +25127,24 @@ function faunaFlashHtmlHistorico() {
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${dataFmt} · ${f.trechoFrente || 'Sem trecho'} · por ${f.responsavelNome || f.CriadoPorNome || '—'}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">${(f.fotos||[]).length ? '📷 ' + f.fotos.length + ' foto(s)' : 'Sem fotos'}</div>
       </div>
-      <div style="display:flex;gap:4px">
+      <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
         <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaFlashVerRegistro(${f.Id})">👁️ Ver</button>
         <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaFlashEditarRegistro(${f.Id})">✏️ Editar</button>
         <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaFlashExportarRegistro(${f.Id})">🖨️ Exportar PDF</button>
-        <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="faunaFlashExcluirRegistro(${f.Id})">🗑️ Excluir</button>
+        ${(() => {
+          // Só a Diretoria exclui direto; colaborador/coordenador precisam solicitar
+          // com motivo, e a Diretoria aprova/rejeita.
+          const pendente = f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente';
+          if (currentProfile === 'diretoria') {
+            return pendente
+              ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:#fff;background:var(--red);border-color:var(--red)" onclick="faunaFlashResponderSolicitacaoExclusao(${f.Id}, true)" title="Solicitado por ${(f.SolicitacaoExclusao.solicitadoPorNome||'').replace(/"/g,'&quot;')} — motivo: ${(f.SolicitacaoExclusao.motivo||'').replace(/"/g,'&quot;')}">🗑️ Aprovar exclusão</button>
+                 <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="faunaFlashResponderSolicitacaoExclusao(${f.Id}, false)">✋ Rejeitar</button>`
+              : `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="faunaFlashExcluirRegistro(${f.Id})">🗑️ Excluir</button>`;
+          }
+          return pendente
+            ? `<span class="status-pill" style="font-size:.62rem;background:#fff8e6;color:#d97706;border:1px solid #d97706">⏳ Exclusão solicitada</span>`
+            : `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="faunaFlashSolicitarExclusao(${f.Id})">🗑️ Solicitar exclusão</button>`;
+        })()}
       </div>
     </div>`;
   };
@@ -30635,6 +30752,13 @@ let _ultimaContagemNotifFlash = null;
 let _ultimaContagemNotifPrazos = null;
 let _ultimaContagemNotifExclusaoFlash = null;
 let _ultimaContagemNotifExclusaoEquip = null;
+let _ultimaContagemNotifExclusaoFauna = null;
+let _ultimaContagemNotifExclusaoFaunaFlash = null;
+let _ultimaContagemNotifAPR = null;
+let _ultimaContagemNotifPrestDiretoria = null;
+let _ultimaContagemNotifContasPagar = null;
+let _ultimaContagemNotifAdiantamento = null;
+let _ultimaContagemNotifSolicGeral = null;
 
 /* -- Filtra os prazos de documentos (coletarPrazosDocumentos) que estão
    vencendo em breve, vencendo hoje ou em atraso há até 30 dias — mesma
@@ -30785,8 +30909,8 @@ async function atualizarBadgeNotificacoes() {
   const ehGestorGeral = usuario.role === 'Gestor Geral';
   const ehDiretoria = perfil === 'diretoria';
   try {
-    const [aprs, prests, contasPagar, despesas, adiantamentos, flashReports, solicitacoesGerais, equipamentos] = await Promise.all([
-      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos'), dbLer('FlashReportsEnergisa'), dbLer('SolicitacoesGerais'), dbLer('Equipamentos')
+    const [aprs, prests, contasPagar, despesas, adiantamentos, flashReports, solicitacoesGerais, equipamentos, faunaFichas, faunaFlash] = await Promise.all([
+      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos'), dbLer('FlashReportsEnergisa'), dbLer('SolicitacoesGerais'), dbLer('Equipamentos'), dbLer('ChecklistFauna'), dbLer('FlashReportsFauna')
     ]);
     const aprsPendentes = aprs.filter(r =>
       r.Status === 'Em Aberto' && (ehGestorGeral || r.Gestor === usuario.name)
@@ -30799,6 +30923,8 @@ async function atualizarBadgeNotificacoes() {
     // 14-15/08/2026) — por isso só entram no sino de quem é Diretoria.
     const flashExclusaoPendente = ehDiretoria ? (flashReports || []).filter(f => f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente') : [];
     const equipExclusaoPendente = ehDiretoria ? (equipamentos || []).filter(e => e.SolicitacaoExclusao && e.SolicitacaoExclusao.status === 'pendente') : [];
+    const faunaExclusaoPendente = ehDiretoria ? (faunaFichas || []).filter(f => f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente') : [];
+    const faunaFlashExclusaoPendente = ehDiretoria ? (faunaFlash || []).filter(f => f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente') : [];
     const prazosDocumentos = await coletarPrazosDocumentos();
     const prazosVencendo = prazosDocumentosVencendoEmBreve(prazosDocumentos);
     const prestsAbertas = prests.filter(r => r.Status === 'Em Aberto');
@@ -30812,7 +30938,7 @@ async function atualizarBadgeNotificacoes() {
       solicGeraisPendentes.length +
       despesasVencendo.length +
       prazosVencendo.length;
-    const total = totalAprovacoesPuras + flashPendentes.length + flashExclusaoPendente.length + equipExclusaoPendente.length;
+    const total = totalAprovacoesPuras + flashPendentes.length + flashExclusaoPendente.length + equipExclusaoPendente.length + faunaExclusaoPendente.length + faunaFlashExclusaoPendente.length;
 
     // Lista detalhada exibida no dropdown do sino (clique em cada item abre a pendência).
     window._notifItens = [];
@@ -30866,6 +30992,16 @@ async function atualizarBadgeNotificacoes() {
       subtitulo: (e.SolicitacaoExclusao.solicitadoPorNome || '—') + ' — ' + (e.Title || ''),
       acao: () => navigate('equipamentos'),
     }));
+    faunaExclusaoPendente.forEach(f => window._notifItens.push({
+      icone: '🗑️', titulo: 'Exclusão de Ficha de Campo (Fauna) solicitada',
+      subtitulo: (f.SolicitacaoExclusao.solicitadoPorNome || '—') + ' — ' + (f.nomeComum || f.nomeCientifico || 'FDC-' + (f.numeroFicha || '')),
+      acao: () => navigate('checklist_fauna'),
+    }));
+    faunaFlashExclusaoPendente.forEach(f => window._notifItens.push({
+      icone: '🗑️', titulo: 'Exclusão de Flash Report de Fauna solicitada',
+      subtitulo: (f.SolicitacaoExclusao.solicitadoPorNome || '—') + ' — FR-' + (f.numero || '—'),
+      acao: () => navigate('checklist_fauna'),
+    }));
 
     // Se só há Flash Reports pendentes (sem nenhuma aprovação financeira/APR
     // em aberto), o sino leva direto pra Projetos em vez de Aprovações.
@@ -30905,6 +31041,86 @@ async function atualizarBadgeNotificacoes() {
       );
     }
     _ultimaContagemNotifExclusaoEquip = equipExclusaoPendente.length;
+    if (_ultimaContagemNotifExclusaoFauna !== null && faunaExclusaoPendente.length > _ultimaContagemNotifExclusaoFauna) {
+      const novas = faunaExclusaoPendente.length - _ultimaContagemNotifExclusaoFauna;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '🗑️ EXPEDIAN — Solicitação de exclusão',
+        novas === 1 ? 'Uma exclusão de Ficha de Campo (Fauna) foi solicitada — aguarda sua aprovação.' : `${novas} exclusões de Ficha de Campo (Fauna) foram solicitadas — aguardam sua aprovação.`,
+        'checklist_fauna'
+      );
+    }
+    _ultimaContagemNotifExclusaoFauna = faunaExclusaoPendente.length;
+    if (_ultimaContagemNotifExclusaoFaunaFlash !== null && faunaFlashExclusaoPendente.length > _ultimaContagemNotifExclusaoFaunaFlash) {
+      const novas = faunaFlashExclusaoPendente.length - _ultimaContagemNotifExclusaoFaunaFlash;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '🗑️ EXPEDIAN — Solicitação de exclusão',
+        novas === 1 ? 'Uma exclusão de Flash Report de Fauna foi solicitada — aguarda sua aprovação.' : `${novas} exclusões de Flash Report de Fauna foram solicitadas — aguardam sua aprovação.`,
+        'checklist_fauna'
+      );
+    }
+    _ultimaContagemNotifExclusaoFaunaFlash = faunaFlashExclusaoPendente.length;
+
+    // Detectar NOVAS APRs em aberto -> som + push específico
+    if (_ultimaContagemNotifAPR !== null && aprsPendentes.length > _ultimaContagemNotifAPR) {
+      const novas = aprsPendentes.length - _ultimaContagemNotifAPR;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '📋 EXPEDIAN — APR em aberto',
+        novas === 1 ? 'Uma nova APR está aguardando sua aprovação.' : `${novas} novas APRs estão aguardando aprovação.`,
+        'aprovacoes'
+      );
+    }
+    _ultimaContagemNotifAPR = aprsPendentes.length;
+
+    // Detectar NOVAS Prestações de Contas aguardando aprovação -> som + push específico
+    if (_ultimaContagemNotifPrestDiretoria !== null && prestsAbertas.length > _ultimaContagemNotifPrestDiretoria) {
+      const novas = prestsAbertas.length - _ultimaContagemNotifPrestDiretoria;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '📑 EXPEDIAN — Prestação de Contas',
+        novas === 1 ? 'Uma Prestação de Contas está aguardando sua aprovação.' : `${novas} Prestações de Contas estão aguardando aprovação.`,
+        'aprovacoes'
+      );
+    }
+    _ultimaContagemNotifPrestDiretoria = prestsAbertas.length;
+
+    // Detectar NOVAS Contas a Pagar aguardando aprovação -> som + push específico
+    if (_ultimaContagemNotifContasPagar !== null && contasPagarAprovacao.length > _ultimaContagemNotifContasPagar) {
+      const novas = contasPagarAprovacao.length - _ultimaContagemNotifContasPagar;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '💰 EXPEDIAN — Conta a Pagar',
+        novas === 1 ? 'Uma Conta a Pagar está aguardando sua aprovação.' : `${novas} Contas a Pagar estão aguardando aprovação.`,
+        'aprovacoes'
+      );
+    }
+    _ultimaContagemNotifContasPagar = contasPagarAprovacao.length;
+
+    // Detectar NOVOS Adiantamentos aguardando aprovação -> som + push específico
+    if (_ultimaContagemNotifAdiantamento !== null && adiantamentosAprovacao.length > _ultimaContagemNotifAdiantamento) {
+      const novos = adiantamentosAprovacao.length - _ultimaContagemNotifAdiantamento;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '💵 EXPEDIAN — Adiantamento',
+        novos === 1 ? 'Um Adiantamento está aguardando sua aprovação.' : `${novos} Adiantamentos estão aguardando aprovação.`,
+        'aprovacoes'
+      );
+    }
+    _ultimaContagemNotifAdiantamento = adiantamentosAprovacao.length;
+
+    // Detectar NOVAS Solicitações Gerais aguardando aprovação -> som + push específico
+    if (_ultimaContagemNotifSolicGeral !== null && solicGeraisPendentes.length > _ultimaContagemNotifSolicGeral) {
+      const novas = solicGeraisPendentes.length - _ultimaContagemNotifSolicGeral;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '📨 EXPEDIAN — Solicitação pendente',
+        novas === 1 ? 'Uma nova solicitação está aguardando sua aprovação.' : `${novas} novas solicitações estão aguardando aprovação.`,
+        'aprovacoes'
+      );
+    }
+    _ultimaContagemNotifSolicGeral = solicGeraisPendentes.length;
 
     // Detectar NOVAS despesas entrando na janela de vencimento -> mensagem específica
     if (_ultimaContagemNotifDespesas !== null && despesasVencendo.length > _ultimaContagemNotifDespesas) {
@@ -30930,19 +31146,6 @@ async function atualizarBadgeNotificacoes() {
       );
     }
     _ultimaContagemNotifPrazos = prazosVencendo.length;
-
-    // Detectar NOVAS pendências desde a última checagem -> som + notificação push
-    // (exclui despesas vencendo, prazos de documentos e Flash Reports, que já têm push dedicado acima)
-    const totalAprovacoes = totalAprovacoesPuras - despesasVencendo.length - prazosVencendo.length;
-    if (_ultimaContagemNotif !== null && totalAprovacoes > _ultimaContagemNotif) {
-      const novas = totalAprovacoes - _ultimaContagemNotif;
-      _notifTocarSom();
-      _notifMostrarPush(
-        '🔔 EXPEDIAN — Nova pendência',
-        novas === 1 ? 'Você tem 1 nova aprovação pendente.' : `Você tem ${novas} novas aprovações pendentes.`
-      );
-    }
-    _ultimaContagemNotif = totalAprovacoes;
 
     // Atualizar o pseudo-element via atributo data
     badge.dataset.notifCount = total > 0 ? total : '';
