@@ -1307,6 +1307,7 @@ function renderPage(id) {
   const pages = {
     dashboard: () => pageDashboard(),
     financeiro: () => pageFinanceiroHub(),
+    dashboard_financeiro: () => pageDashboardFinanceiro(),
     apr: () => pageAPR(),
     checklist: () => pageChecklist(),
     rh: () => pageRH(),
@@ -21608,6 +21609,7 @@ function pageFiscalizacaoEro() {
    pra esta página com os botões. Cada perfil vê só os módulos que já tinha
    acesso no menu antigo, via o campo `perfis`. -- */
 const FINANCEIRO_CATALOGO = [
+  { rota: 'dashboard_financeiro', icon: '📊', titulo: 'Dashboard Financeiro', subtitulo: 'Gráficos de receitas x despesas, contratos com mais saídas e despesas por categoria', perfis: ['diretoria'] },
   { rota: 'servicos', icon: '💼', titulo: 'Catálogo de Serviços', subtitulo: 'Diárias, locação de veículos, projetos e lançamentos de serviços', perfis: ['diretoria','coordenador'] },
   { rota: 'custos', icon: '🗂️', titulo: 'Centros de Custo', subtitulo: 'Contratos e projetos ativos, com valor aprovado, receitas, despesas e saldo', perfis: ['diretoria'] },
   { rota: 'receber', icon: '💰', titulo: 'Contas a Receber', subtitulo: 'Controle de faturas e recebimentos', perfis: ['diretoria'] },
@@ -21630,6 +21632,219 @@ function pageFinanceiroHub() {
       <div class="card-title" style="margin-bottom:6px">${c.titulo}</div>
       <div style="font-size:.78rem;color:var(--text-muted)">${c.subtitulo}</div>
     </div>`).join('')}
+  </div>`;
+}
+/* =====================================================================
+   DASHBOARD FINANCEIRO — restrito à Diretoria. Carrega Chart.js sob
+   demanda (mesmo padrão já usado pro XLSX: só baixa quando essa tela é
+   aberta). 3 gráficos: Receitas x Despesas por mês, Top 10 contratos
+   (Centros de Custo) com mais saídas — considerando DivisaoCC quando a
+   despesa foi dividida entre vários contratos — e Despesas por Categoria.
+   O grid dos cards usa auto-fit/minmax, então empilha em 1 coluna sozinho
+   em telas estreitas (mesmo mecanismo já usado no hub Financeiro/Fiscalização).
+===================================================================== */
+function dashFinMesLabel(ym) {
+  const partes = ym.split('-');
+  const nomes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  return nomes[parseInt(partes[1], 10) - 1] + '/' + partes[0].slice(2);
+}
+
+function dashFinMudarPeriodo(qtd) {
+  window._dashFinMeses = parseInt(qtd, 10) || 12;
+  dashFinCarregar();
+}
+
+async function dashFinCarregar() {
+  const painel = document.getElementById('dashfin-painel');
+  if (!painel) return;
+  try {
+    if (typeof Chart === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    if (!_custosExtrasCarregados) await custosCarregarExtras();
+    const [despesas, receitas] = await Promise.all([
+      dbLer('Despesas').catch(() => []),
+      dbLer('Receitas').catch(() => []),
+    ]);
+
+    const nMeses = window._dashFinMeses || 12;
+    const hoje = new Date();
+    const chavesMeses = [];
+    for (let i = nMeses - 1; i >= 0; i--) {
+      const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+      chavesMeses.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'));
+    }
+    const chaveMes = (dataStr) => (dataStr || '').slice(0, 7);
+
+    const despesasPorMes = {}; chavesMeses.forEach(k => despesasPorMes[k] = 0);
+    const receitasPorMes = {}; chavesMeses.forEach(k => receitasPorMes[k] = 0);
+    (despesas || []).forEach(d => {
+      const k = chaveMes(d.DataLancamento);
+      if (k in despesasPorMes) despesasPorMes[k] += Number(d.Valor) || 0;
+    });
+    (receitas || []).forEach(r => {
+      const k = chaveMes(r.DataEmissao || r.DataPrevista);
+      if (k in receitasPorMes) receitasPorMes[k] += Number(r.Valor) || 0;
+    });
+
+    const totalDespesas = chavesMeses.reduce((s, k) => s + despesasPorMes[k], 0);
+    const totalReceitas = chavesMeses.reduce((s, k) => s + receitasPorMes[k], 0);
+    const saldo = totalReceitas - totalDespesas;
+
+    // Despesas por Centro de Custo — soma a fatia correta quando a despesa
+    // foi dividida entre vários contratos (DivisaoCC), senão conta o valor
+    // inteiro no CC único do lançamento. Só olha despesas dentro do período.
+    const despesaPorCC = {};
+    (despesas || []).forEach(d => {
+      if (!(chaveMes(d.DataLancamento) in despesasPorMes)) return;
+      if (d.DivisaoCC && d.DivisaoCC.length) {
+        d.DivisaoCC.forEach(div => {
+          const id = _ccIdPuro(div.cc);
+          if (id) despesaPorCC[id] = (despesaPorCC[id] || 0) + (Number(div.valor) || 0);
+        });
+      } else {
+        const id = _ccIdPuro(d.CentroCusto);
+        if (id) despesaPorCC[id] = (despesaPorCC[id] || 0) + (Number(d.Valor) || 0);
+      }
+    });
+    const nomeDoCC = (id) => { const c = (centrosCustoData || []).find(x => x.id === id); return c ? (id + ' · ' + c.contrato) : id; };
+    const topCCs = Object.entries(despesaPorCC).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+    // Despesas por Categoria (dentro do período)
+    const despesaPorCategoria = {};
+    (despesas || []).forEach(d => {
+      if (!(chaveMes(d.DataLancamento) in despesasPorMes)) return;
+      const cat = d.Categoria || 'Sem categoria';
+      despesaPorCategoria[cat] = (despesaPorCategoria[cat] || 0) + (Number(d.Valor) || 0);
+    });
+    const topCategorias = Object.entries(despesaPorCategoria).sort((a, b) => b[1] - a[1]).slice(0, 8);
+
+    const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    const fmt = (v) => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+    setTxt('dashfin-kpi-receita', fmt(totalReceitas));
+    setTxt('dashfin-kpi-despesa', fmt(totalDespesas));
+    setTxt('dashfin-kpi-saldo', fmt(saldo));
+    const kpiSaldoEl = document.getElementById('dashfin-kpi-saldo');
+    if (kpiSaldoEl) kpiSaldoEl.style.color = saldo >= 0 ? 'var(--green-main)' : 'var(--red)';
+    setTxt('dashfin-kpi-media', fmt(totalDespesas / nMeses));
+
+    // Destrói gráficos anteriores antes de recriar nos mesmos canvas (evita
+    // "Canvas is already in use" ao trocar o período sem re-renderizar a página).
+    window._dashFinCharts = window._dashFinCharts || {};
+    Object.values(window._dashFinCharts).forEach(c => { try { c.destroy(); } catch (e) {} });
+    window._dashFinCharts = {};
+
+    const corVerde = '#28a745', corVermelho = '#dc3545', corAzul = '#0d6efd';
+    const paletaCategorias = ['#28a745', '#0d6efd', '#e0a800', '#dc3545', '#6f42c1', '#20c997', '#fd7e14', '#6610f2', '#adb5bd'];
+
+    const ctxMensal = document.getElementById('dashfin-chart-mensal');
+    if (ctxMensal) {
+      window._dashFinCharts.mensal = new Chart(ctxMensal, {
+        type: 'bar',
+        data: {
+          labels: chavesMeses.map(dashFinMesLabel),
+          datasets: [
+            { label: 'Receitas', data: chavesMeses.map(k => receitasPorMes[k]), backgroundColor: corVerde },
+            { label: 'Despesas', data: chavesMeses.map(k => despesasPorMes[k]), backgroundColor: corVermelho },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom' } },
+          scales: { y: { ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } } },
+        },
+      });
+    }
+
+    const ctxCC = document.getElementById('dashfin-chart-cc');
+    if (ctxCC) {
+      window._dashFinCharts.cc = new Chart(ctxCC, {
+        type: 'bar',
+        data: {
+          labels: topCCs.map(([id]) => nomeDoCC(id)),
+          datasets: [{ label: 'Despesa', data: topCCs.map(([, v]) => v), backgroundColor: corAzul }],
+        },
+        options: {
+          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { x: { ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } } },
+        },
+      });
+    }
+
+    const ctxCat = document.getElementById('dashfin-chart-categoria');
+    if (ctxCat) {
+      window._dashFinCharts.categoria = new Chart(ctxCat, {
+        type: 'doughnut',
+        data: {
+          labels: topCategorias.map(([c]) => c),
+          datasets: [{ data: topCategorias.map(([, v]) => v), backgroundColor: paletaCategorias }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'right', labels: { boxWidth: 12, font: { size: 10 } } } },
+        },
+      });
+    }
+  } catch (e) {
+    console.warn('[Dashboard Financeiro] Falha ao carregar', e);
+    showToast('❌ Erro ao carregar o dashboard financeiro.');
+  }
+}
+
+function pageDashboardFinanceiro() {
+  if (currentProfile !== 'diretoria') {
+    return `<div class="page-header"><h1>Dashboard Financeiro</h1></div>
+    <div class="card" style="text-align:center;padding:48px 24px;color:var(--text-muted)">
+      <div style="font-size:2rem;margin-bottom:10px">🔒</div>
+      <div style="font-weight:700;color:var(--text)">Acesso restrito à Diretoria</div>
+      <div style="font-size:.85rem;margin-top:6px">Dados financeiros da empresa visíveis apenas para o perfil Diretoria.</div>
+      <button class="btn-secondary" style="margin-top:14px" onclick="navigate('financeiro')">← Financeiro</button>
+    </div>`;
+  }
+  const nMeses = window._dashFinMeses || 12;
+  setTimeout(() => dashFinCarregar(), 150);
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div>
+      <h1>📊 Dashboard Financeiro</h1>
+      <p>Receitas, despesas e contratos com mais saídas — visão consolidada</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
+      <select onchange="dashFinMudarPeriodo(this.value)" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
+        <option value="6" ${nMeses === 6 ? 'selected' : ''}>Últimos 6 meses</option>
+        <option value="12" ${nMeses === 12 ? 'selected' : ''}>Últimos 12 meses</option>
+        <option value="24" ${nMeses === 24 ? 'selected' : ''}>Últimos 24 meses</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card green"><div class="kpi-label">Receitas no período</div><div class="kpi-value" id="dashfin-kpi-receita" style="font-size:1.15rem">—</div><div class="kpi-icon">💰</div></div>
+    <div class="kpi-card red"><div class="kpi-label">Despesas no período</div><div class="kpi-value" id="dashfin-kpi-despesa" style="font-size:1.15rem">—</div><div class="kpi-icon">💸</div></div>
+    <div class="kpi-card blue"><div class="kpi-label">Saldo</div><div class="kpi-value" id="dashfin-kpi-saldo" style="font-size:1.15rem">—</div><div class="kpi-icon">⚖️</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Despesa média/mês</div><div class="kpi-value" id="dashfin-kpi-media" style="font-size:1.15rem">—</div><div class="kpi-icon">📉</div></div>
+  </div>
+
+  <div id="dashfin-painel" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px">
+    <div class="card" style="padding:16px">
+      <div class="card-title" style="margin-bottom:10px">Receitas x Despesas por mês</div>
+      <div style="position:relative;height:280px"><canvas id="dashfin-chart-mensal"></canvas></div>
+    </div>
+    <div class="card" style="padding:16px">
+      <div class="card-title" style="margin-bottom:10px">Contratos com mais saídas (top 10)</div>
+      <div style="position:relative;height:280px"><canvas id="dashfin-chart-cc"></canvas></div>
+    </div>
+    <div class="card" style="padding:16px;grid-column:1/-1">
+      <div class="card-title" style="margin-bottom:10px">Despesas por Categoria</div>
+      <div style="position:relative;height:300px;max-width:560px;margin:0 auto"><canvas id="dashfin-chart-categoria"></canvas></div>
+    </div>
   </div>`;
 }
 
