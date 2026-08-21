@@ -27535,6 +27535,8 @@ function pageChecklistFlash() {
           📄 Importar de PDF
           <input type="file" accept="application/pdf" style="display:none" onchange="flashImportarDePdf(event)">
         </label>
+        ${(window._flashHistorico || []).some(r => (r.fotos || []).some(f => f && f.dataUrl)) ? `
+        <button class="btn-secondary" style="font-size:.75rem" onclick="flashMigrarFotosAntigasParaOneDrive()" title="Move as fotos que ainda estão embutidas nos registros antigos para arquivos separados no OneDrive, reduzindo bastante o tamanho do arquivo principal">🧹 Migrar fotos antigas</button>` : ''}
         <button class="btn-primary" onclick="flashAbrirNovo()">➕ Novo Flash Report</button>
       </div>
     </div>
@@ -35031,6 +35033,56 @@ async function flashPrepararFotosParaSalvar(fotos, dataStr) {
     }
     return { desc: f.desc || '', horizontal: !!f.horizontal, url: enviado.url, id: enviado.id, driveId: enviado.driveId, nome: enviado.nome };
   }));
+}
+
+/* -- Migração única (disparada manualmente pelo botão "🧹 Migrar fotos
+   antigas", que só aparece quando existe algo pra migrar): extrai as fotos
+   que já estão embutidas (dataUrl) nos Flash Reports já salvos e manda pro
+   OneDrive como arquivos separados, do mesmo jeito que salvamentos novos já
+   fazem (flashPrepararFotosParaSalvar) — existe pra encolher de vez o
+   FlashReportsEnergisa.json que já tinha chegado a ~88MB antes dessa
+   mudança (83 fotos num único registro). Usa _dbGravarComRetry na hora de
+   gravar pra não perder gravações concorrentes de quem estiver usando o
+   app durante a migração (mesma proteção anti-condição-de-corrida do
+   dbInserir/dbAtualizar — ver decisão de 13/08/2026). As fotos já
+   enviadas ao OneDrive não se perdem mesmo se a gravação final falhar:
+   rodar a migração de novo simplesmente reenvia só o que ainda tiver
+   dataUrl. -- */
+async function flashMigrarFotosAntigasParaOneDrive() {
+  showSyncStatus('Verificando Flash Reports...');
+  const { lista, sucesso } = await dbLerComEtag('FlashReportsEnergisa');
+  if (!sucesso) { showToast('❌ Não consegui ler o histórico agora — tente de novo em instantes.'); showSyncStatus('', '', 1); return; }
+  const pendentes = lista.filter(r => (r.fotos || []).some(f => f && f.dataUrl));
+  if (!pendentes.length) { showToast('✅ Nenhum Flash Report com fotos embutidas — já está tudo externalizado.'); showSyncStatus('', '', 1); navigate('checklist_flash'); return; }
+  const totalFotos = pendentes.reduce((s, r) => s + (r.fotos || []).filter(f => f && f.dataUrl).length, 0);
+  if (!confirm('Migrar fotos de ' + pendentes.length + ' Flash Report(s) (' + totalFotos + ' fotos) para arquivos separados no OneDrive?\n\nIsso reduz bastante o tamanho do arquivo principal. Pode levar alguns minutos — não feche esta aba enquanto estiver rodando.')) return;
+
+  const migradas = {}; // Id do registro -> novo array de fotos (já enviadas ao OneDrive)
+  for (let i = 0; i < pendentes.length; i++) {
+    const r = pendentes[i];
+    showSyncStatus('Enviando fotos... (' + (i + 1) + '/' + pendentes.length + ')');
+    try {
+      migradas[r.Id] = await flashPrepararFotosParaSalvar(r.fotos || [], r.Data);
+    } catch (e) {
+      console.warn('[Flash Report] Falha ao migrar fotos do registro', r.Id, e);
+    }
+  }
+
+  showSyncStatus('Salvando histórico atualizado...');
+  const { ok, lista: listaFinal } = await _dbGravarComRetry('FlashReportsEnergisa', listaFresca =>
+    listaFresca.map(r => migradas[r.Id] ? { ...r, fotos: migradas[r.Id] } : r)
+  );
+
+  if (ok) {
+    window._flashHistorico = listaFinal;
+    try { localStorage.setItem('flash_historico_cache', JSON.stringify(listaFinal)); } catch (e) {}
+    showToast('✅ Fotos migradas! O arquivo principal deve ficar bem menor agora.');
+    showSyncStatus('Migração concluída!', 'ok', 3000);
+  } else {
+    showToast('⚠️ As fotos já foram enviadas ao OneDrive, mas não consegui salvar o histórico agora. Rode a migração de novo em instantes.');
+    showSyncStatus('Falha ao salvar', 'err', 5000);
+  }
+  navigate('checklist_flash');
 }
 
 /* =============================================================
