@@ -22167,10 +22167,12 @@ async function painelGeralCarregarMitigacaoSemNavegar() {
   try { cacheLocal = JSON.parse(localStorage.getItem('mit_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
   window._mitHistorico = cacheLocal;
   try {
-    const lista = await dbLer('ChecklistMitigacao');
-    if (Array.isArray(lista)) {
+    const { lista, sucesso } = await dbLerComEtag('ChecklistMitigacao');
+    if (sucesso && Array.isArray(lista)) {
       window._mitHistorico = lista;
       try { localStorage.setItem('mit_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    } else {
+      console.warn('[Painel Geral] Falha ao buscar Mitigação do OneDrive — mantendo cache local, nada foi apagado.');
     }
   } catch (e) { console.warn('[Painel Geral] Falha ao carregar histórico de Mitigação, usando cache local.', e); }
 }
@@ -22184,7 +22186,7 @@ async function painelGeralCarregarDados(forcar) {
       (window._flashHistorico === null || forcar) ? flashCarregarHistorico(true, true) : Promise.resolve(),
       (window._ncHistorico === null || forcar) ? ncCarregarHistorico(true, true) : Promise.resolve(),
       painelGeralCarregarMitigacaoSemNavegar(),
-      (_fornEnergisaLista === null || forcar) ? dbLer('FornecedoresEnergisa').then(l => { _fornEnergisaLista = Array.isArray(l) ? l : []; }).catch(() => { _fornEnergisaLista = _fornEnergisaLista || []; }) : Promise.resolve(),
+      (_fornEnergisaLista === null || forcar) ? fornEnergisaCarregar(forcar, true) : Promise.resolve(),
     ]);
   } finally {
     window._painelGeralCarregando = false;
@@ -23068,16 +23070,25 @@ function pagePainelGeralEro() {
 let _fornEnergisaLista = null;
 let _fornEnergisaCircuitoFiltro = null;
 
-async function fornEnergisaCarregar(forcar) {
-  if (_fornEnergisaLista !== null && !forcar) { navigate('checklist_fornecedores'); return; }
-  try {
-    const lista = await dbLer('FornecedoresEnergisa');
-    _fornEnergisaLista = Array.isArray(lista) ? lista : [];
-  } catch(e) {
-    console.warn('[Fornecedores Energisa] Falha ao carregar histórico.', e);
-    _fornEnergisaLista = _fornEnergisaLista || [];
+async function fornEnergisaCarregar(forcar, semNavegar) {
+  if (_fornEnergisaLista !== null && !forcar) { if (!semNavegar) navigate('checklist_fornecedores'); return; }
+  if (_fornEnergisaLista === null) {
+    let cacheLocal = [];
+    try { cacheLocal = JSON.parse(localStorage.getItem('forn_energisa_cache') || '[]'); } catch (e) { cacheLocal = []; }
+    _fornEnergisaLista = cacheLocal;
   }
-  navigate('checklist_fornecedores');
+  try {
+    const { lista, sucesso } = await dbLerComEtag('FornecedoresEnergisa');
+    if (sucesso && Array.isArray(lista)) {
+      _fornEnergisaLista = lista;
+      try { localStorage.setItem('forn_energisa_cache', JSON.stringify(lista)); } catch (e) {}
+    } else {
+      console.warn('[Fornecedores Energisa] Falha ao buscar do OneDrive — mantendo cache local, nada foi apagado.');
+    }
+  } catch(e) {
+    console.warn('[Fornecedores Energisa] Falha ao carregar histórico, usando cache local.', e);
+  }
+  if (!semNavegar) navigate('checklist_fornecedores');
 }
 
 function fornEnergisaFiltrarCircuito(id) {
@@ -27096,10 +27107,12 @@ async function flashCarregarHistorico(forcar, semNavegar) {
   try { cacheLocal = JSON.parse(localStorage.getItem('flash_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
   if (window._flashHistorico === null) window._flashHistorico = cacheLocal;
   try {
-    const lista = await dbLer('FlashReportsEnergisa');
-    if (Array.isArray(lista)) {
+    const { lista, sucesso } = await dbLerComEtag('FlashReportsEnergisa');
+    if (sucesso && Array.isArray(lista)) {
       window._flashHistorico = lista;
       try { localStorage.setItem('flash_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    } else {
+      console.warn('[Flash Report] Falha ao buscar do OneDrive — mantendo cache local, nada foi apagado.');
     }
   } catch (e) { console.warn('[Flash Report] Falha ao carregar histórico, usando cache local.', e); }
   if (!semNavegar) navigate('checklist_flash');
@@ -28200,10 +28213,12 @@ async function ncCarregarHistorico(forcar, semNavegar) {
   try { cacheLocal = JSON.parse(localStorage.getItem('notif_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
   if (window._ncHistorico === null) window._ncHistorico = cacheLocal;
   try {
-    const lista = await dbLer('NotificacoesEnergisa');
-    if (Array.isArray(lista)) {
+    const { lista, sucesso } = await dbLerComEtag('NotificacoesEnergisa');
+    if (sucesso && Array.isArray(lista)) {
       window._ncHistorico = lista;
       try { localStorage.setItem('notif_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    } else {
+      console.warn('[Notificação NC] Falha ao buscar do OneDrive — mantendo cache local, nada foi apagado.');
     }
   } catch (e) { console.warn('[Notificação NC] Falha ao carregar histórico, usando cache local.', e); }
   if (!semNavegar) navigate('checklist_notif');
@@ -39106,28 +39121,36 @@ async function dbLer(tabela) {
    ninguém mais mexeu no arquivo entre a leitura e a escrita (se mexeu, o
    Graph responde 412 e a gente relê + tenta de novo, em vez de sobrescrever
    às cegas e apagar o que a outra pessoa acabou de salvar). -- */
+/* -- "sucesso" distingue "tabela realmente vazia/não existe ainda" (sucesso:true,
+   lista:[]) de "falha ao buscar/ler" (sucesso:false, lista:[]) — sem isso, um
+   hiccup de rede/token ou um arquivo grande demais pra baixar a tempo fica
+   indistinguível de "não há registro nenhum", e quem chama pode acabar
+   sobrescrevendo um cache local bom com uma lista vazia por engano (foi
+   exatamente isso que fez o Painel Geral parecer ter perdido Flash Report/
+   Mitigação/NC/Fornecedores de uma vez em 21/08 — ver flashCarregarHistorico
+   e afins, que agora checam "sucesso" antes de substituir o cache). -- */
 async function dbLerComEtag(tabela) {
   const token = await getOneDriveToken();
-  if (!token) { console.warn('[DB] Sem token para ler', tabela); return { lista: [], etag: null }; }
+  if (!token) { console.warn('[DB] Sem token para ler', tabela); return { lista: [], etag: null, sucesso: false }; }
   try {
     const pasta = await _resolverRaizPara(tabela, true, token);
-    if (!pasta) return { lista: [], etag: null };
+    if (!pasta) return { lista: [], etag: null, sucesso: false };
     const { driveId, itemId } = pasta;
     const dbId = await garantirPastaOneDrive(token, driveId, itemId, 'db');
-    if (!dbId) { console.warn('[DB] Pasta "db" não resolvida, abortando leitura de', tabela); return { lista: [], etag: null }; }
+    if (!dbId) { console.warn('[DB] Pasta "db" não resolvida, abortando leitura de', tabela); return { lista: [], etag: null, sucesso: false }; }
     const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${dbId}:/${tabela}.json:/content`;
     const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
-    if (r.status === 404) { return { lista: [], etag: null }; } // tabela ainda nao existe
+    if (r.status === 404) { return { lista: [], etag: null, sucesso: true }; } // tabela ainda nao existe — isso É sucesso, não falha
     if (!r.ok) {
       console.warn('[DB] Erro ao ler', tabela, r.status);
-      return { lista: [], etag: null };
+      return { lista: [], etag: null, sucesso: false };
     }
     const etag = r.headers.get('etag') || r.headers.get('ETag') || null;
     const data = await r.json();
-    return { lista: Array.isArray(data) ? data : [], etag };
+    return { lista: Array.isArray(data) ? data : [], etag, sucesso: true };
   } catch(e) {
     console.warn('[DB] Erro parse', tabela, e);
-    return { lista: [], etag: null };
+    return { lista: [], etag: null, sucesso: false };
   }
 }
 
