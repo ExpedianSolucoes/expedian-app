@@ -7824,6 +7824,21 @@ function renderDespesasTab() {
     </div>
 
     <div id="rd-form-campos" style="display:${window._rdFormAberto ? 'block' : 'none'}">
+    <!-- Linha 0: Anexo — primeiro campo do formulário, mesmo padrão já usado em
+         Prestação de Contas: anexar o comprovante primeiro permite ao sistema
+         tentar identificar automaticamente o fornecedor, o valor e a categoria
+         (sempre editável a seguir). -->
+    <div class="form-row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>📎 1º passo: Anexe o Comprovante (NF / Cupom / Foto do Recibo)</label>
+        <input type="file" id="rd_comprovante_galeria" accept=".pdf,.jpg,.jpeg,.png" onchange="rdAnexarComprovante(this)"
+          style="background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border);width:100%">
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:4px">Anexe o comprovante antes de preencher o resto — o sistema tenta identificar automaticamente o fornecedor, o valor e a categoria.</div>
+        <div id="rd_anexo_status" style="font-size:.78rem;margin-top:6px"></div>
+        <div id="rd_comprovante_status" style="font-size:.78rem;color:var(--text-muted);margin-top:4px"></div>
+      </div>
+    </div>
+
     <!-- Linha 1: Data lançamento + Semana + Categoria -->
     <div class="form-row">
       <div class="form-group">
@@ -8055,7 +8070,7 @@ function renderDespesasTab() {
       </div>
     </div>
 
-    <!-- Linha 7: Status + Nº Medição + Comprovante -->
+    <!-- Linha 7: Status + Nº Medição (Comprovante virou o 1º campo do formulário) -->
     <div class="form-row">
       <div class="form-group">
         <label>Status de Pagamento</label>
@@ -8068,16 +8083,6 @@ function renderDespesasTab() {
         <input type="text" id="rd_medicao" list="rd_medicao_dl" placeholder="Selecione o contrato...">
         <datalist id="rd_medicao_dl"></datalist>
         <div id="rd_medicao_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
-      </div>
-      <div class="form-group" style="grid-column:span 2">
-        <label>📎 Comprovante (upload ou digitalizar)</label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <button type="button" onclick="document.getElementById('rd_comprovante_scan').click()" style="flex:1;min-width:130px;background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border);cursor:pointer;color:var(--text)">📷 Escanear</button>
-          <button type="button" onclick="document.getElementById('rd_comprovante_galeria').click()" style="flex:1;min-width:130px;background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border);cursor:pointer;color:var(--text)">🖼️ Galeria/Arquivo</button>
-          <input type="file" id="rd_comprovante_scan" accept=".pdf,.jpg,.jpeg,.png" capture="environment" onchange="rdAnexarComprovante(this)" style="display:none">
-          <input type="file" id="rd_comprovante_galeria" accept=".pdf,.jpg,.jpeg,.png" onchange="rdAnexarComprovante(this)" style="display:none">
-          <div id="rd_comprovante_status" style="font-size:.78rem;color:var(--text-muted);white-space:nowrap;width:100%"></div>
-        </div>
       </div>
     </div>
 
@@ -8793,13 +8798,16 @@ function rdAtualizarParcela(i, campo, valor) {
 /* -- Upload de comprovante (foto/scan ou arquivo) direto no formulário de
    Nova Despesa. Sobe assim que o arquivo é selecionado, preservando o nome
    original; o resultado fica guardado em memória até o clique em "Salvar
-   Despesa". O atributo capture="environment" no input abre a câmera
-   diretamente em celulares, funcionando como "escanear". -- */
+   Despesa". Além do upload, dispara finProcessarComprovante (mesma leitura
+   automática de fornecedor/valor/categoria já usada em Prestação de Contas
+   e Contas a Pagar — ver finPreencherFornecedor/finPreencherCategoria) —
+   decisão de 21/08/2026, pra deixar o "1º passo" igual nos três lugares. -- */
 async function rdAnexarComprovante(inputEl) {
   const file = inputEl.files[0];
   if (!file) return;
   window._rdComprovanteUrl = null; window._rdComprovanteNome = null;
   window._rdComprovanteId = null; window._rdComprovanteDriveId = null;
+  finProcessarComprovante(file, 'rd');
   const statusEl = document.getElementById('rd_comprovante_status');
   if (statusEl) statusEl.textContent = '⏳ Enviando...';
   const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.despesas);
@@ -8955,6 +8963,7 @@ async function salvarDespesa() {
   const comprovScan = document.getElementById('rd_comprovante_scan'); if (comprovScan) comprovScan.value = '';
   const comprovGaleria = document.getElementById('rd_comprovante_galeria'); if (comprovGaleria) comprovGaleria.value = '';
   const comprovStatus = document.getElementById('rd_comprovante_status'); if (comprovStatus) comprovStatus.textContent = '';
+  const anexoStatus = document.getElementById('rd_anexo_status'); if (anexoStatus) anexoStatus.textContent = '';
   const dataEl = document.getElementById('rd_data_lancamento'); if (dataEl) dataEl.value = new Date().toISOString().split('T')[0];
   window._rdGrupoServico = null;
   const distChkReset = document.getElementById('rd_tem_distribuicao'); if (distChkReset) distChkReset.checked = false;
@@ -40251,6 +40260,14 @@ function finPreencherCategoria(prefixo, sugestao) {
     pcAtualizarSubcategorias();
     const subEl = document.getElementById('prest_subcategoria');
     if (subEl) subEl.value = sugestao.subcategoria;
+  } else if (prefixo === 'rd') {
+    // Financeiro > Despesas: mesma taxonomia (RD_CATEGORIAS), campos rd_categoria/rd_subcategoria.
+    const catEl = document.getElementById('rd_categoria');
+    if (!catEl) return false;
+    catEl.value = sugestao.categoria;
+    rdAtualizarSubcategorias();
+    const subEl = document.getElementById('rd_subcategoria');
+    if (subEl) subEl.value = sugestao.subcategoria;
   } else {
     const subEl = document.getElementById('pag_subcategoria');
     if (!subEl) return false;
@@ -40263,11 +40280,17 @@ function finPreencherCategoria(prefixo, sugestao) {
 }
 
 function finPreencherFornecedor(prefixo, cnpj, nomeSugerido) {
-  const lista = prefixo === 'prest' ? _fornecedoresPrest : _fornecedoresCadastrados;
+  const lista = prefixo === 'prest' ? _fornecedoresPrest : prefixo === 'rd' ? _rdFornecedores : _fornecedoresCadastrados;
   const alvo = cnpj ? cnpj.replace(/\D/g, '') : '';
   const encontrado = alvo ? (lista || []).find(f => (f.CNPJ || '').replace(/\D/g, '') === alvo) : null;
   if (encontrado) {
     if (prefixo === 'prest') pcSelecionarFornecedor(encontrado.Title);
+    else if (prefixo === 'rd') {
+      // Precisa estar em modalidade "Fornecedor" pra linha do campo aparecer antes de preencher.
+      const modEl = document.getElementById('rd_modalidade');
+      if (modEl && modEl.value !== 'fornecedor') { modEl.value = 'fornecedor'; rdToggleModalidade(); }
+      rdSelecionarFornecedor(encontrado.Title);
+    }
     else pagSelecionarFornecedor(encontrado.Title);
     return { status: 'encontrado', nome: encontrado.Title };
   }
@@ -40276,6 +40299,12 @@ function finPreencherFornecedor(prefixo, cnpj, nomeSugerido) {
       abrirCadastroFornecedorPrest();
       const nomeEl = document.getElementById('pforn_nome'); if (nomeEl && nomeSugerido) nomeEl.value = nomeSugerido;
       const cnpjEl = document.getElementById('pforn_cnpj'); if (cnpjEl && cnpj) cnpjEl.value = cnpj;
+    } else if (prefixo === 'rd') {
+      const modEl = document.getElementById('rd_modalidade');
+      if (modEl && modEl.value !== 'fornecedor') { modEl.value = 'fornecedor'; rdToggleModalidade(); }
+      rdAbrirCadastroFornecedor();
+      const nomeEl = document.getElementById('rd_forn_nome'); if (nomeEl && nomeSugerido) nomeEl.value = nomeSugerido;
+      const cnpjEl = document.getElementById('rd_forn_cnpj'); if (cnpjEl && cnpj) cnpjEl.value = cnpj;
     } else {
       abrirCadastroFornecedor();
       const nomeEl = document.getElementById('forn_nome'); if (nomeEl && nomeSugerido) nomeEl.value = nomeSugerido;
