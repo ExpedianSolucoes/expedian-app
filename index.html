@@ -21914,7 +21914,13 @@ const FINANCEIRO_CATALOGO = [
   { rota: 'servicos', icon: '💼', titulo: 'Catálogo de Serviços', subtitulo: 'Diárias, locação de veículos, projetos e lançamentos de serviços', perfis: ['diretoria','coordenador'] },
   { rota: 'custos', icon: '🗂️', titulo: 'Centros de Custo', subtitulo: 'Contratos e projetos ativos, com valor aprovado, receitas, despesas e saldo', perfis: ['diretoria'] },
   { rota: 'receber', icon: '💰', titulo: 'Contas a Receber', subtitulo: 'Notas fiscais, recebimentos e pendências — por cliente e Centro de Custo', perfis: ['diretoria'] },
-  { rota: 'receitas_despesas', icon: '💵', titulo: 'Receitas e Despesas', subtitulo: 'Lançamentos financeiros da empresa e Contas a Pagar', perfis: ['diretoria'] },
+  // Receitas e Despesas viraram dois botões próprios (antes era 1 botão só,
+  // "Receitas e Despesas") — os dados já eram tabelas separadas por trás
+  // (Receitas.json / Despesas.json), isso só separa também o ponto de
+  // entrada no hub. Ambos abrem a mesma página (receitas_despesas), só
+  // muda a aba pré-selecionada (window._rdTab) — decisão de 21/08/2026.
+  { rota: 'receitas_despesas', preTab: 'receitas', icon: '💰', titulo: 'Receitas', subtitulo: 'Lançamentos de receita da empresa', perfis: ['diretoria'] },
+  { rota: 'receitas_despesas', preTab: 'despesas', icon: '💸', titulo: 'Despesas', subtitulo: 'Lançamentos de despesa da empresa e Contas a Pagar', perfis: ['diretoria'] },
   { rota: 'prestacao', icon: '📑', titulo: 'Prestação de Contas', subtitulo: 'Registro de despesas com comprovante e fluxo de aprovação', perfis: ['diretoria','coordenador','colaborador'] },
   { rota: 'contratos', icon: '📜', titulo: 'Gestão de Contratos', subtitulo: 'Contratos ativos, valores, vigências e alertas de vencimento', perfis: ['diretoria'] },
 ];
@@ -21928,7 +21934,7 @@ function pageFinanceiroHub() {
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
     ${catalogoVisivel.map(c => `
-    <div class="card" style="cursor:pointer" onclick="navigate('${c.rota}')">
+    <div class="card" style="cursor:pointer" onclick="${c.preTab ? `window._rdTab='${c.preTab}';` : ''}navigate('${c.rota}')">
       <div style="font-size:1.8rem;margin-bottom:8px">${c.icon}</div>
       <div class="card-title" style="margin-bottom:6px">${c.titulo}</div>
       <div style="font-size:.78rem;color:var(--text-muted)">${c.subtitulo}</div>
@@ -34976,30 +34982,70 @@ async function flashUploadFotoParaOneDrive(dataUrl, nomeArquivo) {
    a mesma foto de novo dentro da mesma sessão. -- */
 window._flashFotoHidratacaoCache = window._flashFotoHidratacaoCache || {};
 async function flashHidratarFoto(foto) {
-  if (!foto || foto.dataUrl || !foto.id || !foto.driveId) return foto;
-  const chave = foto.driveId + '/' + foto.id;
-  if (window._flashFotoHidratacaoCache[chave]) {
-    return Object.assign({}, foto, { dataUrl: window._flashFotoHidratacaoCache[chave] });
+  if (!foto || foto.dataUrl) return foto;
+  // Formato normal (upload feito pelo próprio app): busca direto por id do
+  // item no Graph — mais rápido, não precisa resolver pasta de novo.
+  if (foto.id && foto.driveId) {
+    const chave = foto.driveId + '/' + foto.id;
+    if (window._flashFotoHidratacaoCache[chave]) {
+      return Object.assign({}, foto, { dataUrl: window._flashFotoHidratacaoCache[chave] });
+    }
+    try {
+      const token = await getOneDriveToken();
+      if (!token) return foto;
+      const url = 'https://graph.microsoft.com/v1.0/drives/' + foto.driveId + '/items/' + foto.id + '/content';
+      const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!resp.ok) { console.warn('[Flash Report] Falha ao baixar foto', foto.id, resp.status); return foto; }
+      const blob = await resp.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      window._flashFotoHidratacaoCache[chave] = dataUrl;
+      return Object.assign({}, foto, { dataUrl });
+    } catch (e) {
+      console.warn('[Flash Report] Erro ao hidratar foto:', e);
+      return foto;
+    }
   }
-  try {
-    const token = await getOneDriveToken();
-    if (!token) return foto;
-    const url = 'https://graph.microsoft.com/v1.0/drives/' + foto.driveId + '/items/' + foto.id + '/content';
-    const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
-    if (!resp.ok) { console.warn('[Flash Report] Falha ao baixar foto', foto.id, resp.status); return foto; }
-    const blob = await resp.blob();
-    const dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-    window._flashFotoHidratacaoCache[chave] = dataUrl;
-    return Object.assign({}, foto, { dataUrl });
-  } catch (e) {
-    console.warn('[Flash Report] Erro ao hidratar foto:', e);
-    return foto;
+  // Formato de migração (fotos extraídas em lote direto do arquivo local
+  // sincronizado, sem passar pelo Graph — usado pra encolher o
+  // FlashReportsEnergisa.json de ~88MB quando ele ficou grande demais pra
+  // carregar no navegador, ver flashMigrarFotosAntigasParaOneDrive): só tem
+  // o nome do arquivo, sem id/driveId. Busca por caminho na mesma pasta
+  // onde uploads normais são salvos (OD_FOLDERS.flashReportsFotos).
+  if (foto.nome) {
+    const chave = 'nome:' + foto.nome;
+    if (window._flashFotoHidratacaoCache[chave]) {
+      return Object.assign({}, foto, { dataUrl: window._flashFotoHidratacaoCache[chave] });
+    }
+    try {
+      const token = await getOneDriveToken();
+      if (!token) return foto;
+      const pasta = await _resolverRaizPara(OD_FOLDERS.flashReportsFotos, false, token);
+      if (!pasta) return foto;
+      const subId = await garantirPastaOneDrive(token, pasta.driveId, pasta.itemId, OD_FOLDERS.flashReportsFotos);
+      if (!subId) return foto;
+      const url = 'https://graph.microsoft.com/v1.0/drives/' + pasta.driveId + '/items/' + subId + ':/' + encodeURIComponent(foto.nome) + ':/content';
+      const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!resp.ok) { console.warn('[Flash Report] Falha ao baixar foto (por nome)', foto.nome, resp.status); return foto; }
+      const blob = await resp.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      window._flashFotoHidratacaoCache[chave] = dataUrl;
+      return Object.assign({}, foto, { dataUrl });
+    } catch (e) {
+      console.warn('[Flash Report] Erro ao hidratar foto (por nome):', e);
+      return foto;
+    }
   }
+  return foto;
 }
 async function flashHidratarFotos(fotos) {
   if (!Array.isArray(fotos) || !fotos.length) return fotos || [];
