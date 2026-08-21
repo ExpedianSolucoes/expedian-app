@@ -22526,22 +22526,26 @@ async function _relColetarDados() {
    4 por registro) num único formato de "grupos" reaproveitado tanto pelo PDF
    quanto pelo Word: [{ titulo, fotos: [{dataUrl, horizontal}] }]. Grupos sem
    nenhuma foto são omitidos. -- */
-function _relGruposFotos(d) {
+async function _relGruposFotos(d) {
   const grupos = [];
-  d.flashMes.forEach(f => {
-    const fotos = (f.fotos || []).filter(x => x && x.dataUrl).slice(0, 4);
+  // fotos de Flash Report e NC podem estar externalizadas no OneDrive (só
+  // {url,id,driveId}, sem dataUrl) — hidrata antes de filtrar por dataUrl.
+  for (const f of d.flashMes) {
+    const fotosHidratadas = await flashHidratarFotos((f.fotos || []).slice(0, 4));
+    const fotos = fotosHidratadas.filter(x => x && x.dataUrl);
     if (fotos.length) grupos.push({
       titulo: 'Flash Report — ' + (f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—'),
       fotos,
     });
-  });
-  d.ncMes.forEach(n => {
-    const fotos = (n.Fotos || []).filter(x => x && x.dataUrl).slice(0, 4);
+  }
+  for (const n of d.ncMes) {
+    const fotosHidratadas = await flashHidratarFotos((n.Fotos || []).slice(0, 4));
+    const fotos = fotosHidratadas.filter(x => x && x.dataUrl);
     if (fotos.length) grupos.push({
       titulo: 'Notificação de NC ' + (n.Numero || '') + ' — ' + (n.Data ? new Date(n.Data + 'T12:00').toLocaleDateString('pt-BR') : '—'),
       fotos,
     });
-  });
+  }
   d.mitMes.forEach(r => {
     const fotos = d.mitFotosPorId[r.Id] || [];
     if (fotos.length) grupos.push({
@@ -22761,7 +22765,7 @@ async function painelGeralGerarRelatorioMensal() {
   paginasSecoes.push(doc.internal.getNumberOfPages());
   doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
   doc.text('10. REGISTROS FOTOGRÁFICOS DO PERÍODO', ML, y); y += 0.55;
-  y = _relFotos(doc, y, pageW, pageH, ML, CW, titPdf, subPdf, _relGruposFotos(d));
+  y = _relFotos(doc, y, pageW, pageH, ML, CW, titPdf, subPdf, await _relGruposFotos(d));
 
   // ===== 2º passe: volta na página do Sumário e escreve o nº de página real de
   // cada seção (calculado durante a montagem acima, em paginasSecoes) =====
@@ -22973,7 +22977,7 @@ async function painelGeralGerarRelatorioMensalWord() {
   };
   const celulaFoto = foto => new D.TableCell({ width: { size: Math.round(CW_DXA / 2), type: D.WidthType.DXA }, children: [imagemParagrafo(foto)] });
 
-  const gruposFotos = _relGruposFotos(d);
+  const gruposFotos = await _relGruposFotos(d);
   children.push(tituloSecao('10. Registros Fotográficos do Período'));
   if (!gruposFotos.length) {
     children.push(new D.Paragraph({ children: [new D.TextRun({ text: 'Nenhum registro fotográfico disponível neste período.', italics: true, size: 18, color: '787878' })] }));
@@ -26753,9 +26757,12 @@ function flashFecharForm() {
 }
 
 /* -- Carrega um Flash Report já salvo de volta no formulário pra edição. -- */
-function flashEditarRegistro(id) {
+async function flashEditarRegistro(id) {
   const f = (window._flashHistorico || []).find(r => r.Id === id);
   if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  showSyncStatus('Carregando fotos...');
+  const fotosHidratadas = await flashHidratarFotos(f.fotos || []);
+  showSyncStatus('', '', 1);
   window._flashData = {
     modelo: f.Modelo === 'v2' ? 'v2' : 'v1',
     frenteId: f.FrenteId || FLASH_FRENTES[0].id, data: f.Data || '',
@@ -26767,7 +26774,7 @@ function flashEditarRegistro(id) {
     outrasVerificacoes: (f.OutrasVerificacoes || []).map(o => ({ ...o })),
     outraativ: f.OutraAtividade || '', outraocorr: f.OutraOcorrencia || '',
     atividades: f.Atividades || '', amanha: f.PrevisaoAmanha || '', obs: f.Observacoes || '',
-    fotos: (f.fotos || []).map(x => ({ ...x })),
+    fotos: (fotosHidratadas || []).map(x => ({ ...x })),
     orientacaoVerbal: !!f.OrientacaoVerbal, orientacaoPara: f.OrientacaoPara || '', orientacaoPrazo: f.OrientacaoPrazo || '',
     orientacaoDataCumprimento: f.OrientacaoDataCumprimento || '', orientacaoStatusCumprimento: f.OrientacaoStatusCumprimento || '',
   };
@@ -27192,6 +27199,8 @@ async function flashSalvar() {
   if (!d.data) { showToast('⚠️ Informe a data.'); return; }
   const frente = FLASH_FRENTES.find(f => f.id === d.frenteId);
   const editandoId = window._flashRegistroAtualId;
+  showSyncStatus('Enviando fotos...');
+  const fotosParaSalvar = await flashPrepararFotosParaSalvar(d.fotos || [], d.data);
   const registro = {
     Title: 'Flash Report — ' + (frente ? frente.nome : d.frenteId) + ' — ' + d.data,
     FrenteId: d.frenteId, FrenteNome: frente ? frente.nome : d.frenteId, Empreiteira: frente ? frente.empreiteira : '',
@@ -27205,7 +27214,7 @@ async function flashSalvar() {
     RespostasAtividades: d.respostasAtividades || {}, RespostasVerificacoes: d.respostasVerificacoes || {},
     TemSupressao: !!d.temSupressao, RespostasSupressao: d.respostasSupressao || {}, ObsItens: d.obsItens || {},
     OutrasVerificacoes: d.outrasVerificacoes || [],
-    fotos: d.fotos || [],
+    fotos: fotosParaSalvar,
     Visualizado: false,
   };
   showSyncStatus('Salvando Flash Report...');
@@ -28106,12 +28115,13 @@ function _flashNomeArquivo(num, frente, frenteId, data) {
 async function flashExportarRegistro(id) {
   const f = (window._flashHistorico || []).find(r => r.Id === id);
   if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
-  showSyncStatus('Gerando PDF...');
   const mesmaFrente = (window._flashHistorico || []).filter(r => r.FrenteId === f.FrenteId)
     .slice().sort((a,b) => (a.Data||'').localeCompare(b.Data||''));
   let posicao = mesmaFrente.findIndex(r => r.Id === f.Id);
   if (posicao < 0) posicao = mesmaFrente.length;
   const num = String(posicao + 1).padStart(3, '0');
+  showSyncStatus('Carregando fotos...');
+  const fotosHidratadas = await flashHidratarFotos(f.fotos || []);
   const dLocal = {
     modelo: f.Modelo === 'v2' ? 'v2' : 'v1',
     frenteId: f.FrenteId, data: f.Data, rt: f.ResponsavelTecnico, clima: f.Clima, trecho: f.Trecho, equipe: f.Equipe, fiscal: f.Fiscal,
@@ -28119,10 +28129,11 @@ async function flashExportarRegistro(id) {
     respostasAtividades: f.RespostasAtividades || {}, respostasVerificacoes: f.RespostasVerificacoes || {},
     temSupressao: !!f.TemSupressao, respostasSupressao: f.RespostasSupressao || {}, obsItens: f.ObsItens || {},
     outrasVerificacoes: f.OutrasVerificacoes || [],
-    outraativ: f.OutraAtividade, outraocorr: f.OutraOcorrencia, atividades: f.Atividades, amanha: f.PrevisaoAmanha, obs: f.Observacoes, fotos: f.fotos || [],
+    outraativ: f.OutraAtividade, outraocorr: f.OutraOcorrencia, atividades: f.Atividades, amanha: f.PrevisaoAmanha, obs: f.Observacoes, fotos: fotosHidratadas || [],
     orientacaoVerbal: !!f.OrientacaoVerbal, orientacaoPara: f.OrientacaoPara || '', orientacaoPrazo: f.OrientacaoPrazo || '',
     orientacaoDataCumprimento: f.OrientacaoDataCumprimento || '', orientacaoStatusCumprimento: f.OrientacaoStatusCumprimento || '',
   };
+  showSyncStatus('Gerando PDF...');
   const { doc, frente } = await _flashGerarDoc(dLocal, num);
   showSyncStatus('PDF gerado!', 'ok', 2000);
   doc.save(_flashNomeArquivo(num, frente, dLocal.frenteId, dLocal.data));
@@ -28230,8 +28241,8 @@ function ncAbrirNovo(frenteIdPreSelecionado, frOrigemIdPreSelecionado) {
   window._ncMostrarForm = true;
   navigate('checklist_notif');
   if (frOrigemIdPreSelecionado) {
-    (window._flashHistorico === null ? flashCarregarHistorico() : Promise.resolve()).then(() => {
-      ncIncluirFotosFR(frOrigemIdPreSelecionado);
+    (window._flashHistorico === null ? flashCarregarHistorico() : Promise.resolve()).then(async () => {
+      await ncIncluirFotosFR(frOrigemIdPreSelecionado);
       ncCarregarNCsDoFR();
       const fr = (window._flashHistorico || []).find(r => r.Id === Number(frOrigemIdPreSelecionado) || r.Id === frOrigemIdPreSelecionado);
       if (fr) {
@@ -28249,9 +28260,10 @@ function ncFecharForm() {
   navigate('checklist_notif');
 }
 
-function ncEditarRegistro(id) {
+async function ncEditarRegistro(id) {
   const n = (window._ncHistorico || []).find(r => r.Id === id);
   if (!n) { showToast('⚠️ Registro não encontrado.'); return; }
+  await ncHidratarFotosReferenciadas(n.Fotos || []);
   window._ncData = {
     frenteId: n.FrenteId || FLASH_FRENTES[0].id,
     numero: n.Numero || '', data: n.Data || '',
@@ -28305,14 +28317,34 @@ function ncFotoSrc(f) {
   return '';
 }
 
+/* -- Fotos referenciadas (_refFrId/_refFoto) resolvem via ncFotoSrc lendo
+   fr.fotos direto de window._flashHistorico — mas essas fotos podem estar
+   externalizadas (só id/driveId, sem dataUrl ainda). Hidrata os Flash
+   Reports referenciados (uma vez por FR, em paralelo) antes de exibir ou
+   exportar, pra ncFotoSrc encontrar o dataUrl já pronto. -- */
+async function ncHidratarFotosReferenciadas(fotos) {
+  if (!Array.isArray(fotos) || !fotos.length) return;
+  const idsUnicos = [...new Set(fotos.filter(f => f && f._refFrId !== undefined).map(f => f._refFrId))];
+  if (!idsUnicos.length) return;
+  await Promise.all(idsUnicos.map(async frId => {
+    const fr = (window._flashHistorico || []).find(r => r.Id === frId);
+    if (fr) await flashHidratarFotosEmLugar(fr);
+  }));
+}
+
 /* -- Ao selecionar o Flash Report de Origem, todas as fotos já tiradas nele
    entram automaticamente na notificação — como referência, não como cópia
    (ver ncFotoSrc). Excluir aqui só tira da notificação, nunca apaga a foto
    do Flash Report original. -- */
-function ncIncluirFotosFR(frId) {
+async function ncIncluirFotosFR(frId) {
   if (!frId) return;
   const fr = (window._flashHistorico || []).find(r => r.Id === Number(frId) || r.Id === frId);
   if (!fr || !fr.fotos || !fr.fotos.length) return;
+  // Hidrata as fotos do FR (algumas podem estar só como referência OneDrive,
+  // sem dataUrl) direto no array compartilhado de window._flashHistorico —
+  // assim ncFotoSrc, que resolve o src na hora da renderização, já enxerga
+  // os dados depois desse await.
+  await flashHidratarFotosEmLugar(fr);
   if (!Array.isArray(window._ncData.fotos)) window._ncData.fotos = [];
   fr.fotos.forEach((f, fotoIdx) => {
     if (!f.dataUrl) return;
@@ -28411,7 +28443,8 @@ function ncToggleFrOrigem(frId, incluir) {
   if (!Array.isArray(d.frOrigensIds)) d.frOrigensIds = d.frOrigemId ? [Number(d.frOrigemId)] : [];
   frId = Number(frId);
   const idx = d.frOrigensIds.indexOf(frId);
-  if (incluir && idx === -1) { d.frOrigensIds.push(frId); ncIncluirFotosFR(frId); }
+  let hidratandoFotos = null;
+  if (incluir && idx === -1) { d.frOrigensIds.push(frId); hidratandoFotos = ncIncluirFotosFR(frId); }
   else if (!incluir && idx !== -1) { d.frOrigensIds.splice(idx, 1); }
   d.frOrigemId = d.frOrigensIds[0] || '';
   // Preenche a Descrição ANTES do navigate() — assim a textarea já reaparece com o
@@ -28422,6 +28455,9 @@ function ncToggleFrOrigem(frId, incluir) {
   }
   navigate('checklist_notif');
   setTimeout(() => ncCarregarNCsDoFR(), 50);
+  // Fotos externalizadas no OneDrive precisam ser hidratadas (async) antes de
+  // aparecerem — re-renderiza de novo quando a busca terminar.
+  if (hidratandoFotos) hidratandoFotos.then(() => navigate('checklist_notif'));
 }
 
 function ncIgnorarSugestoesFR() {
@@ -28722,6 +28758,7 @@ function ncNomeArquivo(numero, frente, frenteId, data) {
    _pdfNumerarPaginas), pra manter consistência visual entre os PDFs do app. -- */
 async function ncGerarDoc(n) {
   await _garantirJsPDF();
+  await ncHidratarFotosReferenciadas(n.fotos || []);
   const frente = FLASH_FRENTES.find(fr => fr.id === n.frenteId);
   const dt = n.data ? new Date(n.data + 'T12:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }) : '--';
   const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
@@ -34190,6 +34227,7 @@ const OD_FOLDERS = {
   receitas:    'Receitas',
   solicitacoes: 'Solicitacoes/Anexos',
   fornecedoresEnergisa: 'Energisa/FornecedoresLegais',
+  flashReportsFotos: 'Energisa/FlashReports/Fotos',
 };
 
 /* Monta "pastaBase/AAAA-MM" (subpasta do mês corrente) — usado por todos os
@@ -34906,6 +34944,93 @@ async function uploadParaOneDrive(blob, subpasta, nomeArquivo, opts) {
     console.warn('[OD] Upload erro de rede:', e);
     return false;
   }
+}
+
+/* -- Flash Report Energisa: fotos ficam em arquivos próprios no OneDrive
+   (mesmo padrão de comprovantes), não mais embutidas no JSON compartilhado
+   FlashReportsEnergisa.json — motivo: registros com muitas fotos (ex: 83
+   fotos = ~11MB) faziam o arquivo único crescer sem limite (chegou a 88MB),
+   deixando leituras lentas/instáveis pros outros 26 registros. Decisão de
+   21/08/2026. Usa uploadParaOneDrive diretamente (NÃO
+   uploadComprovanteComNomeOriginal, que converteria a foto pra PDF). -- */
+async function flashUploadFotoParaOneDrive(dataUrl, nomeArquivo) {
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const resultado = await uploadParaOneDrive(blob, OD_FOLDERS.flashReportsFotos, nomeArquivo, { retornarNome: true, conflictBehavior: 'rename' });
+    if (!resultado || typeof resultado !== 'object') return null;
+    return { id: resultado.id, driveId: resultado.driveId, nome: resultado.nome, url: resultado.url };
+  } catch (e) {
+    console.warn('[Flash Report] Falha ao enviar foto pro OneDrive:', e);
+    return null;
+  }
+}
+
+/* -- Hidrata (busca o base64) uma foto externalizada, sob demanda — usado
+   ao editar um registro, exportar PDF, vincular a uma NC ou montar o
+   relatório mensal. Fotos que já têm dataUrl (registros antigos, ainda
+   inline, ou upload que falhou e ficou local) passam direto. Nunca
+   lança erro: se a busca falhar, devolve a foto como estava (best-effort,
+   igual ao resto da leitura de NF do app). Cache em memória evita buscar
+   a mesma foto de novo dentro da mesma sessão. -- */
+window._flashFotoHidratacaoCache = window._flashFotoHidratacaoCache || {};
+async function flashHidratarFoto(foto) {
+  if (!foto || foto.dataUrl || !foto.id || !foto.driveId) return foto;
+  const chave = foto.driveId + '/' + foto.id;
+  if (window._flashFotoHidratacaoCache[chave]) {
+    return Object.assign({}, foto, { dataUrl: window._flashFotoHidratacaoCache[chave] });
+  }
+  try {
+    const token = await getOneDriveToken();
+    if (!token) return foto;
+    const url = 'https://graph.microsoft.com/v1.0/drives/' + foto.driveId + '/items/' + foto.id + '/content';
+    const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+    if (!resp.ok) { console.warn('[Flash Report] Falha ao baixar foto', foto.id, resp.status); return foto; }
+    const blob = await resp.blob();
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    window._flashFotoHidratacaoCache[chave] = dataUrl;
+    return Object.assign({}, foto, { dataUrl });
+  } catch (e) {
+    console.warn('[Flash Report] Erro ao hidratar foto:', e);
+    return foto;
+  }
+}
+async function flashHidratarFotos(fotos) {
+  if (!Array.isArray(fotos) || !fotos.length) return fotos || [];
+  return Promise.all(fotos.map(flashHidratarFoto));
+}
+/* Igual a flashHidratarFotos, mas substitui os itens NO PRÓPRIO array
+   (mutação in-place) em vez de devolver uma cópia — necessário quando o
+   array é uma referência compartilhada (ex: fr.fotos dentro de
+   window._flashHistorico), pra quem já guardou essa referência (como
+   ncFotoSrc) continuar enxergando os dados hidratados depois. -- */
+async function flashHidratarFotosEmLugar(objComFotos) {
+  if (!objComFotos || !Array.isArray(objComFotos.fotos) || !objComFotos.fotos.length) return objComFotos;
+  const hidratadas = await flashHidratarFotos(objComFotos.fotos);
+  for (let i = 0; i < objComFotos.fotos.length; i++) objComFotos.fotos[i] = hidratadas[i];
+  return objComFotos;
+}
+/* -- Envia as fotos com dataUrl (recém-tiradas/importadas nesta sessão)
+   pro OneDrive antes de salvar o registro, trocando por referência
+   {url,id,driveId,nome}. Fotos que já são só-referência (edição sem mexer
+   na foto) passam direto. Se o upload de uma foto falhar, mantém o
+   dataUrl inline nela — nunca perde a foto por causa disso. -- */
+async function flashPrepararFotosParaSalvar(fotos, dataStr) {
+  if (!Array.isArray(fotos) || !fotos.length) return [];
+  return Promise.all(fotos.map(async (f, i) => {
+    if (!f || !f.dataUrl) return f;
+    const nomeArquivo = 'FR_' + (dataStr || 'sem-data') + '_' + Date.now() + '_' + i + '.jpg';
+    const enviado = await flashUploadFotoParaOneDrive(f.dataUrl, nomeArquivo);
+    if (!enviado) {
+      console.warn('[Flash Report] Falha ao enviar foto pro OneDrive, mantendo inline:', nomeArquivo);
+      return f;
+    }
+    return { desc: f.desc || '', horizontal: !!f.horizontal, url: enviado.url, id: enviado.id, driveId: enviado.driveId, nome: enviado.nome };
+  }));
 }
 
 /* =============================================================
