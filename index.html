@@ -14547,6 +14547,403 @@ async function laSalvar() {
   await dbSalvar('Licencas', LA_DADOS);
 }
 
+/* ===============================
+   INICIAR LICENCIAMENTO (Novo Processo)
+   Checklist de documentos pra abrir um processo de licenciamento ambiental
+   do zero (ex: LAS na SEMA Porto Velho), com upload de cada documento. Ao
+   concluir, converte num registro normal de Licença (LA_DADOS acima). Lista
+   de documentos padrão levantada a partir de dois processos reais já
+   concluídos (Road Tires Ltda e Belini Multimarcas, pasta "03 - CLIENTES/
+   .../Sema PVH") — formato checklist-com-upload escolhido a pedido do
+   usuário ("vc sendo especialista em licenciamento como faria?"), decisão
+   de 21/08/2026.
+=============================== */
+
+var LP_DOC_TEMPLATE_PADRAO = [
+  { grupo: 'Documentos da Empresa', itens: [
+    'Cartão CNPJ',
+    'Contrato Social (e alterações, se houver)',
+    'CNH dos sócios / responsável legal',
+    'Contrato de Locação do imóvel (ou matrícula, se próprio)',
+  ]},
+  { grupo: 'Segurança e Viabilidade', itens: [
+    'Certificado dos Bombeiros (AVCB/CLCB)',
+    'Consulta Prévia de Viabilidade (Município)',
+  ]},
+  { grupo: 'Estudos e Responsabilidade Técnica', itens: [
+    'RAP — Relatório Ambiental Preliminar',
+    'ART do Responsável Técnico (CREA)',
+    'Taxa ART/CREA (comprovante)',
+    'Mapa de Localização do empreendimento',
+  ]},
+  { grupo: 'Declarações', itens: [
+    'Declaração de Terras Indígenas',
+    'Declaração DER/DNIT (faixa de domínio)',
+    'Declaração PGRCC (Resíduos da Construção Civil)',
+    'Declaração PGRS (Resíduos Sólidos)',
+    'Declaração IPHAN (Patrimônio Histórico)',
+    'Declaração UC/APP (Unidade de Conservação / Área de Preservação Permanente)',
+  ]},
+  { grupo: 'Publicação e Taxas', itens: [
+    'Requerimento de Publicação em Jornal',
+    'Comprovante de Publicação em Jornal',
+    'Tarifa de Abertura de Processo (comprovante)',
+    'Taxa de Licenciamento (comprovante)',
+  ]},
+  { grupo: 'Pós-Protocolo', itens: [
+    'Número do Processo / Protocolo (SEMA)',
+    'Licença Ambiental emitida',
+    'Publicação da Licença em Jornal',
+  ]},
+];
+
+var LP_PROCESSOS = [];
+
+function lpUid() {
+  return 'lp-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+}
+
+async function lpCarregar() {
+  const remoto = await dbLer('LicenciamentoProcessos');
+  LP_PROCESSOS = Array.isArray(remoto) ? remoto : [];
+}
+
+async function lpSalvar() {
+  await dbSalvar('LicenciamentoProcessos', LP_PROCESSOS);
+}
+
+function lpNovaListaDocumentos() {
+  var docs = [];
+  LP_DOC_TEMPLATE_PADRAO.forEach(function(g) {
+    g.itens.forEach(function(nome) {
+      docs.push({ id: lpUid(), grupo: g.grupo, nome: nome, status: 'pendente', arquivoUrl: '', arquivoNome: '', obs: '' });
+    });
+  });
+  return docs;
+}
+
+function lpProgresso(p) {
+  var docs = (p && p.documentos) || [];
+  var total = docs.length;
+  var done = docs.filter(function(d){ return d.status === 'enviado' || d.status === 'dispensado'; }).length;
+  var pct = total ? Math.round(done / total * 100) : 0;
+  return { done: done, total: total, pct: pct };
+}
+
+function lpRenderizarLista() {
+  var el = document.getElementById('lp-lista');
+  if (!el) return;
+  var lista = LP_PROCESSOS || [];
+  if (!lista.length) {
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhum processo de licenciamento em andamento.<br>Clique em "+ Novo Processo" para começar um do zero.</div>';
+    return;
+  }
+  el.innerHTML = lista.map(function(p) {
+    var prog = lpProgresso(p);
+    var corBarra = prog.pct >= 100 ? 'var(--brand-green)' : (prog.pct >= 50 ? '#ffc107' : '#fd7e14');
+    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">' +
+        '<div>' +
+          '<div style="font-family:Mont,sans-serif;font-weight:800;font-size:.95rem;color:var(--brand-brown)">'+(p.cliente||'(sem nome)')+'</div>' +
+          '<div style="font-size:.76rem;color:var(--text-muted);margin-top:2px">'+(p.cnpj?p.cnpj+' · ':'')+(p.municipio||'')+(p.uf?'/'+p.uf:'')+' · '+laNomeTipoLicenca(p.tipo)+' · '+(p.orgao||'')+'</div>' +
+          (p.numeroProcesso ? '<div style="font-size:.74rem;color:var(--text-muted);margin-top:2px">Processo: '+p.numeroProcesso+'</div>' : '') +
+        '</div>' +
+        '<div style="display:flex;gap:6px;flex-shrink:0">' +
+          '<button class="btn-secondary" style="font-size:.76rem;padding:6px 12px" onclick="lpAbrirDetalhe(\''+p.id+'\')">📋 Checklist</button>' +
+          '<button onclick="lpExcluirProcesso(\''+p.id+'\')" style="background:none;border:none;color:#dc3545;cursor:pointer;font-size:.9rem" title="Excluir">🗑️</button>' +
+        '</div>' +
+      '</div>' +
+      '<div style="margin-top:12px">' +
+        '<div style="display:flex;justify-content:space-between;font-size:.74rem;color:var(--text-muted);margin-bottom:4px">' +
+          '<span>Documentos: '+prog.done+'/'+prog.total+'</span><span>'+prog.pct+'%</span>' +
+        '</div>' +
+        '<div style="height:8px;background:var(--surface2);border-radius:4px;overflow:hidden">' +
+          '<div style="height:100%;width:'+prog.pct+'%;background:'+corBarra+';border-radius:4px"></div>' +
+        '</div>' +
+      '</div>' +
+      (prog.pct >= 100 ? '<button class="btn-primary" style="margin-top:12px;font-size:.8rem" onclick="lpConcluirEEmitirLicenca(\''+p.id+'\')">🏁 Emitir Licença</button>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function lpHtmlLista() {
+  return `
+  <div id="lp-lista"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+
+  <!-- MODAL: Novo Processo de Licenciamento -->
+  <div id="lp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px">
+    <div style="background:var(--surface);border-radius:16px;width:min(560px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+      <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
+        <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)">🆕 Iniciar Licenciamento do Zero</div>
+        <button onclick="lpFecharModal()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
+      </div>
+      <div style="padding:20px">
+        <input type="hidden" id="lp-id">
+        <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:14px;background:var(--green-pale);border-radius:8px;padding:10px 12px">
+          💡 Cria um checklist com os documentos padrão de um processo de LAS (Licença Ambiental Simplificada) — anexe cada um conforme for reunindo. Ao concluir todos, você pode emitir a licença direto pra cá.
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:2"><label>Razão Social / Cliente</label><input type="text" id="lp-cliente" placeholder="Nome do empreendedor"></div>
+          <div class="form-group"><label>CNPJ / CPF</label><input type="text" id="lp-cnpj" placeholder="00.000.000/0001-00"></div>
+        </div>
+        <div class="form-group"><label>Endereço</label><input type="text" id="lp-endereco" placeholder="Endereço do empreendimento"></div>
+        <div class="form-row">
+          <div class="form-group"><label>Município</label><input type="text" id="lp-municipio" placeholder="Cidade" value="Porto Velho"></div>
+          <div class="form-group" style="flex:0 0 80px"><label>UF</label><input type="text" id="lp-uf" placeholder="RO" maxlength="2" style="text-transform:uppercase" value="RO"></div>
+        </div>
+        <div class="form-group"><label>Atividade</label><input type="text" id="lp-atividade" placeholder="Atividade econômica / CNAE"></div>
+        <div class="form-row">
+          <div class="form-group" style="flex:0 0 150px"><label>Tipo de Licença</label>
+            <select id="lp-tipo">
+              <option value="LAS" selected>LAS — Simplificada</option>
+              <option value="LP">LP — Prévia</option>
+              <option value="LI">LI — Instalação</option>
+              <option value="LO">LO — Operação</option>
+              <option value="LAO">LAO — Simplificada</option>
+              <option value="LSA">LSA — Saneamento</option>
+              <option value="OUTRO">Outro</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Órgão</label><input type="text" id="lp-orgao" placeholder="SEMA" value="SEMA"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Nº do Processo (se já tiver)</label><input type="text" id="lp-numero-processo" placeholder="Preencha depois de protocolar"></div>
+          <div class="form-group"><label>Link do Portal (se já tiver)</label><input type="text" id="lp-link-portal" placeholder="https://licenciamento.portovelho.ro.gov.br/..."></div>
+        </div>
+        <div class="form-group"><label>Observações</label><textarea id="lp-obs" rows="2" placeholder="Observações do processo..."></textarea></div>
+        <div class="form-actions">
+          <button class="btn-primary" onclick="lpSalvarProcesso()">💾 Criar Checklist</button>
+          <button class="btn-secondary" onclick="lpFecharModal()">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Checklist do Processo -->
+  <div id="lp-detalhe-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1001;align-items:center;justify-content:center;padding:16px">
+    <div style="background:var(--surface);border-radius:16px;width:min(640px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+      <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)" id="lp-detalhe-titulo">Checklist</div>
+          <div style="font-size:.78rem;color:var(--text-muted)" id="lp-detalhe-subtitle"></div>
+        </div>
+        <button onclick="lpFecharDetalhe()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
+      </div>
+      <div style="padding:20px">
+        <input type="hidden" id="lp-detalhe-id">
+        <div class="form-row">
+          <div class="form-group"><label>Nº do Processo</label><input type="text" id="lp-detalhe-numero-processo" placeholder="Preencha ao protocolar" onchange="lpAtualizarCampoProcesso(document.getElementById('lp-detalhe-id').value,'numeroProcesso',this.value)"></div>
+          <div class="form-group"><label>Link do Portal</label><input type="text" id="lp-detalhe-link-portal" placeholder="Link de acompanhamento" onchange="lpAtualizarCampoProcesso(document.getElementById('lp-detalhe-id').value,'linkPortal',this.value)"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin:14px 0 8px">
+          <span style="font-size:.82rem;font-weight:700;color:var(--brand-brown)">Documentos</span>
+          <span id="lp-detalhe-progresso" style="font-size:.78rem;color:var(--text-muted)"></span>
+        </div>
+        <div id="lp-detalhe-docs"></div>
+        <details style="margin-top:14px">
+          <summary style="font-size:.82rem;font-weight:700;color:var(--brand-green);cursor:pointer;padding:8px 0">+ Adicionar documento extra</summary>
+          <div style="background:var(--green-pale);border-radius:12px;padding:14px;margin-top:8px;display:flex;gap:8px">
+            <input type="text" id="lp-doc-extra-nome" placeholder="Nome do documento" style="flex:1">
+            <button class="btn-primary" style="font-size:.78rem;padding:7px 14px" onclick="lpAdicionarDocumentoExtra(document.getElementById('lp-detalhe-id').value)">+ Adicionar</button>
+          </div>
+        </details>
+        <div id="lp-detalhe-acao-final" style="margin-top:16px"></div>
+      </div>
+    </div>
+  </div>
+  `;
+}
+
+function lpAbrirModal() {
+  ['lp-id','lp-cliente','lp-cnpj','lp-endereco','lp-atividade','lp-numero-processo','lp-link-portal','lp-obs'].forEach(function(id){
+    var e = document.getElementById(id); if (e) e.value = '';
+  });
+  document.getElementById('lp-municipio').value = 'Porto Velho';
+  document.getElementById('lp-uf').value = 'RO';
+  document.getElementById('lp-tipo').value = 'LAS';
+  document.getElementById('lp-orgao').value = 'SEMA';
+  document.getElementById('lp-modal').style.display = 'flex';
+}
+
+function lpFecharModal() { document.getElementById('lp-modal').style.display = 'none'; }
+
+async function lpSalvarProcesso() {
+  var cliente = document.getElementById('lp-cliente').value.trim();
+  if (!cliente) { showToast('⚠️ Informe o nome do cliente.'); return; }
+  var reg = {
+    id: lpUid(),
+    cliente: cliente,
+    cnpj: document.getElementById('lp-cnpj').value.trim(),
+    endereco: document.getElementById('lp-endereco').value.trim(),
+    municipio: document.getElementById('lp-municipio').value.trim(),
+    uf: document.getElementById('lp-uf').value.trim().toUpperCase(),
+    atividade: document.getElementById('lp-atividade').value.trim(),
+    tipo: document.getElementById('lp-tipo').value,
+    orgao: document.getElementById('lp-orgao').value.trim(),
+    numeroProcesso: document.getElementById('lp-numero-processo').value.trim(),
+    linkPortal: document.getElementById('lp-link-portal').value.trim(),
+    obs: document.getElementById('lp-obs').value.trim(),
+    status: 'em_andamento',
+    criadoEm: new Date().toISOString(),
+    documentos: lpNovaListaDocumentos(),
+  };
+  LP_PROCESSOS.push(reg);
+  await lpSalvar();
+  lpFecharModal();
+  lpRenderizarLista();
+  showToast('✅ Checklist criado! ' + reg.documentos.length + ' documentos a reunir.');
+}
+
+function lpExcluirProcesso(id) {
+  if (!confirm('Excluir este processo de licenciamento e todo o checklist?')) return;
+  LP_PROCESSOS = LP_PROCESSOS.filter(function(p){ return p.id !== id; });
+  lpSalvar(); lpRenderizarLista();
+  showToast('🗑️ Processo removido.');
+}
+
+function lpAtualizarCampoProcesso(id, campo, valor) {
+  var p = LP_PROCESSOS.find(function(x){ return x.id === id; }); if (!p) return;
+  p[campo] = (valor || '').trim();
+  lpSalvar();
+}
+
+function lpAbrirDetalhe(id) {
+  var p = LP_PROCESSOS.find(function(x){ return x.id === id; }); if (!p) return;
+  document.getElementById('lp-detalhe-id').value = id;
+  document.getElementById('lp-detalhe-titulo').textContent = p.cliente || '(sem nome)';
+  document.getElementById('lp-detalhe-subtitle').textContent = (p.municipio||'')+(p.uf?'/'+p.uf:'')+' · '+laNomeTipoLicenca(p.tipo)+' · '+(p.orgao||'');
+  document.getElementById('lp-detalhe-numero-processo').value = p.numeroProcesso || '';
+  document.getElementById('lp-detalhe-link-portal').value = p.linkPortal || '';
+  lpRenderizarDetalhe(id);
+  document.getElementById('lp-detalhe-modal').style.display = 'flex';
+}
+
+function lpFecharDetalhe() {
+  document.getElementById('lp-detalhe-modal').style.display = 'none';
+  lpRenderizarLista();
+}
+
+function lpRenderizarDetalhe(id) {
+  var p = LP_PROCESSOS.find(function(x){ return x.id === id; });
+  var el = document.getElementById('lp-detalhe-docs');
+  if (!p || !el) return;
+  var prog = lpProgresso(p);
+  var progEl = document.getElementById('lp-detalhe-progresso');
+  if (progEl) progEl.textContent = prog.done + '/' + prog.total + ' (' + prog.pct + '%)';
+
+  var grupos = [];
+  (p.documentos||[]).forEach(function(d) {
+    var g = grupos.find(function(x){ return x.nome === d.grupo; });
+    if (!g) { g = { nome: d.grupo, docs: [] }; grupos.push(g); }
+    g.docs.push(d);
+  });
+
+  el.innerHTML = grupos.map(function(g) {
+    return '<div style="margin-bottom:14px">' +
+      '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">'+g.nome+'</div>' +
+      g.docs.map(function(d) {
+        var corStatus = d.status === 'enviado' ? '#28a745' : d.status === 'dispensado' ? '#6c757d' : '#fd7e14';
+        var bgStatus = d.status === 'enviado' ? '#f0fff4' : d.status === 'dispensado' ? '#f5f5f5' : '#fff8f0';
+        var labelStatus = d.status === 'enviado' ? '✅ Enviado' : d.status === 'dispensado' ? '⊘ Dispensado' : '⏳ Pendente';
+        return '<div style="border:1px solid '+corStatus+'33;border-radius:10px;padding:10px 12px;margin-bottom:6px;background:'+bgStatus+'">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+            '<div style="flex:1;min-width:160px">' +
+              '<div style="font-size:.84rem;font-weight:600;color:var(--text)">'+d.nome+'</div>' +
+              (d.arquivoNome ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">'+(d.arquivoUrl ? '<a href="'+d.arquivoUrl+'" target="_blank" style="color:var(--blue)">📎 '+d.arquivoNome+'</a>' : '📎 '+d.arquivoNome)+'</div>' : '') +
+            '</div>' +
+            '<span style="font-size:.72rem;font-weight:700;padding:3px 9px;border-radius:20px;border:1px solid '+corStatus+'55;color:'+corStatus+';white-space:nowrap">'+labelStatus+'</span>' +
+          '</div>' +
+          '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">' +
+            '<label style="font-size:.73rem;padding:5px 10px;border:1px solid var(--brand-green);color:var(--brand-green);border-radius:6px;cursor:pointer;background:white">📎 '+(d.arquivoNome?'Trocar':'Anexar')+
+              '<input type="file" accept=".pdf,.jpg,.jpeg,.png" style="display:none" onchange="lpAnexarDocumento(\''+p.id+'\',\''+d.id+'\',this)"></label>' +
+            (d.status !== 'dispensado'
+              ? '<button style="font-size:.73rem;padding:5px 10px;border:1px solid #6c757d;background:white;color:#6c757d;border-radius:6px;cursor:pointer" onclick="lpMarcarStatusDoc(\''+p.id+'\',\''+d.id+'\',\'dispensado\')">Dispensar</button>'
+              : '<button style="font-size:.73rem;padding:5px 10px;border:1px solid #6c757d;background:white;color:#6c757d;border-radius:6px;cursor:pointer" onclick="lpMarcarStatusDoc(\''+p.id+'\',\''+d.id+'\',\'pendente\')">↩ Reativar</button>') +
+            (d.extra ? '<button style="font-size:.73rem;padding:5px 10px;border:1px solid #dc354533;background:white;color:#dc3545;border-radius:6px;cursor:pointer" onclick="lpRemoverDocumento(\''+p.id+'\',\''+d.id+'\')">✕</button>' : '') +
+          '</div>' +
+        '</div>';
+      }).join('') +
+    '</div>';
+  }).join('');
+
+  var finalEl = document.getElementById('lp-detalhe-acao-final');
+  if (finalEl) {
+    finalEl.innerHTML = prog.pct >= 100
+      ? '<button class="btn-primary" style="width:100%" onclick="lpConcluirEEmitirLicenca(\''+p.id+'\')">🏁 Emitir Licença (todos os documentos prontos)</button>'
+      : '';
+  }
+}
+
+async function lpAnexarDocumento(procId, docId, inputEl) {
+  var file = inputEl.files[0];
+  if (!file) return;
+  var p = LP_PROCESSOS.find(function(x){ return x.id === procId; });
+  var d = p && (p.documentos||[]).find(function(x){ return x.id === docId; });
+  if (!p || !d) return;
+  showToast('☁️ Enviando documento...');
+  var resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.licenciamentoProcessos, (p.cliente||'processo') + ' - ' + d.nome + ' - ' + file.name);
+  if (!resultado) { showToast('⚠️ Falha ao enviar documento.'); return; }
+  d.arquivoUrl = typeof resultado.url === 'string' ? resultado.url : '';
+  d.arquivoNome = resultado.nome;
+  d.status = 'enviado';
+  await lpSalvar();
+  lpRenderizarDetalhe(procId);
+  showToast('✅ Documento anexado!');
+}
+
+function lpMarcarStatusDoc(procId, docId, status) {
+  var p = LP_PROCESSOS.find(function(x){ return x.id === procId; });
+  var d = p && (p.documentos||[]).find(function(x){ return x.id === docId; });
+  if (!p || !d) return;
+  d.status = status;
+  lpSalvar();
+  lpRenderizarDetalhe(procId);
+}
+
+function lpAdicionarDocumentoExtra(procId) {
+  var input = document.getElementById('lp-doc-extra-nome');
+  var nome = (input.value||'').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do documento.'); return; }
+  var p = LP_PROCESSOS.find(function(x){ return x.id === procId; }); if (!p) return;
+  p.documentos.push({ id: lpUid(), grupo: 'Extra', nome: nome, status: 'pendente', arquivoUrl: '', arquivoNome: '', obs: '', extra: true });
+  input.value = '';
+  lpSalvar();
+  lpRenderizarDetalhe(procId);
+  showToast('✅ Documento adicionado ao checklist.');
+}
+
+function lpRemoverDocumento(procId, docId) {
+  var p = LP_PROCESSOS.find(function(x){ return x.id === procId; }); if (!p) return;
+  if (!confirm('Remover este documento do checklist?')) return;
+  p.documentos = (p.documentos||[]).filter(function(d){ return d.id !== docId; });
+  lpSalvar();
+  lpRenderizarDetalhe(procId);
+}
+
+async function lpConcluirEEmitirLicenca(id) {
+  var p = LP_PROCESSOS.find(function(x){ return x.id === id; }); if (!p) return;
+  p.status = 'concluido';
+  await lpSalvar();
+  lpFecharDetalhe();
+  window._lpAba = 'licencas';
+  navigate('relatorios');
+  setTimeout(function() {
+    laAbrirModal();
+    document.getElementById('la-cliente').value = p.cliente || '';
+    document.getElementById('la-cnpj').value = p.cnpj || '';
+    document.getElementById('la-endereco').value = p.endereco || '';
+    document.getElementById('la-municipio').value = p.municipio || '';
+    document.getElementById('la-uf').value = p.uf || '';
+    document.getElementById('la-atividade').value = p.atividade || '';
+    document.getElementById('la-tipo').value = p.tipo || 'LAS';
+    document.getElementById('la-processo').value = p.numeroProcesso || '';
+    document.getElementById('la-orgao').value = p.orgao || 'SEMA';
+    document.getElementById('la-obs').value = (p.obs ? p.obs + '\n' : '') + 'Processo iniciado pelo checklist de licenciamento.' + (p.linkPortal ? ' Portal: ' + p.linkPortal : '');
+    document.getElementById('la-modal-titulo').textContent = 'Finalizar Licença — ' + (p.cliente||'');
+    showToast('🏁 Confira os dados e informe o número/vencimento da licença emitida para salvar.');
+  }, 150);
+}
+
 /* ---- Status da LICENÇA ---- */
 function laStatus(vencimento) {
   if (!vencimento) return { label: 'Sem data', cor: '#999', dias: null, classe: 'gray' };
@@ -14966,14 +15363,39 @@ function laCopiarNotificacao() {
 /* -- RELATÓRIOS (Licenciamento Ambiental) -- */
 function pageRelatorios() {
   laCarregar().then(function() { laRenderizarLista(); });
+  lpCarregar().then(function() { lpRenderizarLista(); });
+  var aba = window._lpAba || 'licencas';
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
     <div>
       <h1>🌿 Licenciamento Ambiental</h1>
       <p>Controle de licenças ambientais e relatórios semestrais de monitoramento</p>
     </div>
-    <button class="btn-primary" onclick="laAbrirModal()">+ Nova Licença</button>
+    ${aba === 'licencas'
+      ? `<button class="btn-primary" onclick="laAbrirModal()">+ Nova Licença</button>`
+      : `<button class="btn-primary" onclick="lpAbrirModal()">🆕 Novo Processo</button>`}
   </div>
+
+  <div style="display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap">
+    <button onclick="window._lpAba='licencas';navigate('relatorios')"
+      style="display:flex;align-items:center;gap:7px;padding:9px 18px;border-radius:10px;
+        border:${aba==='licencas'?'2px solid var(--green-main)':'1px solid var(--border)'};
+        background:${aba==='licencas'?'var(--green-pale)':'var(--surface2)'};
+        color:${aba==='licencas'?'var(--green-main)':'var(--text)'};
+        font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${aba==='licencas'?'700':'500'};cursor:pointer">
+      📋 Licenças Emitidas
+    </button>
+    <button onclick="window._lpAba='processos';navigate('relatorios')"
+      style="display:flex;align-items:center;gap:7px;padding:9px 18px;border-radius:10px;
+        border:${aba==='processos'?'2px solid var(--amber)':'1px solid var(--border)'};
+        background:${aba==='processos'?'#fff8e6':'var(--surface2)'};
+        color:${aba==='processos'?'var(--amber)':'var(--text)'};
+        font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${aba==='processos'?'700':'500'};cursor:pointer">
+      🆕 Iniciar Licenciamento${(LP_PROCESSOS||[]).filter(function(p){return p.status!=='concluido';}).length ? ' ('+(LP_PROCESSOS||[]).filter(function(p){return p.status!=='concluido';}).length+')' : ''}
+    </button>
+  </div>
+
+  ${aba === 'processos' ? lpHtmlLista() : `
 
   <div class="kpi-grid" style="margin-bottom:20px">
     <div class="kpi-card green" id="la-kpi-card-total" onclick="laResetarFiltrosPrincipais()" style="cursor:pointer" title="Ver todas as licenças"><div class="kpi-label">Total de Licenças</div><div class="kpi-value" id="la-kpi-total">—</div><div class="kpi-icon">📋</div></div>
@@ -15141,7 +15563,8 @@ function pageRelatorios() {
         </details>
       </div>
     </div>
-  </div>`;
+  </div>`}
+  `;
 }
 
 function laAbrirPreenchimentoRMA(licId, rmaId) {
@@ -34245,6 +34668,7 @@ const OD_FOLDERS = {
   solicitacoes: 'Solicitacoes/Anexos',
   fornecedoresEnergisa: 'Energisa/FornecedoresLegais',
   flashReportsFotos: 'Energisa/FlashReports/Fotos',
+  licenciamentoProcessos: 'Licenciamento/Processos',
 };
 
 /* Monta "pastaBase/AAAA-MM" (subpasta do mês corrente) — usado por todos os
