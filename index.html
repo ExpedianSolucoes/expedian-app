@@ -1103,8 +1103,7 @@ const menus = {
       { id: 'apr', icon: '📋', label: 'APRs' },
     ]},
     { group: 'checklist', icon: '✔️', label: 'Checklist', children: [
-      { id: 'checklist_ero', icon: '🌿', label: 'Inspeção de Subestação' },
-      { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
+      { id: 'checklist_ero', icon: '🌿', label: 'Monitoramento Ambiental ERO' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
       { id: 'checklist_fiscalizacao_ero', icon: '🌱', label: 'Fiscalização Ambiental ERO' },
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
@@ -1138,8 +1137,7 @@ const menus = {
       { id: 'apr', icon: '📋', label: 'APRs' },
     ]},
     { group: 'checklist', icon: '✔️', label: 'Checklist', children: [
-      { id: 'checklist_ero', icon: '🌿', label: 'Inspeção de Subestação' },
-      { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
+      { id: 'checklist_ero', icon: '🌿', label: 'Monitoramento Ambiental ERO' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
       { id: 'checklist_fiscalizacao_ero', icon: '🌱', label: 'Fiscalização Ambiental ERO' },
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
@@ -1169,8 +1167,7 @@ const menus = {
       { id: 'apr', icon: '📋', label: 'Emitir APR' },
     ]},
     { group: 'checklist', icon: '✔️', label: 'Checklist', children: [
-      { id: 'checklist_ero', icon: '🌿', label: 'Inspeção de Subestação' },
-      { id: 'checklist_linha', icon: '⚡', label: 'Linha de Distribuição' },
+      { id: 'checklist_ero', icon: '🌿', label: 'Monitoramento Ambiental ERO' },
       { id: 'checklist_bombeamento', icon: '💧', label: 'Teste de Bombeamento' },
       { id: 'checklist_fiscalizacao_ero', icon: '🌱', label: 'Fiscalização Ambiental ERO' },
       { id: 'checklist_coleta', icon: '🚛', label: 'Coleta de Resíduos' },
@@ -20382,7 +20379,456 @@ function atualizarEROResponsaveis() {
   window._eroData.responsaveis = [t1, t2].filter(Boolean).join(' / ');
 }
 
+/* ===============================
+   MONITORAMENTO AMBIENTAL ERO
+   Painel/dashboard com a relação de empreendimentos (subestações/linhas)
+   sob monitoramento ambiental Energisa, controle de vistoria (técnicos,
+   status, data), RMA, e das 3 verificações de campo específicas por
+   empreendimento — Ruído Ambiental, Coleta de Poço e CSAO — cada uma com
+   data de realização e status. Importado a partir de "Controle_RMAS_
+   2026.2.xlsx" (91 empreendimentos reais, planilha da Energisa RO) em
+   22/08/2026. A rota 'checklist_ero' agora é um hub: por padrão mostra
+   este painel; os dois checklists de campo (Inspeção de Subestação e
+   Linha de Distribuição) viraram botões de atalho, em vez de itens
+   separados no menu — decisão de 22/08/2026.
+=============================== */
+
+var MEA_DADOS = [];
+if (typeof window._meaAba === 'undefined') window._meaAba = 'dashboard';
+if (typeof window._meaFiltroRegional === 'undefined') window._meaFiltroRegional = '';
+if (typeof window._meaFiltroVistoria === 'undefined') window._meaFiltroVistoria = '';
+if (typeof window._meaBusca === 'undefined') window._meaBusca = '';
+
+function meaUid() {
+  return 'mea-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+}
+
+async function meaCarregar() {
+  const remoto = await dbLer('MonitoramentoAmbientalERO');
+  MEA_DADOS = Array.isArray(remoto) ? remoto : [];
+}
+
+async function meaSalvar() {
+  await dbSalvar('MonitoramentoAmbientalERO', MEA_DADOS);
+}
+
+function meaRegistroVazio() {
+  return {
+    id: meaUid(), num: '', empreendimento: '', regional: '', cnpj: '', municipio: '', endereco: '', coordenadas: '',
+    processoLicenciamento: '', numeroLicenca: '', emissao: '', vencimento: '', areaLicenciada: '',
+    qtdTrafo: '', potencia: '', baciaContencao: '', baciaSinalizada: '',
+    vistoria: { status: 'pendente', data: '', tecnico1: '', tecnico2: '' },
+    rma: { necessario: '', status: 'pendente', art: '', tecnicoArt: '', tecnicoRma: '' },
+    ruido: { status: 'pendente', data: '', obs: '' },
+    poco: { status: 'pendente', data: '', obs: '' },
+    csao: { existe: '', sinalizada: '', status: 'pendente', data: '', obs: '' },
+    obs: '',
+  };
+}
+
+/* -- Status da licença calculado a partir do vencimento (mesmo critério do
+      módulo de Licenciamento — laStatus), em vez de texto fixo importado
+      da planilha, que ficaria desatualizado a partir do dia seguinte. -- */
+function meaStatusLicenca(vencimento) {
+  if (!vencimento) return { label: 'Sem data', cor: '#999' };
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const venc = new Date(vencimento + 'T00:00:00');
+  if (isNaN(venc.getTime())) return { label: 'Data inválida', cor: '#999' };
+  const dias = Math.round((venc - hoje) / 86400000);
+  if (dias < 0)    return { label: 'Vencida há ' + Math.abs(dias) + 'd', cor: '#dc3545' };
+  if (dias <= 90)  return { label: 'Vence em ' + dias + 'd', cor: '#fd7e14' };
+  if (dias <= 180) return { label: 'Vence em ' + dias + 'd', cor: '#ffc107' };
+  return { label: 'Válida (' + dias + 'd)', cor: '#28a745' };
+}
+
+function meaStatusBadge(tipo, status) {
+  var map = {
+    vistoria: { pendente: ['#dc3545','#fff5f5','❌ Pendente'], parcial: ['#fd7e14','#fff8f0','🔶 Parcial'], realizada: ['#28a745','#f0fff4','✅ Realizada'] },
+    rma:      { pendente: ['#dc3545','#fff5f5','❌ Pendente'], em_edicao: ['#0d6efd','#e8f4fd','🔷 Em Edição'], aguardando_revisao: ['#fd7e14','#fff8f0','🔶 Ag. Revisão'], pronto: ['#28a745','#f0fff4','✅ Pronto'], enviado_ero: ['#6f42c1','#f3eefc','📤 Enviado a ERO'] },
+    padrao:   { pendente: ['#dc3545','#fff5f5','❌ Pendente'], agendado: ['#fd7e14','#fff8f0','🔶 Agendado'], realizado: ['#28a745','#f0fff4','✅ Realizado'] },
+  };
+  var m = (map[tipo] || map.padrao)[status] || map.padrao.pendente;
+  return { cor: m[0], bg: m[1], label: m[2] };
+}
+
+function meaKPIs() {
+  var t = MEA_DADOS.length;
+  var vRealizada = MEA_DADOS.filter(function(x){return x.vistoria && x.vistoria.status==='realizada';}).length;
+  var vParcial   = MEA_DADOS.filter(function(x){return x.vistoria && x.vistoria.status==='parcial';}).length;
+  var vPendente  = t - vRealizada - vParcial;
+  var licVencida = MEA_DADOS.filter(function(x){ return meaStatusLicenca(x.vencimento).label.indexOf('Vencida')===0; }).length;
+  var lic90      = MEA_DADOS.filter(function(x){ var l=meaStatusLicenca(x.vencimento).label; return l.indexOf('Vence em')===0; }).length;
+  var ruidoPend  = MEA_DADOS.filter(function(x){return !x.ruido || x.ruido.status!=='realizado';}).length;
+  var pocoPend   = MEA_DADOS.filter(function(x){return !x.poco || x.poco.status!=='realizado';}).length;
+  var csaoPend   = MEA_DADOS.filter(function(x){return !x.csao || x.csao.status!=='realizado';}).length;
+  return { t: t, vRealizada: vRealizada, vParcial: vParcial, vPendente: vPendente, licVencida: licVencida, lic90: lic90, ruidoPend: ruidoPend, pocoPend: pocoPend, csaoPend: csaoPend };
+}
+
+function meaRenderizarKPIs() {
+  var el = document.getElementById('mea-kpis');
+  if (!el) return;
+  var k = meaKPIs();
+  function card(cor, label, valor, icon) {
+    return '<div class="kpi-card" style="border-top:3px solid '+cor+'"><div class="kpi-label">'+label+'</div><div class="kpi-value" style="color:'+cor+'">'+valor+'</div><div class="kpi-icon">'+icon+'</div></div>';
+  }
+  el.innerHTML =
+    card('var(--brand-green)','Empreendimentos', k.t, '🏭') +
+    card('#28a745','Vistorias Realizadas', k.vRealizada, '✅') +
+    card('#fd7e14','Vistorias Parciais', k.vParcial, '🔶') +
+    card('#dc3545','Vistorias Pendentes', k.vPendente, '❌') +
+    card('#dc3545','Licenças Vencidas', k.licVencida, '📋') +
+    card('#ffc107','Licenças <90d', k.lic90, '⏰') +
+    card('#6f42c1','Ruído Pendente', k.ruidoPend, '🔊') +
+    card('#0d6efd','Poço Pendente', k.pocoPend, '💧') +
+    card('#20c997','CSAO Pendente', k.csaoPend, '🛢️');
+}
+
+function meaAplicarFiltros(lista) {
+  var reg = window._meaFiltroRegional, vis = window._meaFiltroVistoria, busca = (window._meaBusca||'').toLowerCase();
+  return lista.filter(function(x) {
+    if (reg && x.regional !== reg) return false;
+    if (vis && (!x.vistoria || x.vistoria.status !== vis)) return false;
+    if (busca && (x.empreendimento||'').toLowerCase().indexOf(busca) === -1 && (x.municipio||'').toLowerCase().indexOf(busca) === -1) return false;
+    return true;
+  });
+}
+
+function meaFiltrar() {
+  window._meaFiltroRegional = document.getElementById('mea-f-regional').value;
+  window._meaFiltroVistoria = document.getElementById('mea-f-vistoria').value;
+  window._meaBusca = document.getElementById('mea-f-busca').value;
+  meaRenderizarLista();
+}
+
+function meaRenderizarLista() {
+  var el = document.getElementById('mea-lista-wrap');
+  if (!el) return;
+  var lista = meaAplicarFiltros(MEA_DADOS);
+  if (!lista.length) {
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">'+(MEA_DADOS.length ? 'Nenhum empreendimento corresponde ao filtro.' : 'Carregando...')+'</div>';
+    return;
+  }
+  var rows = lista.map(function(x) {
+    var lic = meaStatusLicenca(x.vencimento);
+    var vB = meaStatusBadge('vistoria', (x.vistoria||{}).status || 'pendente');
+    var rB = meaStatusBadge('padrao', (x.ruido||{}).status || 'pendente');
+    var pB = meaStatusBadge('padrao', (x.poco||{}).status || 'pendente');
+    var cB = meaStatusBadge('padrao', (x.csao||{}).status || 'pendente');
+    var tecnicos = [(x.vistoria||{}).tecnico1, (x.vistoria||{}).tecnico2].filter(Boolean).join(' / ') || '—';
+    return '<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="meaAbrirDetalhe(\''+x.id+'\')">' +
+      '<td style="padding:8px;font-size:.78rem;color:var(--text-muted)">'+(x.num||'—')+'</td>' +
+      '<td style="padding:8px;font-size:.8rem;font-weight:600;max-width:260px">'+x.empreendimento+'<div style="font-size:.68rem;color:var(--text-muted);font-weight:400">'+(x.regional||'—')+(x.municipio?' · '+x.municipio:'')+'</div></td>' +
+      '<td style="padding:8px;font-size:.72rem"><span style="padding:2px 8px;border-radius:20px;background:'+vB.bg+';color:'+vB.cor+';font-weight:700;white-space:nowrap">'+vB.label+'</span><div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">'+((x.vistoria||{}).data ? laFormatarData(x.vistoria.data) : '—')+' · '+tecnicos+'</div></td>' +
+      '<td style="padding:8px;font-size:.72rem"><span style="font-weight:700;color:'+lic.cor+'">'+lic.label+'</span><div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">'+(x.numeroLicenca||'—')+'</div></td>' +
+      '<td style="padding:8px;font-size:.72rem;text-align:center"><span style="padding:2px 8px;border-radius:20px;background:'+rB.bg+';color:'+rB.cor+';font-weight:700;white-space:nowrap">'+rB.label+'</span></td>' +
+      '<td style="padding:8px;font-size:.72rem;text-align:center"><span style="padding:2px 8px;border-radius:20px;background:'+pB.bg+';color:'+pB.cor+';font-weight:700;white-space:nowrap">'+pB.label+'</span></td>' +
+      '<td style="padding:8px;font-size:.72rem;text-align:center"><span style="padding:2px 8px;border-radius:20px;background:'+cB.bg+';color:'+cB.cor+';font-weight:700;white-space:nowrap">'+cB.label+'</span></td>' +
+      '<td style="padding:8px;text-align:center"><button class="btn-secondary" style="font-size:.7rem;padding:4px 10px" onclick="event.stopPropagation();meaAbrirDetalhe(\''+x.id+'\')">✏️</button></td>' +
+    '</tr>';
+  }).join('');
+  el.innerHTML =
+    '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:900px">' +
+    '<thead><tr style="border-bottom:2px solid var(--border);text-align:left">' +
+    '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Nº</th>' +
+    '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Empreendimento</th>' +
+    '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Vistoria</th>' +
+    '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Licença</th>' +
+    '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase;text-align:center">Ruído</th>' +
+    '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase;text-align:center">Poço</th>' +
+    '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase;text-align:center">CSAO</th>' +
+    '<th style="padding:8px"></th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div style="font-size:.72rem;color:var(--text-muted);margin-top:8px">'+lista.length+' de '+MEA_DADOS.length+' empreendimentos</div>';
+}
+
+function meaAbrirDetalhe(id) {
+  var reg = id ? MEA_DADOS.find(function(x){return x.id===id;}) : meaRegistroVazio();
+  if (!reg) return;
+  var novo = !id;
+  document.getElementById('mea-id').value = reg.id;
+  document.getElementById('mea-modal-titulo').textContent = novo ? 'Novo Empreendimento' : (reg.empreendimento || '(sem nome)');
+  var set = function(elId, val) { var e = document.getElementById(elId); if (e) e.value = val || ''; };
+  set('mea-num', reg.num);
+  set('mea-empreendimento', reg.empreendimento);
+  set('mea-regional', reg.regional);
+  set('mea-cnpj', reg.cnpj);
+  set('mea-municipio', reg.municipio);
+  set('mea-endereco', reg.endereco);
+  set('mea-coordenadas', reg.coordenadas);
+  set('mea-qtdtrafo', reg.qtdTrafo);
+  set('mea-potencia', reg.potencia);
+  set('mea-baciacontencao', reg.baciaContencao);
+  set('mea-baciasinalizada', reg.baciaSinalizada);
+  set('mea-processo', reg.processoLicenciamento);
+  set('mea-numlicenca', reg.numeroLicenca);
+  set('mea-emissao', reg.emissao);
+  set('mea-vencimento', reg.vencimento);
+  var v = reg.vistoria || {};
+  set('mea-vistoria-status', v.status || 'pendente');
+  set('mea-vistoria-data', v.data);
+  set('mea-vistoria-tec1', v.tecnico1);
+  set('mea-vistoria-tec2', v.tecnico2);
+  var r = reg.rma || {};
+  set('mea-rma-necessario', r.necessario);
+  set('mea-rma-status', r.status || 'pendente');
+  set('mea-rma-art', r.art);
+  set('mea-rma-tecart', r.tecnicoArt);
+  set('mea-rma-tecrma', r.tecnicoRma);
+  var ru = reg.ruido || {};
+  set('mea-ruido-status', ru.status || 'pendente');
+  set('mea-ruido-data', ru.data);
+  set('mea-ruido-obs', ru.obs);
+  var po = reg.poco || {};
+  set('mea-poco-status', po.status || 'pendente');
+  set('mea-poco-data', po.data);
+  set('mea-poco-obs', po.obs);
+  var cs = reg.csao || {};
+  set('mea-csao-existe', cs.existe);
+  set('mea-csao-sinalizada', cs.sinalizada);
+  set('mea-csao-status', cs.status || 'pendente');
+  set('mea-csao-data', cs.data);
+  set('mea-csao-obs', cs.obs);
+  set('mea-obs', reg.obs);
+  document.getElementById('mea-btn-excluir').style.display = novo ? 'none' : 'inline-block';
+  document.getElementById('mea-detalhe-modal').style.display = 'flex';
+}
+
+function meaFecharDetalhe() {
+  document.getElementById('mea-detalhe-modal').style.display = 'none';
+}
+
+async function meaSalvarDetalhe() {
+  var id = document.getElementById('mea-id').value;
+  var nome = document.getElementById('mea-empreendimento').value.trim();
+  if (!nome) { showToast('⚠️ Informe o nome do empreendimento.'); return; }
+  var g = function(elId) { var e = document.getElementById(elId); return e ? e.value.trim() : ''; };
+  var idx = MEA_DADOS.findIndex(function(x){return x.id===id;});
+  var reg = idx !== -1 ? MEA_DADOS[idx] : meaRegistroVazio();
+  reg.id = id;
+  reg.num = g('mea-num');
+  reg.empreendimento = nome;
+  reg.regional = g('mea-regional');
+  reg.cnpj = g('mea-cnpj');
+  reg.municipio = g('mea-municipio');
+  reg.endereco = g('mea-endereco');
+  reg.coordenadas = g('mea-coordenadas');
+  reg.qtdTrafo = g('mea-qtdtrafo');
+  reg.potencia = g('mea-potencia');
+  reg.baciaContencao = g('mea-baciacontencao');
+  reg.baciaSinalizada = g('mea-baciasinalizada');
+  reg.processoLicenciamento = g('mea-processo');
+  reg.numeroLicenca = g('mea-numlicenca');
+  reg.emissao = g('mea-emissao');
+  reg.vencimento = g('mea-vencimento');
+  reg.vistoria = { status: g('mea-vistoria-status'), data: g('mea-vistoria-data'), tecnico1: g('mea-vistoria-tec1'), tecnico2: g('mea-vistoria-tec2') };
+  reg.rma = { necessario: g('mea-rma-necessario'), status: g('mea-rma-status'), art: g('mea-rma-art'), tecnicoArt: g('mea-rma-tecart'), tecnicoRma: g('mea-rma-tecrma') };
+  reg.ruido = { status: g('mea-ruido-status'), data: g('mea-ruido-data'), obs: g('mea-ruido-obs') };
+  reg.poco = { status: g('mea-poco-status'), data: g('mea-poco-data'), obs: g('mea-poco-obs') };
+  reg.csao = { existe: g('mea-csao-existe'), sinalizada: g('mea-csao-sinalizada'), status: g('mea-csao-status'), data: g('mea-csao-data'), obs: g('mea-csao-obs') };
+  reg.obs = g('mea-obs');
+  if (idx === -1) MEA_DADOS.push(reg);
+  await meaSalvar();
+  meaFecharDetalhe();
+  meaRenderizarLista();
+  meaRenderizarKPIs();
+  showToast('✅ Empreendimento salvo!');
+}
+
+async function meaExcluir() {
+  var id = document.getElementById('mea-id').value;
+  if (!id) return;
+  if (!confirm('Excluir este empreendimento do monitoramento ambiental?')) return;
+  MEA_DADOS = MEA_DADOS.filter(function(x){return x.id!==id;});
+  await meaSalvar();
+  meaFecharDetalhe();
+  meaRenderizarLista();
+  meaRenderizarKPIs();
+  showToast('🗑️ Empreendimento removido.');
+}
+
+function meaOptsTecnicos(selecionado) {
+  return '<option value="">Selecione...</option>' + ERO_TECNICOS.map(function(n) {
+    return '<option value="'+n+'"'+(selecionado===n?' selected':'')+'>'+n+'</option>';
+  }).join('');
+}
+
+function pageMonitoramentoAmbientalERO() {
+  meaCarregar().then(function() { meaRenderizarLista(); meaRenderizarKPIs(); });
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+    <div>
+      <h1>🌿 Monitoramento Ambiental ERO</h1>
+      <p>Relação de empreendimentos Energisa sob monitoramento, controle de vistorias, RMA, ruído ambiental, coleta de poço e CSAO</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-secondary" onclick="window._meaAba='form';navigate('checklist_ero')">📋 Checklist Inspeção Ambiental (Subestação)</button>
+      <button class="btn-secondary" onclick="navigate('checklist_linha')">⚡ Checklist Linha de Distribuição</button>
+      <button class="btn-primary" onclick="meaAbrirDetalhe(null)">+ Novo Empreendimento</button>
+    </div>
+  </div>
+
+  <div class="kpi-grid" id="mea-kpis" style="margin-bottom:20px">
+    <div style="text-align:center;padding:40px;color:var(--text-muted);grid-column:1/-1">Carregando...</div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <input id="mea-f-busca" placeholder="🔎 Buscar por empreendimento ou município..." style="flex:1;min-width:220px" oninput="meaFiltrar()">
+    <select id="mea-f-regional" onchange="meaFiltrar()" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border)">
+      <option value="">Todas as regionais</option>
+      <option value="Norte">Norte</option>
+      <option value="Sul">Sul</option>
+      <option value="Centro">Centro</option>
+    </select>
+    <select id="mea-f-vistoria" onchange="meaFiltrar()" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border)">
+      <option value="">Vistoria: todos</option>
+      <option value="realizada">Realizada</option>
+      <option value="parcial">Parcial</option>
+      <option value="pendente">Pendente</option>
+    </select>
+  </div>
+
+  <div class="card">
+    <div id="mea-lista-wrap"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+  </div>
+
+  <!-- MODAL: Detalhe do Empreendimento -->
+  <div id="mea-detalhe-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px">
+    <div style="background:var(--surface);border-radius:16px;width:min(720px,96vw);max-height:92vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+      <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
+        <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)" id="mea-modal-titulo">Empreendimento</div>
+        <button onclick="meaFecharDetalhe()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
+      </div>
+      <div style="padding:20px">
+        <input type="hidden" id="mea-id">
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin-bottom:10px;text-transform:uppercase;letter-spacing:.04em">Dados do Empreendimento</div>
+        <div class="form-row">
+          <div class="form-group" style="flex:0 0 70px"><label>Nº</label><input id="mea-num"></div>
+          <div class="form-group" style="flex:2"><label>Empreendimento</label><input id="mea-empreendimento" placeholder="Ex: SED Norte 138kV"></div>
+          <div class="form-group" style="flex:0 0 120px"><label>Regional</label>
+            <select id="mea-regional">
+              <option value="">—</option><option value="Norte">Norte</option><option value="Sul">Sul</option><option value="Centro">Centro</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>CNPJ</label><input id="mea-cnpj"></div>
+          <div class="form-group"><label>Município</label><input id="mea-municipio"></div>
+        </div>
+        <div class="form-group"><label>Endereço</label><input id="mea-endereco"></div>
+        <div class="form-row">
+          <div class="form-group"><label>Coordenadas</label><input id="mea-coordenadas" placeholder="Lat/Long"></div>
+          <div class="form-group" style="flex:0 0 100px"><label>Qtd. Trafo</label><input id="mea-qtdtrafo"></div>
+          <div class="form-group"><label>Potência</label><input id="mea-potencia"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Bacia de Contenção</label>
+            <select id="mea-baciacontencao"><option value="">—</option><option value="SIM">Sim</option><option value="Não">Não</option></select>
+          </div>
+          <div class="form-group"><label>Bacia Sinalizada</label>
+            <select id="mea-baciasinalizada"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+          </div>
+        </div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Licenciamento</div>
+        <div class="form-row">
+          <div class="form-group"><label>Nº Processo</label><input id="mea-processo"></div>
+          <div class="form-group"><label>Nº Licença</label><input id="mea-numlicenca"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Emissão</label><input type="date" id="mea-emissao"></div>
+          <div class="form-group"><label>Vencimento</label><input type="date" id="mea-vencimento"></div>
+        </div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Vistoria</div>
+        <div class="form-row">
+          <div class="form-group"><label>Status</label>
+            <select id="mea-vistoria-status"><option value="pendente">❌ Pendente</option><option value="parcial">🔶 Parcial</option><option value="realizada">✅ Realizada</option></select>
+          </div>
+          <div class="form-group"><label>Data</label><input type="date" id="mea-vistoria-data"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Técnico 1</label><select id="mea-vistoria-tec1">${meaOptsTecnicos()}</select></div>
+          <div class="form-group"><label>Técnico 2</label><select id="mea-vistoria-tec2">${meaOptsTecnicos()}</select></div>
+        </div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">RMA</div>
+        <div class="form-row">
+          <div class="form-group"><label>Necessário?</label>
+            <select id="mea-rma-necessario"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option><option value="N/A">N/A</option></select>
+          </div>
+          <div class="form-group"><label>Status</label>
+            <select id="mea-rma-status">
+              <option value="pendente">❌ Pendente</option><option value="em_edicao">🔷 Em Edição</option>
+              <option value="aguardando_revisao">🔶 Ag. Revisão</option><option value="pronto">✅ Pronto</option>
+              <option value="enviado_ero">📤 Enviado a ERO</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>ART</label><input id="mea-rma-art"></div>
+          <div class="form-group"><label>Técnico ART</label><select id="mea-rma-tecart">${meaOptsTecnicos()}</select></div>
+          <div class="form-group"><label>Técnico RMA</label><select id="mea-rma-tecrma">${meaOptsTecnicos()}</select></div>
+        </div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">🔊 Ruído Ambiental</div>
+        <div class="form-row">
+          <div class="form-group"><label>Status</label>
+            <select id="mea-ruido-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option></select>
+          </div>
+          <div class="form-group"><label>Data de Realização</label><input type="date" id="mea-ruido-data"></div>
+        </div>
+        <div class="form-group"><label>Observação</label><input id="mea-ruido-obs"></div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">💧 Coleta de Poço</div>
+        <div class="form-row">
+          <div class="form-group"><label>Status</label>
+            <select id="mea-poco-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option></select>
+          </div>
+          <div class="form-group"><label>Data de Realização</label><input type="date" id="mea-poco-data"></div>
+        </div>
+        <div class="form-group"><label>Observação</label><input id="mea-poco-obs"></div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">🛢️ CSAO (Caixa Separadora de Água e Óleo)</div>
+        <div class="form-row">
+          <div class="form-group"><label>Existe?</label>
+            <select id="mea-csao-existe"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+          </div>
+          <div class="form-group"><label>Sinalizada?</label>
+            <select id="mea-csao-sinalizada"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Status da Verificação</label>
+            <select id="mea-csao-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option></select>
+          </div>
+          <div class="form-group"><label>Data de Realização</label><input type="date" id="mea-csao-data"></div>
+        </div>
+        <div class="form-group"><label>Observação</label><input id="mea-csao-obs"></div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Observações Gerais</div>
+        <div class="form-group"><textarea id="mea-obs" rows="2"></textarea></div>
+
+        <div class="form-actions" style="justify-content:space-between;display:flex">
+          <button id="mea-btn-excluir" onclick="meaExcluir()" style="background:none;border:1px solid #dc3545;color:#dc3545;border-radius:8px;padding:8px 16px;cursor:pointer">🗑️ Excluir</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn-secondary" onclick="meaFecharDetalhe()">Cancelar</button>
+            <button class="btn-primary" onclick="meaSalvarDetalhe()">💾 Salvar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  `;
+}
+
 function pageChecklistERO() {
+  var aba = window._meaAba || 'dashboard';
+  if (aba === 'form') return pageChecklistEROForm();
+  return pageMonitoramentoAmbientalERO();
+}
+
+function pageChecklistEROForm() {
   const d = window._eroData;
 
   if (window._eroHistorico === null) carregarEROHistorico(); // dispara carregamento assíncrono (re-renderiza ao concluir)
@@ -20416,6 +20862,7 @@ function pageChecklistERO() {
 
   return `
   <div class="page-header">
+    <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="window._meaAba='dashboard';navigate('checklist_ero')">← Voltar ao Monitoramento Ambiental</button>
     <h1>Checklist de Inspeção Ambiental</h1>
     <p>ERO – Energisa Rondônia · Revisão 5 · Código: 8.1-09 · Área: Supervisão de Meio Ambiente</p>
   </div>
@@ -21272,6 +21719,7 @@ function pageChecklistLinha() {
 
   return `
   <div class="page-header">
+    <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="window._meaAba='dashboard';navigate('checklist_ero')">← Voltar ao Monitoramento Ambiental</button>
     <h1>Checklist de Inspeção Ambiental</h1>
     <p>Linha de Distribuição · Registro por ocorrência ao longo do trecho</p>
   </div>
