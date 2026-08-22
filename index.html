@@ -10406,6 +10406,38 @@ async function coletarPrazosDocumentos() {
           criadoPorNome: f.CriadoPorNome || '', criadoPorEmail: f.CriadoPorEmail || '',
         });
       }
+      // Prazo por item marcado Não Conforme no checklist (Verificações
+      // Ambientais + Supressão + Outras Verificações) — mesmo mecanismo da
+      // orientação verbal acima, mas por item (pedido em 22/08/2026).
+      const prazoItens = f.PrazoItens || {}, statusCumprItens = f.StatusCumprimentoItens || {};
+      const itensFixos = (FLASH_VERIFICACOES || []).concat(f.TemSupressao ? _flashItensSupressaoFlat() : []);
+      itensFixos.forEach(it => {
+        const idKey = it.id || it.cod;
+        const marcadoNC = (f.RespostasVerificacoes || {})[idKey] === 'NC' || (f.RespostasSupressao || {})[idKey] === 'NC';
+        const prazo = prazoItens[idKey];
+        const resolvidoItem = statusCumprItens[idKey] === 'Atendido' || statusCumprItens[idKey] === 'Finalizado';
+        if (marcadoNC && prazo && !resolvidoItem) {
+          itens.push({
+            origem: 'flash', id: f.Id,
+            titulo: 'Não conformidade — ' + it.label + ' (' + (f.FrenteNome || '') + ')',
+            descricao: 'Prazo para correção da não conformidade "' + it.label + '" apontada no Flash Report de ' + (f.FrenteNome || '') + ' (' + (f.Data || '') + ').',
+            prazo: prazo,
+            criadoPorNome: f.CriadoPorNome || '', criadoPorEmail: f.CriadoPorEmail || '',
+          });
+        }
+      });
+      (f.OutrasVerificacoes || []).forEach(o => {
+        const resolvidoOutra = o.statusCumprimento === 'Atendido' || o.statusCumprimento === 'Finalizado';
+        if (o.resposta === 'NC' && o.prazo && !resolvidoOutra) {
+          itens.push({
+            origem: 'flash', id: f.Id,
+            titulo: 'Não conformidade — ' + (o.descricao || 'Outra verificação') + ' (' + (f.FrenteNome || '') + ')',
+            descricao: 'Prazo para correção da não conformidade apontada no Flash Report de ' + (f.FrenteNome || '') + ' (' + (f.Data || '') + ').',
+            prazo: o.prazo,
+            criadoPorNome: f.CriadoPorNome || '', criadoPorEmail: f.CriadoPorEmail || '',
+          });
+        }
+      });
     });
   } catch (e) { console.warn('[Prazos] Falha ao ler Flash Reports.', e); }
 
@@ -20272,6 +20304,63 @@ async function eroLimparHistorico() {
   navigate('checklist_ero');
 }
 
+/* -- Agrupa o histórico de checklists ERO por semestre civil (1º Sem =
+   Jan-Jun, 2º Sem = Jul-Dez) — pedido em 22/08/2026 pra dar uma visão
+   consolidada por período, já que os RMAs entregues à Energisa também são
+   organizados em ciclos semestrais. Sempre calculado sobre o histórico
+   completo (não aplica o filtro de mês/ano da lista abaixo), pra servir
+   como visão geral independente do filtro pontual escolhido. -- */
+function eroResumoPorSemestre(historico) {
+  const grupos = {};
+  (historico || []).forEach(r => {
+    if (!r.data || !/^\d{4}-\d{2}/.test(r.data)) return;
+    const ano = r.data.slice(0,4);
+    const mes = parseInt(r.data.slice(5,7), 10);
+    const sem = mes <= 6 ? 1 : 2;
+    const chave = ano + '-S' + sem;
+    if (!grupos[chave]) grupos[chave] = { chave, ano, sem, qtd: 0, somaPct: 0, comPct: 0, empreendimentos: new Set() };
+    const g = grupos[chave];
+    g.qtd++;
+    const pct = parseFloat(r.Percentual);
+    if (!isNaN(pct)) { g.somaPct += pct; g.comPct++; }
+    if (r.empreendimento) g.empreendimentos.add(r.empreendimento.trim());
+  });
+  return Object.values(grupos)
+    .map(g => ({
+      chave: g.chave, label: g.sem + 'º Sem/' + g.ano,
+      qtd: g.qtd, qtdEmpreendimentos: g.empreendimentos.size,
+      mediaPct: g.comPct ? Math.round(g.somaPct / g.comPct) : null,
+    }))
+    .sort((a,b) => b.chave.localeCompare(a.chave));
+}
+function eroHtmlResumoPorSemestre(historico) {
+  const lista = eroResumoPorSemestre(historico);
+  if (!lista.length) return '';
+  return `
+  <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
+    📅 Resumo por Semestre
+  </div>
+  <div style="overflow-x:auto;margin-bottom:18px;border:1px solid var(--border);border-radius:10px">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 10px;text-align:left;font-size:.68rem;color:var(--text-muted)">Semestre</th>
+        <th style="padding:8px 10px;text-align:center;font-size:.68rem;color:var(--text-muted)">Checklists</th>
+        <th style="padding:8px 10px;text-align:center;font-size:.68rem;color:var(--text-muted)">Empreendimentos</th>
+        <th style="padding:8px 10px;text-align:center;font-size:.68rem;color:var(--text-muted)">Média IDA/Pontuação</th>
+      </tr></thead>
+      <tbody>
+        ${lista.map((s,idx) => `
+        <tr style="${idx<lista.length-1?'border-bottom:1px solid var(--border)':''}">
+          <td style="padding:8px 10px;font-size:.82rem;font-weight:700">${s.label}</td>
+          <td style="padding:8px 10px;font-size:.82rem;text-align:center">${s.qtd}</td>
+          <td style="padding:8px 10px;font-size:.82rem;text-align:center">${s.qtdEmpreendimentos}</td>
+          <td style="padding:8px 10px;font-size:.82rem;text-align:center;font-weight:700;color:${s.mediaPct===null?'var(--text-muted)':s.mediaPct>=75?'var(--green-main)':s.mediaPct>=50?'#d97706':'var(--red)'}">${s.mediaPct===null?'—':s.mediaPct+'%'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
 /* -- Renderiza o mini-dashboard de checklists ERO preenchidos -- */
 function renderEROMiniDashboard() {
   const historico = Array.isArray(window._eroHistorico) ? window._eroHistorico : [];
@@ -20324,6 +20413,8 @@ function renderEROMiniDashboard() {
         <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${empreendimentosUnicos.size}</div>
       </div>
     </div>
+
+    ${eroHtmlResumoPorSemestre(historico)}
 
     <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
       Histórico de Empreendimentos Inspecionados
@@ -24746,6 +24837,12 @@ function pageChecklistMitigacao() {
     </div>
   </div>
 
+  <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap">
+    <button class="btn-secondary" onclick="mitNovoChecklist()">🆕 Novo Checklist</button>
+    <button class="btn-primary" onclick="salvarMitigacaoChecklist()">💾 Salvar e Sincronizar com OneDrive</button>
+    <button class="btn-primary" style="background:var(--brand-brown,#3F261F);color:#fff" onclick="exportarMitigacaoPdf()">🖨️ Exportar PDF</button>
+  </div>
+
   `;
 }
 
@@ -27266,15 +27363,19 @@ function flashItensNaoConformesDetalhe(f) {
 // dinâmicas do dia num único array de linhas normalizadas — usado pela
 // tabela de leitura (flashVerRegistro) e pelo PDF, pra não duplicar a
 // lógica de merge em cada lugar que precisa exibir a lista completa.
-function flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras) {
+function flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras, prazoItens, dataCumprimentoItens, statusCumprimentoItens) {
   const fixas = (itens || []).map(it => ({
     id: it.id, label: it.label, criticidade: it.criticidade,
     resposta: respostas ? respostas[it.id] : null,
     obs: obsItens ? obsItens[it.id] : '',
+    prazo: prazoItens ? prazoItens[it.id] : '',
+    dataCumprimento: dataCumprimentoItens ? dataCumprimentoItens[it.id] : '',
+    statusCumprimento: statusCumprimentoItens ? statusCumprimentoItens[it.id] : '',
   }));
   const dinamicas = (outras || []).map(o => ({
     id: o.id, label: o.descricao || '(sem descrição)', criticidade: o.criticidade,
     resposta: o.resposta, obs: o.obs || '',
+    prazo: o.prazo || '', dataCumprimento: o.dataCumprimento || '', statusCumprimento: o.statusCumprimento || '',
   }));
   return fixas.concat(dinamicas);
 }
@@ -27618,6 +27719,7 @@ function flashNovoForm(frenteIdPreSelecionado) {
     rt: '', clima: 'Ensolarado', trecho: '', equipe: '', fiscal: '',
     ckAtividades: {}, ckVerificacoes: {}, ckOcorrencias: {},
     respostasAtividades: {}, respostasVerificacoes: {}, temSupressao: false, respostasSupressao: {}, obsItens: {},
+    prazoItens: {}, dataCumprimentoItens: {}, statusCumprimentoItens: {},
     outrasVerificacoes: [],
     outraativ: '', outraocorr: '', atividades: '', amanha: '', obs: '', fotos: [],
     orientacaoVerbal: false, orientacaoPara: '', orientacaoPrazo: '',
@@ -27657,6 +27759,7 @@ async function flashEditarRegistro(id) {
     ckAtividades: Object.assign({}, f.ckAtividades || {}), ckVerificacoes: Object.assign({}, f.ckVerificacoes || {}), ckOcorrencias: Object.assign({}, f.ckOcorrencias || {}),
     respostasAtividades: Object.assign({}, f.RespostasAtividades || {}), respostasVerificacoes: Object.assign({}, f.RespostasVerificacoes || {}),
     temSupressao: !!f.TemSupressao, respostasSupressao: Object.assign({}, f.RespostasSupressao || {}), obsItens: Object.assign({}, f.ObsItens || {}),
+    prazoItens: Object.assign({}, f.PrazoItens || {}), dataCumprimentoItens: Object.assign({}, f.DataCumprimentoItens || {}), statusCumprimentoItens: Object.assign({}, f.StatusCumprimentoItens || {}),
     outrasVerificacoes: (f.OutrasVerificacoes || []).map(o => ({ ...o })),
     outraativ: f.OutraAtividade || '', outraocorr: f.OutraOcorrencia || '',
     atividades: f.Atividades || '', amanha: f.PrevisaoAmanha || '', obs: f.Observacoes || '',
@@ -27726,8 +27829,102 @@ function flashToggleAtividade(id, checked) {
    no IDA% (ver flashCalcularIdaOutras). -- */
 function flashAdicionarOutraVerificacao() {
   if (!Array.isArray(window._flashData.outrasVerificacoes)) window._flashData.outrasVerificacoes = [];
-  window._flashData.outrasVerificacoes.push({ id: 'ov' + Date.now() + Math.floor(Math.random() * 1000), descricao: '', criticidade: 'Média', resposta: '', obs: '' });
+  window._flashData.outrasVerificacoes.push({ id: 'ov' + Date.now() + Math.floor(Math.random() * 1000), descricao: '', criticidade: 'Média', resposta: '', obs: '', prazo: '', dataCumprimento: '', statusCumprimento: '' });
   navigate('checklist_flash');
+}
+/* -- Cumprimento do prazo dado por item marcado Não Conforme no checklist
+   (Verificações Ambientais / Supressão / Outras Verificações) — mesmo
+   padrão já usado na orientação verbal e em Notificação de NC / Kit de
+   Mitigação: ao dar um prazo pra correção, abre campo de data de
+   cumprimento + status, com o "Dentro/Fora do Prazo" calculado ao vivo
+   (pedido em 22/08/2026 — antes só existia prazo pra orientação verbal,
+   não por item de não conformidade do checklist). -- */
+function flashPrazoItem(id, valor) {
+  if (!window._flashData.prazoItens) window._flashData.prazoItens = {};
+  window._flashData.prazoItens[id] = valor;
+  navigate('checklist_flash');
+}
+function flashDataCumprimentoItem(id, valor) {
+  if (!window._flashData.dataCumprimentoItens) window._flashData.dataCumprimentoItens = {};
+  window._flashData.dataCumprimentoItens[id] = valor;
+  flashAtualizarStatusPrazoItem(id);
+}
+function flashStatusCumprimentoItem(id, valor) {
+  if (!window._flashData.statusCumprimentoItens) window._flashData.statusCumprimentoItens = {};
+  window._flashData.statusCumprimentoItens[id] = valor;
+}
+function flashAtualizarStatusPrazoItem(id) {
+  const info = document.getElementById('flash-item-prazo-info-' + id);
+  if (!info) return;
+  const prazo = (window._flashData.prazoItens || {})[id];
+  const dataCumpr = (window._flashData.dataCumprimentoItens || {})[id];
+  const st = ncCalcularStatusPrazoAtendimento(prazo, dataCumpr);
+  if (!st) { info.textContent = ''; return; }
+  if (st === 'Dentro do Prazo') {
+    info.innerHTML = '🟢 Dentro do Prazo (prazo: ' + new Date(prazo + 'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = 'var(--green-main)';
+  } else {
+    info.innerHTML = '🔴 Fora do Prazo (prazo: ' + new Date(prazo + 'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = 'var(--red)';
+  }
+}
+function flashAtualizarStatusPrazoOutra(id) {
+  const info = document.getElementById('flash-outra-prazo-info-' + id);
+  if (!info) return;
+  const o = (window._flashData.outrasVerificacoes || []).find(x => x.id === id);
+  if (!o) return;
+  const st = ncCalcularStatusPrazoAtendimento(o.prazo, o.dataCumprimento);
+  if (!st) { info.textContent = ''; return; }
+  if (st === 'Dentro do Prazo') {
+    info.innerHTML = '🟢 Dentro do Prazo (prazo: ' + new Date(o.prazo + 'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = 'var(--green-main)';
+  } else {
+    info.innerHTML = '🔴 Fora do Prazo (prazo: ' + new Date(o.prazo + 'T12:00').toLocaleDateString('pt-BR') + ')';
+    info.style.color = 'var(--red)';
+  }
+}
+/* -- Bloco reutilizável de "Prazo para correção" + cumprimento, inserido
+   logo abaixo da observação de qualquer item marcado NC (tabela de
+   Verificações, catálogo de Supressão). -- */
+function flashHtmlPrazoCumprimentoItem(id, prazo, dataCumprimento, statusCumprimento) {
+  const idAttr = String(id).replace(/'/g, "\\'");
+  return `
+  <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">
+    <div class="form-group" style="margin:0"><label style="font-size:.68rem">⏰ Prazo para correção</label><input type="date" value="${prazo || ''}" onchange="flashPrazoItem('${idAttr}', this.value)" style="font-size:.72rem;padding:3px 6px"></div>
+    ${prazo ? `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px">
+      <div class="form-group" style="margin:0"><label style="font-size:.68rem">Data de cumprimento</label><input type="date" value="${dataCumprimento || ''}" onchange="flashDataCumprimentoItem('${idAttr}', this.value)" style="font-size:.72rem;padding:3px 6px"></div>
+      <div class="form-group" style="margin:0"><label style="font-size:.68rem">Status</label>
+        <select onchange="flashStatusCumprimentoItem('${idAttr}', this.value)" style="font-size:.72rem;padding:3px 6px">
+          <option value="">-- Selecione --</option>
+          ${['Atendido', 'Finalizado', 'Pendente'].map(s => `<option ${statusCumprimento === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div id="flash-item-prazo-info-${idAttr}" style="font-size:.68rem;font-weight:700;margin-top:4px"></div>
+    ` : ''}
+  </div>`;
+}
+/* -- Mesmo bloco, mas para "Outras verificações" (array dinâmico, guarda
+   prazo/dataCumprimento/statusCumprimento direto no próprio objeto em vez
+   de mapas paralelos por id). -- */
+function flashHtmlPrazoCumprimentoOutra(o) {
+  return `
+  <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">
+    <div class="form-group" style="margin:0"><label style="font-size:.68rem">⏰ Prazo para correção</label><input type="date" value="${o.prazo || ''}" onchange="flashCampoOutraVerificacao('${o.id}','prazo',this.value);navigate('checklist_flash')" style="font-size:.72rem;padding:3px 6px"></div>
+    ${o.prazo ? `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px">
+      <div class="form-group" style="margin:0"><label style="font-size:.68rem">Data de cumprimento</label><input type="date" value="${o.dataCumprimento || ''}" onchange="flashCampoOutraVerificacao('${o.id}','dataCumprimento',this.value);flashAtualizarStatusPrazoOutra('${o.id}')" style="font-size:.72rem;padding:3px 6px"></div>
+      <div class="form-group" style="margin:0"><label style="font-size:.68rem">Status</label>
+        <select onchange="flashCampoOutraVerificacao('${o.id}','statusCumprimento',this.value)" style="font-size:.72rem;padding:3px 6px">
+          <option value="">-- Selecione --</option>
+          ${['Atendido', 'Finalizado', 'Pendente'].map(s => `<option ${o.statusCumprimento === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div id="flash-outra-prazo-info-${o.id}" style="font-size:.68rem;font-weight:700;margin-top:4px"></div>
+    ` : ''}
+  </div>`;
 }
 function flashRemoverOutraVerificacao(id) {
   window._flashData.outrasVerificacoes = (window._flashData.outrasVerificacoes || []).filter(o => o.id !== id);
@@ -27863,7 +28060,7 @@ function flashHtmlVerificacoesTabela(d) {
     return `
     <tr>
       <td style="padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top">${_flashBotoesConformidade('flashResponderVerificacao', it.id, r)}</td>
-      <td style="padding:5px 6px;border-bottom:1px solid var(--border);font-size:.76rem;vertical-align:top">${it.label}${r==='NC' ? `<textarea placeholder="Descreva a não conformidade..." oninput="flashObsItem('${it.id}', this.value)" style="width:100%;margin-top:5px;font-size:.72rem;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-family:inherit" rows="2">${((obsItens[it.id]) || '').replace(/</g,'&lt;')}</textarea>` : ''}</td>
+      <td style="padding:5px 6px;border-bottom:1px solid var(--border);font-size:.76rem;vertical-align:top">${it.label}${r==='NC' ? `<textarea placeholder="Descreva a não conformidade..." oninput="flashObsItem('${it.id}', this.value)" style="width:100%;margin-top:5px;font-size:.72rem;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-family:inherit" rows="2">${((obsItens[it.id]) || '').replace(/</g,'&lt;')}</textarea>${flashHtmlPrazoCumprimentoItem(it.id, (d.prazoItens||{})[it.id], (d.dataCumprimentoItens||{})[it.id], (d.statusCumprimentoItens||{})[it.id])}` : ''}</td>
       <td style="padding:5px 6px;border-bottom:1px solid var(--border);font-size:.76rem;text-align:center;vertical-align:top">${FLASH_CRIT_ABREV[it.criticidade] || '—'}</td>
       <td style="padding:5px 6px;border-bottom:1px solid var(--border);font-size:.76rem;text-align:center;vertical-align:top">${peso}</td>
     </tr>`;
@@ -27884,7 +28081,7 @@ function flashHtmlVerificacoesTabela(d) {
   ${mostrarSupressao ? `
   <div style="margin-bottom:10px;padding:10px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--brand-brown,#3F261F)">
     <div style="font-size:.76rem;font-weight:800;color:var(--brand-brown,#3F261F);margin-bottom:8px">🌳 Checklist específico de Supressão Vegetal</div>
-    ${flashHtmlCatalogoV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens, 'flashResponderSupressao')}
+    ${flashHtmlCatalogoV2(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens, 'flashResponderSupressao', d.prazoItens, d.dataCumprimentoItens, d.statusCumprimentoItens)}
   </div>` : ''}
   ${flashHtmlOutrasVerificacoes(d)}`;
 }
@@ -27898,7 +28095,7 @@ function flashHtmlOutrasVerificacoes(d) {
       <td style="padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top">${_flashBotoesConformidade('flashResponderOutraVerificacao', o.id, o.resposta)}</td>
       <td style="padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top">
         <input value="${(o.descricao || '').replace(/"/g,'&quot;')}" oninput="flashCampoOutraVerificacao('${o.id}', 'descricao', this.value)" placeholder="Descreva a verificação..." style="width:100%;font-size:.76rem;padding:3px 6px;border:1px solid var(--border);border-radius:5px">
-        ${o.resposta==='NC' ? `<textarea placeholder="Descreva a não conformidade..." oninput="flashCampoOutraVerificacao('${o.id}', 'obs', this.value)" style="width:100%;margin-top:5px;font-size:.72rem;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-family:inherit" rows="2">${(o.obs || '').replace(/</g,'&lt;')}</textarea>` : ''}
+        ${o.resposta==='NC' ? `<textarea placeholder="Descreva a não conformidade..." oninput="flashCampoOutraVerificacao('${o.id}', 'obs', this.value)" style="width:100%;margin-top:5px;font-size:.72rem;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-family:inherit" rows="2">${(o.obs || '').replace(/</g,'&lt;')}</textarea>${flashHtmlPrazoCumprimentoOutra(o)}` : ''}
       </td>
       <td style="padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top">
         <select onchange="flashCampoOutraVerificacao('${o.id}', 'criticidade', this.value)" style="font-size:.72rem;padding:2px 4px">
@@ -27932,7 +28129,7 @@ function flashHtmlOutrasVerificacoes(d) {
 
 /* -- Renderiza um catálogo (seções + itens) do checklist V2 — usado só pelo
    bloco condicional de Supressão Vegetal, que já é organizado em seções. -- */
-function flashHtmlCatalogoV2(catalogo, respostas, obsItens, respFnName) {
+function flashHtmlCatalogoV2(catalogo, respostas, obsItens, respFnName, prazoItens, dataCumprimentoItens, statusCumprimentoItens) {
   return (catalogo || []).map(sec => `
     <div style="margin-bottom:14px">
       <div style="font-size:.78rem;font-weight:800;color:var(--brown-dark,#3F261F);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">${sec.secao}</div>
@@ -27949,7 +28146,7 @@ function flashHtmlCatalogoV2(catalogo, respostas, obsItens, respFnName) {
               <button type="button" class="btn-secondary" style="padding:3px 10px;font-size:.68rem;${r==='NA'?'background:var(--text-muted);color:#fff;border-color:var(--text-muted)':''}" onclick="${respFnName}('${it.cod}','NA')">➖ N/A</button>
             </div>
           </div>
-          ${r==='NC' ? `<textarea placeholder="Observação / descrição da NC (local, foto de referência...)" oninput="flashObsItem('${it.cod}', this.value)" style="width:100%;margin-top:6px;font-size:.75rem;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit" rows="2">${((obsItens && obsItens[it.cod]) || '').replace(/</g,'&lt;')}</textarea>` : ''}
+          ${r==='NC' ? `<textarea placeholder="Observação / descrição da NC (local, foto de referência...)" oninput="flashObsItem('${it.cod}', this.value)" style="width:100%;margin-top:6px;font-size:.75rem;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit" rows="2">${((obsItens && obsItens[it.cod]) || '').replace(/</g,'&lt;')}</textarea>${flashHtmlPrazoCumprimentoItem(it.cod, (prazoItens||{})[it.cod], (dataCumprimentoItens||{})[it.cod], (statusCumprimentoItens||{})[it.cod])}` : ''}
         </div>`;
       }).join('')}
     </div>`).join('');
@@ -28099,6 +28296,7 @@ async function flashSalvar() {
     ckAtividades: d.ckAtividades || {}, ckVerificacoes: d.ckVerificacoes || {}, ckOcorrencias: d.ckOcorrencias || {},
     RespostasAtividades: d.respostasAtividades || {}, RespostasVerificacoes: d.respostasVerificacoes || {},
     TemSupressao: !!d.temSupressao, RespostasSupressao: d.respostasSupressao || {}, ObsItens: d.obsItens || {},
+    PrazoItens: d.prazoItens || {}, DataCumprimentoItens: d.dataCumprimentoItens || {}, StatusCumprimentoItens: d.statusCumprimentoItens || {},
     OutrasVerificacoes: d.outrasVerificacoes || [],
     fotos: fotosParaSalvar,
     Visualizado: false,
@@ -28125,7 +28323,7 @@ async function flashSalvar() {
 /* -- Tabela somente-leitura (usada na visualização e no PDF) de um catálogo
    V2 respondido: Situação/Criticidade/Peso/Observação por item, agrupado
    por seção — espelha o layout da planilha original (DIA XX). -- */
-function flashHtmlTabelaV2(catalogo, respostas, obsItens) {
+function flashHtmlTabelaV2(catalogo, respostas, obsItens, prazoItens, dataCumprimentoItens, statusCumprimentoItens) {
   const situacaoTxt = { C: '✅ Conforme', NC: '❌ Não Conforme', NA: '➖ Não Aplicável' };
   return (catalogo || []).map(sec => `
     <div style="margin-bottom:6px;font-weight:700;font-size:13px;margin-top:10px">${sec.secao}</div>
@@ -28134,9 +28332,22 @@ function flashHtmlTabelaV2(catalogo, respostas, obsItens) {
       ${sec.itens.map(it => {
         const r = (respostas || {})[it.cod] || '';
         const obs = (obsItens && obsItens[it.cod]) || '';
-        return `<tr><td>${it.label}</td><td>${situacaoTxt[r] || '—'}</td><td>${it.criticidade} (${flashPesoItem(it.criticidade)})</td><td>${obs || '—'}</td></tr>`;
+        const prazoTxt = r === 'NC' ? flashTextoPrazoCumprimento((prazoItens||{})[it.cod], (dataCumprimentoItens||{})[it.cod], (statusCumprimentoItens||{})[it.cod]) : '';
+        return `<tr><td>${it.label}</td><td>${situacaoTxt[r] || '—'}</td><td>${it.criticidade} (${flashPesoItem(it.criticidade)})</td><td>${obs || '—'}${prazoTxt ? `<div style="font-size:11px;color:#b8730a;margin-top:2px">${prazoTxt}</div>` : ''}</td></tr>`;
       }).join('')}
     </table>`).join('');
+}
+/* -- Texto curto "Prazo: dd/mm/aaaa | Cumprido em: dd/mm/aaaa (Status) —
+   Dentro/Fora do Prazo" pra exibir junto da observação de um item NC, na
+   leitura e no PDF — mesmo padrão textual usado na caixa de orientação
+   verbal. -- */
+function flashTextoPrazoCumprimento(prazo, dataCumprimento, statusCumprimento) {
+  if (!prazo) return '';
+  const prazoFmt = new Date(prazo + 'T12:00').toLocaleDateString('pt-BR');
+  if (!dataCumprimento) return 'Prazo para correção: ' + prazoFmt + ' — Pendente';
+  const dataCumprFmt = new Date(dataCumprimento + 'T12:00').toLocaleDateString('pt-BR');
+  const st = ncCalcularStatusPrazoAtendimento(prazo, dataCumprimento) || '';
+  return 'Prazo: ' + prazoFmt + ' | Cumprido em: ' + dataCumprFmt + (statusCumprimento ? ' (' + statusCumprimento + ')' : '') + (st ? ' — ' + st : '');
 }
 
 // Leitura (visualização/impressão) de Atividades Acompanhadas: grade de 3
@@ -28154,14 +28365,14 @@ function flashHtmlAtividadesLeitura(f) {
 // Leitura de Verificações Ambientais em tabela de 4 colunas (Conformidade,
 // Descrição, Criticidade, Peso) — junta os itens fixos com as "outras
 // verificações" do dia (flashLinhasVerificacoesNormalizadas).
-function flashHtmlVerificacoesTabelaLeitura(titulo, itens, respostas, obsItens, outras) {
+function flashHtmlVerificacoesTabelaLeitura(titulo, itens, respostas, obsItens, outras, prazoItens, dataCumprimentoItens, statusCumprimentoItens) {
   const situacaoTxt = { C: '✅ C', NC: '❌ NC', NA: '➖ NA' };
-  const linhas = flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras);
+  const linhas = flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras, prazoItens, dataCumprimentoItens, statusCumprimentoItens);
   return `
     <div style="margin-bottom:6px;font-weight:700;font-size:13px;margin-top:10px">${titulo}</div>
     <table>
       <tr style="background:#f4f4f4"><td style="font-weight:700;width:60px">Conf.</td><td style="font-weight:700">Descrição</td><td style="font-weight:700;width:60px">Crit.</td><td style="font-weight:700;width:50px">Peso</td></tr>
-      ${linhas.map(l => `<tr><td>${situacaoTxt[l.resposta] || '—'}</td><td>${l.label}${l.resposta==='NC' && l.obs ? `<div style="font-size:11px;color:#b03;margin-top:2px">Obs: ${l.obs}</div>` : ''}</td><td>${FLASH_CRIT_ABREV[l.criticidade] || '—'}</td><td>${flashPesoItem(l.criticidade)}</td></tr>`).join('')}
+      ${linhas.map(l => `<tr><td>${situacaoTxt[l.resposta] || '—'}</td><td>${l.label}${l.resposta==='NC' && l.obs ? `<div style="font-size:11px;color:#b03;margin-top:2px">Obs: ${l.obs}</div>` : ''}${l.resposta==='NC' && l.prazo ? `<div style="font-size:11px;color:#b8730a;margin-top:2px">${flashTextoPrazoCumprimento(l.prazo, l.dataCumprimento, l.statusCumprimento)}</div>` : ''}</td><td>${FLASH_CRIT_ABREV[l.criticidade] || '—'}</td><td>${flashPesoItem(l.criticidade)}</td></tr>`).join('')}
     </table>`;
 }
 
@@ -28202,8 +28413,8 @@ function flashVerRegistro(id) {
     <div style="font-size:10px;color:#888;margin-top:3px">IDA = Verificações${f.TemSupressao ? '+Supressão' : ''} (peso A=3 M=2 B=1). NA não conta.</div>
   </div>
   ${flashHtmlAtividadesLeitura(f)}
-  ${flashHtmlVerificacoesTabelaLeitura('🔍 Verificações Ambientais no Dia', FLASH_VERIFICACOES, f.RespostasVerificacoes, f.ObsItens, f.OutrasVerificacoes)}
-  ${f.TemSupressao ? flashHtmlTabelaV2(FLASH_ITENS_SUPRESSAO, f.RespostasSupressao, f.ObsItens) : ''}
+  ${flashHtmlVerificacoesTabelaLeitura('🔍 Verificações Ambientais no Dia', FLASH_VERIFICACOES, f.RespostasVerificacoes, f.ObsItens, f.OutrasVerificacoes, f.PrazoItens, f.DataCumprimentoItens, f.StatusCumprimentoItens)}
+  ${f.TemSupressao ? flashHtmlTabelaV2(FLASH_ITENS_SUPRESSAO, f.RespostasSupressao, f.ObsItens, f.PrazoItens, f.DataCumprimentoItens, f.StatusCumprimentoItens) : ''}
   ${(() => { const tem = Object.entries(f.ckOcorrencias||{}).some(([k,v])=>v && k!=='semocorr'); return tem ? grupoHtml('⚠️ Ocorrências (histórico)', 'ckOcorrencias', FLASH_OCORRENCIAS_V2) : ''; })()}
   ${f.OutraOcorrencia ? `<div style="margin-bottom:8px"><strong>Outras observações:</strong> ${f.OutraOcorrencia}</div>` : ''}
   ` : `
@@ -28248,6 +28459,43 @@ function flashCalcularPontuacao(f) {
   return { pct, temOcorr, conforme: !temOcorr };
 }
 
+/* -- Status de RESOLUÇÃO das não conformidades de um Flash Report V2, a
+   partir do prazo/cumprimento dado por item (PrazoItens/DataCumprimentoItens/
+   StatusCumprimentoItens + o mesmo trio embutido em cada "outra verificação").
+   Diferente de flashCalcularPontuacao() (que só olha se HOUVE item NC, pra
+   pontuação do IDA e não deve mudar), esta função olha se as NC já foram
+   corrigidas — pra atualizar automaticamente o selo Conforme/Não Conforme/
+   Corrigido e decidir se ainda faz sentido oferecer o botão "Notificar"
+   (pedido em 22/08/2026: se já cumpriu, não deve mais aparecer pra
+   notificar). Retorna null se o registro não tem nenhum item NC. -- */
+function flashCalcularStatusResolucaoNC(f) {
+  if (f.Modelo !== 'v2') return null;
+  const prazoItens = f.PrazoItens || {}, dataCumprItens = f.DataCumprimentoItens || {}, statusCumprItens = f.StatusCumprimentoItens || {};
+  let totalNC = 0, resolvidos = 0, foraDoPrazo = 0;
+  const itensFixos = (FLASH_VERIFICACOES || []).concat(f.TemSupressao ? _flashItensSupressaoFlat() : []);
+  itensFixos.forEach(it => {
+    const idKey = it.id || it.cod;
+    const marcadoNC = (f.RespostasVerificacoes || {})[idKey] === 'NC' || (f.RespostasSupressao || {})[idKey] === 'NC';
+    if (!marcadoNC) return;
+    totalNC++;
+    const statusC = statusCumprItens[idKey];
+    if (statusC === 'Atendido' || statusC === 'Finalizado') {
+      resolvidos++;
+      if (ncCalcularStatusPrazoAtendimento(prazoItens[idKey], dataCumprItens[idKey]) === 'Fora do Prazo') foraDoPrazo++;
+    }
+  });
+  (f.OutrasVerificacoes || []).forEach(o => {
+    if (o.resposta !== 'NC') return;
+    totalNC++;
+    if (o.statusCumprimento === 'Atendido' || o.statusCumprimento === 'Finalizado') {
+      resolvidos++;
+      if (ncCalcularStatusPrazoAtendimento(o.prazo, o.dataCumprimento) === 'Fora do Prazo') foraDoPrazo++;
+    }
+  });
+  if (totalNC === 0) return null;
+  return { totalNC, resolvidos, pendentes: totalNC - resolvidos, foraDoPrazo, todosResolvidos: resolvidos === totalNC };
+}
+
 // Cada FLASH_FRENTES.id representa um Circuito Elétrico (obra/subestação/linha),
 // espelhando a organização já usada na aba Projetos > Energisa (gestão por
 // empreiteira/circuito). O dashboard abaixo agrupa os Flash Reports por
@@ -28263,6 +28511,12 @@ function flashHtmlHistorico() {
 
   const linhaF = (f, numFR) => {
     const { pct, temOcorr } = flashCalcularPontuacao(f);
+    const statusNC = flashCalcularStatusResolucaoNC(f);
+    // Se todas as NC do registro já foram cumpridas (Atendido/Finalizado),
+    // o selo muda de "Não Conforme" pra "Corrigido" (no prazo ou fora do
+    // prazo) e o botão Notificar some — não faz sentido notificar algo que
+    // já foi resolvido (pedido em 22/08/2026).
+    const aindaPendente = temOcorr && !(statusNC && statusNC.todosResolvidos);
     const dataFmt = f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '—';
     const detalheV2 = f.Modelo === 'v2';
     const marcadosAtiv = Object.values(f.ckAtividades || {}).filter(Boolean).length;
@@ -28291,12 +28545,18 @@ function flashHtmlHistorico() {
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">${linhaDetalhe}</div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
-        ${temOcorr ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Não Conforme</span>' : '<span class="status-pill green" style="font-size:.62rem">✅ Conforme</span>'}
+        ${!temOcorr
+          ? '<span class="status-pill green" style="font-size:.62rem">✅ Conforme</span>'
+          : aindaPendente
+            ? '<span class="status-pill red" style="font-size:.62rem">⚠️ Não Conforme</span>'
+            : statusNC.foraDoPrazo > 0
+              ? '<span class="status-pill" style="font-size:.62rem;background:#fff3e0;color:#c26a00;border:1px solid #c26a00">🟠 Corrigido (fora do prazo)</span>'
+              : '<span class="status-pill green" style="font-size:.62rem">✅ Corrigido no prazo</span>'}
         <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashVerRegistro(${f.Id})">👁️ Ver</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashEditarRegistro(${f.Id})">✏️ Editar</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashExportarRegistro(${f.Id})">🖨️ Exportar PDF</button>
-          ${temOcorr ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;background:#e67e22;color:#fff;border-color:#e67e22" onclick="ncAbrirNovo('${f.FrenteId}', ${f.Id})">⚠️ Notificar</button>` : ''}
+          ${aindaPendente ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;background:#e67e22;color:#fff;border-color:#e67e22" onclick="ncAbrirNovo('${f.FrenteId}', ${f.Id})">⚠️ Notificar</button>` : ''}
           ${botaoExcluir}
         </div>
       </div>
@@ -28305,7 +28565,8 @@ function flashHtmlHistorico() {
 
   const blocos = frentes.map(fr => {
     const itens = todos.filter(f => f.FrenteId === fr.id
-      && (!statusFiltro || (statusFiltro === 'naoconforme' && flashCalcularPontuacao(f).temOcorr))
+      && (!statusFiltro || (statusFiltro === 'naoconforme' && flashCalcularPontuacao(f).temOcorr
+          && !(flashCalcularStatusResolucaoNC(f) && flashCalcularStatusResolucaoNC(f).todosResolvidos)))
     ).slice().sort((a, b) => (a.Data || '').localeCompare(b.Data || ''));
     if (!itens.length) return '';
     const comNumero = itens.map((f, i) => ({ f, num: String(i + 1).padStart(3, '0') })).reverse().slice(0, 30);
@@ -28760,8 +29021,8 @@ async function _flashGerarDoc(d, numOverride) {
   // abreviada, Peso — juntando os itens fixos com as "outras verificacoes"
   // do dia (mesma linha, mesmas colunas). NC abre uma sub-linha indentada,
   // em italico/vermelho, com a descricao da nao conformidade.
-  function checklistTabelaVerificacoesPdf(titulo2, itens, respostas, obsItens, outras) {
-    const linhas = flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras);
+  function checklistTabelaVerificacoesPdf(titulo2, itens, respostas, obsItens, outras, prazoItens, dataCumprimentoItens, statusCumprimentoItens) {
+    const linhas = flashLinhasVerificacoesNormalizadas(itens, respostas, obsItens, outras, prazoItens, dataCumprimentoItens, statusCumprimentoItens);
     if (!linhas.length) return;
     // colCrit/colPeso alargadas em 14/08/2026 — nos valores antigos (0.55/0.5cm)
     // os cabeçalhos "CRIT." e "PESO" (fonte 7 bold) ficavam largos demais pra
@@ -28787,7 +29048,9 @@ async function _flashGerarDoc(d, numOverride) {
       const critAbrev = FLASH_CRIT_ABREV[l.criticidade] || '-';
       const peso = flashPesoItem(l.criticidade);
       const obsLines = (l.resposta === 'NC' && l.obs) ? doc.splitTextToSize('Obs: ' + l.obs, colDesc - 0.35) : [];
-      const rowH = Math.max(descLines.length, 1) * 0.3 + obsLines.length * 0.27 + 0.14;
+      const prazoTxt = (l.resposta === 'NC' && l.prazo) ? flashTextoPrazoCumprimento(l.prazo, l.dataCumprimento, l.statusCumprimento) : '';
+      const prazoLines = prazoTxt ? doc.splitTextToSize(prazoTxt, colDesc - 0.35) : [];
+      const rowH = Math.max(descLines.length, 1) * 0.3 + obsLines.length * 0.27 + prazoLines.length * 0.27 + 0.14;
       if (y + rowH > pageH - 1.6) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); desenhaCabecalho(); }
       doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(cor[0],cor[1],cor[2]);
       doc.text(sitTxt, xConf+0.05, y+0.26);
@@ -28799,6 +29062,10 @@ async function _flashGerarDoc(d, numOverride) {
       if (obsLines.length) {
         doc.setFont('helvetica','italic'); doc.setFontSize(7.2); doc.setTextColor(110,40,40);
         obsLines.forEach(ln => { localY += 0.27; doc.text(ln, xDesc+0.2, localY); });
+      }
+      if (prazoLines.length) {
+        doc.setFont('helvetica','italic'); doc.setFontSize(7.2); doc.setTextColor(180,115,10);
+        prazoLines.forEach(ln => { localY += 0.27; doc.text(ln, xDesc+0.2, localY); });
       }
       y = localY + 0.16;
       doc.setDrawColor(225,220,215); doc.line(ML, y-0.07, ML+CW, y-0.07);
@@ -28812,7 +29079,7 @@ async function _flashGerarDoc(d, numOverride) {
   // Supressão Vegetal, Recuperação de Áreas Degradadas — ver FLASH_ITENS_SUPRESSAO),
   // uma mini-tabela por seção. Antes disso usava checklistGridV2, que saía como
   // lista de texto solta em vez de tabela — trocado aqui em 14/08/2026.
-  function checklistTabelaSupressaoPdf(catalogo, respostas, obsItens) {
+  function checklistTabelaSupressaoPdf(catalogo, respostas, obsItens, prazoItens, dataCumprimentoItens, statusCumprimentoItens) {
     const colConf = 0.65, colCrit = 0.85, colPeso = 0.65;
     const colDesc = CW - colConf - colCrit - colPeso;
     const xConf = ML, xDesc = ML + colConf, xCrit = xDesc + colDesc, xPeso = xCrit + colCrit;
@@ -28837,7 +29104,9 @@ async function _flashGerarDoc(d, numOverride) {
         const peso = flashPesoItem(it.criticidade);
         const obs = obsItens && obsItens[it.cod];
         const obsLines = (r === 'NC' && obs) ? doc.splitTextToSize('Obs: ' + obs, colDesc - 0.35) : [];
-        const rowH = Math.max(descLines.length, 1) * 0.3 + obsLines.length * 0.27 + 0.14;
+        const prazoTxt = (r === 'NC' && prazoItens && prazoItens[it.cod]) ? flashTextoPrazoCumprimento(prazoItens[it.cod], (dataCumprimentoItens||{})[it.cod], (statusCumprimentoItens||{})[it.cod]) : '';
+        const prazoLines = prazoTxt ? doc.splitTextToSize(prazoTxt, colDesc - 0.35) : [];
+        const rowH = Math.max(descLines.length, 1) * 0.3 + obsLines.length * 0.27 + prazoLines.length * 0.27 + 0.14;
         if (y + rowH > pageH - 1.6) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); desenhaCabecalho(); }
         doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(cor[0],cor[1],cor[2]);
         doc.text(sitTxt, xConf+0.05, y+0.26);
@@ -28849,6 +29118,10 @@ async function _flashGerarDoc(d, numOverride) {
         if (obsLines.length) {
           doc.setFont('helvetica','italic'); doc.setFontSize(7.2); doc.setTextColor(110,40,40);
           obsLines.forEach(ln => { localY += 0.27; doc.text(ln, xDesc+0.2, localY); });
+        }
+        if (prazoLines.length) {
+          doc.setFont('helvetica','italic'); doc.setFontSize(7.2); doc.setTextColor(180,115,10);
+          prazoLines.forEach(ln => { localY += 0.27; doc.text(ln, xDesc+0.2, localY); });
         }
         y = localY + 0.16;
         doc.setDrawColor(225,220,215); doc.line(ML, y-0.07, ML+CW, y-0.07);
@@ -28881,9 +29154,9 @@ async function _flashGerarDoc(d, numOverride) {
     checklistGridAtividadesPdf('ATIVIDADES ACOMPANHADAS NO DIA', FLASH_ATIVIDADES, d.respostasAtividades);
     if (d.outraativ) { doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(80,80,80); doc.text('Outras: ' + d.outraativ, ML+0.3, y); y += 0.5; }
 
-    checklistTabelaVerificacoesPdf('VERIFICACOES AMBIENTAIS NO DIA', FLASH_VERIFICACOES, d.respostasVerificacoes, d.obsItens, d.outrasVerificacoes);
+    checklistTabelaVerificacoesPdf('VERIFICACOES AMBIENTAIS NO DIA', FLASH_VERIFICACOES, d.respostasVerificacoes, d.obsItens, d.outrasVerificacoes, d.prazoItens, d.dataCumprimentoItens, d.statusCumprimentoItens);
 
-    if (d.temSupressao) checklistTabelaSupressaoPdf(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens);
+    if (d.temSupressao) checklistTabelaSupressaoPdf(FLASH_ITENS_SUPRESSAO, d.respostasSupressao, d.obsItens, d.prazoItens, d.dataCumprimentoItens, d.statusCumprimentoItens);
 
     // Ocorrências foi removida do modelo V2 (Atividades/Verificações já
     // capturam Conforme/Não Conforme item a item) — só aparece aqui se o
