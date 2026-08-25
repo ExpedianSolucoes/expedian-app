@@ -20252,6 +20252,7 @@ if (!window._eroData) window._eroData = {};
 if (typeof window._eroHistorico === 'undefined') window._eroHistorico = null; // null = ainda não carregado
 if (typeof window._eroDashFiltroMes === 'undefined') window._eroDashFiltroMes = '';
 if (typeof window._eroDashFiltroAno === 'undefined') window._eroDashFiltroAno = '';
+if (typeof window._eroDashFiltroSemestre === 'undefined') window._eroDashFiltroSemestre = '';
 
 const ERO_MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
@@ -20275,6 +20276,7 @@ async function carregarEROHistorico(forcar) {
 
 function eroDashFiltrarMes(v) { window._eroDashFiltroMes = v; navigate('checklist_ero'); }
 function eroDashFiltrarAno(v) { window._eroDashFiltroAno = v; navigate('checklist_ero'); }
+function eroDashFiltrarSemestre(v) { window._eroDashFiltroSemestre = v; navigate('checklist_ero'); }
 
 /* -- Limpa TODO o histórico de checklists ERO (local + OneDrive central). Ação destrutiva. -- */
 async function eroLimparHistorico() {
@@ -20365,18 +20367,21 @@ function eroHtmlResumoPorSemestre(historico) {
 function renderEROMiniDashboard() {
   const historico = Array.isArray(window._eroHistorico) ? window._eroHistorico : [];
 
-  // Extrai ano/mês de cada registro a partir do campo data (yyyy-mm-dd)
+  // Extrai ano/mês/semestre de cada registro a partir do campo data (yyyy-mm-dd)
+  // — semestre civil: 1º Sem = Jan-Jun, 2º Sem = Jul-Dez (pedido em 22/08/2026,
+  // mesmo critério usado no "Resumo por Semestre" logo abaixo).
   const comData = historico.map(r => {
-    let ano = '', mes = '';
-    if (r.data && /^\d{4}-\d{2}/.test(r.data)) { ano = r.data.slice(0,4); mes = r.data.slice(5,7); }
-    return { ...r, _ano: ano, _mes: mes };
+    let ano = '', mes = '', sem = '';
+    if (r.data && /^\d{4}-\d{2}/.test(r.data)) { ano = r.data.slice(0,4); mes = r.data.slice(5,7); sem = parseInt(mes,10) <= 6 ? '1' : '2'; }
+    return { ...r, _ano: ano, _mes: mes, _sem: sem };
   });
 
   const anosDisponiveis = [...new Set(comData.map(r => r._ano).filter(Boolean))].sort().reverse();
 
   const filtrados = comData.filter(r =>
     (!window._eroDashFiltroAno || r._ano === window._eroDashFiltroAno) &&
-    (!window._eroDashFiltroMes || r._mes === window._eroDashFiltroMes)
+    (!window._eroDashFiltroMes || r._mes === window._eroDashFiltroMes) &&
+    (!window._eroDashFiltroSemestre || r._sem === window._eroDashFiltroSemestre)
   ).sort((a,b) => (b.data||'').localeCompare(a.data||''));
 
   const empreendimentosUnicos = new Set(filtrados.map(r => (r.empreendimento||'Sem nome').trim()).filter(Boolean));
@@ -20393,6 +20398,11 @@ function renderEROMiniDashboard() {
         <select onchange="eroDashFiltrarAno(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
           <option value="">Todos os anos</option>
           ${anosDisponiveis.map(a => `<option value="${a}" ${window._eroDashFiltroAno===a?'selected':''}>${a}</option>`).join('')}
+        </select>
+        <select onchange="eroDashFiltrarSemestre(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
+          <option value="">Todos os semestres</option>
+          <option value="1" ${window._eroDashFiltroSemestre==='1'?'selected':''}>1º Semestre</option>
+          <option value="2" ${window._eroDashFiltroSemestre==='2'?'selected':''}>2º Semestre</option>
         </select>
         <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="carregarEROHistorico(true)">🔄 Atualizar</button>
         <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem;color:var(--red)" onclick="eroLimparHistorico()">🗑️ Limpar Histórico</button>
@@ -29807,6 +29817,25 @@ function ncAtualizarStatusPrazoAtendimento() {
   }
 }
 
+/* -- Status ÚNICO da notificação, escolhido dentro de "Atendimento da NCA"
+   (pedido em 22/08/2026 — antes havia um "Status" solto perto do Prazo pra
+   Correção, Aberta/Respondida/Fechada, E um "Status do atendimento"
+   separado, Encerrado/Atendido/Outras — os dois descrevendo a mesma coisa
+   de formas diferentes e podendo ficar dessincronizados). Continua gravando
+   nos DOIS campos internos (Status e AtendimentoStatus) só pra manter
+   compatibilidade com dashboards/filtros/KPIs antigos que já leem um ou
+   outro — mas na tela só existe UM seletor visível, e o valor mostrado é
+   sempre o mesmo dos dois lados:
+     - "" (vazio)  -> Aberta      / aguardando atendimento
+     - "Atendido"  -> Respondida  / a empreiteira executou e reportou a correção
+     - "Encerrado" -> Fechada     / a fiscalização conferiu e confirma a NC como definitivamente resolvida
+-- */
+function ncCampoStatusUnico(valor) {
+  window._ncData.atendimentoStatus = valor;
+  window._ncData.status = valor === 'Encerrado' ? 'Fechada' : valor === 'Atendido' ? 'Respondida' : 'Aberta';
+  navigate('checklist_notif');
+}
+
 function ncCarregarFotosMultiplas(event) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
@@ -30084,6 +30113,147 @@ async function ncGerarDoc(n) {
   return { doc, frente };
 }
 
+/* -- "Espelho" de atendimento — versão curta pra quando a NC já foi
+   atendida/encerrada: um resumo da notificação original (sem repetir as
+   fotos de evidência da não conformidade) seguido do que interessa nesse
+   momento — status, data, situação de prazo — e as fotos do ATENDIMENTO.
+   Existe porque reexportar o PDF inteiro de novo (com todas as fotos da NC
+   original) só pra registrar que foi corrigido é redundante; isso aqui é
+   só a "prova de encerramento" (pedido em 22/08/2026). Só faz sentido
+   chamar quando n.atendimentoStatus já estiver preenchido — ver
+   ncExportarResumoAtendimento(). -- */
+async function ncGerarDocResumoAtendimento(n) {
+  await _garantirJsPDF();
+  const frente = FLASH_FRENTES.find(fr => fr.id === n.frenteId);
+  const dt = n.data ? new Date(n.data + 'T12:00').toLocaleDateString('pt-BR') : '--';
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'ESPELHO DE ATENDIMENTO — NOTIFICAÇÃO DE NC';
+  const subtitulo = 'Contrato 2025022101 · Gestão Ambiental de Obras · Energisa RO';
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.4, CW = pageW - 2.8;
+
+  // -- Resumo da notificação original (sem fotos) --
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  const descResumo = (n.descricao || '').length > 260 ? n.descricao.slice(0, 260) + '…' : (n.descricao || '');
+  const descLinhas = doc.splitTextToSize('Não conformidade: ' + (descResumo || 'Não informado.'), CW - 0.6);
+  const boxH = 2.4 + descLinhas.length * 0.4;
+  doc.setFillColor(254, 243, 240);
+  doc.roundedRect(ML, y, CW, boxH, 0.2, 0.2, 'F');
+  doc.setDrawColor(200, 60, 40); doc.setLineWidth(0.04);
+  doc.roundedRect(ML, y, CW, boxH, 0.2, 0.2, 'S');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(192, 57, 43);
+  doc.text((n.numero || 'NCA-???') + ' - Resumo da Notificação', ML + 0.3, y + 0.5);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80, 60, 50);
+  let iy = y + 0.9;
+  doc.text('Data de emissão: ' + dt + '    |    Circuito/Frente: ' + (frente ? frente.nome + ' — ' + frente.empreiteira : (n.frenteId || '--')), ML + 0.3, iy); iy += 0.4;
+  doc.text('Destinatário: ' + (n.destinatario || '--') + '    |    Severidade: ' + (n.severidade || '--'), ML + 0.3, iy); iy += 0.4;
+  if (n.prazo) { doc.text('Prazo para correção: ' + new Date(n.prazo + 'T12:00').toLocaleDateString('pt-BR'), ML + 0.3, iy); iy += 0.4; }
+  descLinhas.forEach(ln => { doc.text(ln, ML + 0.3, iy); iy += 0.4; });
+  y += boxH + 0.3;
+
+  function nSectionTitle(t) {
+    if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    doc.setFillColor(39, 174, 96);
+    doc.roundedRect(ML, y, CW, 0.55, 0.1, 0.1, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
+    doc.text(t, ML + 0.3, y + 0.37);
+    y += 0.75;
+  }
+
+  // -- Atendimento da NCA (o que interessa neste documento) --
+  nSectionTitle('ATENDIMENTO DA NCA');
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(40, 40, 40);
+  if (n.atendimentoData) {
+    doc.text('Data de atendimento: ' + new Date(n.atendimentoData + 'T12:00').toLocaleDateString('pt-BR'), ML + 0.3, y); y += 0.5;
+  }
+  doc.setFont('helvetica', 'bold');
+  const statusCor = n.atendimentoStatus === 'Encerrado' ? [39, 174, 96] : n.atendimentoStatus === 'Atendido' ? [230, 126, 34] : [180, 40, 40];
+  doc.setTextColor(statusCor[0], statusCor[1], statusCor[2]);
+  doc.text('Status: ' + (n.atendimentoStatus || 'Aberta'), ML + 0.3, y); y += 0.5;
+  if (n.atendimentoPrazoStatus) {
+    const okPrazo = n.atendimentoPrazoStatus === 'Dentro do Prazo';
+    doc.setTextColor(okPrazo ? 39 : 192, okPrazo ? 174 : 57, okPrazo ? 96 : 43);
+    doc.text('Situação: ' + n.atendimentoPrazoStatus, ML + 0.3, y); y += 0.5;
+  }
+  y += 0.2;
+
+  function nGaleriaFotos(fotos) {
+    const COLS = 3, gapX = 0.25, gapY = 0.3;
+    const fW = (CW - gapX * (COLS - 1)) / COLS;
+    const fH = fW * 0.75;
+    const legH = 0.7;
+    const blocoH = fH + legH + gapY;
+    let col2 = 0;
+    fotos.forEach((foto, fi) => {
+      if (col2 >= COLS) { col2 = 0; y += blocoH; }
+      if (y + fH + legH > pageH - 1.8) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); col2 = 0; }
+      const xf = ML + col2 * (fW + gapX);
+      doc.setDrawColor(180, 180, 180); doc.setLineWidth(0.02);
+      doc.rect(xf, y, fW, fH);
+      try { doc.addImage(foto.src, 'JPEG', xf + 0.02, y + 0.02, fW - 0.04, fH - 0.04); } catch (ex) {}
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(7); doc.setTextColor(80, 80, 80);
+      const leg = foto.legenda || 'Foto ' + (fi + 1);
+      const legLines = doc.splitTextToSize(leg, fW - 0.2);
+      for (let li = 0; li < Math.min(legLines.length, 2); li++) {
+        doc.text(legLines[li], xf + fW / 2, y + fH + 0.25 + li * 0.28, { align: 'center' });
+      }
+      col2++;
+    });
+    if (col2 > 0) y += blocoH;
+    y += 0.3;
+  }
+
+  const atendFotos = (n.atendimentoFotos || []).filter(f => f.dataUrl).map(f => ({ src: f.dataUrl, legenda: f.desc || '' }));
+  if (atendFotos.length) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
+    doc.text('Evidência fotográfica do atendimento:', ML + 0.3, y); y += 0.4;
+    nGaleriaFotos(atendFotos);
+  } else {
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(120, 120, 120);
+    doc.text('Nenhuma foto de atendimento anexada.', ML + 0.3, y); y += 0.5;
+  }
+
+  if (y > pageH - 4) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  y += 0.6;
+  const assinX2 = ML + CW / 2 + 0.3;
+  doc.setDrawColor(200, 200, 200);
+  doc.line(ML, y, ML + CW / 2 - 0.5, y);
+  doc.line(assinX2, y, assinX2 + CW / 2 - 0.5, y);
+  y += 0.5;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
+  doc.text(n.fiscal || 'Fiscal Ambiental', ML, y);
+  doc.text(n.gestor || 'Gestor do Contrato', assinX2, y);
+  y += 0.38;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(100, 100, 100);
+  doc.text('Fiscal Ambiental', ML, y);
+  doc.text('Gestor do Contrato', assinX2, y);
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  return { doc, frente };
+}
+
+function ncNomeArquivoResumo(numero, frente, frenteId, data) {
+  const obraSlug = (frente ? frente.nome : frenteId || '').replace(/\s+/g, '_');
+  const dataFmt = (data || '').split('-').reverse().join('.');
+  return 'Espelho_Atendimento_' + (numero || 'NCA').replace(/\s+/g, '_') + '_' + obraSlug + ' - ' + dataFmt + '.pdf';
+}
+
+/* -- Exporta só o espelho de atendimento (resumo + fotos do atendimento),
+   em vez da notificação inteira — usado quando a NC já tem atendimento
+   preenchido. -- */
+async function ncExportarResumoAtendimento(id) {
+  const n = (window._ncHistorico || []).find(r => r.Id === id);
+  if (!n) { showToast('⚠️ Registro não encontrado.'); return; }
+  if (!n.AtendimentoStatus) { showToast('⚠️ Preencha o status do atendimento antes de gerar o espelho.'); return; }
+  showSyncStatus('Gerando PDF do espelho de atendimento...');
+  const frente = FLASH_FRENTES.find(f => f.id === n.FrenteId);
+  const { doc } = await ncGerarDocResumoAtendimento(_ncRegistroParaPdf(n));
+  showSyncStatus('PDF gerado!', 'ok', 2000);
+  doc.save(ncNomeArquivoResumo(n.Numero, frente, n.FrenteId, n.Data));
+}
+
 async function ncSalvarEExportarPDF() {
   const registroSalvo = await ncSalvar(true);
   if (!registroSalvo) return;
@@ -30091,6 +30261,20 @@ async function ncSalvarEExportarPDF() {
   const frente = FLASH_FRENTES.find(f => f.id === registroSalvo.FrenteId);
   const { doc } = await ncGerarDoc(_ncRegistroParaPdf(registroSalvo));
   doc.save(ncNomeArquivo(registroSalvo.Numero, frente, registroSalvo.FrenteId, registroSalvo.Data));
+  window._ncMostrarForm = false; window._ncRegistroAtualId = null; ncNovoForm();
+  navigate('checklist_notif');
+}
+
+/* -- Salva e exporta só o espelho de atendimento (ver ncGerarDocResumoAtendimento) —
+   atalho do formulário, pra não precisar salvar e depois ir na lista exportar. -- */
+async function ncSalvarEExportarResumoAtendimento() {
+  const registroSalvo = await ncSalvar(true);
+  if (!registroSalvo) return;
+  if (!registroSalvo.AtendimentoStatus) { showToast('⚠️ Preencha o status do atendimento antes de gerar o espelho.'); return; }
+  showToast('🔄 Gerando espelho de atendimento...');
+  const frente = FLASH_FRENTES.find(f => f.id === registroSalvo.FrenteId);
+  const { doc } = await ncGerarDocResumoAtendimento(_ncRegistroParaPdf(registroSalvo));
+  doc.save(ncNomeArquivoResumo(registroSalvo.Numero, frente, registroSalvo.FrenteId, registroSalvo.Data));
   window._ncMostrarForm = false; window._ncRegistroAtualId = null; ncNovoForm();
   navigate('checklist_notif');
 }
@@ -30112,12 +30296,15 @@ function ncHtmlHistorico() {
   const statusFiltro = window._ncStatusFiltro || null;
   const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
   const sevCor = { Leve: '#f39c12', Moderada: '#e67e22', Grave: 'var(--red)', 'Gravíssima': '#8e44ad' };
-  const statCor = { Aberta: 'var(--red)', Respondida: '#f39c12', Fechada: 'var(--green-main)' };
-  const atendCor = { Encerrado: 'var(--green-main)', Atendido: '#2980b9', Outras: '#7f8c8d' };
+  // Status único da notificação (ver ncCampoStatusUnico) — antes havia dois
+  // badges (Status + AtendimentoStatus) descrevendo a mesma coisa; agora só
+  // um, lido de AtendimentoStatus (vazio = Aberta).
+  const statUnicoCor = { '': 'var(--red)', Atendido: '#f39c12', Encerrado: 'var(--green-main)' };
   const prazoCor = { 'Dentro do Prazo': 'var(--green-main)', 'Fora do Prazo': 'var(--red)' };
   const linhaN = (n) => {
     const dt = n.Data ? new Date(n.Data + 'T12:00').toLocaleDateString('pt-BR') : '—';
     const nFotos = (n.Fotos || []).length;
+    const statUnico = n.AtendimentoStatus || '';
     return `
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">⚠️</div>
@@ -30125,8 +30312,7 @@ function ncHtmlHistorico() {
         <div class="name">${n.Numero || 'NCA'} · ${dt}</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${n.Fiscal || '—'} · por ${n.CriadoPorNome || '—'}</div>
         <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
-          <span class="badge" style="font-size:.62rem;background:${statCor[n.Status] || 'var(--red)'};color:#fff">${n.Status || 'Aberta'}</span>
-          ${n.AtendimentoStatus ? `<span class="badge" style="font-size:.62rem;background:${atendCor[n.AtendimentoStatus] || '#7f8c8d'};color:#fff">${n.AtendimentoStatus}</span>` : ''}
+          <span class="badge" style="font-size:.62rem;background:${statUnicoCor[statUnico] || 'var(--red)'};color:#fff">${statUnico || 'Aberta'}</span>
           ${n.AtendimentoPrazoStatus ? `<span class="badge" style="font-size:.62rem;background:${prazoCor[n.AtendimentoPrazoStatus] || '#7f8c8d'};color:#fff">${n.AtendimentoPrazoStatus}</span>` : ''}
           <span class="badge" style="font-size:.62rem;background:${sevCor[n.Severidade] || '#e67e22'};color:#fff">${n.Severidade || '—'}</span>
           ${nFotos ? `<span class="badge badge-cinza" style="font-size:.62rem">📷 ${nFotos}</span>` : ''}
@@ -30136,6 +30322,7 @@ function ncHtmlHistorico() {
         <div style="display:flex;gap:4px">
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="ncEditarRegistro(${n.Id})">✏️ Editar</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="ncExportarRegistro(${n.Id})">🖨️ PDF</button>
+          ${n.AtendimentoStatus ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;background:var(--green-pale);color:var(--green-main)" title="PDF curto com o resumo da notificação + fotos do atendimento, sem repetir as fotos da NC original" onclick="ncExportarResumoAtendimento(${n.Id})">📄 Espelho Atendimento</button>` : ''}
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="ncExcluirRegistro(${n.Id})">🗑️ Excluir</button>
         </div>
       </div>
@@ -30311,16 +30498,11 @@ function pageChecklistNotif() {
     <div class="form-group"><label>Fundamentação Legal / Condicionante</label><textarea id="nc-fundamentacao" style="min-height:50px" placeholder="Base legal, licença ambiental, condicionante violada..." oninput="ncCampo('fundamentacao', this.value)">${d.fundamentacao || ''}</textarea></div>
     <div class="form-group"><label>Ação Corretiva Requerida</label><textarea style="min-height:60px" placeholder="Descreva a ação corretiva que deve ser executada..." oninput="ncCampo('acao', this.value)">${d.acao || ''}</textarea></div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Prazo para Correção</label><input type="date" value="${d.prazo || ''}" onchange="ncCampo('prazo', this.value); navigate('checklist_notif')"></div>
       <div class="form-group" style="margin:0"><label>Severidade</label>
         <select onchange="ncCampo('severidade', this.value)">
           ${['Leve', 'Moderada', 'Grave', 'Gravíssima'].map(s => `<option ${d.severidade === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group" style="margin:0"><label>Status</label>
-        <select onchange="ncCampo('status', this.value)">
-          ${['Aberta', 'Respondida', 'Fechada'].map(s => `<option ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>
       </div>
       <div class="form-group" style="margin:0"><label>Fiscal Ambiental</label><input value="${(d.fiscal || '').replace(/"/g, '&quot;')}" oninput="ncCampo('fiscal', this.value)"></div>
@@ -30355,13 +30537,15 @@ function pageChecklistNotif() {
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0">
       <div class="form-group" style="margin:0"><label>Data de atendimento</label><input type="date" value="${d.atendimentoData || ''}" onchange="ncCampo('atendimentoData', this.value); ncAtualizarStatusPrazoAtendimento()"></div>
-      <div class="form-group" style="margin:0"><label>Status do atendimento</label>
-        <select onchange="ncCampo('atendimentoStatus', this.value)">
-          <option value="">-- Selecione --</option>
-          ${['Encerrado', 'Atendido', 'Outras'].map(s => `<option ${d.atendimentoStatus === s ? 'selected' : ''}>${s}</option>`).join('')}
+      <div class="form-group" style="margin:0"><label>Status da notificação</label>
+        <select onchange="ncCampoStatusUnico(this.value)">
+          <option value="" ${!d.atendimentoStatus ? 'selected' : ''}>🔴 Aberta — aguardando atendimento</option>
+          <option value="Atendido" ${d.atendimentoStatus === 'Atendido' ? 'selected' : ''}>🟡 Atendido — empreiteira já corrigiu e reportou</option>
+          <option value="Encerrado" ${d.atendimentoStatus === 'Encerrado' ? 'selected' : ''}>🟢 Encerrado — fiscalização conferiu e confirma resolvido</option>
         </select>
       </div>
     </div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin:-6px 0 10px">Este é o único status da notificação — some do menu "Prazo para Correção" o campo separado que existia antes. <strong>Atendido</strong> = a empreiteira já executou a correção e apresentou evidência; <strong>Encerrado</strong> = a fiscalização conferiu em campo/no relato e confirma a NC como definitivamente resolvida.</div>
     <div id="nc-atend-prazo-info" style="font-size:.78rem;font-weight:700;margin:-4px 0 10px"></div>
     <div style="margin-bottom:14px">
       <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">📷 Evidência do Atendimento</label>
@@ -30381,6 +30565,7 @@ function pageChecklistNotif() {
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-primary" onclick="ncSalvar()">💾 ${editando ? 'Salvar Alterações' : 'Salvar e Sincronizar com OneDrive'}</button>
       <button class="btn-primary" style="background:var(--brand-brown,#3F261F);color:#fff" onclick="ncSalvarEExportarPDF()">🖨️ Salvar + Exportar PDF</button>
+      ${d.atendimentoStatus ? `<button class="btn-primary" style="background:var(--green-main);color:#fff" onclick="ncSalvarEExportarResumoAtendimento()">📄 Salvar + Exportar Espelho do Atendimento</button>` : ''}
       <button class="btn-secondary" onclick="ncFecharForm()">Cancelar</button>
     </div>
   </div>`;
@@ -40609,8 +40794,26 @@ async function dbSalvar(tabela, dados, etagEsperado) {
 async function _dbGravarComRetry(tabela, mutarFn, tentativas) {
   if (!tentativas) tentativas = 5;
   let ultimaLista = null;
+  let falhasLeitura = 0;
   for (let i = 0; i < tentativas; i++) {
-    const { lista, etag } = await dbLerComEtag(tabela);
+    const { lista, etag, sucesso } = await dbLerComEtag(tabela);
+    // CRÍTICO: nunca gravar em cima de uma leitura que falhou (rede, timeout,
+    // arquivo grande demais pra baixar a tempo etc.) — "sucesso:false" pode
+    // vir com lista:[] mesmo quando a tabela JÁ TEM registros no OneDrive.
+    // Antes desse check, o código seguia direto pra mutarFn(lista) com essa
+    // lista vazia e gravava por cima com etagEsperado:'*' — foi exatamente
+    // isso que apagou 16 Flash Reports de Fauna em 21/08 (a leitura do
+    // arquivo, que já estava grande por causa das fotos embutidas, falhou
+    // silenciosamente, e a gravação seguinte sobrescreveu tudo só com o
+    // registro novo sendo inserido no momento). Em vez de escrever, espera
+    // e tenta ler de novo — só escreve quando a leitura realmente confirma
+    // o estado atual do arquivo. -- */
+    if (!sucesso) {
+      falhasLeitura++;
+      console.warn('[DB] Leitura de', tabela, 'falhou antes de gravar (tentativa', i + 1, 'de', tentativas, ') — não vou gravar em cima de uma lista incompleta.');
+      await new Promise(res => setTimeout(res, 400 + Math.random() * 400));
+      continue;
+    }
     const novaLista = mutarFn(lista);
     if (novaLista === null) return { ok: false, lista: null }; // mutarFn sinalizou erro (ex.: registro não encontrado)
     ultimaLista = novaLista;
@@ -40620,8 +40823,13 @@ async function _dbGravarComRetry(tabela, mutarFn, tentativas) {
     // 'conflito': outra gravação venceu a corrida — espera um pouco e tenta de novo com dados frescos
     await new Promise(res => setTimeout(res, 250 + Math.random() * 250));
   }
-  console.warn('[DB] Conflito de concorrência persistente em', tabela, 'após', tentativas, 'tentativas.');
-  _setSyncError('não foi possível salvar em ' + tabela + ' — muitas pessoas salvando ao mesmo tempo, tente novamente em alguns segundos');
+  if (falhasLeitura >= tentativas) {
+    console.warn('[DB] Não foi possível nem LER', tabela, 'após', tentativas, 'tentativas — nada foi gravado, dado preservado.');
+    _setSyncError('não foi possível confirmar o estado atual de ' + tabela + ' antes de salvar (conexão instável ou arquivo grande) — nada foi perdido, tente novamente');
+  } else {
+    console.warn('[DB] Conflito de concorrência persistente em', tabela, 'após', tentativas, 'tentativas.');
+    _setSyncError('não foi possível salvar em ' + tabela + ' — muitas pessoas salvando ao mesmo tempo, tente novamente em alguns segundos');
+  }
   return { ok: false, lista: ultimaLista };
 }
 
