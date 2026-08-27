@@ -21920,13 +21920,16 @@ function renderLinhaChecklistPerguntas() {
     <div style="margin-bottom:16px">
       <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">${grupo.titulo}</div>
       ${grupo.itens.map(it => `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid var(--border)">
-          <div style="flex:1;min-width:220px;font-size:.82rem">${it.texto}</div>
-          <div style="display:flex;gap:6px;flex-shrink:0">
-            ${_linhaBotaoResposta(it.id, 'C', '✅ Conforme', respostas[it.id])}
-            ${_linhaBotaoResposta(it.id, 'NC', '❌ Não conf.', respostas[it.id])}
-            ${_linhaBotaoResposta(it.id, 'NA', '➖ N/A', respostas[it.id])}
+        <div style="padding:8px 10px;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div style="flex:1;min-width:220px;font-size:.82rem">${it.texto}</div>
+            <div style="display:flex;gap:6px;flex-shrink:0">
+              ${_linhaBotaoResposta(it.id, 'C', '✅ Conforme', respostas[it.id])}
+              ${_linhaBotaoResposta(it.id, 'NC', '❌ Não conf.', respostas[it.id])}
+              ${_linhaBotaoResposta(it.id, 'NA', '➖ N/A', respostas[it.id])}
+            </div>
           </div>
+          ${respostas[it.id] === 'NC' ? linhaHtmlOcorrenciaInline(it) : ''}
         </div>`).join('')}
     </div>`).join('');
 }
@@ -21995,6 +21998,7 @@ function linhaAddOcorrenciaDoItem(item) {
   if (!window._linhaData.ocorrencias) window._linhaData.ocorrencias = [];
   window._linhaData.ocorrencias.push({
     id: window._linhaOcorrenciaSeq++,
+    origemChecklistItemId: item ? item.id : null,
     estrutura: '', tipoEstrutura: '',
     latitude: '', longitude: '', conformidade: 'nao_conforme',
     quantidade: 1,
@@ -22005,7 +22009,50 @@ function linhaAddOcorrenciaDoItem(item) {
       descricaoManual: item ? ('Não conforme no checklist: "' + item.texto + '"') : '',
     }],
   });
-  showToast('❌ Item não conforme — detalhe a ocorrência criada na seção 3.');
+  navigate('checklist_linha');
+}
+
+/* -- Ocorrência aberta direto sob a pergunta do checklist (não aparece na lista
+      genérica da seção 3, que é só pra ocorrências adicionadas manualmente). -- */
+function linhaOcorrenciaVinculada(itemId) {
+  return (window._linhaData.ocorrencias || []).find(oc => oc.origemChecklistItemId === itemId) || null;
+}
+
+function linhaHtmlOcorrenciaInline(item) {
+  const oc = linhaOcorrenciaVinculada(item.id);
+  if (!oc) return '';
+  linhaMigrarOcorrencia(oc);
+  return `
+    <div id="linha-oc-${oc.id}" style="border:1px solid var(--red);border-radius:10px;padding:14px;margin:8px 0 4px;background:var(--surface2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <span style="font-family:'Mont',sans-serif;font-size:.78rem;font-weight:800;color:var(--red)">📋 Formulário de Ocorrência</span>
+        <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="linhaRemoverOcorrenciaVinculada('${item.id}',${oc.id})">🗑️ Remover</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="form-group">
+          <label>Identificação da Estrutura</label>
+          <input value="${oc.estrutura||''}" oninput="linhaOcorrenciaCampo(${oc.id},'estrutura',this.value)" placeholder="Ex: P-014">
+        </div>
+        <div class="form-group">
+          <label>Tipo de Estrutura</label>
+          <input list="linha_dl_estrutura_${oc.id}" value="${oc.tipoEstrutura||''}" oninput="linhaOcorrenciaCampo(${oc.id},'tipoEstrutura',this.value)" placeholder="Selecione ou digite">
+          <datalist id="linha_dl_estrutura_${oc.id}"><option value="Torre"><option value="Poste"></datalist>
+        </div>
+      </div>
+      <div id="linha-itens-${oc.id}" style="margin-bottom:12px">${renderLinhaItens(oc)}</div>
+      <div class="form-group" style="margin-bottom:0">
+        <label>Coordenadas</label>
+        <div style="display:flex;gap:6px">
+          <input id="linha-coord-${oc.id}" value="${oc.latitude?oc.latitude+', '+oc.longitude:''}" readonly placeholder="—" style="flex:1">
+          <button id="linha-coord-btn-${oc.id}" class="btn-secondary" style="padding:6px 10px;font-size:.75rem;white-space:nowrap" onclick="linhaCapturarCoordenadas(${oc.id})">📍 Capturar</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function linhaRemoverOcorrenciaVinculada(itemId, ocId) {
+  window._linhaData.ocorrencias = (window._linhaData.ocorrencias || []).filter(o => o.id !== ocId);
+  if (window._linhaData.respostas) delete window._linhaData.respostas[itemId];
   navigate('checklist_linha');
 }
 
@@ -22362,9 +22409,11 @@ function limparLinhaChecklist() {
 }
 
 function pageChecklistLinha() {
-  if (!window._linhaData) window._linhaData = { ocorrencias: [] };
+  if (!window._linhaData) window._linhaData = { ocorrencias: [], respostas: {} };
   if (!window._linhaData.ocorrencias) window._linhaData.ocorrencias = [];
+  if (!window._linhaData.respostas) window._linhaData.respostas = {};
   const d = window._linhaData;
+  const ocorrenciasManuais = d.ocorrencias.filter(oc => !oc.origemChecklistItemId);
   if (window._linhaHistorico === null) carregarLinhaHistorico();
 
   return `
@@ -22377,14 +22426,7 @@ function pageChecklistLinha() {
   ${renderLinhaMiniDashboard()}
 
   <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
-    <div class="card-title" style="font-size:.88rem;margin-bottom:4px">1. Checklist de Patrulhamento</div>
-    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Responda cada item. Ao marcar "Não conf." abre automaticamente uma Ocorrência na seção 3 para detalhar.</div>
-    ${renderLinhaChecklistResumo()}
-    ${renderLinhaChecklistPerguntas()}
-  </div>
-
-  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
-    <div class="card-title" style="font-size:.88rem;margin-bottom:14px">2. Identificação da Inspeção</div>
+    <div class="card-title" style="font-size:.88rem;margin-bottom:14px">1. Identificação da Inspeção</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
       <div class="form-group" style="grid-column:span 2">
         <label>Empreendimento / Trecho</label>
@@ -22419,16 +22461,23 @@ function pageChecklistLinha() {
   </div>
 
   <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div class="card-title" style="font-size:.88rem;margin-bottom:4px">2. Checklist de Patrulhamento</div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Responda cada item. Ao marcar "Não conf." o formulário de Ocorrência abre na hora, logo abaixo da pergunta.</div>
+    ${renderLinhaChecklistResumo()}
+    ${renderLinhaChecklistPerguntas()}
+  </div>
+
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="font-size:.88rem;margin-bottom:0">3. Registro Ambiental</div>
       <button class="btn-primary" onclick="linhaAddOcorrencia()">➕ Nova Ocorrência</button>
     </div>
     <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Registre uma ocorrência para cada estrutura/ponto encontrado ao longo do trecho. Adicione quantas forem necessárias.</div>
 
-    ${d.ocorrencias.length === 0
+    ${ocorrenciasManuais.length === 0
       ? `<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:.82rem;border:1px dashed var(--border);border-radius:10px">Nenhuma ocorrência registrada ainda. Clique em "➕ Nova Ocorrência" para começar.</div>`
-      : d.ocorrencias.map((oc, idx) => { linhaMigrarOcorrencia(oc); return `
-      <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;background:${idx%2===0?'var(--surface)':'var(--surface2)'}">
+      : ocorrenciasManuais.map((oc, idx) => { linhaMigrarOcorrencia(oc); return `
+      <div id="linha-oc-${oc.id}" style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;background:${idx%2===0?'var(--surface)':'var(--surface2)'}">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <span style="font-family:'Mont',sans-serif;font-size:.8rem;font-weight:800;color:var(--green-main)">Ocorrência ${idx+1}</span>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="linhaRemoverOcorrencia(${oc.id})">🗑️ Remover</button>
