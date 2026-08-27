@@ -21804,7 +21804,7 @@ function removeEROPhoto(itemId, fn) {
    ocorrências encontrar em campo (erosão, supressão vegetal, resíduos,
    fauna, etc.), cada uma com campos específicos por categoria.
 =============================== */
-if (!window._linhaData) window._linhaData = { ocorrencias: [] };
+if (!window._linhaData) window._linhaData = { ocorrencias: [], respostas: {} };
 if (typeof window._linhaHistorico === 'undefined') window._linhaHistorico = null;
 if (typeof window._linhaOcorrenciaSeq === 'undefined') window._linhaOcorrenciaSeq = 1;
 if (typeof window._linhaItemSeq === 'undefined') window._linhaItemSeq = 1;
@@ -21869,6 +21869,87 @@ const LINHA_TENSOES = {
   '138 kV':  { rr:'1,20 m', rc:'3,20 m' },
 };
 
+/* Checklist fixo de patrulhamento — perguntas de Conforme/Não Conforme/Não Aplicável.
+   Ao marcar "Não Conforme", abre automaticamente uma Ocorrência (seção 3) já
+   pré-preenchida com a categoria sugerida e um texto de referência à pergunta. */
+const LINHA_CHECKLIST_GRUPOS = [
+  { titulo: 'Licenciamento e operação', itens: [
+    { id: 'q1', texto: 'A Licença de Operação está vigente?' },
+    { id: 'q2', texto: 'Funcionamento da Linha de distribuição dentro da normalidade?' },
+    { id: 'q3', texto: 'Equipes estão fazendo a manutenção na rede periodicamente?' },
+  ]},
+  { titulo: 'Vegetação na faixa de servidão', itens: [
+    { id: 'q4', texto: 'Na faixa de servidão a vegetação na linha está acima das normas de segurança?', categoriaSugerida: 'Supressão vegetal' },
+    { id: 'q5', texto: 'Há construções na faixa de servidão?', categoriaSugerida: 'Ocupação irregular' },
+    { id: 'q6', texto: 'Existem árvores interferindo na rede?', categoriaSugerida: 'Supressão vegetal' },
+    { id: 'q7', texto: 'Existem culturas / plantio de médio e grande porte na faixa de servidão que comprometa a operação?', categoriaSugerida: 'Supressão vegetal' },
+    { id: 'q8', texto: 'Existem lianas (trepadeiras) se desenvolvendo na rede?', categoriaSugerida: 'Supressão vegetal' },
+    { id: 'q9', texto: 'Existem nidificação (ninhos, cupins, abelhas, etc.) na rede?', categoriaSugerida: 'Fauna silvestre' },
+  ]},
+  { titulo: 'Estruturas e postes', itens: [
+    { id: 'q10', texto: 'Existem postes com risco de queda?' },
+    { id: 'q11', texto: 'Há sinais de danos na estrutura dos postes?' },
+    { id: 'q12', texto: 'Há sinais de processos erosivos ou outros danos na base das estruturas?', categoriaSugerida: 'Erosão' },
+    { id: 'q13', texto: 'As estruturas de concreto e cabeamento estão em bom estado?' },
+  ]},
+  { titulo: 'Equipamentos elétricos', itens: [
+    { id: 'q14', texto: 'Os transformadores estão operando normalmente?' },
+    { id: 'q15', texto: 'Há sinais de vazamento em transformadores?', categoriaSugerida: 'Resíduos oleosos' },
+    { id: 'q16', texto: 'A fiação está em bom estado?' },
+    { id: 'q17', texto: 'Há sinais de curto circuito?' },
+    { id: 'q18', texto: 'Os isoladores estão em bom estado? Em quais postes não estão?' },
+  ]},
+  { titulo: 'Ocupação da faixa de servidão', itens: [
+    { id: 'q19', texto: 'Há sinais de obstáculos ou estruturas construídas no perímetro da faixa de servidão (cercas, lagos, residências etc.)?', categoriaSugerida: 'Ocupação irregular' },
+  ]},
+];
+
+function linhaTodosItensChecklist() {
+  return LINHA_CHECKLIST_GRUPOS.reduce((acc, g) => acc.concat(g.itens), []);
+}
+
+function _linhaBotaoResposta(itemId, valor, label, respostaAtual) {
+  const ativo = respostaAtual === valor;
+  const cor = valor === 'C' ? 'var(--green-main)' : (valor === 'NC' ? 'var(--red)' : 'var(--text-muted)');
+  return `<button type="button" onclick="linhaResponderChecklist('${itemId}','${valor}')" style="padding:4px 10px;font-size:.7rem;border-radius:6px;border:1px solid ${ativo ? cor : 'var(--border)'};background:${ativo ? cor : 'transparent'};color:${ativo ? '#fff' : 'var(--text-muted)'};cursor:pointer;white-space:nowrap">${label}</button>`;
+}
+
+function renderLinhaChecklistPerguntas() {
+  const respostas = (window._linhaData && window._linhaData.respostas) || {};
+  return LINHA_CHECKLIST_GRUPOS.map(grupo => `
+    <div style="margin-bottom:16px">
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">${grupo.titulo}</div>
+      ${grupo.itens.map(it => `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid var(--border)">
+          <div style="flex:1;min-width:220px;font-size:.82rem">${it.texto}</div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            ${_linhaBotaoResposta(it.id, 'C', '✅ Conforme', respostas[it.id])}
+            ${_linhaBotaoResposta(it.id, 'NC', '❌ Não conf.', respostas[it.id])}
+            ${_linhaBotaoResposta(it.id, 'NA', '➖ N/A', respostas[it.id])}
+          </div>
+        </div>`).join('')}
+    </div>`).join('');
+}
+
+function renderLinhaChecklistResumo() {
+  const respostas = (window._linhaData && window._linhaData.respostas) || {};
+  const total = linhaTodosItensChecklist().length;
+  let c = 0, nc = 0, na = 0;
+  Object.keys(respostas).forEach(k => {
+    if (respostas[k] === 'C') c++;
+    else if (respostas[k] === 'NC') nc++;
+    else if (respostas[k] === 'NA') na++;
+  });
+  const pendente = total - c - nc - na;
+  return `
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+    <div class="kpi-card green" style="padding:10px"><div style="font-size:.62rem;color:var(--text-muted)">Conforme</div><div style="font-family:'Mont',sans-serif;font-size:1.2rem;font-weight:800">${c}</div></div>
+    <div class="kpi-card" style="padding:10px;border-color:var(--red)"><div style="font-size:.62rem;color:var(--text-muted)">Não conforme</div><div style="font-family:'Mont',sans-serif;font-size:1.2rem;font-weight:800;color:var(--red)">${nc}</div></div>
+    <div class="kpi-card" style="padding:10px"><div style="font-size:.62rem;color:var(--text-muted)">N/A</div><div style="font-family:'Mont',sans-serif;font-size:1.2rem;font-weight:800">${na}</div></div>
+    <div class="kpi-card" style="padding:10px"><div style="font-size:.62rem;color:var(--text-muted)">Pendentes</div><div style="font-family:'Mont',sans-serif;font-size:1.2rem;font-weight:800">${pendente}</div></div>
+  </div>`;
+}
+
 function linhaEncontrarOcorrencia(id) {
   return (window._linhaData.ocorrencias || []).find(o => o.id === id);
 }
@@ -21892,6 +21973,39 @@ function linhaAddOcorrencia() {
     quantidade: 1,
     itens: [{ id: window._linhaItemSeq++, categoria: '', sub: {}, descricaoManual: '' }],
   });
+  navigate('checklist_linha');
+}
+
+/* -- Marca a resposta de uma pergunta fixa do checklist. Se for "Não Conforme",
+      abre automaticamente uma Ocorrência (mesmo formulário da seção 3), já
+      pré-preenchida com a categoria sugerida e uma referência à pergunta. -- */
+function linhaResponderChecklist(itemId, valor) {
+  if (!window._linhaData.respostas) window._linhaData.respostas = {};
+  const anterior = window._linhaData.respostas[itemId];
+  window._linhaData.respostas[itemId] = valor;
+  if (valor === 'NC' && anterior !== 'NC') {
+    const item = linhaTodosItensChecklist().find(i => i.id === itemId);
+    linhaAddOcorrenciaDoItem(item);
+    return;
+  }
+  navigate('checklist_linha');
+}
+
+function linhaAddOcorrenciaDoItem(item) {
+  if (!window._linhaData.ocorrencias) window._linhaData.ocorrencias = [];
+  window._linhaData.ocorrencias.push({
+    id: window._linhaOcorrenciaSeq++,
+    estrutura: '', tipoEstrutura: '',
+    latitude: '', longitude: '', conformidade: 'nao_conforme',
+    quantidade: 1,
+    itens: [{
+      id: window._linhaItemSeq++,
+      categoria: (item && item.categoriaSugerida) || '',
+      sub: {},
+      descricaoManual: item ? ('Não conforme no checklist: "' + item.texto + '"') : '',
+    }],
+  });
+  showToast('❌ Item não conforme — detalhe a ocorrência criada na seção 3.');
   navigate('checklist_linha');
 }
 
@@ -22131,6 +22245,7 @@ function renderLinhaMiniDashboard() {
               <div style="font-size:.78rem;font-weight:700;min-width:80px;text-align:right;color:var(--green-main)">
                 ${r.QtdOcorrencias || 0} ocorr.
               </div>
+              ${r.QtdNaoConforme ? `<div style="font-size:.68rem;font-weight:700;color:var(--red);min-width:70px;text-align:right">${r.QtdNaoConforme} não conf.</div>` : ''}
               <div style="display:flex;gap:4px;flex-shrink:0">
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="linhaEditarChecklist(${r.Id})">✏️ Editar</button>
               </div>
@@ -22178,6 +22293,7 @@ async function salvarLinhaChecklist() {
     data: d.data || '',
     tensao: d.tensao || '',
     QtdOcorrencias: (d.ocorrencias || []).length,
+    QtdNaoConforme: Object.values(d.respostas || {}).filter(v => v === 'NC').length,
     Status: 'Salvo',
     arquivoDados: 'Checklists/Linha/dados/' + meuId + '.json',
   };
@@ -22222,6 +22338,7 @@ async function linhaEditarChecklist(id) {
   try {
     window._linhaData = JSON.parse(texto);
     if (!window._linhaData.ocorrencias) window._linhaData.ocorrencias = [];
+    if (!window._linhaData.respostas) window._linhaData.respostas = {};
     const maxId = window._linhaData.ocorrencias.reduce((m, o) => Math.max(m, o.id || 0), 0);
     window._linhaOcorrenciaSeq = maxId + 1;
     const maxItemId = window._linhaData.ocorrencias.reduce((m, o) => (o.itens || []).reduce((m2, it) => Math.max(m2, it.id || 0), m), 0);
@@ -22238,7 +22355,7 @@ async function linhaEditarChecklist(id) {
 
 function limparLinhaChecklist() {
   if (confirm('Deseja limpar todo o formulário? Os dados serão perdidos.')) {
-    window._linhaData = { ocorrencias: [] };
+    window._linhaData = { ocorrencias: [], respostas: {} };
     window._linhaRegistroAtualId = null;
     navigate('checklist_linha');
   }
@@ -22260,7 +22377,14 @@ function pageChecklistLinha() {
   ${renderLinhaMiniDashboard()}
 
   <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
-    <div class="card-title" style="font-size:.88rem;margin-bottom:14px">1. Identificação da Inspeção</div>
+    <div class="card-title" style="font-size:.88rem;margin-bottom:4px">1. Checklist de Patrulhamento</div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Responda cada item. Ao marcar "Não conf." abre automaticamente uma Ocorrência na seção 3 para detalhar.</div>
+    ${renderLinhaChecklistResumo()}
+    ${renderLinhaChecklistPerguntas()}
+  </div>
+
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div class="card-title" style="font-size:.88rem;margin-bottom:14px">2. Identificação da Inspeção</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
       <div class="form-group" style="grid-column:span 2">
         <label>Empreendimento / Trecho</label>
@@ -22296,7 +22420,7 @@ function pageChecklistLinha() {
 
   <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px">
-      <div class="card-title" style="font-size:.88rem;margin-bottom:0">2. Registro Ambiental</div>
+      <div class="card-title" style="font-size:.88rem;margin-bottom:0">3. Registro Ambiental</div>
       <button class="btn-primary" onclick="linhaAddOcorrencia()">➕ Nova Ocorrência</button>
     </div>
     <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Registre uma ocorrência para cada estrutura/ponto encontrado ao longo do trecho. Adicione quantas forem necessárias.</div>
