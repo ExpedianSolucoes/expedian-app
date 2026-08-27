@@ -28634,6 +28634,40 @@ function flashCalcularStatusResolucaoNC(f) {
   return { totalNC, resolvidos, pendentes: totalNC - resolvidos, foraDoPrazo, todosResolvidos: resolvidos === totalNC };
 }
 
+/* -- Lista, item a item, as não conformidades do Flash Report que já foram
+   atendidas (Atendido/Finalizado), com os dados necessários pro "espelho
+   de atendimento" (ver flashGerarDocResumoAtendimento) — mesma varredura
+   de flashCalcularStatusResolucaoNC acima, mas devolvendo o detalhe de
+   cada item em vez de só as contagens (pedido em 27/08/2026). -- */
+function flashListarItensNCAtendidos(f) {
+  if (f.Modelo !== 'v2') return [];
+  const prazoItens = f.PrazoItens || {}, dataCumprItens = f.DataCumprimentoItens || {}, statusCumprItens = f.StatusCumprimentoItens || {};
+  const itensFixos = (FLASH_VERIFICACOES || []).concat(f.TemSupressao ? _flashItensSupressaoFlat() : []);
+  const lista = [];
+  itensFixos.forEach(it => {
+    const idKey = it.id || it.cod;
+    const marcadoNC = (f.RespostasVerificacoes || {})[idKey] === 'NC' || (f.RespostasSupressao || {})[idKey] === 'NC';
+    if (!marcadoNC) return;
+    const statusC = statusCumprItens[idKey];
+    if (statusC !== 'Atendido' && statusC !== 'Finalizado') return;
+    lista.push({
+      label: it.label, criticidade: it.criticidade, obs: (f.ObsItens || {})[idKey] || '',
+      prazo: prazoItens[idKey], dataCumprimento: dataCumprItens[idKey], statusCumprimento: statusC,
+      situacaoPrazo: ncCalcularStatusPrazoAtendimento(prazoItens[idKey], dataCumprItens[idKey]),
+    });
+  });
+  (f.OutrasVerificacoes || []).forEach(o => {
+    if (o.resposta !== 'NC') return;
+    if (o.statusCumprimento !== 'Atendido' && o.statusCumprimento !== 'Finalizado') return;
+    lista.push({
+      label: o.descricao || 'Outra verificação', criticidade: o.criticidade, obs: o.obs || '',
+      prazo: o.prazo, dataCumprimento: o.dataCumprimento, statusCumprimento: o.statusCumprimento,
+      situacaoPrazo: ncCalcularStatusPrazoAtendimento(o.prazo, o.dataCumprimento),
+    });
+  });
+  return lista;
+}
+
 // Cada FLASH_FRENTES.id representa um Circuito Elétrico (obra/subestação/linha),
 // espelhando a organização já usada na aba Projetos > Energisa (gestão por
 // empreiteira/circuito). O dashboard abaixo agrupa os Flash Reports por
@@ -28695,6 +28729,7 @@ function flashHtmlHistorico() {
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashEditarRegistro(${f.Id})">✏️ Editar</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="flashExportarRegistro(${f.Id})">🖨️ Exportar PDF</button>
           ${aindaPendente ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;background:#e67e22;color:#fff;border-color:#e67e22" onclick="ncAbrirNovo('${f.FrenteId}', ${f.Id})">⚠️ Notificar</button>` : ''}
+          ${statusNC && statusNC.resolvidos > 0 ? `<button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;background:var(--green-pale);color:var(--green-main)" title="PDF curto com o resumo do Flash Report + lista das não conformidades já atendidas, sem repetir o checklist inteiro" onclick="flashExportarResumoAtendimento(${f.Id})">📄 Espelho Atendimento</button>` : ''}
           ${botaoExcluir}
         </div>
       </div>
@@ -29436,6 +29471,126 @@ async function flashExportarRegistro(id) {
   const { doc, frente } = await _flashGerarDoc(dLocal, num);
   showSyncStatus('PDF gerado!', 'ok', 2000);
   doc.save(_flashNomeArquivo(num, frente, dLocal.frenteId, dLocal.data));
+}
+
+/* -- PDF "espelho" resumido do atendimento das NC de um Flash Report —
+   mesma ideia de ncGerarDocResumoAtendimento (task #202), adaptada pro
+   fato de um Flash Report poder ter VÁRIAS não conformidades (em vez de
+   uma só): em vez de uma seção única de atendimento, lista um bloco por
+   item já atendido/finalizado (flashListarItensNCAtendidos). Não repete
+   fotos do dia (f.fotos são fotos gerais do Flash Report, não evidência
+   específica de cada item corrigido — o modelo de dado ainda não guarda
+   foto por item de NC, então o espelho aqui é só o resumo textual, sem
+   galeria de fotos, pedido em 27/08/2026). -- */
+async function flashGerarDocResumoAtendimento(f, num) {
+  await _garantirJsPDF();
+  const frente = FLASH_FRENTES.find(fr => fr.id === f.FrenteId);
+  const itens = flashListarItensNCAtendidos(f);
+  const dt = f.Data ? new Date(f.Data + 'T12:00').toLocaleDateString('pt-BR') : '--';
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'ESPELHO DE ATENDIMENTO — FLASH REPORT';
+  const subtitulo = 'Contrato 2025022101 · Gestão Ambiental de Obras · Energisa RO';
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.4, CW = pageW - 2.8;
+
+  // -- Resumo do Flash Report original (sem fotos, sem checklist inteiro) --
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  const boxH = 2.3;
+  doc.setFillColor(254, 243, 240);
+  doc.roundedRect(ML, y, CW, boxH, 0.2, 0.2, 'F');
+  doc.setDrawColor(200, 60, 40); doc.setLineWidth(0.04);
+  doc.roundedRect(ML, y, CW, boxH, 0.2, 0.2, 'S');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(192, 57, 43);
+  doc.text('FR-' + num + ' - Resumo do Flash Report', ML + 0.3, y + 0.5);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80, 60, 50);
+  let iy = y + 0.9;
+  doc.text('Data: ' + dt + '    |    Circuito/Frente: ' + (frente ? frente.nome + ' — ' + frente.empreiteira : (f.FrenteId || '--')), ML + 0.3, iy); iy += 0.4;
+  doc.text('Responsável Técnico: ' + (f.ResponsavelTecnico || '--') + '    |    Fiscal Ambiental: ' + (f.Fiscal || '--'), ML + 0.3, iy); iy += 0.4;
+  doc.text('Não conformidades atendidas: ' + itens.length, ML + 0.3, iy); iy += 0.4;
+  y += boxH + 0.3;
+
+  function fSectionTitle(t) {
+    if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    doc.setFillColor(39, 174, 96);
+    doc.roundedRect(ML, y, CW, 0.55, 0.1, 0.1, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
+    doc.text(t, ML + 0.3, y + 0.37);
+    y += 0.75;
+  }
+
+  fSectionTitle('ATENDIMENTO DAS NÃO CONFORMIDADES');
+  if (!itens.length) {
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(120, 120, 120);
+    doc.text('Nenhuma não conformidade atendida registrada.', ML + 0.3, y); y += 0.5;
+  }
+  itens.forEach((it, idx) => {
+    const obsResumo = (it.obs || '').length > 220 ? it.obs.slice(0, 220) + '…' : (it.obs || '');
+    const obsLinhas = obsResumo ? doc.splitTextToSize('Obs.: ' + obsResumo, CW - 0.6) : [];
+    const itemH = 0.5 + 0.4 + (it.prazo ? 0.4 : 0) + (it.dataCumprimento ? 0.4 : 0) + obsLinhas.length * 0.36 + 0.35;
+    if (y + itemH > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    doc.setFillColor(245, 240, 237);
+    doc.roundedRect(ML, y, CW, itemH, 0.15, 0.15, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(63, 38, 31);
+    doc.text((idx + 1) + '. ' + (it.label || '—') + (it.criticidade ? '  [' + it.criticidade + ']' : ''), ML + 0.25, y + 0.38);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(80, 80, 80);
+    let liy = y + 0.75;
+    if (it.prazo) { doc.text('Prazo: ' + new Date(it.prazo + 'T12:00').toLocaleDateString('pt-BR'), ML + 0.25, liy); liy += 0.4; }
+    if (it.dataCumprimento) { doc.text('Data de cumprimento: ' + new Date(it.dataCumprimento + 'T12:00').toLocaleDateString('pt-BR'), ML + 0.25, liy); liy += 0.4; }
+    doc.setFont('helvetica', 'bold');
+    const situOk = it.situacaoPrazo === 'Dentro do Prazo';
+    doc.setTextColor(situOk ? 39 : 192, situOk ? 174 : 57, situOk ? 96 : 43);
+    doc.text('Status: ' + it.statusCumprimento + (it.situacaoPrazo ? ' — ' + it.situacaoPrazo : ''), ML + 0.25, liy); liy += 0.4;
+    if (obsLinhas.length) {
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(100, 100, 100);
+      obsLinhas.forEach(ln => { doc.text(ln, ML + 0.25, liy); liy += 0.36; });
+    }
+    y += itemH + 0.25;
+  });
+
+  if (y > pageH - 4) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  y += 0.6;
+  const assinX2 = ML + CW / 2 + 0.3;
+  doc.setDrawColor(200, 200, 200);
+  doc.line(ML, y, ML + CW / 2 - 0.5, y);
+  doc.line(assinX2, y, assinX2 + CW / 2 - 0.5, y);
+  y += 0.5;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
+  doc.text(f.Fiscal || 'Fiscal Ambiental', ML, y);
+  doc.text(f.ResponsavelTecnico || 'Gestor do Contrato', assinX2, y);
+  y += 0.38;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(100, 100, 100);
+  doc.text('Fiscal Ambiental', ML, y);
+  doc.text('Gestor do Contrato', assinX2, y);
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  return { doc, frente };
+}
+
+function _flashNomeArquivoResumo(num, frente, frenteId, data) {
+  const obraSlug = (frente ? frente.nome : frenteId || '').replace(/\s+/g, '_');
+  const dataFmt = (data || '').split('-').reverse().join('.');
+  return 'Espelho_Atendimento_FR-' + num + '_' + obraSlug + ' - ' + dataFmt + '.pdf';
+}
+
+/* -- Exporta só o espelho de atendimento das NC de um Flash Report já
+   salvo no histórico (resumo + lista de itens corrigidos, sem repetir o
+   checklist inteiro) — botão "📄 Espelho Atendimento" no histórico,
+   visível quando pelo menos uma NC do registro já foi atendida/finalizada
+   (ver flashHtmlHistorico / statusNC.resolvidos). -- */
+async function flashExportarResumoAtendimento(id) {
+  const f = (window._flashHistorico || []).find(r => r.Id === id);
+  if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  const mesmaFrente = (window._flashHistorico || []).filter(r => r.FrenteId === f.FrenteId)
+    .slice().sort((a,b) => (a.Data||'').localeCompare(b.Data||''));
+  let posicao = mesmaFrente.findIndex(r => r.Id === f.Id);
+  if (posicao < 0) posicao = mesmaFrente.length;
+  const num = String(posicao + 1).padStart(3, '0');
+  showSyncStatus('Gerando PDF do espelho de atendimento...');
+  const { doc, frente } = await flashGerarDocResumoAtendimento(f, num);
+  showSyncStatus('PDF gerado!', 'ok', 2000);
+  doc.save(_flashNomeArquivoResumo(num, frente, f.FrenteId, f.Data));
 }
 
 /* =============================================================
