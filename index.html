@@ -1369,6 +1369,7 @@ function pageDashboard() {
   <div class="kpi-grid">
     <div class="kpi-card green"><div class="kpi-label">Contas a Receber</div><div class="kpi-value" id="kpi-receber">—</div><div class="kpi-sub" id="kpi-receber-sub">carregando...</div><div class="kpi-icon">💰</div></div>
     <div class="kpi-card red"><div class="kpi-label">Contas a Pagar</div><div class="kpi-value" id="kpi-pagar">—</div><div class="kpi-sub" id="kpi-pagar-sub">carregando...</div><div class="kpi-icon">💸</div></div>
+    <div class="kpi-card amber" style="cursor:pointer" onclick="navigate('pagar')" title="Ver Contas a Pagar (já ordenadas por vencimento)"><div class="kpi-label">Contas a Vencer</div><div class="kpi-value" id="kpi-pagar-vencer">—</div><div class="kpi-sub" id="kpi-pagar-vencer-sub">carregando...</div><div class="kpi-icon">⏰</div></div>
     <div class="kpi-card blue"><div class="kpi-label">Prestações Pendentes</div><div class="kpi-value" id="kpi-prestacao">—</div><div class="kpi-sub" id="kpi-prestacao-sub">carregando...</div><div class="kpi-icon">📑</div></div>
   </div>
 
@@ -1536,13 +1537,21 @@ async function carregarDashboard() {
     set('kpi-prestacoes-total', prests.length);
 
     const prestPend  = prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor' || r.Status === 'Pendente');
-    const pagarPend  = contas.filter(r => r.Status === 'Pendente');
+    // Contas a Pagar em aberto (tudo que ainda não foi pago nem rejeitado) — o
+    // Status gravado pode estar desatualizado (só é recalculado ao abrir a tela
+    // de Contas a Pagar), então "vencendo/atrasada" é recalculado aqui na hora,
+    // a partir da data de Vencimento, pra não depender de um Status parado.
+    const contasAbertas = contas.filter(r => r.Status !== 'Pago' && r.Status !== 'Rejeitada');
+    const pagarVencendo = contasAbertas.filter(r => ['Vence hoje', 'Vence em breve'].includes(calcularStatusVencimento(r.Vencimento)));
+    const pagarAtrasadas = contasAbertas.filter(r => calcularStatusVencimento(r.Vencimento) === 'Em atraso');
     const receberPend= receber.filter(r => r.Status === 'Pendente');
 
     set('kpi-prestacao',     prestPend.length);
     set('kpi-prestacao-sub', prestPend.length + ' pendentes');
-    set('kpi-pagar',         pagarPend.length);
-    set('kpi-pagar-sub',     pagarPend.length + ' pendentes');
+    set('kpi-pagar',         contasAbertas.length);
+    set('kpi-pagar-sub',     contasAbertas.length + ' em aberto');
+    set('kpi-pagar-vencer',       pagarVencendo.length);
+    set('kpi-pagar-vencer-sub',   pagarAtrasadas.length ? (pagarAtrasadas.length + ' já em atraso') : 'nos próximos 3 dias');
     set('kpi-receber',       receberPend.length);
     set('kpi-receber-sub',   receberPend.length + ' pendentes');
 
@@ -3731,20 +3740,14 @@ function pagePrestacao() {
   </div>
 
   <!-- Nova Despesa (Contas a Pagar virou botão próprio no hub Financeiro —
-       ver FINANCEIRO_CATALOGO). Abre sua própria estrutura completa
-       (dashboard + botão de lançamento + histórico) — não abre o formulário direto. -->
+       ver FINANCEIRO_CATALOGO). O formulário é colapsável (recolhido por
+       padrão); o dashboard (KPIs) e o histórico ficam sempre visíveis abaixo,
+       independente do formulário estar aberto ou fechado. -->
   <div style="margin-bottom:24px;display:flex;gap:10px;flex-wrap:wrap">
-    <button id="prest-despesa-toggle-btn" class="btn-primary" onclick="pcToggleDespesaContainer()">➕ Nova Despesa</button>
+    <button id="prest-form-toggle-btn" class="btn-primary" onclick="pcToggleFormNovo()">➕ Nova Despesa</button>
   </div>
 
-  <!-- Estrutura de Nova Despesa (recolhida por padrão). Ao abrir: botão
-       "Novo Lançamento" (revela o formulário), dashboard (KPIs) e histórico
-       — igual ao padrão já usado em Contas a Pagar. -->
-  <div id="prest-despesa-container" style="display:none;margin-bottom:24px">
-
-    <button id="prest-form-toggle-btn" class="btn-secondary" style="margin-bottom:16px" onclick="pcToggleFormNovo()">➕ Novo Lançamento</button>
-
-    <div id="prest-form-container" style="display:none;margin-bottom:20px">
+  <div id="prest-form-container" style="display:none;margin-bottom:24px">
     <div class="form-card">
     <div id="prest-form-titulo" style="font-family:'Mont',sans-serif;font-size:.82rem;font-weight:700;color:var(--green-main);margin-bottom:16px;text-transform:uppercase;letter-spacing:.07em">➕ Nova Despesa</div>
     <div id="prest-edit-banner"></div>
@@ -3970,39 +3973,20 @@ function pagePrestacao() {
     <div id="lista-prestacoes"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
     </div>
   </details>
-
-  </div>
-  <!-- ^ fecha prest-despesa-container -->
   `;
 }
 
-/* -- Abre/fecha a ESTRUTURA de "Nova Despesa" (dashboard + botão "Novo
-   Lançamento" + histórico) — não abre o formulário direto, só monta o
-   layout. Espelha exatamente o mesmo padrão do bloco de Contas a Pagar. -- */
-function pcToggleDespesaContainer(forcar) {
-  const c = document.getElementById('prest-despesa-container');
-  const btn = document.getElementById('prest-despesa-toggle-btn');
-  if (!c) return;
-  const abrir = typeof forcar === 'boolean' ? forcar : (c.style.display === 'none');
-  c.style.display = abrir ? 'block' : 'none';
-  if (btn) btn.textContent = abrir ? '➖ Fechar Nova Despesa' : '➕ Nova Despesa';
-  if (abrir) {
-    c.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  } else {
-    pcToggleFormNovo(false); // fecha o formulário interno também ao recolher
-  }
-}
-
-/* -- Abre/fecha o FORMULÁRIO de lançamento de despesa em si (dentro da
-   estrutura de Nova Despesa). Fica recolhido por padrão — só abre ao
-   clicar no botão "➕ Novo Lançamento" dentro do bloco. -- */
+/* -- Abre/fecha o FORMULÁRIO de "Nova Despesa". O dashboard (KPIs) e o
+   histórico ficam sempre visíveis na página, independente disso — só o
+   formulário de lançamento em si fica recolhido por padrão. -- */
 function pcToggleFormNovo(forcar) {
   const c = document.getElementById('prest-form-container');
   const btn = document.getElementById('prest-form-toggle-btn');
   if (!c) return;
   const abrir = typeof forcar === 'boolean' ? forcar : (c.style.display === 'none');
   c.style.display = abrir ? 'block' : 'none';
-  if (btn) btn.textContent = abrir ? '➖ Fechar Formulário' : '➕ Novo Lançamento';
+  if (btn) btn.textContent = abrir ? '➖ Fechar Formulário' : '➕ Nova Despesa';
+  if (abrir) c.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function atualizarCCsPrest() {
@@ -5990,7 +5974,7 @@ async function pagConfirmarPagamento(id) {
   if (!dataPag) { showToast('⚠️ Informe a data do pagamento.'); return; }
   if (!banco) { showToast('⚠️ Selecione o banco.'); return; }
   _limparSyncError();
-  const ok = await dbAtualizar('ContasPagar', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco });
+  const ok = await dbAtualizar('ContasPagar', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco, PagoPor: window._currentUser ? window._currentUser.name : '' });
   if (ok) await pagSincronizarDespesa(id, dataPag, banco);
   showToast(ok ? '✅ Pagamento registrado!' : ('❌ Erro' + syncErrorDetalhe()));
   const m = document.getElementById('pag-view-modal'); if (m) m.remove();
@@ -6323,12 +6307,23 @@ async function carregarContasPagar() {
   if(!token){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>';return;}
   try {
     let items = await dbLer('ContasPagar');
-    // Recalcular status de vencimento automaticamente (exceto estados já definidos por aprovação/pagamento)
+    // Recalcular status de vencimento automaticamente (exceto estados já definidos por aprovação/pagamento).
+    // Também grava de volta no OneDrive quando o status mudou (ex: "Pendente" virou
+    // "Vence hoje"), pra outras telas que leem ContasPagar direto (dashboard da
+    // página inicial, sino) não ficarem com um status parado/desatualizado.
+    const idsParaAtualizar = [];
     items.forEach(i=>{
       if (i.Status !== 'Pago' && i.Status !== 'Aprovado — Aguardando Pagamento' && i.Status !== 'Aguardando Aprovação') {
-        i.Status = calcularStatusVencimento(i.Vencimento);
+        const novoStatus = calcularStatusVencimento(i.Vencimento);
+        if (novoStatus !== i.Status) { i.Status = novoStatus; idsParaAtualizar.push(i.Id); }
       }
     });
+    if (idsParaAtualizar.length) {
+      idsParaAtualizar.forEach(id => {
+        const item = items.find(x => x.Id === id);
+        if (item) dbAtualizar('ContasPagar', id, { Status: item.Status }).catch(()=>{});
+      });
+    }
 
     // KPIs — sobre todos os lançamentos, antes dos filtros de busca
     const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
@@ -6372,8 +6367,18 @@ async function carregarContasPagar() {
     else if (PAG_FILTRO_KPI === 'pago') items = items.filter(r=>r.Status==='Pago');
     else if (PAG_FILTRO_KPI === 'atraso') items = items.filter(r=>r.Status==='Em atraso');
     else if (PAG_FILTRO_KPI === 'estagiario') items = items.filter(r=>r.Status==='Aguardando Aprovação' && ehLancadorExtra(r.LancadoPor));
+    // Lançamentos já pagos saem da lista padrão de "lançamentos" assim que são
+    // pagos — só aparecem ao clicar no KPI "Pagos" (ou escolher o status
+    // manualmente no filtro), pra não poluir a lista do que ainda está em aberto.
+    else if (!filtroStatus) items = items.filter(r=>r.Status!=='Pago');
 
-    items = items.slice().sort((a,b)=>(b.Id||0)-(a.Id||0)).slice(0,200);
+    // Ordem por vencimento (mais próximo primeiro) — exceto na aba "Pagos", que
+    // faz mais sentido mostrar o pagamento mais recente primeiro.
+    if (PAG_FILTRO_KPI === 'pago') {
+      items = items.slice().sort((a,b)=>(b.DataPagamento||'').localeCompare(a.DataPagamento||'') || (b.Id||0)-(a.Id||0)).slice(0,200);
+    } else {
+      items = items.slice().sort((a,b)=>(a.Vencimento||'9999-99-99').localeCompare(b.Vencimento||'9999-99-99') || (b.Id||0)-(a.Id||0)).slice(0,200);
+    }
     window._pagFiltradas = items;
 
     if(!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado.</div>';return;}
@@ -33137,6 +33142,7 @@ let _ultimaContagemNotifPrestDiretoria = null;
 let _ultimaContagemNotifContasPagar = null;
 let _ultimaContagemNotifAdiantamento = null;
 let _ultimaContagemNotifSolicGeral = null;
+let _ultimaContagemNotifContaPaga = null;
 
 /* -- Filtra os prazos de documentos (coletarPrazosDocumentos) que estão
    vencendo em breve, vencendo hoje ou em atraso há até 30 dias — mesma
@@ -33181,8 +33187,8 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
     const nomeAtual = _equipNomeAtual();
     const norm = s => (s || '').trim().toLowerCase();
 
-    const [equipamentos, prestacoes] = await Promise.all([
-      dbLer('Equipamentos'), dbLer('PrestacaoContas'),
+    const [equipamentos, prestacoes, contasPagarColab] = await Promise.all([
+      dbLer('Equipamentos'), dbLer('PrestacaoContas'), dbLer('ContasPagar'),
     ]);
 
     // Equipamentos enviados a este colaborador, aguardando checklist+fotos+assinatura dele.
@@ -33196,6 +33202,12 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
       ['Suspensa', 'Devolvida'].includes(r.Status) && norm(r.Responsavel) === norm(nomeAtual)
     );
 
+    // Contas a Pagar lançadas por este colaborador (campo "Lançado por") que já
+    // foram pagas pela Diretoria — avisa quem lançou que o documento foi pago.
+    const contasPagasNotif = (contasPagarColab || []).filter(r =>
+      r.Status === 'Pago' && norm(r.LancadoPor) === norm(nomeAtual) && norm(r.PagoPor) !== norm(nomeAtual)
+    );
+
     // Prazos para atendimento (Flash Report, Mitigação, NC) aplicados em documentos
     // criados por este colaborador, vencendo em breve ou em atraso.
     const emailAtualColab = (window._currentUser && window._currentUser.email || '').toLowerCase();
@@ -33205,7 +33217,7 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
     );
     const prazosVencendo = prazosDocumentosVencendoEmBreve(meusPrazos);
 
-    const total = equipPendentes.length + prestPendentes.length + prazosVencendo.length;
+    const total = equipPendentes.length + prestPendentes.length + prazosVencendo.length + contasPagasNotif.length;
 
     // Lista detalhada exibida no dropdown do sino (clique em cada item abre a pendência).
     window._notifItens = [];
@@ -33223,6 +33235,11 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
       icone: '⏰', titulo: p.titulo,
       subtitulo: 'Prazo: ' + (p.prazo ? new Date(p.prazo + 'T12:00').toLocaleDateString('pt-BR') : '—'),
       acao: () => _notifAbrirPrazoItem(p),
+    }));
+    contasPagasNotif.forEach(r => window._notifItens.push({
+      icone: '💸', titulo: 'Conta a pagar que você lançou foi paga',
+      subtitulo: (r.Fornecedor || 'Conta a Pagar') + ' — R$ ' + (r.Valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+      acao: () => navigate('pagar'),
     }));
 
     if (_ultimaContagemNotifEquip !== null && equipPendentes.length > _ultimaContagemNotifEquip) {
@@ -33258,7 +33275,18 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
     }
     _ultimaContagemNotifPrazos = prazosVencendo.length;
 
-    window._notifColabDestino = equipPendentes.length > 0 ? 'equipamentos' : (prestPendentes.length > 0 ? 'prestacao' : (prazosVencendo.length > 0 ? 'agenda' : 'equipamentos'));
+    if (_ultimaContagemNotifContaPaga !== null && contasPagasNotif.length > _ultimaContagemNotifContaPaga) {
+      const novas = contasPagasNotif.length - _ultimaContagemNotifContaPaga;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '💸 EXPEDIAN — Conta a Pagar paga',
+        novas === 1 ? 'Uma conta a pagar que você lançou foi paga.' : `${novas} contas a pagar que você lançou foram pagas.`,
+        'pagar'
+      );
+    }
+    _ultimaContagemNotifContaPaga = contasPagasNotif.length;
+
+    window._notifColabDestino = equipPendentes.length > 0 ? 'equipamentos' : (prestPendentes.length > 0 ? 'prestacao' : (prazosVencendo.length > 0 ? 'agenda' : (contasPagasNotif.length > 0 ? 'pagar' : 'equipamentos')));
 
     badge.dataset.notifCount = total > 0 ? total : '';
     let styleEl = document.getElementById('notif-badge-style');
@@ -33307,6 +33335,12 @@ async function atualizarBadgeNotificacoes() {
     const prazosVencendo = prazosDocumentosVencendoEmBreve(prazosDocumentos);
     const prestsAbertas = prests.filter(r => r.Status === 'Em Aberto');
     const contasPagarAprovacao = contasPagar.filter(r => r.Status === 'Aguardando Aprovação');
+    // Contas a Pagar lançadas por este usuário (Diretoria/Coordenação) que já foram
+    // pagas por outra pessoa — avisa quem lançou que o documento foi pago.
+    const normPago = s => (s || '').trim().toLowerCase();
+    const contasPagasNotifDir = contasPagar.filter(r =>
+      r.Status === 'Pago' && normPago(r.LancadoPor) === normPago(usuario.name) && normPago(r.PagoPor) !== normPago(usuario.name)
+    );
     const adiantamentosAprovacao = adiantamentos.filter(r => r.Status === 'Aguardando Aprovação');
     const totalAprovacoesPuras =
       aprsPendentes.length +
@@ -33316,7 +33350,7 @@ async function atualizarBadgeNotificacoes() {
       solicGeraisPendentes.length +
       despesasVencendo.length +
       prazosVencendo.length;
-    const total = totalAprovacoesPuras + flashPendentes.length + flashExclusaoPendente.length + equipExclusaoPendente.length + faunaExclusaoPendente.length + faunaFlashExclusaoPendente.length;
+    const total = totalAprovacoesPuras + flashPendentes.length + flashExclusaoPendente.length + equipExclusaoPendente.length + faunaExclusaoPendente.length + faunaFlashExclusaoPendente.length + contasPagasNotifDir.length;
 
     // Lista detalhada exibida no dropdown do sino (clique em cada item abre a pendência).
     window._notifItens = [];
@@ -33334,6 +33368,11 @@ async function atualizarBadgeNotificacoes() {
       icone: '💰', titulo: 'Conta a pagar aguardando aprovação',
       subtitulo: r.Descricao || r.Fornecedor || ('Conta #' + (r.Id || '')),
       acao: () => navigate('aprovacoes'),
+    }));
+    contasPagasNotifDir.forEach(r => window._notifItens.push({
+      icone: '💸', titulo: 'Conta a pagar que você lançou foi paga',
+      subtitulo: (r.Fornecedor || 'Conta a Pagar') + ' — R$ ' + (r.Valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+      acao: () => navigate('pagar'),
     }));
     adiantamentosAprovacao.forEach(r => window._notifItens.push({
       icone: '💵', titulo: 'Adiantamento aguardando aprovação',
@@ -33488,6 +33527,19 @@ async function atualizarBadgeNotificacoes() {
       _notifMostrarPush('💰 EXPEDIAN — Conta a Pagar', corpo, 'aprovacoes');
     }
     _ultimaContagemNotifContasPagar = contasPagarAprovacao.length;
+
+    // Detectar NOVAS Contas a Pagar pagas que este usuário lançou -> avisa que
+    // o documento já foi pago por outra pessoa.
+    if (_ultimaContagemNotifContaPaga !== null && contasPagasNotifDir.length > _ultimaContagemNotifContaPaga) {
+      const novas = contasPagasNotifDir.length - _ultimaContagemNotifContaPaga;
+      _notifTocarSom();
+      _notifMostrarPush(
+        '💸 EXPEDIAN — Conta a Pagar paga',
+        novas === 1 ? 'Uma conta a pagar que você lançou foi paga.' : `${novas} contas a pagar que você lançou foram pagas.`,
+        'pagar'
+      );
+    }
+    _ultimaContagemNotifContaPaga = contasPagasNotifDir.length;
 
     // Detectar NOVOS Adiantamentos aguardando aprovação -> som + push específico
     if (_ultimaContagemNotifAdiantamento !== null && adiantamentosAprovacao.length > _ultimaContagemNotifAdiantamento) {
