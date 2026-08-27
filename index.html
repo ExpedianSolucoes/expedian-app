@@ -6390,7 +6390,7 @@ async function carregarContasPagar() {
         const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}` : (i.FormaPagamento||'—');
         return `<tr>
           <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
-          <td><strong>${i.Fornecedor||'—'}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}</td>
+          <td><strong>${i.Fornecedor||'—'}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}${i.Provisorio?`<div style="font-size:.62rem;color:var(--amber);font-weight:700" title="Valor estimado pela alíquota configurada — ainda não reconciliado com o DAS real (ver Notas Fiscais > 🧮 Reconciliar DAS)">📐 Provisão</div>`:''}</td>
           <td style="font-size:.78rem">${i.Descricao||'—'}${i.ComprovanteUrl?`<br><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.68rem">📎 Ver comprovante</a>`:''}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}${(i.DivisaoCC&&i.DivisaoCC.length)?`<div style="color:var(--blue)">🧩 dividido (${i.DivisaoCC.length})</div>`:''}</td>
           <td style="font-size:.72rem">${pgtoTxt}</td>
@@ -7672,10 +7672,10 @@ async function rcSalvarEdicaoReceita(id) {
   const issRetido = (document.getElementById('rce_iss_retido')||{}).value || '';
   let comprovanteUrl = window._rceComprovanteUrl || '';
   let comprovanteNome = window._rceComprovanteNome || '';
+  const original = (window._rcReceitasPorId || {})[id] || {};
 
   // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/cliente definitivos
   if (window._rceComprovanteId && window._rceComprovanteDriveId) {
-    const original = (window._rcReceitasPorId || {})[id] || {};
     const nomeDesejado = financeiroGerarNomeComprovante(original.DataEmissao, valor, original.Cliente, comprovanteNome);
     const renomeado = await renomearArquivoOneDrive(window._rceComprovanteDriveId, window._rceComprovanteId, nomeDesejado);
     if (renomeado) { comprovanteUrl = renomeado.url || comprovanteUrl; comprovanteNome = renomeado.nome || comprovanteNome; }
@@ -7699,6 +7699,12 @@ async function rcSalvarEdicaoReceita(id) {
   showToast(ok ? '✅ Lançamento atualizado!' : '❌ Erro ao salvar.');
   if (ok) {
     const modal = document.getElementById('rc-edit-modal'); if (modal) modal.remove();
+    if (status === 'Recebido' && original.Status !== 'Recebido' && numeroNF) {
+      await financeiroGerarProvisaoImposto({
+        receitaId: id, numeroNF, cliente: original.Cliente, empresa: original.Empresa,
+        centroCusto: original.CentroCusto, valor, dataRecebimento: campos.DataRecebimento,
+      });
+    }
     carregarReceitas();
     carregarNotasFiscais();
   }
@@ -7734,6 +7740,215 @@ async function exportarReceitasExcel() {
   XLSX.writeFile(wb, 'Receitas_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
+/* =============================================================
+   IMPOSTO AUTOMÁTICO SOBRE NOTA FISCAL RECEBIDA (Simples Nacional / DAS)
+   Pedido em 27/08/2026: ao marcar uma Receita com Nº de NF como "Recebido",
+   gera automaticamente uma PROVISÃO de imposto (Contas a Pagar, categoria
+   Impostos > Simples Nacional) já vinculada ao MESMO Centro de Custo/contrato
+   da nota, calculada pela alíquota configurada por empresa (config editável,
+   já que a faixa do Simples muda ao longo do ano conforme o RBT12). Quando o
+   DAS real do mês chega (1 boleto só, cobrindo várias notas), a Reconciliação
+   de DAS distribui esse valor real proporcionalmente entre as provisões
+   daquele mês de recebimento, substituindo a estimativa pelo valor
+   definitivo — sem perder o vínculo por contrato/CC em nenhum momento.
+   ============================================================= */
+
+async function financeiroObterAliquota(empresa) {
+  try {
+    const config = await dbLer('ConfigFinanceiro');
+    const rec = (config || []).find(c => c.Empresa === empresa);
+    return rec ? (Number(rec.AliquotaSimples) || 0) : 0;
+  } catch (e) { return 0; }
+}
+
+function financeiroAbrirConfigAliquota() {
+  const existente = document.getElementById('fin-aliquota-modal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.id = 'fin-aliquota-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:420px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <div style="font-weight:800;font-size:1rem">🧮 Alíquota do Simples Nacional</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('fin-aliquota-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Usada pra estimar automaticamente o imposto (DAS) ao marcar uma Nota Fiscal como recebida. Ajuste aqui sempre que a faixa de faturamento (RBT12) mudar de anexo/alíquota.</div>
+      <div id="fin-aliquota-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn-primary" style="flex:1" onclick="financeiroSalvarAliquota()">💾 Salvar</button>
+        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('fin-aliquota-modal').remove()">Fechar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  financeiroCarregarConfigAliquota();
+}
+
+async function financeiroCarregarConfigAliquota() {
+  const el = document.getElementById('fin-aliquota-lista');
+  if (!el) return;
+  const config = await dbLer('ConfigFinanceiro').catch(() => []);
+  window._finConfigAliquota = RD_EMPRESAS.map(emp => {
+    const rec = (config || []).find(c => c.Empresa === emp);
+    return { Empresa: emp, Id: rec ? rec.Id : null, AliquotaSimples: rec ? rec.AliquotaSimples : '' };
+  });
+  el.innerHTML = window._finConfigAliquota.map((c, i) => `
+    <div class="form-group" style="margin-bottom:12px">
+      <label>${c.Empresa} <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">(% sobre o valor de cada NF)</span></label>
+      <input type="text" inputmode="decimal" value="${c.AliquotaSimples || ''}" placeholder="Ex: 6,00" oninput="window._finConfigAliquota[${i}].AliquotaSimples = this.value.replace(',','.')" style="width:100%">
+    </div>`).join('');
+}
+
+async function financeiroSalvarAliquota() {
+  const itens = window._finConfigAliquota || [];
+  showToast('💾 Salvando...');
+  for (const c of itens) {
+    const valor = parseFloat(c.AliquotaSimples) || 0;
+    if (c.Id) await dbAtualizar('ConfigFinanceiro', c.Id, { AliquotaSimples: valor });
+    else if (valor) await dbInserir('ConfigFinanceiro', { Empresa: c.Empresa, AliquotaSimples: valor });
+  }
+  showToast('✅ Alíquotas salvas!');
+  const m = document.getElementById('fin-aliquota-modal'); if (m) m.remove();
+}
+
+/* -- Gera a provisão de imposto de UMA nota fiscal ao ser marcada como
+   recebida (ver rcSalvarEdicaoReceita). Se a empresa não tiver alíquota
+   configurada, avisa e não provisiona nada — melhor não gerar valor errado
+   do que gerar um R$ 0,00 silencioso. -- */
+async function financeiroGerarProvisaoImposto({ receitaId, numeroNF, cliente, empresa, centroCusto, valor, dataRecebimento }) {
+  const aliquota = await financeiroObterAliquota(empresa);
+  if (!aliquota) {
+    showToast('⚠️ Alíquota do Simples Nacional não configurada para ' + empresa + ' — o imposto desta NF não foi provisionado. Configure em Notas Fiscais > 🧮 Alíquota.');
+    return;
+  }
+  const valorImposto = Math.round(valor * aliquota) / 100;
+  if (!valorImposto) return;
+  const dtReceb = dataRecebimento || new Date().toISOString().slice(0, 10);
+  const competencia = dtReceb.slice(0, 7); // YYYY-MM — mês de recebimento (regime de caixa)
+  const [ano, mes] = competencia.split('-').map(Number);
+  // DAS vence no dia 20 do mês SEGUINTE à competência (regra do Simples Nacional)
+  const anoVenc = mes === 12 ? ano + 1 : ano;
+  const mesVenc = mes === 12 ? 1 : mes + 1;
+  const vencimento = anoVenc + '-' + String(mesVenc).padStart(2, '0') + '-20';
+  const dados = {
+    Title: 'DAS (Simples Nacional) — NF ' + numeroNF,
+    Fornecedor: 'DAS — Simples Nacional', Descricao: 'Imposto estimado sobre a NF ' + numeroNF + (cliente ? ' — ' + cliente : ''),
+    Empresa: empresa, CentroCusto: centroCusto || '',
+    Categoria: 'Impostos', Subcategoria: 'Simples Nacional', NaturezaEconomica: rdNaturezaDeSubcategoria('Simples Nacional'),
+    Vencimento: vencimento, Valor: valorImposto, Status: calcularStatusVencimento(vencimento),
+    Parcelamento: 'avista', LancadoPor: window._currentUser ? window._currentUser.name : '',
+    Provisorio: true, NFOrigemId: receitaId, NumeroNFOrigem: numeroNF, CompetenciaDAS: competencia, AliquotaUsada: aliquota,
+    DivisaoCC: [],
+  };
+  const ok = await dbInserir('ContasPagar', dados);
+  if (ok) showToast('🧮 Provisão de DAS gerada: R$ ' + rdNumeroParaMoeda(valorImposto) + ' (' + aliquota + '% sobre R$ ' + rdNumeroParaMoeda(valor) + ')');
+}
+
+/* -- Reconciliação de DAS: quando o boleto real do mês chega (1 valor só,
+   cobrindo várias notas), distribui esse valor PROPORCIONALMENTE entre as
+   provisões da mesma empresa/competência, substituindo a estimativa pelo
+   valor definitivo — mantém o vínculo por Centro de Custo intacto, porque
+   continua sendo N lançamentos (um por NF), só com o valor corrigido. -- */
+function financeiroAbrirReconciliacaoDAS() {
+  const existente = document.getElementById('fin-das-modal'); if (existente) existente.remove();
+  const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  const mesAtual = new Date().toISOString().slice(0, 7);
+  // Sugere o mês anterior como competência — o DAS de um mês só fica pronto
+  // (e normalmente só é pago) no mês seguinte.
+  const [anoA, mesA] = mesAtual.split('-').map(Number);
+  const anoAnt = mesA === 1 ? anoA - 1 : anoA;
+  const mesAnt = mesA === 1 ? 12 : mesA - 1;
+  const competenciaSugerida = anoAnt + '-' + String(mesAnt).padStart(2, '0');
+  const bancosEmpresa = RD_BANCOS_POR_EMPRESA[empresaAtiva] || [];
+
+  const modal = document.createElement('div');
+  modal.id = 'fin-das-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <div style="font-weight:800;font-size:1rem">🧮 Reconciliar DAS do mês</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('fin-das-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Distribui o valor real do DAS pago entre as provisões de imposto das notas fiscais daquele mês de recebimento, proporcionalmente ao valor de cada nota.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <select id="dasr_empresa" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.8rem">
+          ${RD_EMPRESAS.map(e => `<option value="${e}" ${e === empresaAtiva ? 'selected' : ''}>${e}</option>`).join('')}
+        </select>
+        <input type="month" id="dasr_competencia" value="${competenciaSugerida}" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.8rem">
+        <input type="text" inputmode="decimal" id="dasr_valor_real" placeholder="Valor real do DAS (R$)" oninput="rdFormatarMoedaInput(this)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.8rem;flex:1;min-width:140px">
+        <button class="btn-secondary" onclick="financeiroBuscarProvisoesDAS()">🔍 Buscar</button>
+      </div>
+      <div id="dasr_lista" style="margin-bottom:12px"></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;cursor:pointer;margin-bottom:10px">
+        <input type="checkbox" id="dasr_marcar_pago" style="width:auto" onchange="document.getElementById('dasr_pagamento_campos').style.display=this.checked?'grid':'none'">
+        Já marcar como pago (informar banco e data)
+      </label>
+      <div id="dasr_pagamento_campos" style="display:none;gap:8px;margin-bottom:10px" class="form-row">
+        <div class="form-group"><label>Data do pagamento</label><input type="date" id="dasr_data_pagamento"></div>
+        <div class="form-group"><label>Banco</label><input type="text" id="dasr_banco" list="dasr_bancos_dl"></div>
+        <datalist id="dasr_bancos_dl">${bancosEmpresa.map(b => `<option value="${b}">`).join('')}</datalist>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" style="flex:1" onclick="financeiroConfirmarReconciliacaoDAS()">✅ Distribuir e Confirmar</button>
+        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('fin-das-modal').remove()">Fechar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function financeiroBuscarProvisoesDAS() {
+  const empresa = (document.getElementById('dasr_empresa')||{}).value;
+  const competencia = (document.getElementById('dasr_competencia')||{}).value;
+  const lista = document.getElementById('dasr_lista');
+  if (!lista) return;
+  if (!competencia) { showToast('⚠️ Selecione a competência (mês).'); return; }
+  lista.innerHTML = '<div style="font-size:.8rem;color:var(--text-muted)">Buscando...</div>';
+  const todas = await dbLer('ContasPagar').catch(() => []);
+  const provisoes = (todas || []).filter(r => r.Empresa === empresa && r.CompetenciaDAS === competencia && r.Subcategoria === 'Simples Nacional' && r.Provisorio === true);
+  window._dasrProvisoes = provisoes;
+  if (!provisoes.length) {
+    lista.innerHTML = '<div style="font-size:.8rem;color:var(--text-muted);padding:8px 0">Nenhuma provisão de DAS encontrada para essa empresa/competência.</div>';
+    return;
+  }
+  const somaEstimada = provisoes.reduce((s, r) => s + (r.Valor || 0), 0);
+  lista.innerHTML = `
+    <div style="font-size:.76rem;color:var(--text-muted);margin-bottom:6px">${provisoes.length} nota(s) — soma estimada: <strong>R$ ${rdNumeroParaMoeda(somaEstimada)}</strong></div>
+    <div style="display:flex;flex-direction:column;gap:5px;max-height:220px;overflow-y:auto">
+      ${provisoes.map(r => `<div style="display:flex;justify-content:space-between;gap:8px;background:var(--surface2);padding:6px 10px;border-radius:8px;font-size:.78rem">
+        <span>🧾 NF ${r.NumeroNFOrigem || '—'} · ${r.CentroCusto || '—'}</span>
+        <span style="font-weight:700">R$ ${rdNumeroParaMoeda(r.Valor || 0)}</span>
+      </div>`).join('')}
+    </div>`;
+}
+
+async function financeiroConfirmarReconciliacaoDAS() {
+  const provisoes = window._dasrProvisoes || [];
+  if (!provisoes.length) { showToast('⚠️ Busque as provisões antes de confirmar.'); return; }
+  const valorReal = rdMoedaParaNumero((document.getElementById('dasr_valor_real')||{}).value);
+  if (!valorReal) { showToast('⚠️ Informe o valor real do DAS pago.'); return; }
+  const marcarPago = (document.getElementById('dasr_marcar_pago')||{}).checked;
+  const dataPag = (document.getElementById('dasr_data_pagamento')||{}).value;
+  const banco = (document.getElementById('dasr_banco')||{}).value;
+  if (marcarPago && (!dataPag || !banco)) { showToast('⚠️ Informe data e banco do pagamento, ou desmarque a opção.'); return; }
+
+  const somaEstimada = provisoes.reduce((s, r) => s + (r.Valor || 0), 0);
+  showToast('💾 Distribuindo...');
+  for (const r of provisoes) {
+    const proporcao = somaEstimada > 0 ? (r.Valor || 0) / somaEstimada : (1 / provisoes.length);
+    const valorReal_i = Math.round(valorReal * proporcao * 100) / 100;
+    const campos = { Valor: valorReal_i, Provisorio: false, DASValorRealTotal: valorReal };
+    if (marcarPago) {
+      campos.Status = 'Pago'; campos.DataPagamento = dataPag; campos.BancoPagamento = banco;
+      campos.PagoPor = window._currentUser ? window._currentUser.name : '';
+    }
+    await dbAtualizar('ContasPagar', r.Id, campos);
+    if (marcarPago) await pagSincronizarDespesa(r.Id, dataPag, banco).catch(() => {});
+  }
+  showToast('✅ DAS distribuído entre ' + provisoes.length + ' nota(s)!');
+  const m = document.getElementById('fin-das-modal'); if (m) m.remove();
+  carregarContasPagar();
+}
+
 /* ===== Notas Fiscais =====
    Não é uma tabela nova — é uma VISÃO sobre 'Receitas'. Toda receita pode
    ter um Nº de NF preenchido (campo NumeroNF, opcional); esta aba só filtra
@@ -7762,9 +7977,13 @@ function renderNotasFiscaisTab(destino) {
   <div style="font-size:.7rem;color:var(--text-muted);margin:6px 0 14px">💡 O filtro de mês usa a <strong>data de recebimento</strong> (regime de caixa). Notas emitidas mas ainda não recebidas não somem — elas contam no card "Emitidas, ainda não recebidas", fora do filtro de mês.</div>
 
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="margin:0">Notas Fiscais</div>
-      <button class="btn-secondary" onclick="exportarNotasFiscaisExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-secondary" onclick="financeiroAbrirConfigAliquota()" style="font-size:.78rem;padding:6px 12px">🧮 Alíquota</button>
+        <button class="btn-secondary" onclick="financeiroAbrirReconciliacaoDAS()" style="font-size:.78rem;padding:6px 12px">🧮 Reconciliar DAS</button>
+        <button class="btn-secondary" onclick="exportarNotasFiscaisExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
+      </div>
     </div>
     <div id="lista-notas-fiscais"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
