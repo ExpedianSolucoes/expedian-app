@@ -1316,7 +1316,6 @@ function renderPage(id) {
     prestacao: () => pagePrestacao(),
     receber: () => pageReceber(),
     pagar: () => pagePagar(),
-    busca_financeira: () => pageBuscaFinanceira(),
     receitas_despesas: () => pageReceitasDespesas(),
     aprovacoes: () => pageAprovacoes(),
     agenda: () => pageAgenda(),
@@ -24205,7 +24204,6 @@ const FINANCEIRO_CATALOGO = [
   { rota: 'custos', icon: '🗂️', titulo: 'Centros de Custo', subtitulo: 'Contratos e projetos ativos, com valor aprovado, receitas, despesas e saldo', perfis: ['diretoria'] },
   { rota: 'receber', icon: '💰', titulo: 'Contas a Receber', subtitulo: 'Notas fiscais, recebimentos e pendências — por cliente e Centro de Custo', perfis: ['diretoria','coordenador'] },
   { rota: 'pagar', icon: '💸', titulo: 'Contas a Pagar', subtitulo: 'Fornecedores, lançamentos, vencimentos e pagamentos', perfis: ['diretoria','coordenador'] },
-  { rota: 'busca_financeira', icon: '🔍', titulo: 'Busca Financeira', subtitulo: 'Encontre um lançamento por fornecedor ou valor em Contas a Pagar, Despesas e Prestação de Contas', perfis: ['diretoria','coordenador'] },
   // Receitas e Despesas viraram dois botões próprios (antes era 1 botão só,
   // "Receitas e Despesas") — os dados já eram tabelas separadas por trás
   // (Receitas.json / Despesas.json), isso só separa também o ponto de
@@ -24219,12 +24217,21 @@ const FINANCEIRO_CATALOGO = [
 
 function pageFinanceiroHub() {
   const catalogoVisivel = FINANCEIRO_CATALOGO.filter(c => c.perfis.includes(currentProfile));
+  const podeBuscar = currentProfile === 'diretoria' || currentProfile === 'coordenador';
   return `
-  <div class="page-header">
-    <h1>Financeiro</h1>
-    <p>Gestão financeira da empresa — escolha um módulo abaixo</p>
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+    <div>
+      <h1>Financeiro</h1>
+      <p>Gestão financeira da empresa — escolha um módulo abaixo</p>
+    </div>
+    ${podeBuscar ? `
+    <div style="position:relative;min-width:260px;flex-shrink:0">
+      <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:.9rem;pointer-events:none">🔍</span>
+      <input type="text" id="fh_busca" placeholder="Buscar fornecedor ou valor..." autocomplete="off" oninput="financeiroHubBuscar()" style="width:100%;padding:9px 14px 9px 34px;border-radius:20px;border:1px solid var(--border);font-size:.85rem;background:var(--surface)">
+    </div>` : ''}
   </div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
+  ${podeBuscar ? `<div id="fh-busca-resultados"></div>` : ''}
+  <div id="fh-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
     ${catalogoVisivel.map(c => `
     <div class="card" style="cursor:pointer" onclick="${c.preTab ? `window._rdTab='${c.preTab}';` : ''}navigate('${c.rota}')">
       <div style="font-size:1.8rem;margin-bottom:8px">${c.icon}</div>
@@ -24235,57 +24242,45 @@ function pageFinanceiroHub() {
 }
 
 /* =====================================================================
-   BUSCA FINANCEIRA — pesquisa unificada por Fornecedor e/ou Valor, cruzando
+   BUSCA FINANCEIRA — barra de busca fixa no topo do hub Financeiro (ao
+   lado do título), pesquisa unificada por Fornecedor e/ou Valor, cruzando
    as 3 tabelas de lançamento (Contas a Pagar, Despesas, Prestação de Contas)
    de uma vez só, pra quem é do financeiro não precisar abrir aba por aba
-   procurando o mesmo lançamento. Mesma restrição de perfil de "pagar"/"receber".
+   procurando o mesmo lançamento. Um único campo: se o texto digitado é
+   puramente numérico (com vírgula/ponto), busca por valor exato; senão,
+   busca por nome do fornecedor (substring). Restrito a quem já vê Contas a
+   Pagar/Receber (diretoria/coordenador — ver `podeBuscar` em pageFinanceiroHub).
    Clicar num resultado abre o registro: Contas a Pagar e Prestação têm
    modais que se bastam sozinhos (dbLer próprio se precisar, sem depender de
    nenhuma outra página já estar carregada) — Despesas não, o editor lê de um
    mapa (`_rdDespesasPorId`) que só existe depois que a aba Despesas carregou,
    então pra esse caso a gente navega pra lá primeiro e só abre depois. -- */
-function pageBuscaFinanceira() {
-  return `
-  <div class="page-header"><h1>🔍 Busca Financeira</h1><p>Encontre um lançamento por fornecedor e/ou valor — busca em Contas a Pagar, Despesas e Prestação de Contas ao mesmo tempo</p></div>
-  <div style="margin-bottom:16px">
-    <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
-  </div>
-  <div class="form-card" style="margin-bottom:16px">
-    <div class="form-row">
-      <div class="form-group">
-        <label>Fornecedor</label>
-        <input type="text" id="bf_fornecedor" placeholder="Nome do fornecedor..." oninput="buscaFinanceiraExecutar()" autocomplete="off">
-      </div>
-      <div class="form-group">
-        <label>Valor exato (R$)</label>
-        <input type="number" id="bf_valor" step="0.01" placeholder="Ex: 1250.00" oninput="buscaFinanceiraExecutar()">
-      </div>
-    </div>
-  </div>
-  <div id="bf-resultados">
-    <div style="color:var(--text-muted);font-size:.85rem;text-align:center;padding:30px 10px">Digite um fornecedor e/ou um valor para buscar.</div>
-  </div>`;
-}
-
 function _bfLabelOrigem(origem) {
   if (origem === 'pagar') return { icone: '💸', nome: 'Contas a Pagar' };
   if (origem === 'despesa') return { icone: '💰', nome: 'Despesa' };
   return { icone: '📑', nome: 'Prestação de Contas' };
 }
 
-async function buscaFinanceiraExecutar() {
-  const el = document.getElementById('bf-resultados');
+async function financeiroHubBuscar() {
+  const grid = document.getElementById('fh-grid');
+  const el = document.getElementById('fh-busca-resultados');
   if (!el) return;
-  const fTexto = ((document.getElementById('bf_fornecedor')||{}).value || '').trim().toLowerCase();
-  const fValorStr = (document.getElementById('bf_valor')||{}).value || '';
-  const fValor = fValorStr !== '' ? parseFloat(fValorStr) : null;
+  const bruto = ((document.getElementById('fh_busca')||{}).value || '').trim();
 
-  if (!fTexto && (fValor === null || isNaN(fValor))) {
-    el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;text-align:center;padding:30px 10px">Digite um fornecedor e/ou um valor para buscar.</div>';
+  if (!bruto) {
+    el.innerHTML = '';
+    if (grid) grid.style.display = 'grid';
     return;
   }
+  if (grid) grid.style.display = 'none';
 
-  el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;text-align:center;padding:30px 10px">Buscando...</div>';
+  // Texto puramente numérico (aceita vírgula ou ponto decimal) -> busca por valor exato.
+  // Qualquer outra coisa -> busca por nome do fornecedor (substring, sem acento/caixa fixos).
+  const soNumero = /^[\d.,]+$/.test(bruto);
+  const fTexto = soNumero ? '' : bruto.toLowerCase();
+  const fValor = soNumero ? parseFloat(bruto.replace(',', '.')) : null;
+
+  el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;text-align:center;padding:20px 10px">Buscando...</div>';
 
   try {
     const [contasPagar, despesas, prestacoes] = await Promise.all([
@@ -24323,7 +24318,7 @@ async function buscaFinanceiraExecutar() {
     resultados.sort((a, b) => (b.data || '').localeCompare(a.data || ''));
 
     if (!resultados.length) {
-      el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;text-align:center;padding:30px 10px">Nenhum lançamento encontrado com esses filtros.</div>';
+      el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;text-align:center;padding:20px 10px">Nenhum lançamento encontrado com "' + bruto.replace(/</g,'&lt;') + '".</div>';
       return;
     }
 
@@ -24348,7 +24343,7 @@ async function buscaFinanceiraExecutar() {
         </div>`;
       }).join('');
   } catch(e) {
-    el.innerHTML = '<div style="color:var(--red);font-size:.85rem;text-align:center;padding:30px 10px">Erro ao buscar. Tente novamente.</div>';
+    el.innerHTML = '<div style="color:var(--red);font-size:.85rem;text-align:center;padding:20px 10px">Erro ao buscar. Tente novamente.</div>';
   }
 }
 
