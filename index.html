@@ -5118,22 +5118,26 @@ function pageReceber() {
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   setTimeout(()=>carregarNotasFiscais(),200);
   return `
-  <div class="page-header"><h1>Nota Fiscal</h1><p>Notas fiscais emitidas, recebimentos e pendências — por cliente e Centro de Custo</p></div>
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:14px">
+    <div><h1>Nota Fiscal</h1><p>Notas fiscais emitidas, recebimentos e pendências — por cliente e Centro de Custo</p></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding-top:2px">
+      ${RD_EMPRESAS.map(emp => {
+        const ativo = emp === (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
+        const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
+        return `<button onclick="rdSelecionarEmpresa('${emp}','receber')"
+          style="display:flex;align-items:center;gap:7px;padding:9px 16px;border-radius:10px;
+            border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
+            background:${ativo?cor:'var(--surface2)'};
+            color:${ativo?'#fff':'var(--text)'};
+            font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${ativo?'700':'500'};cursor:pointer">
+          🏢 ${emp}
+        </button>`;
+      }).join('')}
+    </div>
+  </div>
   <div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
     <button class="btn-secondary" onclick="window._rdTab='receitas';navigate('receitas_despesas')">💰 Ir para Receitas</button>
-    ${RD_EMPRESAS.map(emp => {
-      const ativo = emp === (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
-      const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
-      return `<button onclick="rdSelecionarEmpresa('${emp}','receber')"
-        style="display:flex;align-items:center;gap:7px;padding:9px 16px;border-radius:10px;
-          border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
-          background:${ativo?cor:'var(--surface2)'};
-          color:${ativo?'#fff':'var(--text)'};
-          font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${ativo?'700':'500'};cursor:pointer">
-        🏢 ${emp}
-      </button>`;
-    }).join('')}
   </div>
   ${renderNotasFiscaisTab('receber')}`;
 }
@@ -8554,10 +8558,19 @@ function renderNotasFiscaisTab(destino) {
   const mesAtual = new Date().toISOString().slice(0,7);
   return `
 
-  <div class="kpi-grid" style="margin-bottom:16px">
-    <div class="kpi-card blue" id="nf-kpi-card-total"><div class="kpi-label">Notas no Mês (recebimento)</div><div class="kpi-value" id="nf-kpi-total">—</div><div class="kpi-icon">🧾</div></div>
-    <div class="kpi-card green" id="nf-kpi-card-recebido"><div class="kpi-label">Valor Recebido no Mês</div><div class="kpi-value" id="nf-kpi-recebido" style="font-size:1.05rem">—</div><div class="kpi-icon">✅</div></div>
-    <div class="kpi-card amber" id="nf-kpi-card-pendente"><div class="kpi-label">Emitidas, Ainda Não Recebidas</div><div class="kpi-value" id="nf-kpi-pendente" style="font-size:1.05rem">—</div><div class="kpi-icon">⏳</div></div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:stretch;margin-bottom:16px">
+    <div style="flex:1.3;min-width:300px;display:flex;flex-direction:column;gap:12px">
+      <div class="kpi-grid" style="margin-bottom:0;align-content:start">
+        <div class="kpi-card blue" id="nf-kpi-card-total"><div class="kpi-label">Notas no Mês (recebimento)</div><div class="kpi-value" id="nf-kpi-total">—</div><div class="kpi-icon">🧾</div></div>
+        <div class="kpi-card green" id="nf-kpi-card-recebido"><div class="kpi-label">Valor Recebido no Mês</div><div class="kpi-value" id="nf-kpi-recebido" style="font-size:1.05rem">—</div><div class="kpi-icon">✅</div></div>
+        <div class="kpi-card amber" id="nf-kpi-card-pendente"><div class="kpi-label">Emitidas, Ainda Não Recebidas</div><div class="kpi-value" id="nf-kpi-pendente" style="font-size:1.05rem">—</div><div class="kpi-icon">⏳</div></div>
+      </div>
+      <div class="card" style="margin-bottom:0;flex:1;min-height:110px;display:flex;flex-direction:column">
+        <div class="card-title" style="margin-bottom:6px;font-size:.8rem">📈 Recebido x A Receber x Vencido</div>
+        <div style="position:relative;flex:1;min-height:90px"><canvas id="nf-grafico-mensal"></canvas></div>
+      </div>
+    </div>
+    <div id="nf-resumo-mensal" style="flex:1;min-width:320px"></div>
   </div>
 
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
@@ -8597,6 +8610,7 @@ async function carregarNotasFiscais() {
     doEmpresa.forEach(i => { window._rcReceitasPorId[i.Id] = i; });
 
     const comNF = doEmpresa.filter(i => i.NumeroNF);
+    nfRenderResumoMensal(comNF);
 
     const fMes = (document.getElementById('nf_filtro_mes')||{}).value || '';
     const fBusca = ((document.getElementById('nf_filtro_busca')||{}).value || '').trim().toLowerCase();
@@ -8639,6 +8653,99 @@ async function carregarNotasFiscais() {
   } catch (e) {
     el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';
   }
+}
+
+/* -- Calendário Mensal de Notas Fiscais — mesmo padrão de Receitas/Despesas
+   (pedido em 30/08/2026). Usa data de recebimento (regime de caixa, mesma
+   base do filtro de mês da página) com fallback pra data prevista/emissão
+   nas notas ainda não recebidas, senão elas não apareceriam em mês nenhum. -- */
+function nfRenderResumoMensal(items) {
+  const el = document.getElementById('nf-resumo-mensal');
+  if (!el) return;
+  if (!window._nfAnoResumo) window._nfAnoResumo = new Date().getFullYear();
+  const ano = window._nfAnoResumo;
+  const porMes = {};
+  for (let m = 1; m <= 12; m++) porMes[m] = { total: 0, recebido: 0, vencido: 0, qtd: 0 };
+  items.forEach(i => {
+    const chave = i.DataRecebimento || i.DataPrevista || i.DataEmissao || '';
+    if (chave.slice(0,4) !== String(ano)) return;
+    const m = parseInt(chave.slice(5,7), 10);
+    if (!m || !porMes[m]) return;
+    porMes[m].qtd++;
+    porMes[m].total += (i.Valor || 0);
+    if (i.Status === 'Recebido') porMes[m].recebido += (i.Valor || 0);
+    else if (i.Status === 'Em atraso') porMes[m].vencido += (i.Valor || 0);
+  });
+  const fMesAtivo = (document.getElementById('nf_filtro_mes')||{}).value || '';
+  const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const fmt0 = (v) => v.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0});
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:0;height:100%">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="card-title" style="margin:0">📆 Calendário Mensal</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button onclick="nfMudarAnoResumo(-1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">‹</button>
+          <span style="font-weight:800;font-size:.9rem;min-width:38px;text-align:center">${ano}</span>
+          <button onclick="nfMudarAnoResumo(1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">›</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:7px">
+        ${nomesMes.map((nome, idx) => {
+          const m = idx + 1;
+          const d = porMes[m];
+          const chaveMes = ano + '-' + String(m).padStart(2,'0');
+          const ativo = fMesAtivo === chaveMes;
+          const vazio = d.qtd === 0;
+          const pendente = Math.max(d.total - d.recebido - d.vencido, 0);
+          return `<div onclick="document.getElementById('nf_filtro_mes').value='${vazio?'':chaveMes}';carregarNotasFiscais()" style="cursor:pointer;padding:8px 6px;border-radius:9px;text-align:center;border:${ativo?'2px solid var(--green-main)':'1px solid var(--border)'};background:${ativo?'var(--green-pale)':(vazio?'var(--bg)':'var(--surface2)')};opacity:${vazio?'.55':'1'}">
+            <div style="font-size:.7rem;font-weight:800;color:var(--text-muted)">${nome}</div>
+            <div style="font-size:.74rem;font-weight:800;margin:3px 0">${vazio?'—':'R$ '+fmt0(d.total)}</div>
+            ${!vazio ? `<div style="font-size:.56rem;color:var(--text-muted);line-height:1.5">${d.recebido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✅ ${fmt0(d.recebido)} receb.</div>`):''}${pendente>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🟡 ${fmt0(pendente)} a receber</div>`):''}${d.vencido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">⚠️ ${fmt0(d.vencido)} venc.</div>`):''}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+      ${fMesAtivo ? `<button onclick="document.getElementById('nf_filtro_mes').value='';carregarNotasFiscais()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
+    </div>`;
+
+  nfRenderGraficoMensal(porMes, ano, nomesMes);
+}
+
+async function nfRenderGraficoMensal(porMes, ano, nomesMes) {
+  const canvas = document.getElementById('nf-grafico-mensal');
+  if (!canvas) return;
+  try {
+    if (typeof Chart === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const canvasAtual = document.getElementById('nf-grafico-mensal');
+    if (!canvasAtual) return;
+    if (window._nfGraficoMensal) { window._nfGraficoMensal.destroy(); window._nfGraficoMensal = null; }
+    const recebido = nomesMes.map((_, idx) => porMes[idx+1].recebido);
+    const aReceber = nomesMes.map((_, idx) => Math.max(porMes[idx+1].total - porMes[idx+1].recebido - porMes[idx+1].vencido, 0));
+    const vencido = nomesMes.map((_, idx) => porMes[idx+1].vencido);
+    window._nfGraficoMensal = new Chart(canvasAtual.getContext('2d'), {
+      type: 'line',
+      data: { labels: nomesMes, datasets: [
+        { label: 'Recebido', data: recebido, borderColor: '#28a745', backgroundColor: '#28a74522', borderWidth: 1.5, pointRadius: 0, tension: .3, fill: true },
+        { label: 'A Receber', data: aReceber, borderColor: '#e0a800', backgroundColor: '#e0a80022', borderWidth: 1.5, pointRadius: 0, tension: .3, fill: true },
+        { label: 'Vencido', data: vencido, borderColor: '#dc3545', backgroundColor: '#dc354522', borderWidth: 1.5, pointRadius: 0, tension: .3, fill: true },
+      ]},
+      options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'top', labels: { boxWidth: 8, font: { size: 9 }, padding: 6 } } },
+        scales: { x: { ticks: { font: { size: 8 } } }, y: { ticks: { font: { size: 8 }, callback: (v) => (v/1000).toLocaleString('pt-BR',{maximumFractionDigits:0})+'k' } } }
+      }
+    });
+  } catch (e) { /* Chart.js indisponível — gráfico só não aparece */ }
+}
+
+function nfMudarAnoResumo(delta) {
+  window._nfAnoResumo = (window._nfAnoResumo || new Date().getFullYear()) + delta;
+  carregarNotasFiscais();
 }
 
 async function exportarNotasFiscaisExcel() {
