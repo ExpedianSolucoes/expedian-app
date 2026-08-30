@@ -7111,7 +7111,23 @@ function pageReceitasDespesas() {
   const subtituloTab = { despesas: 'Lançamentos de despesa da empresa', receitas: 'Lançamentos de receita da empresa', conciliacao: 'Conciliação com o extrato bancário' }[tab] || 'Lançamentos financeiros detalhados da empresa';
 
   return `
-  <div class="page-header"><h1>${tituloTab}</h1><p>${subtituloTab}</p></div>
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:14px">
+    <div><h1>${tituloTab}</h1><p>${subtituloTab}</p></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding-top:2px">
+      ${RD_EMPRESAS.map(emp => {
+        const ativo = emp === (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
+        const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
+        return `<button onclick="rdSelecionarEmpresa('${emp}','receitas_despesas')"
+          style="display:flex;align-items:center;gap:7px;padding:9px 16px;border-radius:10px;
+            border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
+            background:${ativo?cor:'var(--surface2)'};
+            color:${ativo?'#fff':'var(--text)'};
+            font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${ativo?'700':'500'};cursor:pointer">
+          🏢 ${emp}
+        </button>`;
+      }).join('')}
+    </div>
+  </div>
 
   <div style="display:flex;gap:6px;margin-bottom:22px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
@@ -7124,18 +7140,6 @@ function pageReceitasDespesas() {
       🏦 Conciliação Bancária
     </button>
     ${tab === 'receitas' ? `<button class="btn-secondary" onclick="navigate('receber')">🧾 Ir para Notas Fiscais</button>` : ''}
-    ${RD_EMPRESAS.map(emp => {
-      const ativo = emp === (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
-      const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
-      return `<button onclick="rdSelecionarEmpresa('${emp}','receitas_despesas')"
-        style="display:flex;align-items:center;gap:7px;padding:9px 16px;border-radius:10px;
-          border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
-          background:${ativo?cor:'var(--surface2)'};
-          color:${ativo?'#fff':'var(--text)'};
-          font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${ativo?'700':'500'};cursor:pointer">
-        🏢 ${emp}
-      </button>`;
-    }).join('')}
     ${tab === 'receitas' ? `<button class="btn-primary" onclick="rcToggleFormNovaReceita()">➕ Nova Receita</button>` : ''}
     ${tab === 'despesas' ? `<button class="btn-primary" onclick="rdToggleFormNovaDespesa()">➕ Nova Despesa</button>` : ''}
   </div>
@@ -8934,6 +8938,12 @@ function renderDespesasTab() {
     <div id="rd-resumo-mensal" style="flex:1;min-width:320px"></div>
   </div>
 
+  <!-- Gráfico de linha: Pago x A Pagar x Vencido por mês, mesmo ano do calendário acima
+       (pedido em 30/08/2026 — "compatível com aquele espaço" logo abaixo do dashboard). -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title" style="margin-bottom:10px">📈 Pago x A Pagar x Vencido por mês</div>
+    <div style="position:relative;height:220px"><canvas id="rd-grafico-mensal"></canvas></div>
+  </div>
 
   <!-- BARRA DE FILTROS -->
   <div id="rd-filtros" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
@@ -8962,12 +8972,25 @@ function renderDespesasTab() {
 
   <!-- Lista -->
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="margin:0">Lançamentos — Despesas</div>
       <button class="btn-secondary" onclick="exportarDespesasExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
     </div>
+    <!-- Histórico separado do que ainda tá em aberto do que já foi pago — antes vinha tudo
+         misturado numa lista só, que crescia sem parar (pedido em 30/08/2026). -->
+    <div style="display:flex;gap:6px;margin-bottom:14px">
+      <button id="rd-subtab-aberto" onclick="rdMudarSubTab('aberto')" style="padding:7px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);font-size:.78rem;cursor:pointer">📋 Em Aberto</button>
+      <button id="rd-subtab-pagos" onclick="rdMudarSubTab('pagos')" style="padding:7px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);font-size:.78rem;cursor:pointer">✅ Histórico de Pagos</button>
+    </div>
     <div id="lista-despesas"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
+}
+
+function rdMudarSubTab(tab) {
+  window._rdSubTab = tab;
+  RD_FILTRO_KPI = '';
+  const statusSel = document.getElementById('rd_filtro_status'); if (statusSel) statusSel.value = '';
+  carregarDespesas();
 }
 
 function rdToggleFormNovaDespesa() {
@@ -9768,6 +9791,10 @@ async function salvarDespesa() {
 function rdFiltrarKpi(tipo) {
   RD_FILTRO_KPI = (RD_FILTRO_KPI === tipo) ? '' : tipo;
   const statusSel = document.getElementById('rd_filtro_status'); if (statusSel) statusSel.value = '';
+  // Troca a aba Em Aberto/Histórico de Pagos junto, senão clicar em "Pagos" com a aba
+  // "Em Aberto" ativa mostraria lista vazia (Pago fica só na aba de histórico agora).
+  if (RD_FILTRO_KPI === 'pago') window._rdSubTab = 'pagos';
+  else if (RD_FILTRO_KPI === 'atraso' || RD_FILTRO_KPI === 'pendente') window._rdSubTab = 'aberto';
   carregarDespesas();
 }
 
@@ -9789,6 +9816,7 @@ async function carregarDespesas() {
     // Escopo pela empresa ativa no submenu — cada empresa vê só seus próprios lançamentos.
     const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
     items = items.filter(i => i.Empresa === empresaAtiva);
+    window._rdSubTab = window._rdSubTab || 'aberto';
     items.forEach(i => {
       if (i.Status !== 'Pago' && i.Status !== 'Cancelado' && i.Vencimento) {
         i.Status = calcularStatusVencimento(i.Vencimento);
@@ -9829,6 +9857,8 @@ async function carregarDespesas() {
     setActiveChip('rd-chip-pago', RD_FILTRO_KPI==='pago', '#28a745');
     setActiveChip('rd-chip-atraso', RD_FILTRO_KPI==='atraso', '#dc3545');
     setActiveChip('rd-chip-pendente', RD_FILTRO_KPI==='pendente', '#e0a800');
+    setActiveChip('rd-subtab-aberto', window._rdSubTab==='aberto', '#0d6efd');
+    setActiveChip('rd-subtab-pagos', window._rdSubTab==='pagos', '#28a745');
 
     // Guarda a base já escopada pela empresa (antes dos filtros de texto/mês/categoria da tabela)
     // para os painéis de Resumo Mensal e A Vencer, que devem refletir o todo, não a busca pontual.
@@ -9857,6 +9887,10 @@ async function carregarDespesas() {
     if (RD_FILTRO_KPI === 'pendente') items = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje');
     else if (RD_FILTRO_KPI === 'pago') items = items.filter(r=>r.Status==='Pago');
     else if (RD_FILTRO_KPI === 'atraso') items = items.filter(r=>r.Status==='Em atraso');
+
+    // Separa a lista abaixo em Em Aberto x Histórico de Pagos (pedido em 30/08/2026) —
+    // as somas dos KPIs/calendário acima continuam refletindo o total geral, só a lista muda.
+    items = window._rdSubTab === 'pagos' ? items.filter(r=>r.Status==='Pago') : items.filter(r=>r.Status!=='Pago');
 
     // Ordenado por data de pagamento mais recente primeiro (pedido em 30/08/2026);
     // itens ainda não pagos entram pela data de vencimento/lançamento, ficando após os já pagos mais recentes.
@@ -10139,6 +10173,47 @@ function rdRenderResumoMensal(items) {
       </div>
       ${fMesAtivo ? `<button onclick="document.getElementById('rd_filtro_mes').value='';carregarDespesas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
     </div>`;
+
+  rdRenderGraficoMensal(porMes, ano, nomesMes);
+}
+
+/* -- Gráfico de linha Pago x A Pagar x Vencido, mesmo ano do Calendário Mensal acima
+   (pedido em 30/08/2026 — "compatível com aquele espaço" logo abaixo do dashboard). -- */
+async function rdRenderGraficoMensal(porMes, ano, nomesMes) {
+  const canvas = document.getElementById('rd-grafico-mensal');
+  if (!canvas) return;
+  try {
+    if (typeof Chart === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const canvasAtual = document.getElementById('rd-grafico-mensal');
+    if (!canvasAtual) return;
+    if (window._rdGraficoMensal) { window._rdGraficoMensal.destroy(); window._rdGraficoMensal = null; }
+    const pago = nomesMes.map((_, idx) => porMes[idx+1].pago);
+    const aPagar = nomesMes.map((_, idx) => porMes[idx+1].aVencer);
+    const vencido = nomesMes.map((_, idx) => porMes[idx+1].vencido);
+    window._rdGraficoMensal = new Chart(canvasAtual.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: nomesMes,
+        datasets: [
+          { label: 'Pago', data: pago, borderColor: '#28a745', backgroundColor: '#28a74522', tension: .3, fill: true },
+          { label: 'A Pagar', data: aPagar, borderColor: '#e0a800', backgroundColor: '#e0a80022', tension: .3, fill: true },
+          { label: 'Vencido', data: vencido, borderColor: '#dc3545', backgroundColor: '#dc354522', tension: .3, fill: true },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } } },
+        scales: { y: { ticks: { callback: (v) => 'R$ ' + v.toLocaleString('pt-BR',{notation:'compact'}) } } }
+      }
+    });
+  } catch (e) { /* Chart.js indisponível (offline) — gráfico só não aparece, resto da página segue normal */ }
 }
 
 function rdMudarAnoResumo(delta) {
