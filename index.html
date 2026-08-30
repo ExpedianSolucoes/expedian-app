@@ -24545,6 +24545,31 @@ async function dashFinCarregar() {
     });
     const topCategorias = Object.entries(despesaPorCategoria).sort((a, b) => b[1] - a[1]).slice(0, 8);
 
+    // Despesas por Natureza Econômica (Operacional x Não Operacional) — dentro do período.
+    const despesaPorNatureza = { 'Operacional': 0, 'Não Operacional': 0 };
+    (despesas || []).forEach(d => {
+      if (!(chaveMes(d.DataLancamento) in despesasPorMes)) return;
+      const nat = d.NaturezaEconomica === 'Não Operacional' ? 'Não Operacional' : 'Operacional';
+      despesaPorNatureza[nat] += Number(d.Valor) || 0;
+    });
+
+    // Margem por Contrato/Centro de Custo (Receita - Despesa, dentro do período) —
+    // reaproveita despesaPorCC já calculado acima e soma a receita por CC do mesmo jeito
+    // (Receitas não tem DivisaoCC, é sempre um único Centro de Custo por lançamento).
+    const receitaPorCC = {};
+    (receitas || []).forEach(r => {
+      if (!(chaveMes(r.DataEmissao || r.DataPrevista) in receitasPorMes)) return;
+      const id = _ccIdPuro(r.CentroCusto);
+      if (id) receitaPorCC[id] = (receitaPorCC[id] || 0) + (Number(r.Valor) || 0);
+    });
+    const todosCCsComMovimento = [...new Set([...Object.keys(despesaPorCC), ...Object.keys(receitaPorCC)])];
+    const margemPorCC = todosCCsComMovimento.map(id => ({
+      id, receita: receitaPorCC[id] || 0, despesa: despesaPorCC[id] || 0,
+      margem: (receitaPorCC[id] || 0) - (despesaPorCC[id] || 0),
+    }));
+    const topMargens = margemPorCC.slice().sort((a, b) => Math.abs(b.margem) - Math.abs(a.margem)).slice(0, 10)
+      .sort((a, b) => b.margem - a.margem);
+
     const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
     const fmt = (v) => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
     setTxt('dashfin-kpi-receita', fmt(totalReceitas));
@@ -24728,6 +24753,47 @@ async function dashFinCarregar() {
         },
       });
     }
+
+    const ctxNatureza = document.getElementById('dashfin-chart-natureza');
+    if (ctxNatureza) {
+      window._dashFinCharts.natureza = new Chart(ctxNatureza, {
+        type: 'doughnut',
+        data: {
+          labels: ['Operacional', 'Não Operacional'],
+          datasets: [{ data: [despesaPorNatureza['Operacional'], despesaPorNatureza['Não Operacional']], backgroundColor: [corAzul, '#adb5bd'] }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'right', labels: { boxWidth: 12, font: { size: 10 } } },
+            tooltip: { callbacks: { label: (ctx) => ctx.label + ': R$ ' + Number(ctx.parsed).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) } } },
+        },
+      });
+    }
+
+    const ctxMargem = document.getElementById('dashfin-chart-margem');
+    if (ctxMargem) {
+      window._dashFinCharts.margem = new Chart(ctxMargem, {
+        type: 'bar',
+        data: {
+          labels: topMargens.map(m => nomeDoCC(m.id)),
+          datasets: [{ label: 'Margem (Receita − Despesa)', data: topMargens.map(m => m.margem),
+            backgroundColor: topMargens.map(m => m.margem >= 0 ? corVerde : corVermelho) }],
+        },
+        options: {
+          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: (ctx) => {
+              const m = topMargens[ctx.dataIndex];
+              return ['Margem: R$ ' + m.margem.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+                'Receita: R$ ' + m.receita.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+                'Despesa: R$ ' + m.despesa.toLocaleString('pt-BR', { minimumFractionDigits: 2 })];
+            } } },
+          },
+          scales: { x: { ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } } },
+        },
+      });
+    }
   } catch (e) {
     console.warn('[Dashboard Financeiro] Falha ao carregar', e);
     showToast('❌ Erro ao carregar o dashboard financeiro.');
@@ -24798,6 +24864,14 @@ function pageDashboardFinanceiro() {
     <div class="card" style="padding:16px;grid-column:1/-1">
       <div class="card-title" style="margin-bottom:10px">Fluxo de Caixa Projetado — a receber x a pagar por vencimento</div>
       <div style="position:relative;height:300px"><canvas id="dashfin-chart-fluxo"></canvas></div>
+    </div>
+    <div class="card" style="padding:16px">
+      <div class="card-title" style="margin-bottom:10px">Despesas: Operacional x Não Operacional</div>
+      <div style="position:relative;height:260px"><canvas id="dashfin-chart-natureza"></canvas></div>
+    </div>
+    <div class="card" style="padding:16px;grid-column:1/-1">
+      <div class="card-title" style="margin-bottom:10px">Margem por Contrato/Centro de Custo (Receita − Despesa, top 10)</div>
+      <div style="position:relative;height:320px"><canvas id="dashfin-chart-margem"></canvas></div>
     </div>
   </div>`;
 }
