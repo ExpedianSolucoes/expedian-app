@@ -6789,13 +6789,35 @@ function rcAoAtualizarDataRecebimento(valor, idStatus) {
 }
 
 // -- ISS Retido = Sim revela o campo de valor retido; qualquer outra opção
-// esconde e zera. O Valor Líquido (Valor - ISS retido) é sempre recalculado
-// junto, tanto no form de nova receita ('rc') quanto na edição ('rce'). --
+// esconde e zera. "Outras retenções" (INSS, IR, PIS/COFINS/CSLL etc.) segue o
+// mesmo padrão, com valor + motivo. O Valor Líquido (Valor - ISS - outras
+// retenções) aparece se qualquer uma das duas for "Sim", e é recalculado a
+// cada mudança — em ambos os formulários, nova receita ('rc') e edição ('rce'). --
 function rcAtualizarIssRetido(valor, prefixo) {
   const wrap = document.getElementById(prefixo + '_iss_valor_wrap');
   if (wrap) wrap.style.display = valor === 'Sim' ? 'flex' : 'none';
   if (valor !== 'Sim') { const campo = document.getElementById(prefixo + '_iss_valor'); if (campo) campo.value = ''; }
+  rcAtualizarVisibilidadeValorLiquido(prefixo);
   rcRecalcularValorLiquido(prefixo);
+}
+
+function rcAtualizarOutrasRetencoes(valor, prefixo) {
+  const wrap = document.getElementById(prefixo + '_outras_ret_wrap');
+  if (wrap) wrap.style.display = valor === 'Sim' ? 'flex' : 'none';
+  if (valor !== 'Sim') {
+    const campoValor = document.getElementById(prefixo + '_outras_ret_valor'); if (campoValor) campoValor.value = '';
+    const campoMotivo = document.getElementById(prefixo + '_outras_ret_motivo'); if (campoMotivo) campoMotivo.value = '';
+  }
+  rcAtualizarVisibilidadeValorLiquido(prefixo);
+  rcRecalcularValorLiquido(prefixo);
+}
+
+function rcAtualizarVisibilidadeValorLiquido(prefixo) {
+  const issEl = document.getElementById(prefixo + '_iss_retido');
+  const outrasEl = document.getElementById(prefixo + '_outras_retencoes');
+  const mostrar = (issEl && issEl.value === 'Sim') || (outrasEl && outrasEl.value === 'Sim');
+  const wrap = document.getElementById(prefixo + '_valor_liquido_wrap');
+  if (wrap) wrap.style.display = mostrar ? 'block' : 'none';
 }
 
 function rcRecalcularValorLiquido(prefixo) {
@@ -6804,10 +6826,12 @@ function rcRecalcularValorLiquido(prefixo) {
   const valorEl = document.getElementById(prefixo + '_valor');
   const issRetidoEl = document.getElementById(prefixo + '_iss_retido');
   const issValorEl = document.getElementById(prefixo + '_iss_valor');
+  const outrasRetEl = document.getElementById(prefixo + '_outras_retencoes');
+  const outrasValorEl = document.getElementById(prefixo + '_outras_ret_valor');
   const valor = rdMoedaParaNumero(valorEl ? valorEl.value : '') || 0;
-  const issRetido = issRetidoEl ? issRetidoEl.value : '';
-  const issValor = (issRetido === 'Sim' && issValorEl) ? (rdMoedaParaNumero(issValorEl.value) || 0) : 0;
-  liquidoEl.value = rdNumeroParaMoeda(Math.max(valor - issValor, 0));
+  const issValor = (issRetidoEl && issRetidoEl.value === 'Sim' && issValorEl) ? (rdMoedaParaNumero(issValorEl.value) || 0) : 0;
+  const outrasValor = (outrasRetEl && outrasRetEl.value === 'Sim' && outrasValorEl) ? (rdMoedaParaNumero(outrasValorEl.value) || 0) : 0;
+  liquidoEl.value = rdNumeroParaMoeda(Math.max(valor - issValor - outrasValor, 0));
 }
 
 let _rdFornecedores = [];
@@ -7046,11 +7070,36 @@ function renderReceitasTab() {
     </div>
 
     <div class="form-row" id="rc_iss_valor_wrap" style="display:none">
-      <div class="form-group">
+      <div class="form-group" style="grid-column:span 2">
         <label>Valor do ISS Retido (R$)</label>
         <input type="text" inputmode="decimal" id="rc_iss_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rc')">
       </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Houve outras retenções no recebimento? <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">(INSS, IR, PIS/COFINS/CSLL etc.)</span></label>
+        <select id="rc_outras_retencoes" onchange="rcAtualizarOutrasRetencoes(this.value,'rc')">
+          <option value="">Não sei / verificar</option>
+          <option value="Sim">Sim, houve outras retenções</option>
+          <option value="Não">Não, só o ISS (ou nenhuma retenção)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row" id="rc_outras_ret_wrap" style="display:none">
       <div class="form-group">
+        <label>Valor Retido (R$)</label>
+        <input type="text" inputmode="decimal" id="rc_outras_ret_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rc')">
+      </div>
+      <div class="form-group">
+        <label>Motivo da Retenção</label>
+        <input type="text" id="rc_outras_ret_motivo" placeholder="Ex: INSS, IR, PIS/COFINS/CSLL...">
+      </div>
+    </div>
+
+    <div class="form-row" id="rc_valor_liquido_wrap" style="display:none">
+      <div class="form-group" style="grid-column:span 2">
         <label>Valor Líquido (R$) <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">(automático)</span></label>
         <input type="text" id="rc_valor_liquido" readonly style="background:var(--surface2)">
       </div>
@@ -7535,7 +7584,10 @@ async function salvarReceita() {
   const numeroNF = (document.getElementById('rc_numero_nf')||{}).value.trim() || '';
   const issRetido = (document.getElementById('rc_iss_retido')||{}).value || '';
   const issValorRetido = issRetido === 'Sim' ? (rdMoedaParaNumero((document.getElementById('rc_iss_valor')||{}).value) || 0) : 0;
-  const valorLiquido = Math.max(valor - issValorRetido, 0);
+  const outrasRetencoes = (document.getElementById('rc_outras_retencoes')||{}).value || '';
+  const outrasRetencoesValor = outrasRetencoes === 'Sim' ? (rdMoedaParaNumero((document.getElementById('rc_outras_ret_valor')||{}).value) || 0) : 0;
+  const outrasRetencoesMotivo = outrasRetencoes === 'Sim' ? (document.getElementById('rc_outras_ret_motivo')||{}).value.trim() || '' : '';
+  const valorLiquido = Math.max(valor - issValorRetido - outrasRetencoesValor, 0);
   let comprovanteUrl = window._rcComprovanteUrl || '';
   let comprovanteNome = window._rcComprovanteNome || '';
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
@@ -7559,7 +7611,9 @@ async function salvarReceita() {
     NaturezaEconomica: rcNaturezaDeSubcategoria(subcategoria), Cliente: cliente, Descricao: descricao,
     CentroCusto: cc, Valor: valor, DataPrevista: dataPrevista, FormaRecebimento: forma,
     ResponsavelLancamento: responsavel, DataRecebimento: dataRecebimento, Banco: banco,
-    Status: status, NumMedicao: medicao, NumeroNF: numeroNF, ISSRetido: issRetido, ISSValorRetido: issValorRetido, ValorLiquido: valorLiquido, Comprovante: comprovanteUrl ? 'Sim' : 'Não',
+    Status: status, NumMedicao: medicao, NumeroNF: numeroNF, ISSRetido: issRetido, ISSValorRetido: issValorRetido,
+    OutrasRetencoes: outrasRetencoes, OutrasRetencoesValor: outrasRetencoesValor, OutrasRetencoesMotivo: outrasRetencoesMotivo,
+    ValorLiquido: valorLiquido, Comprovante: comprovanteUrl ? 'Sim' : 'Não',
     ComprovanteUrl: comprovanteUrl, ComprovanteNome: comprovanteNome, Empresa: empresa,
     Title: cliente + ' · ' + (dataPrevista || dataEmissao),
     LancadoPor: window._currentUser ? window._currentUser.name : '',
@@ -7581,6 +7635,11 @@ async function salvarReceita() {
   const issValorEl = document.getElementById('rc_iss_valor'); if (issValorEl) issValorEl.value = '';
   const valorLiquidoEl = document.getElementById('rc_valor_liquido'); if (valorLiquidoEl) valorLiquidoEl.value = '';
   const issValorWrap = document.getElementById('rc_iss_valor_wrap'); if (issValorWrap) issValorWrap.style.display = 'none';
+  const outrasRetSel = document.getElementById('rc_outras_retencoes'); if (outrasRetSel) outrasRetSel.selectedIndex = 0;
+  const outrasRetValorEl = document.getElementById('rc_outras_ret_valor'); if (outrasRetValorEl) outrasRetValorEl.value = '';
+  const outrasRetMotivoEl = document.getElementById('rc_outras_ret_motivo'); if (outrasRetMotivoEl) outrasRetMotivoEl.value = '';
+  const outrasRetWrap = document.getElementById('rc_outras_ret_wrap'); if (outrasRetWrap) outrasRetWrap.style.display = 'none';
+  const valorLiquidoWrap = document.getElementById('rc_valor_liquido_wrap'); if (valorLiquidoWrap) valorLiquidoWrap.style.display = 'none';
   const nfStatus = document.getElementById('rc_nf_status'); if (nfStatus) nfStatus.innerHTML = '';
   const ccInp = document.getElementById('rc_cc_input'); if (ccInp) ccInp.value = '';
   const ccHid = document.getElementById('rc_cc'); if (ccHid) ccHid.value = '';
@@ -7781,15 +7840,32 @@ function rcAbrirEdicaoReceita(id) {
         <option value="Não" ${i.ISSRetido==='Não'?'selected':''}>Não — Expedian recolhe o ISS</option>
       </select>
 
-      <div id="rce_iss_valor_wrap" style="display:${i.ISSRetido==='Sim'?'flex':'none'};gap:10px;margin-bottom:12px">
+      <div id="rce_iss_valor_wrap" style="display:${i.ISSRetido==='Sim'?'block':'none'};margin-bottom:12px">
+        <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR DO ISS RETIDO (R$)</label>
+        <input id="rce_iss_valor" type="text" inputmode="decimal" value="${i.ISSValorRetido?rdNumeroParaMoeda(i.ISSValorRetido):''}" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rce')" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+      </div>
+
+      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">HOUVE OUTRAS RETENÇÕES NO RECEBIMENTO? <span style="font-weight:400;color:var(--text-muted)">(INSS, IR, PIS/COFINS/CSLL etc.)</span></label>
+      <select id="rce_outras_retencoes" onchange="rcAtualizarOutrasRetencoes(this.value,'rce')" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+        <option value="" ${!i.OutrasRetencoes?'selected':''}>Não sei / verificar</option>
+        <option value="Sim" ${i.OutrasRetencoes==='Sim'?'selected':''}>Sim, houve outras retenções</option>
+        <option value="Não" ${i.OutrasRetencoes==='Não'?'selected':''}>Não, só o ISS (ou nenhuma retenção)</option>
+      </select>
+
+      <div id="rce_outras_ret_wrap" style="display:${i.OutrasRetencoes==='Sim'?'flex':'none'};gap:10px;margin-bottom:12px">
         <div style="flex:1">
-          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR DO ISS RETIDO (R$)</label>
-          <input id="rce_iss_valor" type="text" inputmode="decimal" value="${i.ISSValorRetido?rdNumeroParaMoeda(i.ISSValorRetido):''}" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rce')" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR RETIDO (R$)</label>
+          <input id="rce_outras_ret_valor" type="text" inputmode="decimal" value="${i.OutrasRetencoesValor?rdNumeroParaMoeda(i.OutrasRetencoesValor):''}" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rce')" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
         </div>
         <div style="flex:1">
-          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR LÍQUIDO (R$)</label>
-          <input id="rce_valor_liquido" type="text" readonly style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2)">
+          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">MOTIVO DA RETENÇÃO</label>
+          <input id="rce_outras_ret_motivo" type="text" value="${(i.OutrasRetencoesMotivo||'').replace(/"/g,'&quot;')}" placeholder="Ex: INSS, IR, PIS/COFINS/CSLL..." style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
         </div>
+      </div>
+
+      <div id="rce_valor_liquido_wrap" style="display:${(i.ISSRetido==='Sim'||i.OutrasRetencoes==='Sim')?'block':'none'};margin-bottom:12px">
+        <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR LÍQUIDO (R$) <span style="font-weight:400;color:var(--text-muted)">(automático)</span></label>
+        <input id="rce_valor_liquido" type="text" readonly style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2)">
       </div>
 
       <div style="display:flex;gap:10px;margin-bottom:12px">
@@ -7819,6 +7895,7 @@ function rcAbrirEdicaoReceita(id) {
       </div>
     </div>`;
   document.body.appendChild(modal);
+  rcAtualizarVisibilidadeValorLiquido('rce');
   rcRecalcularValorLiquido('rce');
 }
 
@@ -7851,7 +7928,10 @@ async function rcSalvarEdicaoReceita(id) {
   const numeroNF = (document.getElementById('rce_numero_nf')||{}).value.trim() || '';
   const issRetido = (document.getElementById('rce_iss_retido')||{}).value || '';
   const issValorRetido = issRetido === 'Sim' ? (rdMoedaParaNumero((document.getElementById('rce_iss_valor')||{}).value) || 0) : 0;
-  const valorLiquido = Math.max(valor - issValorRetido, 0);
+  const outrasRetencoes = (document.getElementById('rce_outras_retencoes')||{}).value || '';
+  const outrasRetencoesValor = outrasRetencoes === 'Sim' ? (rdMoedaParaNumero((document.getElementById('rce_outras_ret_valor')||{}).value) || 0) : 0;
+  const outrasRetencoesMotivo = outrasRetencoes === 'Sim' ? (document.getElementById('rce_outras_ret_motivo')||{}).value.trim() || '' : '';
+  const valorLiquido = Math.max(valor - issValorRetido - outrasRetencoesValor, 0);
   let comprovanteUrl = window._rceComprovanteUrl || '';
   let comprovanteNome = window._rceComprovanteNome || '';
   const original = (window._rcReceitasPorId || {})[id] || {};
@@ -7872,6 +7952,9 @@ async function rcSalvarEdicaoReceita(id) {
     NumeroNF: numeroNF,
     ISSRetido: issRetido,
     ISSValorRetido: issValorRetido,
+    OutrasRetencoes: outrasRetencoes,
+    OutrasRetencoesValor: outrasRetencoesValor,
+    OutrasRetencoesMotivo: outrasRetencoesMotivo,
     ValorLiquido: valorLiquido,
     Comprovante: comprovanteUrl ? 'Sim' : 'Não',
     ComprovanteUrl: comprovanteUrl,
