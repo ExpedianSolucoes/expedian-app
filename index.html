@@ -7988,10 +7988,23 @@ async function carregarReceitas() {
           <td>R$ ${valorLiquido.toLocaleString('pt-BR',{minimumFractionDigits:2})}${temRetencao?'<div style="font-size:.64rem;color:var(--text-muted)">c/ retenção</div>':''}</td>
           <td><span class="status-pill ${statusColor(i.Status)}">${rcStatusLabel(i.Status)||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
           <td style="font-size:.72rem">${i.ComprovanteUrl?`<a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver</a>`:'— Não'}</td>
-          <td><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;white-space:nowrap" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button></td>
+          <td style="white-space:nowrap"><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button> <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="rcExcluirReceita(${i.Id})">🗑️</button></td>
         </tr>`;
       }).join('') + '</tbody></table></div>';
   } catch(e) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>'; }
+}
+
+/* -- Exclusão direta, restrita à Diretoria — a página inteira de Receitas já é
+   exclusiva pra esse perfil, então não precisa do fluxo de "solicitar exclusão"
+   usado em Flash Report/Equipamentos (pedido em 30/08/2026). -- */
+async function rcExcluirReceita(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const i = (window._rcReceitasPorId || {})[id];
+  const desc = i ? ((i.Cliente||'—') + ' · R$ ' + (i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})) : ('#' + id);
+  if (!confirm(`Excluir a receita "${desc}"? Essa ação não pode ser desfeita.`)) return;
+  const { ok } = await dbRemover('Receitas', id);
+  showToast(ok ? '🗑️ Receita excluída.' : '❌ Erro ao excluir.');
+  if (ok) carregarReceitas();
 }
 
 function rcRenderResumoMensal(items) {
@@ -8621,7 +8634,7 @@ async function carregarNotasFiscais() {
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td>${i.ISSRetido ? `<span class="status-pill ${issColor(i.ISSRetido)}">${i.ISSRetido}</span>` : '<span style="color:var(--text-muted);font-size:.72rem">—</span>'}</td>
           <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span></td>
-          <td><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;white-space:nowrap" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button></td>
+          <td style="white-space:nowrap"><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button> <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="rcExcluirReceita(${i.Id})">🗑️</button></td>
         </tr>`).join('') + '</tbody></table></div>';
   } catch (e) {
     el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';
@@ -9995,7 +10008,7 @@ async function carregarDespesas() {
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
           <td style="font-size:.72rem">${i.ComprovanteUrl?`<a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver</a>`:'— Não'}</td>
-          <td><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;white-space:nowrap" onclick="rdAbrirEdicaoDespesa(${i.Id})">✏️ Editar</button></td>
+          <td style="white-space:nowrap"><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="rdAbrirEdicaoDespesa(${i.Id})">✏️ Editar</button> <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="rdExcluirDespesa(${i.Id})">🗑️</button></td>
         </tr>`;
       }).join('') + '</tbody></table></div>';
   } catch(e) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>'; }
@@ -10365,6 +10378,23 @@ async function rdVerHistoricoCompra(id) {
 /* Edição rápida de uma Despesa já lançada — pensada sobretudo para marcar
    como Paga (com data/banco do pagamento), mas permite ajustar qualquer
    campo relevante do lançamento sem precisar apagar e recriar. */
+/* -- Exclusão direta, restrita à Diretoria — a página inteira de Despesas já é
+   exclusiva pra esse perfil (pedido em 30/08/2026). Avisa quando a despesa veio
+   de uma sincronização automática (Prestação de Contas/Contas a Pagar), já que
+   excluir aqui não desfaz o vínculo do lado de lá. -- */
+async function rdExcluirDespesa(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const i = (window._rdDespesasPorId || {})[id];
+  const desc = i ? ((i.Fornecedor||i.ServicoDesc||'—') + ' · R$ ' + (i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})) : ('#' + id);
+  const avisoSync = (i && (i.OrigemPrestacaoContas || i.OrigemContaPagar))
+    ? '\n\n⚠️ Esse lançamento veio de uma sincronização automática (Prestação de Contas/Contas a Pagar) — excluir aqui não remove o registro de origem.'
+    : '';
+  if (!confirm(`Excluir a despesa "${desc}"? Essa ação não pode ser desfeita.${avisoSync}`)) return;
+  const { ok } = await dbRemover('Despesas', id);
+  showToast(ok ? '🗑️ Despesa excluída.' : '❌ Erro ao excluir.');
+  if (ok) carregarDespesas();
+}
+
 function rdAbrirEdicaoDespesa(id) {
   const i = (window._rdDespesasPorId || {})[id];
   if (!i) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
