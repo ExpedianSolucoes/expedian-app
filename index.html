@@ -6770,7 +6770,7 @@ const RC_NATUREZA_ECONOMICA = {
 };
 function rcNaturezaDeSubcategoria(subcategoria) { return RC_NATUREZA_ECONOMICA[subcategoria] || ''; }
 const RC_STATUS = ['Pendente','Vence em breve','Vence hoje','Em atraso','Recebido','Cancelado'];
-const RC_FORMAS = ['PIX','Boleto','Transferência','Cartão de Crédito','Cartão de Débito','Débito em Conta'];
+const RC_FORMAS = ['PIX','Boleto','Transferência','Cartão de Crédito','Cartão de Débito','Débito em Conta','Crédito em Conta'];
 /* -- 'Pendente' é o rótulo interno herdado de calcularStatusVencimento()
    (mesma função usada em Contas a Pagar), mas em Receitas soa como algo
    travado/em atraso quando na verdade só significa "ainda dentro do prazo,
@@ -6780,7 +6780,38 @@ const RC_FORMAS = ['PIX','Boleto','Transferência','Cartão de Crédito','Cartã
    os filtros que já comparam com esse valor) — pedido em 27/08/2026. -- */
 function rcStatusLabel(status) { return status === 'Pendente' ? 'A Receber' : status; }
 
+// -- Ao preencher a Data de Recebimento, o Status muda pra "Recebido" sozinho —
+// pedido em 30/08/2026, pra não depender de lembrar de mudar os dois campos.
+function rcAoAtualizarDataRecebimento(valor, idStatus) {
+  if (!valor) return;
+  const statusEl = document.getElementById(idStatus);
+  if (statusEl) statusEl.value = 'Recebido';
+}
+
+// -- ISS Retido = Sim revela o campo de valor retido; qualquer outra opção
+// esconde e zera. O Valor Líquido (Valor - ISS retido) é sempre recalculado
+// junto, tanto no form de nova receita ('rc') quanto na edição ('rce'). --
+function rcAtualizarIssRetido(valor, prefixo) {
+  const wrap = document.getElementById(prefixo + '_iss_valor_wrap');
+  if (wrap) wrap.style.display = valor === 'Sim' ? 'flex' : 'none';
+  if (valor !== 'Sim') { const campo = document.getElementById(prefixo + '_iss_valor'); if (campo) campo.value = ''; }
+  rcRecalcularValorLiquido(prefixo);
+}
+
+function rcRecalcularValorLiquido(prefixo) {
+  const liquidoEl = document.getElementById(prefixo + '_valor_liquido');
+  if (!liquidoEl) return;
+  const valorEl = document.getElementById(prefixo + '_valor');
+  const issRetidoEl = document.getElementById(prefixo + '_iss_retido');
+  const issValorEl = document.getElementById(prefixo + '_iss_valor');
+  const valor = rdMoedaParaNumero(valorEl ? valorEl.value : '') || 0;
+  const issRetido = issRetidoEl ? issRetidoEl.value : '';
+  const issValor = (issRetido === 'Sim' && issValorEl) ? (rdMoedaParaNumero(issValorEl.value) || 0) : 0;
+  liquidoEl.value = rdNumeroParaMoeda(Math.max(valor - issValor, 0));
+}
+
 let _rdFornecedores = [];
+let _rcClientes = [];
 let RD_FILTRO_KPI = '';
 
 function _rdSemanaDoAno(dataStr) {
@@ -6832,7 +6863,7 @@ function pageReceitasDespesas() {
   const tab = window._rdTab || 'despesas';
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarDespesas(); }, 200);
-  if (tab === 'receitas') setTimeout(() => { carregarReceitas(); }, 200);
+  if (tab === 'receitas') setTimeout(() => { carregarClientesListaRc(); carregarReceitas(); }, 200);
 
   // Título/subtítulo dinâmicos por aba — antes era sempre "Receitas e Despesas"
   // mesmo quando a tela era só uma das duas, porque Receitas e Despesas viraram
@@ -6940,9 +6971,19 @@ function renderReceitasTab() {
     </div>
 
     <div class="form-row">
-      <div class="form-group">
+      <div class="form-group" style="position:relative">
         <label>Cliente</label>
-        <input type="text" id="rc_cliente" placeholder="Nome do cliente">
+        <div style="display:flex;gap:8px">
+          <div style="flex:1;position:relative">
+            <input type="text" id="rc_cliente_input" placeholder="Digite para buscar..." autocomplete="off"
+              oninput="rcFiltrarClientes(this.value)" onfocus="rcFiltrarClientes(this.value)"
+              onblur="setTimeout(()=>rcFecharDropdownCliente(),150)"
+              style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
+            <input type="hidden" id="rc_cliente">
+            <div id="rc_cliente_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+          </div>
+          <button type="button" onclick="rcAbrirCadastroCliente()" class="btn-secondary" style="padding:6px 12px;font-size:.78rem;white-space:nowrap">+ Novo</button>
+        </div>
       </div>
       <div class="form-group">
         <label>Descrição</label>
@@ -6962,7 +7003,7 @@ function renderReceitasTab() {
       </div>
       <div class="form-group">
         <label>Valor (R$)</label>
-        <input type="text" inputmode="decimal" id="rc_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)">
+        <input type="text" inputmode="decimal" id="rc_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rc')">
       </div>
     </div>
 
@@ -6996,11 +7037,22 @@ function renderReceitasTab() {
     <div class="form-row">
       <div class="form-group" style="grid-column:span 2">
         <label>ISS Retido pelo Tomador? <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">(uso no cálculo de impostos)</span></label>
-        <select id="rc_iss_retido">
+        <select id="rc_iss_retido" onchange="rcAtualizarIssRetido(this.value,'rc')">
           <option value="">Não sei / verificar</option>
           <option value="Sim">Sim — cliente reteve e recolhe o ISS</option>
           <option value="Não">Não — Expedian recolhe o ISS</option>
         </select>
+      </div>
+    </div>
+
+    <div class="form-row" id="rc_iss_valor_wrap" style="display:none">
+      <div class="form-group">
+        <label>Valor do ISS Retido (R$)</label>
+        <input type="text" inputmode="decimal" id="rc_iss_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rc')">
+      </div>
+      <div class="form-group">
+        <label>Valor Líquido (R$) <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">(automático)</span></label>
+        <input type="text" id="rc_valor_liquido" readonly style="background:var(--surface2)">
       </div>
     </div>
 
@@ -7014,7 +7066,7 @@ function renderReceitasTab() {
       </div>
       <div class="form-group">
         <label>Data de Recebimento</label>
-        <input type="date" id="rc_data_recebimento">
+        <input type="date" id="rc_data_recebimento" onchange="rcAoAtualizarDataRecebimento(this.value,'rc_status')">
       </div>
     </div>
 
@@ -7027,7 +7079,7 @@ function renderReceitasTab() {
       <div class="form-group">
         <label>Status de Recebimento</label>
         <select id="rc_status">
-          ${RC_STATUS.map(s => `<option>${s}</option>`).join('')}
+          ${RC_STATUS.map(s => `<option value="${s}">${rcStatusLabel(s)}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -7036,6 +7088,21 @@ function renderReceitasTab() {
       <button class="btn-primary" onclick="salvarReceita()">💾 Salvar Receita</button>
     </div>
     </div><!-- /rc-form-campos -->
+  </div>
+
+  <!-- Modal cadastro de cliente (Receitas) -->
+  <div id="modal-cliente-rc" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center">
+    <div style="background:var(--surface);border-radius:14px;padding:24px;width:min(420px,90vw);box-shadow:0 20px 60px rgba(0,0,0,.4)">
+      <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;margin-bottom:6px">Cadastrar Novo Cliente</div>
+      <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:16px">Clientes cadastrados ficam disponíveis para todos os usuários do sistema.</div>
+      <div class="form-group" style="margin-bottom:12px"><label>Razão Social / Nome</label><input type="text" id="rc_cli_nome" placeholder="Nome completo do cliente"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>CNPJ / CPF</label><input type="text" id="rc_cli_cnpj" placeholder="00.000.000/0001-00"></div>
+      <div class="form-group" style="margin-bottom:16px"><label>Município</label><input type="text" id="rc_cli_municipio" placeholder="Cidade/UF"></div>
+      <div style="display:flex;gap:10px">
+        <button class="btn-primary" onclick="rcConfirmarCadastroCliente()" style="flex:1">✅ Cadastrar</button>
+        <button class="btn-secondary" onclick="rcFecharModalCliente()" style="flex:1">Cancelar</button>
+      </div>
+    </div>
   </div>
 
   <!-- Dashboard: KPIs (valores) + calendário mensal lado a lado -->
@@ -7173,6 +7240,84 @@ async function rcAtualizarMedicaoPorCC(cc) {
     if (hint) hint.textContent = `Última medição deste contrato: Nº ${Math.max(...numeros)} · sugerido: Nº ${proximo}`;
   } else {
     if (hint) hint.textContent = 'Nenhuma medição cadastrada para este contrato ainda. Cadastre em Centro de Custo → Medições.';
+  }
+}
+
+/* -- Combobox de Cliente (mesmo padrão de Fornecedor em Prestação de Contas /
+      Despesas): lista salva e reaproveitável, com "+ Novo" pra cadastrar na
+      hora. Também aceita nome digitado livremente (não obriga escolher da
+      lista) — o hidden field é atualizado a cada tecla, e a seleção no
+      dropdown só substitui pelo nome canônico já cadastrado. -- */
+async function carregarClientesListaRc() {
+  try { _rcClientes = await dbLer('Clientes'); }
+  catch(e) { _rcClientes = []; }
+}
+
+function rcFiltrarClientes(texto) {
+  const hid = document.getElementById('rc_cliente'); if (hid) hid.value = texto;
+  const dd = document.getElementById('rc_cliente_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  let matches = t ? _rcClientes.filter(c => (c.Title||'').toLowerCase().includes(t)) : _rcClientes;
+  matches = matches.slice(0, 30);
+  let html = matches.map(c => {
+    const esc = String(c.Title).replace(/'/g,"\\'");
+    return '<div onclick="rcSelecionarCliente(\''+esc+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>'+c.Title+'</strong>'+(c.Municipio?' <span style="color:var(--text-muted);font-size:.72rem">· '+c.Municipio+'</span>':'') +
+    '</div>';
+  }).join('');
+  if (t && !_rcClientes.some(c => (c.Title||'').toLowerCase() === t)) {
+    html += '<div onclick="rcNovoClienteComNome(\''+t.replace(/'/g,"\\'")+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;color:var(--green-main);font-weight:700">+ Cadastrar "'+texto+'" como novo cliente</div>';
+  }
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum cliente cadastrado encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+
+function rcFecharDropdownCliente() {
+  const dd = document.getElementById('rc_cliente_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+
+function rcSelecionarCliente(nome) {
+  const inp = document.getElementById('rc_cliente_input'); if (inp) inp.value = nome;
+  const hid = document.getElementById('rc_cliente'); if (hid) hid.value = nome;
+  rcFecharDropdownCliente();
+}
+
+function rcNovoClienteComNome(nomeSugerido) {
+  rcFecharDropdownCliente();
+  rcAbrirCadastroCliente();
+  const el = document.getElementById('rc_cli_nome');
+  if (el) el.value = nomeSugerido;
+}
+
+function rcAbrirCadastroCliente() {
+  const el = document.getElementById('modal-cliente-rc'); if (el) el.style.display = 'flex';
+}
+
+function rcFecharModalCliente() {
+  const el = document.getElementById('modal-cliente-rc'); if (el) el.style.display = 'none';
+  ['rc_cli_nome','rc_cli_cnpj','rc_cli_municipio'].forEach(id => { const e = document.getElementById(id); if (e) e.value=''; });
+}
+
+async function rcConfirmarCadastroCliente() {
+  const nome = (document.getElementById('rc_cli_nome').value||'').trim();
+  const cnpj = (document.getElementById('rc_cli_cnpj').value||'').trim();
+  const municipio = (document.getElementById('rc_cli_municipio').value||'').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do cliente.'); return; }
+  const jaExiste = _rcClientes.some(c => (c.Title||'').toLowerCase() === nome.toLowerCase() || (cnpj && c.CNPJ === cnpj));
+  if (jaExiste) { showToast('⚠️ Cliente já cadastrado!'); return; }
+  const dados = { Title: nome, CNPJ: cnpj, Municipio: municipio };
+  const ok = await salvarNoSharePoint('Clientes', dados);
+  if (ok) {
+    showToast('✅ Cliente cadastrado!');
+    rcFecharModalCliente();
+    await carregarClientesListaRc();
+    rcSelecionarCliente(nome);
+  } else {
+    showToast('❌ Erro ao cadastrar cliente.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():''));
   }
 }
 
@@ -7389,6 +7534,8 @@ async function salvarReceita() {
   const medicao = (document.getElementById('rc_medicao')||{}).value || '';
   const numeroNF = (document.getElementById('rc_numero_nf')||{}).value.trim() || '';
   const issRetido = (document.getElementById('rc_iss_retido')||{}).value || '';
+  const issValorRetido = issRetido === 'Sim' ? (rdMoedaParaNumero((document.getElementById('rc_iss_valor')||{}).value) || 0) : 0;
+  const valorLiquido = Math.max(valor - issValorRetido, 0);
   let comprovanteUrl = window._rcComprovanteUrl || '';
   let comprovanteNome = window._rcComprovanteNome || '';
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
@@ -7412,7 +7559,7 @@ async function salvarReceita() {
     NaturezaEconomica: rcNaturezaDeSubcategoria(subcategoria), Cliente: cliente, Descricao: descricao,
     CentroCusto: cc, Valor: valor, DataPrevista: dataPrevista, FormaRecebimento: forma,
     ResponsavelLancamento: responsavel, DataRecebimento: dataRecebimento, Banco: banco,
-    Status: status, NumMedicao: medicao, NumeroNF: numeroNF, ISSRetido: issRetido, Comprovante: comprovanteUrl ? 'Sim' : 'Não',
+    Status: status, NumMedicao: medicao, NumeroNF: numeroNF, ISSRetido: issRetido, ISSValorRetido: issValorRetido, ValorLiquido: valorLiquido, Comprovante: comprovanteUrl ? 'Sim' : 'Não',
     ComprovanteUrl: comprovanteUrl, ComprovanteNome: comprovanteNome, Empresa: empresa,
     Title: cliente + ' · ' + (dataPrevista || dataEmissao),
     LancadoPor: window._currentUser ? window._currentUser.name : '',
@@ -7423,7 +7570,7 @@ async function salvarReceita() {
   showToast(ok ? '✅ Receita salva!' : ('❌ Erro ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
   showSyncStatus(ok ? 'Receita salva!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
 
-  ['rc_cliente','rc_descricao','rc_valor','rc_data_prevista','rc_data_recebimento','rc_banco','rc_numero_nf'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
+  ['rc_cliente','rc_cliente_input','rc_descricao','rc_valor','rc_data_prevista','rc_data_recebimento','rc_banco','rc_numero_nf'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const catSel = document.getElementById('rc_categoria'); if (catSel) catSel.selectedIndex = 0;
   const subcatSel = document.getElementById('rc_subcategoria'); if (subcatSel) subcatSel.innerHTML = '<option value="">Selecione a categoria primeiro...</option>';
   const rcNatHint = document.getElementById('rc_natureza_hint'); if (rcNatHint) rcNatHint.textContent = '';
@@ -7431,6 +7578,9 @@ async function salvarReceita() {
   const respSel = document.getElementById('rc_responsavel'); if (respSel) respSel.selectedIndex = 0;
   const statusSel = document.getElementById('rc_status'); if (statusSel) statusSel.selectedIndex = 0;
   const issSel = document.getElementById('rc_iss_retido'); if (issSel) issSel.selectedIndex = 0;
+  const issValorEl = document.getElementById('rc_iss_valor'); if (issValorEl) issValorEl.value = '';
+  const valorLiquidoEl = document.getElementById('rc_valor_liquido'); if (valorLiquidoEl) valorLiquidoEl.value = '';
+  const issValorWrap = document.getElementById('rc_iss_valor_wrap'); if (issValorWrap) issValorWrap.style.display = 'none';
   const nfStatus = document.getElementById('rc_nf_status'); if (nfStatus) nfStatus.innerHTML = '';
   const ccInp = document.getElementById('rc_cc_input'); if (ccInp) ccInp.value = '';
   const ccHid = document.getElementById('rc_cc'); if (ccHid) ccHid.value = '';
@@ -7615,7 +7765,7 @@ function rcAbrirEdicaoReceita(id) {
       </select>
 
       <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">DATA DE RECEBIMENTO</label>
-      <input id="rce_data_recebimento" type="date" value="${i.DataRecebimento||''}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+      <input id="rce_data_recebimento" type="date" value="${i.DataRecebimento||''}" onchange="rcAoAtualizarDataRecebimento(this.value,'rce_status')" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
 
       <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">BANCO</label>
       <input id="rce_banco" list="rce_bancos_dl" value="${(i.Banco||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
@@ -7625,16 +7775,27 @@ function rcAbrirEdicaoReceita(id) {
       <input id="rce_numero_nf" type="text" value="${(i.NumeroNF||'').replace(/"/g,'&quot;')}" placeholder="Ex: 168" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
 
       <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">ISS RETIDO PELO TOMADOR?</label>
-      <select id="rce_iss_retido" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+      <select id="rce_iss_retido" onchange="rcAtualizarIssRetido(this.value,'rce')" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
         <option value="" ${!i.ISSRetido?'selected':''}>Não sei / verificar</option>
         <option value="Sim" ${i.ISSRetido==='Sim'?'selected':''}>Sim — cliente reteve e recolhe o ISS</option>
         <option value="Não" ${i.ISSRetido==='Não'?'selected':''}>Não — Expedian recolhe o ISS</option>
       </select>
 
+      <div id="rce_iss_valor_wrap" style="display:${i.ISSRetido==='Sim'?'flex':'none'};gap:10px;margin-bottom:12px">
+        <div style="flex:1">
+          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR DO ISS RETIDO (R$)</label>
+          <input id="rce_iss_valor" type="text" inputmode="decimal" value="${i.ISSValorRetido?rdNumeroParaMoeda(i.ISSValorRetido):''}" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rce')" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+        </div>
+        <div style="flex:1">
+          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR LÍQUIDO (R$)</label>
+          <input id="rce_valor_liquido" type="text" readonly style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2)">
+        </div>
+      </div>
+
       <div style="display:flex;gap:10px;margin-bottom:12px">
         <div style="flex:1">
           <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR (R$)</label>
-          <input id="rce_valor" type="text" inputmode="decimal" value="${rdNumeroParaMoeda(i.Valor||0)}" oninput="rdFormatarMoedaInput(this)" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
+          <input id="rce_valor" type="text" inputmode="decimal" value="${rdNumeroParaMoeda(i.Valor||0)}" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rce')" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
         </div>
         <div style="flex:1">
           <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">PREVISÃO</label>
@@ -7658,6 +7819,7 @@ function rcAbrirEdicaoReceita(id) {
       </div>
     </div>`;
   document.body.appendChild(modal);
+  rcRecalcularValorLiquido('rce');
 }
 
 async function rceAnexarComprovante(inputEl) {
@@ -7688,6 +7850,8 @@ async function rcSalvarEdicaoReceita(id) {
   const dataPrevista = document.getElementById('rce_data_prevista').value;
   const numeroNF = (document.getElementById('rce_numero_nf')||{}).value.trim() || '';
   const issRetido = (document.getElementById('rce_iss_retido')||{}).value || '';
+  const issValorRetido = issRetido === 'Sim' ? (rdMoedaParaNumero((document.getElementById('rce_iss_valor')||{}).value) || 0) : 0;
+  const valorLiquido = Math.max(valor - issValorRetido, 0);
   let comprovanteUrl = window._rceComprovanteUrl || '';
   let comprovanteNome = window._rceComprovanteNome || '';
   const original = (window._rcReceitasPorId || {})[id] || {};
@@ -7707,6 +7871,8 @@ async function rcSalvarEdicaoReceita(id) {
     DataPrevista: dataPrevista,
     NumeroNF: numeroNF,
     ISSRetido: issRetido,
+    ISSValorRetido: issValorRetido,
+    ValorLiquido: valorLiquido,
     Comprovante: comprovanteUrl ? 'Sim' : 'Não',
     ComprovanteUrl: comprovanteUrl,
     ComprovanteNome: comprovanteNome,
