@@ -24474,15 +24474,17 @@ async function dashFinCarregar() {
       });
     }
     if (!_custosExtrasCarregados) await custosCarregarExtras();
-    const [despesasTodas, receitasTodas] = await Promise.all([
+    const [despesasTodas, receitasTodas, contasPagarTodas] = await Promise.all([
       dbLer('Despesas').catch(() => []),
       dbLer('Receitas').catch(() => []),
+      dbLer('ContasPagar').catch(() => []),
     ]);
 
     // Filtro por empresa (Expedian/TL3/EXP Brasil) — vazio = todas.
     const empresaFiltro = window._dashFinEmpresa || '';
     const despesas = empresaFiltro ? despesasTodas.filter(d => normalizarEmpresa(d.Empresa) === empresaFiltro) : despesasTodas;
     const receitas = empresaFiltro ? receitasTodas.filter(r => normalizarEmpresa(r.Empresa) === empresaFiltro) : receitasTodas;
+    const contasPagar = empresaFiltro ? contasPagarTodas.filter(c => normalizarEmpresa(c.Empresa) === empresaFiltro) : contasPagarTodas;
 
     // Filtro por mês específico (sobrepõe o período de "últimos N meses" — vira
     // um único mês na série, o que também deixa a Despesa média/mês igual ao total).
@@ -24610,6 +24612,122 @@ async function dashFinCarregar() {
         },
       });
     }
+
+    // Contas a Receber / Contas a Pagar — situação ATUAL de todos os lançamentos
+    // em aberto (não é filtrado pelo período de meses acima, é uma foto de agora;
+    // respeita só o filtro de Empresa, igual às KPIs de cada página).
+    const receberBuckets = { 'Recebido': 0, 'A Vencer': 0, 'Vencido': 0, 'Cancelado': 0 };
+    (receitas || []).forEach(r => {
+      const v = Number(r.Valor) || 0;
+      if (r.Status === 'Recebido') receberBuckets['Recebido'] += v;
+      else if (r.Status === 'Em atraso') receberBuckets['Vencido'] += v;
+      else if (r.Status === 'Cancelado') receberBuckets['Cancelado'] += v;
+      else receberBuckets['A Vencer'] += v; // Pendente / Vence em breve / Vence hoje
+    });
+    const receberEntries = Object.entries(receberBuckets).filter(([, v]) => v > 0);
+
+    const pagarBuckets = { 'Pago': 0, 'A Vencer': 0, 'Vencido': 0, 'Aguardando Aprovação': 0 };
+    (contasPagar || []).forEach(c => {
+      const v = Number(c.Valor) || 0;
+      if (c.Status === 'Pago') pagarBuckets['Pago'] += v;
+      else if (c.Status === 'Rejeitada') return; // não representa saída de caixa
+      else if (c.Status === 'Aguardando Aprovação') pagarBuckets['Aguardando Aprovação'] += v;
+      else {
+        const statusVenc = calcularStatusVencimento(c.Vencimento);
+        if (statusVenc === 'Em atraso') pagarBuckets['Vencido'] += v;
+        else pagarBuckets['A Vencer'] += v;
+      }
+    });
+    const pagarEntries = Object.entries(pagarBuckets).filter(([, v]) => v > 0);
+
+    const coresReceber = { 'Recebido': corVerde, 'A Vencer': '#e0a800', 'Vencido': corVermelho, 'Cancelado': '#adb5bd' };
+    const coresPagar = { 'Pago': corVerde, 'A Vencer': '#e0a800', 'Vencido': corVermelho, 'Aguardando Aprovação': corAzul };
+
+    const ctxReceber = document.getElementById('dashfin-chart-receber');
+    if (ctxReceber) {
+      window._dashFinCharts.receber = new Chart(ctxReceber, {
+        type: 'doughnut',
+        data: {
+          labels: receberEntries.map(([k]) => k),
+          datasets: [{ data: receberEntries.map(([, v]) => v), backgroundColor: receberEntries.map(([k]) => coresReceber[k]) }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'right', labels: { boxWidth: 12, font: { size: 10 } } },
+            tooltip: { callbacks: { label: (ctx) => ctx.label + ': R$ ' + Number(ctx.parsed).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) } } },
+        },
+      });
+    }
+
+    const ctxPagar = document.getElementById('dashfin-chart-pagar');
+    if (ctxPagar) {
+      window._dashFinCharts.pagar = new Chart(ctxPagar, {
+        type: 'doughnut',
+        data: {
+          labels: pagarEntries.map(([k]) => k),
+          datasets: [{ data: pagarEntries.map(([, v]) => v), backgroundColor: pagarEntries.map(([k]) => coresPagar[k]) }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'right', labels: { boxWidth: 12, font: { size: 10 } } },
+            tooltip: { callbacks: { label: (ctx) => ctx.label + ': R$ ' + Number(ctx.parsed).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) } } },
+        },
+      });
+    }
+
+    // Fluxo de Caixa Projetado — pega tudo que ainda NÃO foi liquidado (a pagar
+    // não pago/rejeitado; a receber não recebido/cancelado) e distribui por
+    // faixa de vencimento, pra dar uma ideia de quando o caixa aperta ou sobra.
+    const hojeF = new Date(); hojeF.setHours(0,0,0,0);
+    const faixaVencimento = (dataStr) => {
+      if (!dataStr) return '+90 dias'; // sem data prevista — trata como mais distante, não como vencido
+      const d = new Date(dataStr + 'T00:00:00');
+      const diff = Math.floor((d - hojeF) / 86400000);
+      if (diff < 0) return 'Vencido';
+      if (diff <= 30) return '0-30 dias';
+      if (diff <= 60) return '31-60 dias';
+      if (diff <= 90) return '61-90 dias';
+      return '+90 dias';
+    };
+    const faixasOrdem = ['Vencido', '0-30 dias', '31-60 dias', '61-90 dias', '+90 dias'];
+    const fluxoPagar = {}; faixasOrdem.forEach(f => fluxoPagar[f] = 0);
+    const fluxoReceber = {}; faixasOrdem.forEach(f => fluxoReceber[f] = 0);
+    (contasPagar || []).forEach(c => {
+      if (c.Status === 'Pago' || c.Status === 'Rejeitada') return;
+      fluxoPagar[faixaVencimento(c.Vencimento)] += Number(c.Valor) || 0;
+    });
+    (receitas || []).forEach(r => {
+      if (r.Status === 'Recebido' || r.Status === 'Cancelado') return;
+      fluxoReceber[faixaVencimento(r.DataPrevista || r.DataEmissao)] += Number(r.Valor) || 0;
+    });
+    let acumulado = 0;
+    const saldoAcumulado = faixasOrdem.map(f => { acumulado += (fluxoReceber[f] - fluxoPagar[f]); return acumulado; });
+
+    const ctxFluxo = document.getElementById('dashfin-chart-fluxo');
+    if (ctxFluxo) {
+      window._dashFinCharts.fluxo = new Chart(ctxFluxo, {
+        type: 'bar',
+        data: {
+          labels: faixasOrdem,
+          datasets: [
+            { type: 'bar', label: 'A Receber', data: faixasOrdem.map(f => fluxoReceber[f]), backgroundColor: corVerde },
+            { type: 'bar', label: 'A Pagar', data: faixasOrdem.map(f => fluxoPagar[f]), backgroundColor: corVermelho },
+            { type: 'line', label: 'Saldo Acumulado Projetado', data: saldoAcumulado, borderColor: corAzul, backgroundColor: corAzul, tension: .25, yAxisID: 'y1', pointRadius: 4 },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom' },
+            tooltip: { callbacks: { label: (ctx) => ctx.dataset.label + ': R$ ' + Number(ctx.parsed.y).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) } },
+          },
+          scales: {
+            y: { ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } },
+            y1: { position: 'right', grid: { drawOnChartArea: false }, ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } },
+          },
+        },
+      });
+    }
   } catch (e) {
     console.warn('[Dashboard Financeiro] Falha ao carregar', e);
     showToast('❌ Erro ao carregar o dashboard financeiro.');
@@ -24665,9 +24783,21 @@ function pageDashboardFinanceiro() {
       <div class="card-title" style="margin-bottom:10px">Contratos com mais saídas (top 10)</div>
       <div style="position:relative;height:280px"><canvas id="dashfin-chart-cc"></canvas></div>
     </div>
-    <div class="card" style="padding:16px;grid-column:1/-1">
+    <div class="card" style="padding:16px">
       <div class="card-title" style="margin-bottom:10px">Despesas por Categoria</div>
-      <div style="position:relative;height:300px;max-width:560px;margin:0 auto"><canvas id="dashfin-chart-categoria"></canvas></div>
+      <div style="position:relative;height:280px"><canvas id="dashfin-chart-categoria"></canvas></div>
+    </div>
+    <div class="card" style="padding:16px">
+      <div class="card-title" style="margin-bottom:10px">Contas a Receber (situação atual)</div>
+      <div style="position:relative;height:280px"><canvas id="dashfin-chart-receber"></canvas></div>
+    </div>
+    <div class="card" style="padding:16px">
+      <div class="card-title" style="margin-bottom:10px">Contas a Pagar (situação atual)</div>
+      <div style="position:relative;height:280px"><canvas id="dashfin-chart-pagar"></canvas></div>
+    </div>
+    <div class="card" style="padding:16px;grid-column:1/-1">
+      <div class="card-title" style="margin-bottom:10px">Fluxo de Caixa Projetado — a receber x a pagar por vencimento</div>
+      <div style="position:relative;height:300px"><canvas id="dashfin-chart-fluxo"></canvas></div>
     </div>
   </div>`;
 }
