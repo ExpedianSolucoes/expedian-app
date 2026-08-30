@@ -5098,7 +5098,7 @@ async function reprovarPrestacao(id) { return reprovarPrestacaoGestor(id); }
    definidas abaixo por segurança, mas não são mais chamadas por nenhuma tela. */
 function pageReceber() {
   if (!['diretoria','coordenador'].includes(currentProfile)) {
-    return `<div class="page-header"><h1>Contas a Receber</h1></div>
+    return `<div class="page-header"><h1>Nota Fiscal</h1></div>
     <div class="card" style="text-align:center;padding:48px 24px;color:var(--text-muted)">
       <div style="font-size:2rem;margin-bottom:10px">🔒</div>
       <div style="font-weight:700;color:var(--text)">Acesso restrito à Diretoria e Coordenação</div>
@@ -5109,7 +5109,7 @@ function pageReceber() {
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   setTimeout(()=>carregarNotasFiscais(),200);
   return `
-  <div class="page-header"><h1>Contas a Receber</h1><p>Notas fiscais emitidas, recebimentos e pendências — por cliente e Centro de Custo</p></div>
+  <div class="page-header"><h1>Nota Fiscal</h1><p>Notas fiscais emitidas, recebimentos e pendências — por cliente e Centro de Custo</p></div>
   <div style="margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">
     <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
     <button class="btn-secondary" onclick="window._rdTab='receitas';navigate('receitas_despesas')">💰 Ir para Receitas</button>
@@ -7111,6 +7111,22 @@ function pageReceitasDespesas() {
         font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${tab==='conciliacao'?'700':'500'};cursor:pointer">
       🏦 Conciliação Bancária
     </button>
+    ${tab === 'receitas' ? `
+    <button class="btn-secondary" onclick="navigate('receber')">🧾 Ir para Notas Fiscais</button>
+    ${RD_EMPRESAS.map(emp => {
+      const ativo = emp === (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
+      const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
+      return `<button onclick="rdSelecionarEmpresa('${emp}','receitas_despesas')"
+        style="display:flex;align-items:center;gap:7px;padding:9px 16px;border-radius:10px;
+          border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
+          background:${ativo?cor:'var(--surface2)'};
+          color:${ativo?'#fff':'var(--text)'};
+          font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${ativo?'700':'500'};cursor:pointer">
+        🏢 ${emp}
+      </button>`;
+    }).join('')}
+    <button class="btn-primary" onclick="rcToggleFormNovaReceita()">➕ Nova Receita</button>
+    ` : ''}
   </div>
 
   ${tab === 'despesas' ? renderDespesasTab() : tab === 'receitas' ? renderReceitasTab() : renderConciliacaoTab()}
@@ -7144,11 +7160,6 @@ function renderRdSubmenuEmpresa(destino) {
 function renderReceitasTab() {
   const responsaveis = _servicosResponsaveisDiretoria();
   return `
-  <div style="margin-bottom:16px">
-    <button class="btn-secondary" onclick="navigate('receber')">🧾 Ir para Notas Fiscais</button>
-  </div>
-  ${renderRdSubmenuEmpresa()}
-
   <!-- Formulário de lançamento (recolhido por padrão — clique para abrir) -->
   <div class="form-card" style="margin-bottom:24px">
     <div onclick="rcToggleFormNovaReceita()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-family:'Mont',sans-serif;font-size:.85rem;font-weight:700;color:var(--green-main);${window._rcFormAberto?'margin-bottom:14px;':''}text-transform:uppercase;letter-spacing:.07em">
@@ -7385,6 +7396,7 @@ function renderReceitasTab() {
       ${RC_CATEGORIAS.map(c => `<option>${c}</option>`).join('')}
     </select>
     <input type="text" id="rc_filtro_busca" placeholder="Cliente / descrição / CC..." oninput="carregarReceitas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:160px">
+    <input type="text" id="rc_filtro_nf" placeholder="🧾 Nº NF..." oninput="carregarReceitas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);width:110px">
     <select id="rc_filtro_status" onchange="RC_FILTRO_KPI='';carregarReceitas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
       <option value="">Todos os status</option>
       ${RC_STATUS.map(s => `<option value="${s}">${rcStatusLabel(s)}</option>`).join('')}
@@ -7586,7 +7598,7 @@ function rcFiltrarKpi(tipo) {
 }
 
 function rcLimparFiltros() {
-  ['rc_filtro_mes','rc_filtro_mes_receb','rc_filtro_categoria','rc_filtro_busca','rc_filtro_status','rc_filtro_valor_min','rc_filtro_valor_max'].forEach(id => { const e=document.getElementById(id); if(e) e.value=''; });
+  ['rc_filtro_mes','rc_filtro_mes_receb','rc_filtro_categoria','rc_filtro_busca','rc_filtro_nf','rc_filtro_status','rc_filtro_valor_min','rc_filtro_valor_max'].forEach(id => { const e=document.getElementById(id); if(e) e.value=''; });
   RC_FILTRO_KPI = '';
   carregarReceitas();
 }
@@ -7911,6 +7923,7 @@ async function carregarReceitas() {
     const fMesReceb = (document.getElementById('rc_filtro_mes_receb')||{}).value || '';
     const fCategoria = (document.getElementById('rc_filtro_categoria')||{}).value || '';
     const fBusca = ((document.getElementById('rc_filtro_busca')||{}).value || '').trim().toLowerCase();
+    const fNF = ((document.getElementById('rc_filtro_nf')||{}).value || '').trim().toLowerCase();
     const fStatus = (document.getElementById('rc_filtro_status')||{}).value || '';
     const fValorMin = rdMoedaParaNumero((document.getElementById('rc_filtro_valor_min')||{}).value);
     const fValorMax = rdMoedaParaNumero((document.getElementById('rc_filtro_valor_max')||{}).value);
@@ -7919,6 +7932,7 @@ async function carregarReceitas() {
     if (fMesReceb) items = items.filter(r => (r.DataRecebimento||'').slice(0,7) === fMesReceb);
     if (fCategoria) items = items.filter(r => r.Categoria === fCategoria);
     if (fBusca) items = items.filter(r => (r.Cliente||'').toLowerCase().includes(fBusca) || (r.Descricao||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca));
+    if (fNF) items = items.filter(r => (r.NumeroNF||'').toLowerCase().includes(fNF));
     if (fStatus) items = items.filter(r => r.Status === fStatus);
     if (fValorMin > 0) items = items.filter(r => (r.Valor||0) >= fValorMin);
     if (fValorMax > 0) items = items.filter(r => (r.Valor||0) <= fValorMax);
@@ -7932,18 +7946,23 @@ async function carregarReceitas() {
     if (!items.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma receita encontrada.</div>'; return; }
 
     const statusColor = (s) => s==='Recebido'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
-    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Emissão</th><th>Categoria</th><th>Cliente</th><th>CC</th><th>Previsão</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
-      items.map(i => `<tr>
+    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Emissão</th><th>Categoria</th><th>Cliente</th><th>CC</th><th>Previsão</th><th>Valor Total</th><th>Valor Líquido</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
+      items.map(i => {
+        const valorLiquido = (i.ValorLiquido != null && i.ValorLiquido !== '') ? i.ValorLiquido : Math.max((i.Valor||0) - (i.ISSValorRetido||0) - (i.OutrasRetencoesValor||0), 0);
+        const temRetencao = (i.ISSValorRetido||0) > 0 || (i.OutrasRetencoesValor||0) > 0;
+        return `<tr>
           <td style="font-size:.78rem">${i.DataEmissao ? new Date(i.DataEmissao+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td style="font-size:.76rem">${i.Categoria||'—'}${i.Subcategoria?`<div style="font-size:.66rem;color:var(--text-muted)">${i.Subcategoria}</div>`:''}</td>
           <td style="font-size:.78rem"><strong>${i.Cliente||'—'}</strong>${i.Descricao?`<div style="font-size:.68rem;color:var(--text-muted)">${i.Descricao}</div>`:''}${i.NumeroNF?`<div style="font-size:.66rem;color:var(--blue)">🧾 NF ${i.NumeroNF}</div>`:''}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}</td>
           <td style="font-size:.8rem">${i.DataPrevista ? new Date(i.DataPrevista+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
+          <td>R$ ${valorLiquido.toLocaleString('pt-BR',{minimumFractionDigits:2})}${temRetencao?'<div style="font-size:.64rem;color:var(--text-muted)">c/ retenção</div>':''}</td>
           <td><span class="status-pill ${statusColor(i.Status)}">${rcStatusLabel(i.Status)||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
           <td style="font-size:.72rem">${i.ComprovanteUrl?`<a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver</a>`:'— Não'}</td>
           <td><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;white-space:nowrap" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button></td>
-        </tr>`).join('') + '</tbody></table></div>';
+        </tr>`;
+      }).join('') + '</tbody></table></div>';
   } catch(e) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>'; }
 }
 
@@ -8213,7 +8232,8 @@ async function exportarReceitasExcel() {
     'Nº NF': i.NumeroNF || '',
     'Categoria': i.Categoria || '', 'Subcategoria': i.Subcategoria || '', 'Natureza Econômica': i.NaturezaEconomica || '',
     'Cliente': i.Cliente || '', 'Descrição': i.Descricao || '',
-    'Centro de Custo': i.CentroCusto || '', 'Valor': i.Valor || 0,
+    'Centro de Custo': i.CentroCusto || '', 'Valor Total': i.Valor || 0,
+    'Valor Líquido': (i.ValorLiquido != null && i.ValorLiquido !== '') ? i.ValorLiquido : Math.max((i.Valor||0) - (i.ISSValorRetido||0) - (i.OutrasRetencoesValor||0), 0),
     'Previsão de Recebimento': i.DataPrevista ? new Date(i.DataPrevista+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Data de Recebimento': i.DataRecebimento ? new Date(i.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Forma de Recebimento': i.FormaRecebimento || '', 'Banco': i.Banco || '', 'Status': i.Status || '',
@@ -24266,7 +24286,7 @@ const FINANCEIRO_CATALOGO = [
   { rota: 'dashboard_financeiro', icon: '📊', titulo: 'Dashboard Financeiro', subtitulo: 'Gráficos de receitas x despesas, contratos com mais saídas e despesas por categoria', perfis: ['diretoria'] },
   { rota: 'servicos', icon: '💼', titulo: 'Catálogo de Serviços', subtitulo: 'Diárias, locação de veículos, projetos e lançamentos de serviços', perfis: ['diretoria','coordenador'] },
   { rota: 'custos', icon: '🗂️', titulo: 'Centros de Custo', subtitulo: 'Contratos e projetos ativos, com valor aprovado, receitas, despesas e saldo', perfis: ['diretoria'] },
-  { rota: 'receber', icon: '💰', titulo: 'Contas a Receber', subtitulo: 'Notas fiscais, recebimentos e pendências — por cliente e Centro de Custo', perfis: ['diretoria','coordenador'] },
+  { rota: 'receber', icon: '💰', titulo: 'Nota Fiscal', subtitulo: 'Notas fiscais, recebimentos e pendências — por cliente e Centro de Custo', perfis: ['diretoria','coordenador'] },
   { rota: 'pagar', icon: '💸', titulo: 'Contas a Pagar', subtitulo: 'Fornecedores, lançamentos, vencimentos e pagamentos', perfis: ['diretoria','coordenador'] },
   // Receitas e Despesas viraram dois botões próprios (antes era 1 botão só,
   // "Receitas e Despesas") — os dados já eram tabelas separadas por trás
@@ -24431,6 +24451,16 @@ function dashFinMudarPeriodo(qtd) {
   dashFinCarregar();
 }
 
+function dashFinMudarMes(valor) {
+  window._dashFinMesEspecifico = valor || '';
+  navigate('dashboard_financeiro');
+}
+
+function dashFinMudarEmpresa(valor) {
+  window._dashFinEmpresa = valor || '';
+  dashFinCarregar();
+}
+
 async function dashFinCarregar() {
   const painel = document.getElementById('dashfin-painel');
   if (!painel) return;
@@ -24444,17 +24474,29 @@ async function dashFinCarregar() {
       });
     }
     if (!_custosExtrasCarregados) await custosCarregarExtras();
-    const [despesas, receitas] = await Promise.all([
+    const [despesasTodas, receitasTodas] = await Promise.all([
       dbLer('Despesas').catch(() => []),
       dbLer('Receitas').catch(() => []),
     ]);
 
-    const nMeses = window._dashFinMeses || 12;
+    // Filtro por empresa (Expedian/TL3/EXP Brasil) — vazio = todas.
+    const empresaFiltro = window._dashFinEmpresa || '';
+    const despesas = empresaFiltro ? despesasTodas.filter(d => normalizarEmpresa(d.Empresa) === empresaFiltro) : despesasTodas;
+    const receitas = empresaFiltro ? receitasTodas.filter(r => normalizarEmpresa(r.Empresa) === empresaFiltro) : receitasTodas;
+
+    // Filtro por mês específico (sobrepõe o período de "últimos N meses" — vira
+    // um único mês na série, o que também deixa a Despesa média/mês igual ao total).
+    const mesEspecifico = window._dashFinMesEspecifico || '';
+    const nMeses = mesEspecifico ? 1 : (window._dashFinMeses || 12);
     const hoje = new Date();
     const chavesMeses = [];
-    for (let i = nMeses - 1; i >= 0; i--) {
-      const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
-      chavesMeses.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'));
+    if (mesEspecifico) {
+      chavesMeses.push(mesEspecifico);
+    } else {
+      for (let i = nMeses - 1; i >= 0; i--) {
+        const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+        chavesMeses.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'));
+      }
     }
     const chaveMes = (dataStr) => (dataStr || '').slice(0, 7);
 
@@ -24594,10 +24636,15 @@ function pageDashboardFinanceiro() {
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
-      <select onchange="dashFinMudarPeriodo(this.value)" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
+      <select onchange="dashFinMudarPeriodo(this.value)" ${window._dashFinMesEspecifico ? 'disabled title="Desative o filtro de mês específico pra usar o período"' : ''} style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
         <option value="6" ${nMeses === 6 ? 'selected' : ''}>Últimos 6 meses</option>
         <option value="12" ${nMeses === 12 ? 'selected' : ''}>Últimos 12 meses</option>
         <option value="24" ${nMeses === 24 ? 'selected' : ''}>Últimos 24 meses</option>
+      </select>
+      <input type="month" value="${window._dashFinMesEspecifico || ''}" onchange="dashFinMudarMes(this.value)" title="Filtrar por um mês específico (sobrepõe o período acima)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
+      <select onchange="dashFinMudarEmpresa(this.value)" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
+        <option value="">🏢 Todas as empresas</option>
+        ${RD_EMPRESAS.map(emp => `<option value="${emp}" ${window._dashFinEmpresa === emp ? 'selected' : ''}>🏢 ${emp}</option>`).join('')}
       </select>
     </div>
   </div>
