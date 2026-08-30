@@ -8949,6 +8949,7 @@ function renderDespesasTab() {
       <option value="">Todos os status</option>
       ${RD_STATUS.map(s => `<option>${s}</option>`).join('')}
     </select>
+    <input type="text" inputmode="decimal" id="rd_filtro_valor_exato" placeholder="Valor exato" title="Buscar por valor exato" oninput="rdFormatarMoedaInput(this);carregarDespesas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);width:100px">
     <input type="text" inputmode="decimal" id="rd_filtro_valor_min" placeholder="Valor mín." oninput="rdFormatarMoedaInput(this);carregarDespesas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);width:100px">
     <input type="text" inputmode="decimal" id="rd_filtro_valor_max" placeholder="Valor máx." oninput="rdFormatarMoedaInput(this);carregarDespesas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);width:100px">
     <button onclick="rdLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
@@ -9766,7 +9767,7 @@ function rdFiltrarKpi(tipo) {
 }
 
 function rdLimparFiltros() {
-  ['rd_filtro_mes','rd_filtro_dia','rd_filtro_categoria','rd_filtro_busca','rd_filtro_valor_min','rd_filtro_valor_max'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
+  ['rd_filtro_mes','rd_filtro_dia','rd_filtro_categoria','rd_filtro_busca','rd_filtro_valor_exato','rd_filtro_valor_min','rd_filtro_valor_max'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const statusSel = document.getElementById('rd_filtro_status'); if (statusSel) statusSel.value = '';
   RD_FILTRO_KPI = '';
   carregarDespesas();
@@ -9821,6 +9822,7 @@ async function carregarDespesas() {
     const fCategoria = (document.getElementById('rd_filtro_categoria')||{}).value || '';
     const fBusca = ((document.getElementById('rd_filtro_busca')||{}).value || '').trim().toLowerCase();
     const fStatus = (document.getElementById('rd_filtro_status')||{}).value || '';
+    const fValorExato = rdMoedaParaNumero((document.getElementById('rd_filtro_valor_exato')||{}).value);
     const fValorMin = rdMoedaParaNumero((document.getElementById('rd_filtro_valor_min')||{}).value);
     const fValorMax = rdMoedaParaNumero((document.getElementById('rd_filtro_valor_max')||{}).value);
 
@@ -9829,19 +9831,29 @@ async function carregarDespesas() {
     if (fCategoria) items = items.filter(r => r.Categoria === fCategoria);
     if (fBusca) items = items.filter(r => (r.Fornecedor||'').toLowerCase().includes(fBusca) || (r.ServicoDesc||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca) || (r.Subcategoria||'').toLowerCase().includes(fBusca));
     if (fStatus) items = items.filter(r => r.Status === fStatus);
-    if (fValorMin > 0) items = items.filter(r => (r.Valor||0) >= fValorMin);
-    if (fValorMax > 0) items = items.filter(r => (r.Valor||0) <= fValorMax);
+    if (fValorExato > 0) items = items.filter(r => Math.abs((r.Valor||0) - fValorExato) < 0.01);
+    else {
+      if (fValorMin > 0) items = items.filter(r => (r.Valor||0) >= fValorMin);
+      if (fValorMax > 0) items = items.filter(r => (r.Valor||0) <= fValorMax);
+    }
     if (RD_FILTRO_KPI === 'pendente') items = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje');
     else if (RD_FILTRO_KPI === 'pago') items = items.filter(r=>r.Status==='Pago');
     else if (RD_FILTRO_KPI === 'atraso') items = items.filter(r=>r.Status==='Em atraso');
 
-    items = items.slice().sort((a,b)=>(b.Id||0)-(a.Id||0)).slice(0,300);
+    // Ordenado por data de pagamento mais recente primeiro (pedido em 30/08/2026);
+    // itens ainda não pagos entram pela data de vencimento/lançamento, ficando após os já pagos mais recentes.
+    items = items.slice().sort((a,b) => {
+      const chaveA = a.DataPagamento || a.Vencimento || a.DataLancamento || '';
+      const chaveB = b.DataPagamento || b.Vencimento || b.DataLancamento || '';
+      if (chaveA !== chaveB) return chaveB.localeCompare(chaveA);
+      return (b.Id||0)-(a.Id||0);
+    }).slice(0,300);
     window._rdFiltradas = items;
 
     if (!items.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma despesa encontrada.</div>'; return; }
 
     const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
-    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
+    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Data Pagto</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
         const desc = i.Modalidade === 'servicos' ? ('🛠️ ' + (i.ServicoDesc||'—')) : ('🏭 ' + (i.Fornecedor||'—'));
         const ehParcelado = i.TotalParcelas > 1;
@@ -9857,6 +9869,7 @@ async function carregarDespesas() {
           <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
           <td style="font-size:.72rem">${pgtoCel}</td>
           <td style="font-size:.8rem">${i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
+          <td style="font-size:.8rem;color:${i.DataPagamento?'var(--green-mid)':'var(--text-muted)'}">${i.DataPagamento ? new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</strong></td>
           <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
           <td style="font-size:.72rem">${i.ComprovanteUrl?`<a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver</a>`:'— Não'}</td>
@@ -10102,7 +10115,7 @@ function rdRenderResumoMensal(items) {
           return `<div onclick="document.getElementById('rd_filtro_mes').value='${vazio?'':chaveMes}';document.getElementById('rd_filtro_dia').value='';carregarDespesas()" style="cursor:pointer;padding:8px 6px;border-radius:9px;text-align:center;border:${ativo?'2px solid var(--red)':'1px solid var(--border)'};background:${ativo?'#fce8e8':(vazio?'var(--bg)':'var(--surface2)')};opacity:${vazio?'.55':'1'}">
             <div style="font-size:.7rem;font-weight:800;color:var(--text-muted)">${nome}</div>
             <div style="font-size:.74rem;font-weight:800;margin:3px 0">${vazio?'—':'R$ '+fmt0(d.total)}</div>
-            ${!vazio ? `<div style="font-size:.6rem;color:var(--text-muted);line-height:1.5">${d.pago>0?('✅ '+fmt0(d.pago)+' pago<br>'):''}${d.aVencer>0?('🟡 '+fmt0(d.aVencer)+' a pagar<br>'):''}${d.vencido>0?('⚠️ '+fmt0(d.vencido)+' vencido'):''}</div>` : ''}
+            ${!vazio ? `<div style="font-size:.56rem;color:var(--text-muted);line-height:1.5">${d.pago>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✅ ${fmt0(d.pago)} pago</div>`):''}${d.aVencer>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🟡 ${fmt0(d.aVencer)} pagar</div>`):''}${d.vencido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">⚠️ ${fmt0(d.vencido)} venc.</div>`):''}</div>` : ''}
           </div>`;
         }).join('')}
       </div>
