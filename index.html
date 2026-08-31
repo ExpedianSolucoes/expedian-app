@@ -4624,15 +4624,16 @@ async function carregarPrestacoes() {
       }
     }
 
-    const theadPrestHtml = '<thead><tr><th>Data</th><th>Fornecedor</th><th>Município</th><th>Empresa / CC</th><th>Pagamento</th><th>NF/Recibo</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead>';
+    const theadPrestHtml = '<thead><tr><th>Data</th><th>Lançado em</th><th>Fornecedor</th><th>Município</th><th>Empresa / CC</th><th>Pagamento</th><th>NF/Recibo</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead>';
     const linhaPrest = i=>{
         const dias = diasDesde(i.DataLancamento);
         const atrasado = (i.Status === 'Ag. Financeiro' || i.Status === 'Ag. Aprovação Gestor') && dias !== null && dias > 3;
         const podeAgirFinanceiro = i.Status==='Ag. Financeiro' && isGestor;
         const podeAgirGestorLegado = i.Status==='Ag. Aprovação Gestor' && isGestor;
-        const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcelas||'?'}x (${i.TipoParcelamento||''})` : i.Parcelamento==='faturado' ? `${i.FormaPagamento||''} · Faturado` : (i.FormaPagamento||'—');
+        const pgtoTxt = (i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcelas||'?'}x (${i.TipoParcelamento||''})` : i.Parcelamento==='faturado' ? `${i.FormaPagamento||''} · Faturado` : (i.FormaPagamento||'—')) + (i.Status==='Paga'&&i.DataPagamento ? `<div style="font-size:.68rem;color:var(--green-main)">✅ Pago em ${new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR')}</div>` : '');
         return `<tr${atrasado?' style="background:#fffbeb"':''}>
         <td style="font-size:.78rem">${i.DataDespesa?new Date(i.DataDespesa+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
+        <td style="font-size:.75rem;color:var(--text-muted)">${i.DataLancamento?new Date(i.DataLancamento).toLocaleDateString('pt-BR'):'—'}</td>
         <td><strong>${i.Fornecedor||'—'}</strong><div style="font-size:.7rem;color:var(--text-muted)">${i.Responsavel||''}${i.LancadoPor && i.LancadoPor !== i.Responsavel && !ehLancadorExtra(i.LancadoPor) ? ' · lançado por ' + i.LancadoPor : ''}</div>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}</td>
         <td style="font-size:.75rem">${i.Municipio||'—'}</td>
         <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}<br><span style="color:var(--text-muted)">${i.CentroCusto||''}</span></td>
@@ -4767,6 +4768,7 @@ async function exportarPrestacaoExcel() {
   }
   const rows = items.map(i => ({
     'Data': i.DataDespesa ? new Date(i.DataDespesa+'T00:00:00').toLocaleDateString('pt-BR') : '',
+    'Lançado em': i.DataLancamento ? new Date(i.DataLancamento).toLocaleDateString('pt-BR') : '',
     'Colaborador': i.Responsavel || '',
     'Lançado por': i.LancadoPor || '',
     'Fornecedor': i.Fornecedor || '',
@@ -4780,6 +4782,7 @@ async function exportarPrestacaoExcel() {
     'Forma de Pagamento': i.FormaPagamento || '',
     'Parcelamento': i.Parcelamento === 'parcelado' ? ((i.NumParcelas||'')+'x — '+(i.TipoParcelamento||'')) : i.Parcelamento === 'faturado' ? 'Faturado' : 'À vista',
     'Status': i.Status || '',
+    'Data de Pagamento': (i.Status==='Paga'&&i.DataPagamento) ? new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Motivo Devolução': i.MotivoReprovacao || '',
     'Observações': i.Observacoes || '',
   }));
@@ -5501,6 +5504,7 @@ function pagePagar() {
     <div class="kpi-card green" id="pag-kpi-card-pago" onclick="pagFiltrarKpi('pago')" style="cursor:pointer" title="Filtrar: pagos"><div class="kpi-label">Pagos</div><div class="kpi-value" id="pag-kpi-pago">—</div><div class="kpi-icon">✅</div></div>
     <div class="kpi-card red" id="pag-kpi-card-atraso" onclick="pagFiltrarKpi('atraso')" style="cursor:pointer" title="Filtrar: em atraso"><div class="kpi-label">Em Atraso</div><div class="kpi-value" id="pag-kpi-atraso">—</div><div class="kpi-icon">⚠️</div></div>
     <div class="kpi-card amber" id="pag-kpi-card-estagiario" onclick="pagFiltrarKpi('estagiario')" style="cursor:pointer" title="Lançamentos feitos por quem usa outro login (ex.: estagiário), aguardando sua aprovação"><div class="kpi-label">🎓 Do Estagiário — Ag. Aprovação</div><div class="kpi-value" id="pag-kpi-estagiario">—</div><div class="kpi-icon">🎓</div></div>
+    <div class="kpi-card blue" title="Média de dias entre a data de lançamento e a data de pagamento, considerando só os já pagos"><div class="kpi-label">⏱️ Prazo Médio (lanç. → pago)</div><div class="kpi-value" id="pag-kpi-prazo">—</div><div class="kpi-icon">⏱️</div></div>
   </div>
 
   <!-- BARRA DE FILTROS -->
@@ -6501,7 +6505,11 @@ function pagLimparFiltros() {
 
 async function carregarContasPagar() {
   const el=document.getElementById('lista-pagar');if(!el)return;
-  if (currentProfile !== 'diretoria') { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria.</div>'; return; }
+  // Alinhado com o guard de pagePagar() — Coordenação também acessa Contas a
+  // Pagar (achado e corrigido em 31/08/2026: essa checagem aqui dentro só
+  // liberava Diretoria, então Coordenação via a página mas a lista ficava
+  // presa em "Acesso restrito à Diretoria").
+  if (!['diretoria','coordenador'].includes(currentProfile)) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria e Coordenação.</div>'; return; }
   const token=await getSharePointToken();
   if(!token){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>';return;}
   try {
@@ -6532,6 +6540,17 @@ async function carregarContasPagar() {
     setKpi('pag-kpi-pago', items.filter(r=>r.Status==='Pago').length);
     setKpi('pag-kpi-atraso', items.filter(r=>r.Status==='Em atraso').length);
     setKpi('pag-kpi-estagiario', items.filter(r=>r.Status==='Aguardando Aprovação' && ehLancadorExtra(r.LancadoPor)).length);
+
+    // Prazo médio entre o lançamento (Created, gravado automaticamente ao
+    // salvar) e o pagamento efetivo (DataPagamento) — pedido em 31/08/2026,
+    // pra saber quanto tempo em média um fornecedor espera pra ser pago.
+    const pagosComPrazo = items.filter(r => r.Status === 'Pago' && r.Created && r.DataPagamento);
+    if (pagosComPrazo.length) {
+      const somaDias = pagosComPrazo.reduce((s,r) => s + Math.max(0, (new Date(r.DataPagamento+'T00:00:00') - new Date(r.Created)) / 86400000), 0);
+      setKpi('pag-kpi-prazo', Math.round(somaDias / pagosComPrazo.length) + 'd');
+    } else {
+      setKpi('pag-kpi-prazo', '—');
+    }
 
     const setActiveKpi = (cardId, ativo, cor) => {
       const e = document.getElementById(cardId); if (!e) return;
@@ -6583,12 +6602,13 @@ async function carregarContasPagar() {
     if(!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado.</div>';return;}
     const statusColor = (s) => s==='Pago'?'green':s==='Em atraso'||s==='Rejeitada'?'red':s==='Vence hoje'||s==='Vence em breve'?'amber':s==='Aguardando Aprovação'||s==='Aprovado — Aguardando Pagamento'?'blue':'amber';
     const isDir = currentProfile === 'diretoria';
-    el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Empresa</th><th>Fornecedor</th><th>Descrição</th><th>CC</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
+    el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Empresa</th><th>Fornecedor</th><th>Lançado em</th><th>Descrição</th><th>CC</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
       items.map(i=>{
         const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}` : (i.FormaPagamento||'—');
         return `<tr>
           <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
           <td><strong>${i.Fornecedor||'—'}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}${i.Provisorio?`<div style="font-size:.62rem;color:var(--amber);font-weight:700" title="Valor estimado pela alíquota configurada — ainda não reconciliado com o DAS real (ver Notas Fiscais > 🧮 Reconciliar DAS)">📐 Provisão</div>`:''}</td>
+          <td style="font-size:.75rem;color:var(--text-muted)">${i.Created?new Date(i.Created).toLocaleDateString('pt-BR'):'—'}</td>
           <td style="font-size:.78rem">${i.Descricao||'—'}${i.ComprovanteUrl?`<br><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.68rem">📎 Ver comprovante</a>`:''}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${i.CentroCusto||'—'}${(i.DivisaoCC&&i.DivisaoCC.length)?`<div style="color:var(--blue)">🧩 dividido (${i.DivisaoCC.length})</div>`:''}</td>
           <td style="font-size:.72rem">${pgtoTxt}</td>
@@ -6597,7 +6617,7 @@ async function carregarContasPagar() {
           <td><span class="status-pill ${statusColor(i.Status)}">* ${i.Status||'—'}</span></td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap;align-items:center">
             <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="pagAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
-            ${i.Status==='Pago'?`<span style="font-size:.7rem;color:var(--green-main)">✅ Pago${i.BancoPagamento?' · '+i.BancoPagamento:''}</span>${i.DespesaId?'':`<button class="btn-secondary" style="padding:3px 7px;font-size:.65rem;background:var(--amber)" onclick="pagSincronizarEEnviar(${i.Id})">📤 Enviar p/ Despesas</button>`}`:''}
+            ${i.Status==='Pago'?`<span style="font-size:.7rem;color:var(--green-main)">✅ Pago${i.DataPagamento?' em '+new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR'):''}${i.BancoPagamento?' · '+i.BancoPagamento:''}</span>${i.DespesaId?'':`<button class="btn-secondary" style="padding:3px 7px;font-size:.65rem;background:var(--amber)" onclick="pagSincronizarEEnviar(${i.Id})">📤 Enviar p/ Despesas</button>`}`:''}
             ${i.Status==='Rejeitada'?`<span style="font-size:.7rem;color:var(--red)">↩️ Rejeitada</span>`:''}
             <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="pagExcluirLancamento(${i.Id})">🗑️ Excluir</button>
           </td>
@@ -6638,6 +6658,7 @@ async function exportarContasPagarExcel() {
   const rows = items.map(i => ({
     'Empresa': normalizarEmpresa(i.Empresa) || '',
     'Fornecedor': i.Fornecedor || '',
+    'Lançado em': i.Created ? new Date(i.Created).toLocaleDateString('pt-BR') : '',
     'Descrição': i.Descricao || '',
     'Categoria': i.Categoria || '',
     'Subcategoria': i.Subcategoria || '',
@@ -6645,6 +6666,7 @@ async function exportarContasPagarExcel() {
     'Forma de Pagamento': i.FormaPagamento || '',
     'Parcelamento': i.Parcelamento === 'parcelado' ? ((i.NumParcela||'')+'/'+(i.TotalParcelas||'')) : 'À vista',
     'Vencimento': i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '',
+    'Data de Pagamento': i.DataPagamento ? new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Valor': i.Valor || 0,
     'Status': i.Status || '',
     'Observação': i.Observacao || '',
@@ -7204,6 +7226,26 @@ function pageReceitasDespesas() {
       }).join('')}
     </div>
   </div>
+
+  ${tab === 'despesas' ? `
+  <!-- Contas a Pagar e Prestação de Contas saíram do hub Financeiro pra Diretoria
+       e viraram estes 2 cards aqui dentro de Despesas (mesma visibilidade que
+       tinham como card no hub) — pedido em 31/08/2026. Depois de confirmado o
+       pagamento, o lançamento sai dessas 2 telas e passa a existir só em
+       Despesas (pagSincronizarDespesa / registrarPagamentoPrestacao já fazem
+       esse espelhamento automático ao marcar como pago). -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-bottom:18px">
+    <div class="card" style="cursor:pointer" onclick="navigate('pagar')">
+      <div style="font-size:1.8rem;margin-bottom:8px">💸</div>
+      <div class="card-title" style="margin-bottom:6px">Contas a Pagar</div>
+      <div style="font-size:.78rem;color:var(--text-muted)">Fornecedores, lançamentos, vencimentos e pagamentos</div>
+    </div>
+    <div class="card" style="cursor:pointer" onclick="navigate('prestacao')">
+      <div style="font-size:1.8rem;margin-bottom:8px">📑</div>
+      <div class="card-title" style="margin-bottom:6px">Prestação de Contas</div>
+      <div style="font-size:.78rem;color:var(--text-muted)">Registro de despesas com comprovante e fluxo de aprovação</div>
+    </div>
+  </div>` : ''}
 
   <div style="display:flex;gap:6px;margin-bottom:22px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
@@ -24775,7 +24817,10 @@ const FINANCEIRO_CATALOGO = [
   { rota: 'custos', icon: '🗂️', titulo: 'Centros de Custo', subtitulo: 'Contratos e projetos ativos, com valor aprovado, receitas, despesas e saldo', perfis: ['diretoria'] },
   // "Nota Fiscal" (rota 'receber') saiu daqui — agora só é acessada de dentro de
   // Receitas, pelo botão "🧾 Ir para Notas Fiscais" (pedido em 30/08/2026).
-  { rota: 'pagar', icon: '💸', titulo: 'Contas a Pagar', subtitulo: 'Fornecedores, lançamentos, vencimentos e pagamentos', perfis: ['diretoria','coordenador'] },
+  // Pra Diretoria, "Contas a Pagar" saiu do hub — agora é acessado de dentro de
+  // Despesas (botão de mesma visibilidade do card antigo, ver pageReceitasDespesas).
+  // Coordenador continua entrando por aqui normalmente (pedido em 31/08/2026).
+  { rota: 'pagar', icon: '💸', titulo: 'Contas a Pagar', subtitulo: 'Fornecedores, lançamentos, vencimentos e pagamentos', perfis: ['coordenador'] },
   // Receitas e Despesas viraram dois botões próprios (antes era 1 botão só,
   // "Receitas e Despesas") — os dados já eram tabelas separadas por trás
   // (Receitas.json / Despesas.json), isso só separa também o ponto de
@@ -24783,7 +24828,9 @@ const FINANCEIRO_CATALOGO = [
   // muda a aba pré-selecionada (window._rdTab) — decisão de 21/08/2026.
   { rota: 'receitas_despesas', preTab: 'receitas', icon: '💰', titulo: 'Receitas', subtitulo: 'Lançamentos de receita da empresa', perfis: ['diretoria'] },
   { rota: 'receitas_despesas', preTab: 'despesas', icon: '💸', titulo: 'Despesas', subtitulo: 'Lançamentos de despesa da empresa', perfis: ['diretoria'] },
-  { rota: 'prestacao', icon: '📑', titulo: 'Prestação de Contas', subtitulo: 'Registro de despesas com comprovante e fluxo de aprovação', perfis: ['diretoria','coordenador','colaborador'] },
+  // Mesma lógica: pra Diretoria, "Prestação de Contas" saiu do hub e virou botão
+  // dentro de Despesas. Coordenador e Colaborador continuam vendo o card aqui.
+  { rota: 'prestacao', icon: '📑', titulo: 'Prestação de Contas', subtitulo: 'Registro de despesas com comprovante e fluxo de aprovação', perfis: ['coordenador','colaborador'] },
   { rota: 'contratos', icon: '📜', titulo: 'Gestão de Contratos', subtitulo: 'Contratos ativos, valores, vigências e alertas de vencimento', perfis: ['diretoria'] },
 ];
 
