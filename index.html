@@ -5453,8 +5453,8 @@ function pagePagar() {
     </div>
 
     <div class="form-actions" style="gap:10px">
-      <button class="btn-primary" onclick="salvarContaPagar()">💾 Salvar Lançamento</button>
-      <button class="btn-secondary" onclick="salvarEnviarFinanceiro()">📤 Salvar e Enviar ao Financeiro</button>
+      <button class="btn-primary" id="pag-btn-salvar" onclick="salvarContaPagar()">💾 Salvar Lançamento</button>
+      <button class="btn-secondary" id="pag-btn-salvar-enviar" onclick="salvarEnviarFinanceiro()">📤 Salvar e Enviar ao Financeiro</button>
     </div>
     </div>
     </div>
@@ -5911,6 +5911,28 @@ function pagSelecionarCategoria(cat) {
 }
 
 async function salvarContaPagar(enviarFinanceiro=false) {
+  // Trava contra clique duplo/duplo envio (pedido em 30/08/2026 — um lançamento
+  // demorou pra dar feedback visual, o usuário clicou de novo e duplicou). Os
+  // botões ficam desabilitados do clique até o fim do salvamento (sucesso, erro
+  // ou cancelamento por duplicidade), sempre reabilitados no finally.
+  if (window._pagSalvando) { showToast('⏳ Já estou salvando esse lançamento, aguarde...'); return; }
+  window._pagSalvando = true;
+  const btnSalvar = document.getElementById('pag-btn-salvar');
+  const btnEnviar = document.getElementById('pag-btn-salvar-enviar');
+  const textoOrigSalvar = btnSalvar ? btnSalvar.textContent : '';
+  const textoOrigEnviar = btnEnviar ? btnEnviar.textContent : '';
+  if (btnSalvar) { btnSalvar.disabled = true; btnSalvar.textContent = '⏳ Salvando...'; }
+  if (btnEnviar) { btnEnviar.disabled = true; btnEnviar.textContent = '⏳ Salvando...'; }
+  try {
+    await _salvarContaPagarInterno(enviarFinanceiro);
+  } finally {
+    window._pagSalvando = false;
+    if (btnSalvar) { btnSalvar.disabled = false; btnSalvar.textContent = textoOrigSalvar || '💾 Salvar Lançamento'; }
+    if (btnEnviar) { btnEnviar.disabled = false; btnEnviar.textContent = textoOrigEnviar || '📤 Salvar e Enviar ao Financeiro'; }
+  }
+}
+
+async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   const empresa=(document.getElementById('pag_empresa').value||'').trim();
   const cc=(document.getElementById('pag_cc').value||'').trim();
   const fornecedor=document.getElementById('pag_fornecedor_sel').value;
@@ -5933,6 +5955,28 @@ async function salvarContaPagar(enviarFinanceiro=false) {
     const somaDivisao=divisaoCC.reduce((s,d)=>s+(d.valor||0),0);
     const diffDivisao=Math.round((somaDivisao-valor)*100)/100;
     if(Math.abs(diffDivisao)>0.01){showToast(`⚠️ A soma da divisão de Centro de Custo (R$ ${rdNumeroParaMoeda(somaDivisao)}) não bate com o valor (R$ ${rdNumeroParaMoeda(valor)}).`);return;}
+  }
+
+  // Checagem de duplicidade — mesmo Fornecedor + Valor + Vencimento (1ª parcela,
+  // se parcelado) na mesma Empresa. Pedido em 30/08/2026: um lançamento sem
+  // feedback claro levou a um clique duplo e um duplicado real. Não bloqueia —
+  // só avisa e pede confirmação, porque duas contas iguais no mesmo dia podem
+  // ser legítimas (2 notas do mesmo fornecedor, mesmo valor).
+  const vencimentoRef = parcelamento === 'parcelado'
+    ? ((window._pagParcelas && window._pagParcelas[0] && window._pagParcelas[0].vencimento) || '')
+    : vencimento;
+  if (vencimentoRef) {
+    const existentes = await dbLer('ContasPagar').catch(() => []);
+    const possivelDuplicata = (existentes || []).find(r =>
+      normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa) &&
+      (r.Fornecedor || '') === fornecedor &&
+      Math.abs((r.Valor || 0) - (parcelamento === 'parcelado' ? ((window._pagParcelas && window._pagParcelas[0] && window._pagParcelas[0].valor) || valor) : valor)) < 0.01 &&
+      r.Vencimento === vencimentoRef
+    );
+    if (possivelDuplicata) {
+      const jaLancado = `⚠️ Já existe um lançamento igual: ${possivelDuplicata.Fornecedor} · R$ ${(possivelDuplicata.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})} · vencimento ${new Date(possivelDuplicata.Vencimento+'T00:00:00').toLocaleDateString('pt-BR')} (status: ${possivelDuplicata.Status||'—'}).\n\nTem certeza que quer lançar de novo?`;
+      if (!confirm(jaLancado)) { showToast('Lançamento cancelado — já existia um igual.'); return; }
+    }
   }
 
   // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/fornecedor definitivos
@@ -6553,11 +6597,28 @@ async function carregarContasPagar() {
             <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="pagAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
             ${i.Status==='Pago'?`<span style="font-size:.7rem;color:var(--green-main)">✅ Pago${i.BancoPagamento?' · '+i.BancoPagamento:''}</span>${i.DespesaId?'':`<button class="btn-secondary" style="padding:3px 7px;font-size:.65rem;background:var(--amber)" onclick="pagSincronizarEEnviar(${i.Id})">📤 Enviar p/ Despesas</button>`}`:''}
             ${i.Status==='Rejeitada'?`<span style="font-size:.7rem;color:var(--red)">↩️ Rejeitada</span>`:''}
+            <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="pagExcluirLancamento(${i.Id})">🗑️ Excluir</button>
           </td>
         </tr>`;
       }).join('')+
       '</tbody></table></div>';
   } catch(e){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';}
+}
+
+/* -- Exclusão direta — restrita à Diretoria (a página inteira de Contas a
+   Pagar já é exclusiva pra esse perfil). Pedido em 30/08/2026 junto com a
+   checagem de duplicidade, pra dar um jeito rápido de apagar um lançamento
+   duplicado sem precisar mexer direto no OneDrive. Se já tiver virado Despesa
+   (pago e sincronizado), avisa — apagar aqui não desfaz a Despesa gerada. -- */
+async function pagExcluirLancamento(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const i = (window._pagFiltradas || []).find(r => r.Id === id);
+  const desc = i ? ((i.Fornecedor||'—') + ' · R$ ' + (i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2}) + (i.Vencimento ? ' · venc. ' + new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '')) : ('#' + id);
+  const avisoDespesa = (i && i.DespesaId) ? '\n\n⚠️ Esse lançamento já foi pago e gerou uma Despesa vinculada — excluir aqui NÃO remove a Despesa. Se for duplicidade real, exclua também a Despesa correspondente.' : '';
+  if (!confirm(`Excluir o lançamento "${desc}"? Essa ação não pode ser desfeita.${avisoDespesa}`)) return;
+  const { ok } = await dbRemover('ContasPagar', id);
+  showToast(ok ? '🗑️ Lançamento excluído.' : '❌ Erro ao excluir.');
+  if (ok) carregarContasPagar();
 }
 
 async function exportarContasPagarExcel() {
@@ -37811,9 +37872,15 @@ async function initOffline() {
   await openDB();
   await registerSW();
 
-  // Restaurar sessão anterior (login offline)
+  // Restaurar sessão anterior (login offline) — SÓ quando o dispositivo está
+  // sem internet, para não deixar o colaborador travado num app que ele não
+  // consegue logar de novo (o login Microsoft exige conexão). Online, sempre
+  // mostra a tela de login do zero ao abrir o app (pedido em 30/08/2026, PC
+  // ou celular) — antes disso a sessão local ficava restaurada pra sempre
+  // depois do 1º login, e o app abria direto na tela principal com mensagens
+  // soltas de "login necessário" em vez de pedir login primeiro.
   const session = await loadSession();
-  if (session && session.profile) {
+  if (!navigator.onLine && session && session.profile) {
     applyLogin({
       profile:  session.profile,
       name:     session.name,
