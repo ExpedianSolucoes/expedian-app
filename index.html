@@ -1357,6 +1357,7 @@ function renderPage(id) {
     contratos: () => pageContratos(),
     adiantamento: () => pageAdiantamento(),
     projetos: () => pageProjetos(),
+    fornecedores: () => pageFornecedores(),
   };
   const fn = pages[id] || (() => `<div style="padding:40px;text-align:center;color:var(--text-muted)">Página em construção 🚧</div>`);
   container.innerHTML = fn();
@@ -3767,6 +3768,7 @@ function pagePrestacao() {
   <div style="margin-bottom:24px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="${window._prestVindoDeDespesas ? "window._prestVindoDeDespesas=false;window._rdTab='despesas';navigate('receitas_despesas')" : "navigate('financeiro')"}">← ${window._prestVindoDeDespesas ? 'Despesas' : 'Financeiro'}</button>
     <button id="prest-form-toggle-btn" class="btn-primary" onclick="pcToggleFormNovo()">➕ Nova Despesa</button>
+    <button class="btn-secondary" onclick="window._fornVindoDe='prestacao';navigate('fornecedores')">🏷️ Fornecedores</button>
   </div>
 
   <div id="prest-form-container" style="display:none;margin-bottom:24px">
@@ -5265,6 +5267,7 @@ function pagePagar() {
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
       <button class="btn-secondary" onclick="${window._pagVindoDeDespesas ? "window._pagVindoDeDespesas=false;window._rdTab='despesas';navigate('receitas_despesas')" : "navigate('financeiro')"}">← ${window._pagVindoDeDespesas ? 'Despesas' : 'Financeiro'}</button>
       <button id="pag-form-toggle" class="btn-primary" onclick="pagToggleFormNovo()">➕ Novo Lançamento</button>
+      <button class="btn-secondary" onclick="window._fornVindoDe='pagar';navigate('fornecedores')">🏷️ Fornecedores</button>
     </div>
     <div id="pag-form-container" style="display:${window._pagFormAberto ? 'block' : 'none'};margin-top:14px">
     <div class="form-card">
@@ -5776,6 +5779,160 @@ async function confirmarCadastroFornecedor() {
   } else {
     showToast('❌ Erro ao cadastrar fornecedor.' + syncErrorDetalhe());
   }
+}
+
+/* =====================================================================
+   FORNECEDORES — página dedicada de gestão (listar/editar/excluir).
+   Antes só dava pra cadastrar (nos 3 módulos) e editar (só dentro de
+   Prestação de Contas, clicando no ✏️ do resultado da busca) — sem tela
+   central e sem exclusão em lugar nenhum. Pedido em 31/08/2026, Tiago
+   (Financeiro). A tabela 'Fornecedores' já é compartilhada entre Contas a
+   Pagar, Prestação de Contas e Despesas — essa página lê/edita a mesma. -- */
+function pageFornecedores() {
+  setTimeout(() => { carregarMunicipiosLista(); carregarFornecedoresPagina(); }, 150);
+  const origem = window._fornVindoDe;
+  const voltarRota = origem === 'pagar' ? 'pagar' : origem === 'prestacao' ? 'prestacao' : 'financeiro';
+  const voltarLabel = origem === 'pagar' ? 'Contas a Pagar' : origem === 'prestacao' ? 'Prestação de Contas' : 'Financeiro';
+  return `
+  <div class="page-header">
+    <h1>Fornecedores</h1>
+    <p>Cadastro compartilhado usado em Contas a Pagar, Prestação de Contas e Despesas</p>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+    <button class="btn-secondary" onclick="window._fornVindoDe=null;navigate('${voltarRota}')">← ${voltarLabel}</button>
+    <button class="btn-primary" onclick="fornAbrirForm()">➕ Novo Fornecedor</button>
+    <input type="text" id="forn_busca" placeholder="Buscar por nome ou CNPJ..." oninput="carregarFornecedoresPagina()" style="flex:1;min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;background:var(--surface)">
+  </div>
+
+  <div id="forn-form-container" style="display:none;margin-bottom:20px">
+    <div class="form-card">
+      <div id="forn-form-titulo" style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:700;color:var(--green-main);margin-bottom:14px;text-transform:uppercase;letter-spacing:.07em">➕ Novo Fornecedor</div>
+      <div class="form-row">
+        <div class="form-group"><label>Razão Social / Nome</label><input type="text" id="forn_nome_pg" placeholder="Nome completo do fornecedor"></div>
+        <div class="form-group"><label>CNPJ / CPF</label><input type="text" id="forn_cnpj_pg" placeholder="00.000.000/0001-00"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Categoria</label>
+          <select id="forn_categoria_pg">
+            <option value="">Selecione...</option>
+            <option>Transporte de Resíduos</option>
+            <option>Locação de Veículos</option>
+            <option>Análises Laboratoriais</option>
+            <option>Serviços Contábeis</option>
+            <option>Materiais e Insumos</option>
+            <option>Serviços de TI</option>
+            <option>Combustíveis</option>
+            <option>Manutenção</option>
+            <option>Outros</option>
+          </select>
+        </div>
+        <div class="form-group" style="position:relative">
+          <label>Município</label>
+          <input type="text" id="forn_municipio_input" placeholder="Digite para buscar..." autocomplete="off"
+            oninput="municipioFiltrar(this.value,'forn')" onfocus="municipioFiltrar(this.value,'forn')"
+            onblur="setTimeout(()=>municipioFecharDropdown('forn'),150)">
+          <input type="hidden" id="forn_municipio">
+          <div id="forn_municipio_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:6px">
+        <button class="btn-primary" id="forn-btn-salvar" onclick="fornSalvar()">✅ Cadastrar</button>
+        <button class="btn-secondary" onclick="fornFecharForm()">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="lista-fornecedores"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  `;
+}
+
+async function carregarFornecedoresPagina() {
+  const el = document.getElementById('lista-fornecedores'); if (!el) return;
+  const todos = await dbLer('Fornecedores').catch(() => []);
+  window._fornecedoresPagina = todos;
+  const busca = ((document.getElementById('forn_busca')||{}).value || '').trim().toLowerCase();
+  let itens = todos;
+  if (busca) itens = itens.filter(f => (f.Title||'').toLowerCase().includes(busca) || (f.CNPJ||'').toLowerCase().includes(busca));
+  itens = itens.slice().sort((a,b) => (a.Title||'').localeCompare(b.Title||''));
+  if (!itens.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum fornecedor encontrado.</div>'; return; }
+  const isDir = currentProfile === 'diretoria';
+  el.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>CNPJ</th><th>Categoria</th><th>Município</th><th>Ações</th></tr></thead><tbody>' +
+    itens.map(f => `<tr>
+      <td><strong>${f.Title||'—'}</strong></td>
+      <td style="font-size:.8rem">${f.CNPJ||'—'}</td>
+      <td style="font-size:.8rem">${f.Categoria||'—'}</td>
+      <td style="font-size:.8rem">${f.Municipio||'—'}</td>
+      <td style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px">
+        <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="fornAbrirForm(${f.Id})">✏️ Editar</button>
+        ${isDir ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="fornExcluir(${f.Id})">🗑️ Excluir</button>` : ''}
+      </td>
+    </tr>`).join('') + '</tbody></table></div>';
+}
+
+function fornAbrirForm(id) {
+  window._fornEditandoId = id || null;
+  const c = document.getElementById('forn-form-container'); if (c) c.style.display = 'block';
+  const titulo = document.getElementById('forn-form-titulo');
+  const btn = document.getElementById('forn-btn-salvar');
+  if (id) {
+    const f = (window._fornecedoresPagina||[]).find(x => x.Id === id);
+    if (!f) { showToast('⚠️ Fornecedor não encontrado.'); return; }
+    if (titulo) titulo.textContent = '✏️ Editar Fornecedor';
+    if (btn) btn.textContent = '💾 Salvar Alterações';
+    const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
+    set('forn_nome_pg', f.Title); set('forn_cnpj_pg', f.CNPJ);
+    set('forn_categoria_pg', f.Categoria);
+    set('forn_municipio_input', f.Municipio); set('forn_municipio', f.Municipio);
+  } else {
+    if (titulo) titulo.textContent = '➕ Novo Fornecedor';
+    if (btn) btn.textContent = '✅ Cadastrar';
+    ['forn_nome_pg','forn_cnpj_pg','forn_municipio_input','forn_municipio'].forEach(elId => { const e = document.getElementById(elId); if (e) e.value = ''; });
+    const cat = document.getElementById('forn_categoria_pg'); if (cat) cat.selectedIndex = 0;
+  }
+  if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function fornFecharForm() {
+  window._fornEditandoId = null;
+  const c = document.getElementById('forn-form-container'); if (c) c.style.display = 'none';
+}
+
+async function fornSalvar() {
+  const nome = (document.getElementById('forn_nome_pg').value||'').trim();
+  const cnpj = (document.getElementById('forn_cnpj_pg').value||'').trim();
+  const categoria = document.getElementById('forn_categoria_pg').value || '';
+  const municipio = (document.getElementById('forn_municipio').value||'').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do fornecedor.'); return; }
+  const editandoId = window._fornEditandoId;
+  const todos = window._fornecedoresPagina || await dbLer('Fornecedores').catch(() => []);
+  const jaExiste = todos.some(f => f.Id !== editandoId && ((f.Title||'').toLowerCase() === nome.toLowerCase() || (cnpj && f.CNPJ === cnpj)));
+  if (jaExiste) { showToast('⚠️ Já existe outro fornecedor com esse nome/CNPJ!'); return; }
+  _limparSyncError();
+  const dados = { Title: nome, CNPJ: cnpj, Categoria: categoria, Municipio: municipio };
+  let ok;
+  if (editandoId) {
+    ok = await dbAtualizar('Fornecedores', editandoId, dados);
+    showToast(ok ? '✅ Fornecedor atualizado!' : ('❌ Erro ao atualizar.' + syncErrorDetalhe()));
+  } else {
+    ok = await salvarNoSharePoint('Fornecedores', dados);
+    showToast(ok ? '✅ Fornecedor cadastrado!' : ('❌ Erro ao cadastrar.' + syncErrorDetalhe()));
+  }
+  if (ok) { fornFecharForm(); carregarFornecedoresPagina(); }
+}
+
+/* -- Exclusão restrita à Diretoria (mesmo padrão usado em Contas a Pagar,
+   Despesas etc.) — um fornecedor é um cadastro compartilhado entre os 3
+   módulos, então apagar aqui não some com o nome já salvo em lançamentos
+   antigos, só tira ele da busca pra novos lançamentos. -- */
+async function fornExcluir(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const f = (window._fornecedoresPagina||[]).find(x => x.Id === id);
+  const nome = f ? f.Title : ('#' + id);
+  if (!confirm(`Excluir o fornecedor "${nome}"? Essa ação não pode ser desfeita.\n\nLançamentos já existentes continuam com o nome salvo — só deixa de aparecer na busca pra novos lançamentos.`)) return;
+  const { ok } = await dbRemover('Fornecedores', id);
+  showToast(ok ? '🗑️ Fornecedor excluído.' : '❌ Erro ao excluir.');
+  if (ok) carregarFornecedoresPagina();
 }
 
 /* -- Parcelamento em Contas a Pagar: gera as parcelas automaticamente
