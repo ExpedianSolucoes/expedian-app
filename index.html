@@ -33668,6 +33668,93 @@ async function medExportarExcel() {
   showToast('✅ Planilha gerada!');
 }
 
+/* -- Excel "espelho" de UMA medição só (mesmas colunas/abas do
+   medExportarExcel geral, só que filtrado a um registro) — botão 📊 por
+   linha no histórico, espelhando o que já existia pro PDF (medExportarPDF).
+   Pedido em 31/08/2026. -- */
+async function medExportarExcelUm(id) {
+  const m = (window._medHistorico || []).find(r => r.Id === id);
+  if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
+  showToast('📊 Gerando planilha...');
+  if (typeof XLSX === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  const rows = [{
+    'Nº Medição': m.NumeroMedicao || '',
+    'Circuito Elétrico': m.FrenteNome || '',
+    'Sistema Elétrico': m.SistemaEletrico || '',
+    'Período': m.Periodo || '',
+    'SIGCO': m.Sigco || '',
+    'Reg. Obras': m.RegObras || '',
+    'Data Medição': m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '',
+    'Valor Total': m.Valor || 0,
+    'Status': m.Status || '',
+    'Observações': m.Obs || '',
+  }];
+  const rowsItens = medItensDoRegistro(m).map((it, i) => ({
+    'Nº Medição': m.NumeroMedicao || '',
+    'Circuito Elétrico': m.FrenteNome || '',
+    'Período': m.Periodo || '',
+    'Seq': i + 1,
+    'Trabalhos Previstos': it.desc || '',
+    'Quanti': parseFloat(it.quanti) || 0,
+    'Unid': it.unid || '',
+    'R$ Unitário': parseFloat(it.valorUnit) || 0,
+    'Valor Total do Item': (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0),
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wsItens = XLSX.utils.json_to_sheet(rowsItens);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Medição');
+  XLSX.utils.book_append_sheet(wb, wsItens, 'Itens');
+  const nomeCircuito = (m.FrenteNome || 'Medicao').replace(/[\\/:*?"<>|]/g, '');
+  XLSX.writeFile(wb, 'Espelho_Medicao_' + (m.NumeroMedicao || '') + '_' + nomeCircuito + '.xlsx');
+  showToast('✅ Planilha gerada!');
+}
+
+/* -- Modal de visualização rápida de uma medição (mesmos dados do PDF/Excel
+   espelho, sem precisar abrir o formulário de edição) — botão 👁️ por linha
+   no histórico. Pedido em 31/08/2026. -- */
+function medVisualizar(id) {
+  const m = (window._medHistorico || []).find(r => r.Id === id);
+  if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
+  const itens = medItensDoRegistro(m);
+  const fmt = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2,maximumFractionDigits:2});
+  const linha = (label, val) => `<div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:12px"><span style="color:var(--text-muted);font-size:.78rem">${label}</span><span style="font-weight:600;font-size:.85rem;text-align:right">${val}</span></div>`;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:520px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h3 style="margin:0">💰 Medição ${m.NumeroMedicao ? 'BM ' + m.NumeroMedicao : ''}</h3>
+        <span style="cursor:pointer;font-size:1.2rem" onclick="this.closest('.modal-overlay').remove()">✕</span>
+      </div>
+      ${linha('Circuito Elétrico', m.FrenteNome || '—')}
+      ${linha('Sistema Elétrico', m.SistemaEletrico || '—')}
+      ${linha('Período', m.Periodo || '—')}
+      ${linha('Data', m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—')}
+      ${linha('SIGCO', m.Sigco || '—')}
+      ${linha('Reg. Obras', m.RegObras || '—')}
+      ${linha('Status', m.Status || '—')}
+      ${linha('Valor Total', fmt(m.Valor))}
+      ${itens.length ? `<div style="margin-top:12px;margin-bottom:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Escopo dos Serviços</div>
+        <div style="font-size:.78rem">${itens.map(it => `<div style="padding:6px 0;border-bottom:1px solid var(--border)">${it.desc || '—'} — ${it.quanti || 0} ${it.unid || ''} × ${fmt(it.valorUnit)} = <strong>${fmt((parseFloat(it.quanti)||0)*(parseFloat(it.valorUnit)||0))}</strong></div>`).join('')}</div>` : ''}
+      ${m.Obs ? `<div style="margin-top:12px;font-size:.78rem;color:var(--text-muted)"><strong>Observações:</strong> ${m.Obs}</div>` : ''}
+      <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+        <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="medExportarPDF(${m.Id})">📄 PDF</button>
+        <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="medExportarExcelUm(${m.Id})">📊 Excel</button>
+        <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="this.closest('.modal-overlay').remove()">Fechar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
 /* -- Gera o Boletim de Medição em PDF (jsPDF), reaproveitando o mesmo
    cabeçalho/rodapé/paginação dos demais PDFs do app (_pdfCabecalhoRodape/
    _pdfNovaPagina/_pdfNumerarPaginas). Recebe os dados no "formato de
@@ -34147,8 +34234,10 @@ function medHtmlHistorico() {
         </div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
-        <div style="display:flex;gap:4px">
+        <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="medVisualizar(${m.Id})">👁️ Ver</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="medExportarPDF(${m.Id})">📄 PDF</button>
+          <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="medExportarExcelUm(${m.Id})">📊 Excel</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="medEditarRegistro(${m.Id})">✏️ Editar</button>
           <button class="btn-secondary" style="padding:3px 8px;font-size:.65rem;color:var(--red)" onclick="medExcluirRegistro(${m.Id})">🗑️ Excluir</button>
         </div>
