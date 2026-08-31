@@ -7467,6 +7467,11 @@ function pageReceitasDespesas() {
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:14px">
     <div><h1>${tituloTab}</h1><p>${subtituloTab}</p></div>
+    ${tab === 'despesas' ? `
+    <div style="position:relative;min-width:240px;flex:1;max-width:340px">
+      <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:.9rem;pointer-events:none">🔍</span>
+      <input type="text" id="fh_busca" placeholder="Buscar fornecedor ou valor..." autocomplete="off" oninput="financeiroHubBuscar()" style="width:100%;padding:9px 14px 9px 34px;border-radius:20px;border:1px solid var(--border);font-size:.85rem;background:var(--surface)">
+    </div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding-top:2px">
       ${RD_EMPRESAS.map(emp => {
         const ativo = emp === (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
@@ -7482,6 +7487,7 @@ function pageReceitasDespesas() {
       }).join('')}
     </div>
   </div>
+  ${tab === 'despesas' ? `<div id="fh-busca-resultados"></div>` : ''}
 
   <div style="display:flex;gap:6px;margin-bottom:22px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
@@ -10424,9 +10430,21 @@ async function carregarDespesas() {
       items = window._rdSubTab === 'pagos' ? items.filter(r=>r.Status==='Pago') : items.filter(r=>r.Status!=='Pago');
     }
 
-    // Ordenado por data de pagamento mais recente primeiro (pedido em 30/08/2026);
-    // itens ainda não pagos entram pela data de vencimento/lançamento, ficando após os já pagos mais recentes.
+    // Ordenação (pedido em 31/08/2026): na aba "Em Aberto" (e quando não há busca
+    // ativa misturando as duas abas), prioriza o que está mais perto de vencer ou
+    // já vencido — ordem crescente por vencimento, então quem venceu há mais tempo
+    // aparece primeiro. Na aba "Histórico de Pagos" (ou durante uma busca, que
+    // mistura pago+aberto) mantém a ordenação por data de pagamento mais recente
+    // primeiro (pedido em 30/08/2026), já que ali o interesse é achar o lançamento,
+    // não priorizar urgência de pagamento.
+    const ordenarPorVencimento = window._rdSubTab !== 'pagos' && !fBusca;
     items = items.slice().sort((a,b) => {
+      if (ordenarPorVencimento) {
+        const chaveA = a.Vencimento || a.DataLancamento || '';
+        const chaveB = b.Vencimento || b.DataLancamento || '';
+        if (chaveA !== chaveB) return chaveA.localeCompare(chaveB);
+        return (b.Id||0)-(a.Id||0);
+      }
       const chaveA = a.DataPagamento || a.Vencimento || a.DataLancamento || '';
       const chaveB = b.DataPagamento || b.Vencimento || b.DataLancamento || '';
       if (chaveA !== chaveB) return chaveB.localeCompare(chaveA);
@@ -10700,9 +10718,12 @@ function rdRenderResumoMensal(items) {
           return `<div onclick="document.getElementById('rd_filtro_mes').value='${vazio?'':chaveMes}';document.getElementById('rd_filtro_dia').value='';carregarDespesas()" style="cursor:pointer;padding:8px 6px;border-radius:9px;text-align:center;border:${ativo?'2px solid var(--red)':'1px solid var(--border)'};background:${ativo?'#fce8e8':(vazio?'var(--bg)':'var(--surface2)')};opacity:${vazio?'.55':'1'}">
             <div style="font-size:.7rem;font-weight:800;color:var(--text-muted)">${nome}</div>
             <div style="font-size:.74rem;font-weight:800;margin:3px 0">${vazio?'—':'R$ '+fmt0(d.total)}</div>
-            ${!vazio ? `<div style="font-size:.56rem;color:var(--text-muted);line-height:1.5">${d.pago>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✅ ${fmt0(d.pago)} pago</div>`):''}${d.aVencer>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🟡 ${fmt0(d.aVencer)} pagar</div>`):''}${d.vencido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">⚠️ ${fmt0(d.vencido)} venc.</div>`):''}</div>` : ''}
+            ${!vazio ? `<div style="font-size:.5rem;color:var(--text-muted);line-height:1.45">${d.pago>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✅ ${fmt0(d.pago)}</div>`):''}${d.aVencer>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🟡 ${fmt0(d.aVencer)}</div>`):''}${d.vencido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">⚠️ ${fmt0(d.vencido)}</div>`):''}</div>` : ''}
           </div>`;
         }).join('')}
+      </div>
+      <div style="font-size:.62rem;color:var(--text-muted);margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
+        <span>✅ Pago</span><span>🟡 A pagar</span><span>⚠️ Vencido</span>
       </div>
       ${fMesAtivo ? `<button onclick="document.getElementById('rd_filtro_mes').value='';carregarDespesas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
     </div>`;
