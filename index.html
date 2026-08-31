@@ -7205,6 +7205,21 @@ const RD_SUBCATEGORIAS_DESPESAS = {
   'Outras Saídas': ['Doações a Entidades/Institucionais','Compra de Produtos para Revenda','Reembolso de Cliente','Outros (Outras Saídas)'],
 };
 function rdSubcategoriasDeDespesas(categoria) { return RD_SUBCATEGORIAS_DESPESAS[categoria] || []; }
+// Busca reversa (subcategoria -> categoria) e opções agrupadas — usadas pelo
+// campo Subcategoria da tela Despesas, que agora vem ANTES de Categoria e
+// preenche a Categoria sozinho ao ser escolhido (mesmo padrão já usado em
+// Prestação de Contas/Contas a Pagar — pedido em 31/08/2026).
+function rdCategoriaDeSubcategoriaDespesas(subcategoria) {
+  for (const cat of RD_CATEGORIAS_DESPESAS) { if ((RD_SUBCATEGORIAS_DESPESAS[cat] || []).includes(subcategoria)) return cat; }
+  return '';
+}
+function rdOpcoesSubcategoriasAgrupadasDespesas() {
+  return RD_CATEGORIAS_DESPESAS.map(cat => {
+    const subs = RD_SUBCATEGORIAS_DESPESAS[cat] || [];
+    if (!subs.length) return '';
+    return `<optgroup label="${cat}">${subs.map(s => `<option>${s}</option>`).join('')}</optgroup>`;
+  }).join('');
+}
 const RD_NATUREZA_ECONOMICA_DESPESAS = Object.assign({}, RD_NATUREZA_ECONOMICA, {
   'Locação de veículos próprio': 'Operacional',
   'Consultoria Ambiental': 'Não Operacional',
@@ -9132,6 +9147,9 @@ function renderDespesasTab() {
        que abre/fecha isso mora na linha de botões lá em cima, junto com
        Financeiro/Conciliação/Empresa (mesmo padrão de Receitas, 30/08/2026). -->
   <div id="rd-form-container" class="form-card" style="margin-bottom:24px;display:${window._rdFormAberto ? 'block' : 'none'}">
+    <!-- Título do formulário (mesmo padrão de Contas a Pagar/Prestação de Contas —
+         pedido em 31/08/2026: Despesas não tinha essa barra de título). -->
+    <div id="rd-form-titulo" style="font-family:'Mont',sans-serif;font-size:.82rem;font-weight:700;color:var(--green-main);margin-bottom:16px;text-transform:uppercase;letter-spacing:.07em">${window._rdEditandoId ? '✏️ Editar Despesa' : '➕ Nova Despesa'}</div>
     <div id="rd-form-campos">
     <!-- Linha 0: Anexo — primeiro campo do formulário, mesmo padrão já usado em
          Prestação de Contas: anexar o comprovante primeiro permite ao sistema
@@ -9159,18 +9177,19 @@ function renderDespesasTab() {
         <input type="text" id="rd_semana" readonly style="background:var(--surface2)">
       </div>
       <div class="form-group">
-        <label>Categoria</label>
-        <select id="rd_categoria" onchange="rdAtualizarSubcategorias()">
+        <label>Subcategoria</label>
+        <select id="rd_subcategoria" onchange="rdSubcategoriaEscolhidaDespesas()">
+          <option value="">Selecione...</option>
+          ${rdOpcoesSubcategoriasAgrupadasDespesas()}
+        </select>
+        <div id="rd_natureza_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
+      </div>
+      <div class="form-group">
+        <label>Categoria <span style="font-size:.7rem;color:var(--text-muted)">(automático)</span></label>
+        <select id="rd_categoria">
           <option value="">Selecione...</option>
           ${RD_CATEGORIAS_DESPESAS.map(c => `<option>${c}</option>`).join('')}
         </select>
-      </div>
-      <div class="form-group">
-        <label>Subcategoria</label>
-        <select id="rd_subcategoria" onchange="rdAtualizarNaturezaHint()">
-          <option value="">Selecione a categoria primeiro...</option>
-        </select>
-        <div id="rd_natureza_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
       </div>
     </div>
 
@@ -9526,10 +9545,19 @@ function rdMudarSubTab(tab) {
   carregarDespesas();
 }
 
-function rdToggleFormNovaDespesa() {
-  window._rdFormAberto = !window._rdFormAberto;
+function rdToggleFormNovaDespesa(forcar) {
+  const atual = !!window._rdFormAberto;
+  const abrir = typeof forcar === 'boolean' ? forcar : !atual;
+  window._rdFormAberto = abrir;
   const container = document.getElementById('rd-form-container');
-  if (container) container.style.display = window._rdFormAberto ? 'block' : 'none';
+  if (container) container.style.display = abrir ? 'block' : 'none';
+  // Fechar o formulário (Cancelar/depois de salvar) sempre sai do modo edição
+  // e devolve o título padrão "Nova Despesa" pra próxima vez que abrir — mesmo
+  // padrão de pagToggleFormNovo em Contas a Pagar (pedido em 31/08/2026).
+  if (!abrir) {
+    window._rdEditandoId = null;
+    const titulo = document.getElementById('rd-form-titulo'); if (titulo) titulo.textContent = '➕ Nova Despesa';
+  }
 }
 
 function rdAtualizarSemana() {
@@ -9538,14 +9566,13 @@ function rdAtualizarSemana() {
   if (el) el.value = _rdSemanaDoAno(data);
 }
 
-function rdAtualizarSubcategorias() {
-  const categoria = (document.getElementById('rd_categoria')||{}).value || '';
-  const sel = document.getElementById('rd_subcategoria');
-  if (!sel) return;
-  const subs = rdSubcategoriasDeDespesas(categoria);
-  sel.innerHTML = subs.length
-    ? '<option value="">Selecione...</option>' + subs.map(s => `<option>${s}</option>`).join('')
-    : '<option value="">Selecione a categoria primeiro...</option>';
+// Subcategoria vem primeiro no formulário e preenche a Categoria sozinha
+// (mesmo padrão de Prestação de Contas/Contas a Pagar — pedido em 31/08/2026).
+function rdSubcategoriaEscolhidaDespesas() {
+  const sub = (document.getElementById('rd_subcategoria')||{}).value || '';
+  const catSel = document.getElementById('rd_categoria');
+  const cat = rdCategoriaDeSubcategoriaDespesas(sub);
+  if (catSel) catSel.value = cat;
   rdAtualizarNaturezaHint();
 }
 
@@ -10192,6 +10219,7 @@ async function salvarDespesa() {
   const distribuicoes = temDistribuicao ? (window._rdDistribuicoes||[]) : [];
   const temDivisaoCC = (document.getElementById('rd_tem_divisaocc')||{}).checked || false;
   const divisaoCC = temDivisaoCC ? (window._rdDivisaoCC||[]) : [];
+  const editandoId = window._rdEditandoId || null;
 
   if (!dataLancamento) { showToast('⚠️ Informe a data de lançamento.'); return; }
   if (!categoria) { showToast('⚠️ Selecione a categoria.'); return; }
@@ -10245,9 +10273,24 @@ async function salvarDespesa() {
     DivisaoCC: temDivisaoCC ? divisaoCC : [],
   };
 
-  showSyncStatus('Salvando despesa...');
+  showSyncStatus(editandoId ? 'Atualizando despesa...' : 'Salvando despesa...');
   let ok = true;
-  if (tipoPagamento === 'parcelado') {
+  if (editandoId) {
+    // Edição de um lançamento já existente (mesmo padrão de Contas a Pagar —
+    // pedido em 31/08/2026). Atualiza só esse registro; se ele tiver nascido
+    // de um parcelamento, edita só essa parcela específica (cada parcela já
+    // é seu próprio registro), preservando NumParcela/TotalParcelas/GrupoCompraId
+    // originais (não fazem parte de `dados`, então dbAtualizar não mexe neles).
+    const vencimento = (document.getElementById('rd_vencimento')||{}).value || '';
+    if (!vencimento) { showToast('⚠️ Informe o vencimento.'); return; }
+    const dados = {
+      ...base,
+      Title: descricao + ' · ' + (vencimento || dataLancamento),
+      Vencimento: vencimento, Valor: valorTotal, Status: status,
+      Distribuicoes: distribuicoes,
+    };
+    ok = await dbAtualizar('Despesas', editandoId, dados);
+  } else if (tipoPagamento === 'parcelado') {
     const parcelas = window._rdParcelas || [];
     if (!parcelas.length) { showToast('⚠️ Configure a quantidade de parcelas e o vencimento da 1ª parcela.'); return; }
     const grupoCompraId = 'GC-' + Date.now(); // liga todas as parcelas desta compra para o "Histórico da Compra"
@@ -10277,15 +10320,14 @@ async function salvarDespesa() {
     ok = await dbInserir('Despesas', dados);
   }
 
-  showToast(ok ? '✅ Despesa salva!' : ('❌ Erro ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
-  showSyncStatus(ok ? 'Despesa salva!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
+  showToast(ok ? (editandoId ? '✅ Despesa atualizada!' : '✅ Despesa salva!') : ('❌ Erro ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  showSyncStatus(ok ? (editandoId ? 'Despesa atualizada!' : 'Despesa salva!') : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
 
   // Reset do formulário
-  ['rd_categoria','rd_local','rd_valor','rd_forma_pgto',
+  ['rd_categoria','rd_subcategoria','rd_local','rd_valor','rd_forma_pgto',
    'rd_num_parcelas','rd_venc_1parcela','rd_vencimento','rd_responsavel','rd_data_pagamento',
    'rd_banco','rd_medicao','rd_beneficiario','rd_veiculo'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const rdLancEl=document.getElementById('rd_lancadopor');if(rdLancEl)rdLancEl.value=window._currentUser?window._currentUser.name:'';
-  const subcatSel = document.getElementById('rd_subcategoria'); if (subcatSel) subcatSel.innerHTML = '<option value="">Selecione a categoria primeiro...</option>';
   ['rd_servico_input','rd_servico_sel','rd_beneficiario_input','rd_veiculo_input',
    'rd_fornecedor_input','rd_fornecedor_sel'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const modalidadeSel = document.getElementById('rd_modalidade'); if (modalidadeSel) modalidadeSel.selectedIndex = 0;
@@ -10318,6 +10360,10 @@ async function salvarDespesa() {
   rdToggleModalidade();
   rdTogglePagamento();
   window._rdParcelas = null;
+  // Edição bem-sucedida fecha o formulário (mesmo padrão de Contas a Pagar) —
+  // lançamento novo continua com o formulário aberto pra permitir lançar em
+  // sequência sem reabrir toda vez.
+  if (ok && editandoId) rdToggleFormNovaDespesa(false);
   setTimeout(() => carregarDespesas(), 900);
 }
 
@@ -10866,218 +10912,94 @@ async function rdExcluirDespesa(id) {
   if (ok) carregarDespesas();
 }
 
-function rdAbrirEdicaoDespesa(id) {
-  const i = (window._rdDespesasPorId || {})[id];
+/* -- Edição de uma Despesa já lançada — antes abria um modal compacto (só
+   status/pagamento/CC/valor/vencimento); agora reabre o mesmo formulário
+   "Nova Despesa" já pré-preenchido, igual ao padrão de Contas a Pagar
+   (pagEditarLancamento) e Prestação de Contas (pedido em 31/08/2026: os três
+   formulários devem seguir o mesmo modelo). Ao salvar, salvarDespesa()
+   detecta window._rdEditandoId e faz dbAtualizar no registro em vez de criar
+   um novo. Cada parcela de uma compra parcelada já é seu próprio registro em
+   Despesas — editar aqui edita só essa parcela específica, então força
+   "à vista" no formulário (esconde a geração de novas parcelas), mesma
+   simplificação já usada em Contas a Pagar. -- */
+async function rdAbrirEdicaoDespesa(id) {
+  let i = (window._rdDespesasPorId || {})[id];
+  if (!i) { try { const todos = await dbLer('Despesas'); i = todos.find(r => r.Id === id); } catch(e) {} }
   if (!i) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
-  const existente = document.getElementById('rd-edit-modal');
-  if (existente) existente.remove();
 
-  // Preserva o comprovante já vinculado (se houver) até o usuário anexar um novo
-  window._rdeComprovanteUrl = i.ComprovanteUrl || '';
-  window._rdeComprovanteNome = i.ComprovanteNome || '';
-  window._rdeComprovanteId = null; window._rdeComprovanteDriveId = null;
-  // Empresa do lançamento sendo editado — usada pra filtrar a lista de Contratos/CC
-  // disponíveis pro reatribuir contrato/medição desta parcela específica.
-  window._rdeEmpresaAtual = i.Empresa || (RD_EMPRESAS && RD_EMPRESAS[0]) || '';
+  window._rdEditandoId = id;
+  rdToggleFormNovaDespesa(true);
+  const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
 
-  const bancosEmpresa = RD_BANCOS_POR_EMPRESA[i.Empresa] || [];
-  const opt = (v,l) => `<option value="${v}" ${i.Status===v?'selected':''}>${l}</option>`;
+  set('rd_data_lancamento', i.DataLancamento);
+  rdAtualizarSemana();
 
-  const modal = document.createElement('div');
-  modal.id = 'rd-edit-modal';
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
-  modal.innerHTML = `
-    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div style="font-weight:800;font-size:1rem">✏️ Editar Lançamento</div>
-        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('rd-edit-modal').remove()">✕</div>
-      </div>
-      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:14px">${i.Modalidade==='servicos' ? ('🛠️ '+(i.ServicoDesc||'—')) : ('🏭 '+(i.Fornecedor||'—'))} · R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+  set('rd_subcategoria', i.Subcategoria);
+  set('rd_categoria', i.Categoria);
+  rdAtualizarNaturezaHint();
 
-      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">STATUS DE PAGAMENTO</label>
-      <select id="rde_status" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
-        ${opt('Pendente','Pendente')}${opt('Vence em breve','Vence em breve')}${opt('Vence hoje','Vence hoje')}${opt('Em atraso','Em atraso')}${opt('Pago','Pago')}${opt('Cancelado','Cancelado')}
-      </select>
-
-      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">DATA DE PAGAMENTO</label>
-      <input id="rde_data_pagamento" type="date" value="${i.DataPagamento||''}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
-
-      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">BANCO</label>
-      <input id="rde_banco" list="rde_bancos_dl" value="${(i.Banco||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
-      <datalist id="rde_bancos_dl">${bancosEmpresa.map(b=>`<option value="${b}">`).join('')}</datalist>
-
-      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">CONTRATO (CENTRO DE CUSTO) DESTA PARCELA</label>
-      <div style="position:relative;margin-bottom:4px">
-        <input type="text" id="rde_cc_input" value="${(i.CentroCusto||'').replace(/"/g,'&quot;')}" placeholder="Digite para buscar..." autocomplete="off"
-          oninput="rdeFiltrarCCs(this.value)" onfocus="rdeFiltrarCCs(this.value)" onblur="setTimeout(()=>rdeFecharDropdownCC(),150)"
-          style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);box-sizing:border-box">
-        <input type="hidden" id="rde_cc" value="${(i.CentroCusto||'').replace(/"/g,'&quot;')}">
-        <div id="rde_cc_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
-      </div>
-      <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:12px">Parcelas de uma mesma compra podem ser custeadas por contratos ou medições diferentes — mude aqui se for o caso desta parcela.</div>
-
-      ${(i.TotalParcelas||1)<=1 ? `<div style="margin-bottom:12px">
-        <button type="button" class="btn-secondary" style="width:100%;font-size:.78rem;padding:8px" onclick="document.getElementById('rd-edit-modal').remove();rdVerDivisaoCC(${id})">
-          🧩 ${(i.DivisaoCC&&i.DivisaoCC.length) ? `Editar divisão por contrato (${i.DivisaoCC.length})` : 'Dividir este lançamento entre vários contratos'}
-        </button>
-      </div>` : ''}
-
-      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">Nº MEDIÇÃO DESTA PARCELA</label>
-      <input id="rde_medicao" list="rde_medicao_dl" type="text" value="${(i.NumMedicao||'').toString().replace(/"/g,'&quot;')}" placeholder="Selecione o contrato acima..." style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border)">
-      <datalist id="rde_medicao_dl"></datalist>
-      <div id="rde_medicao_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px;margin-bottom:12px"></div>
-
-      <div style="display:flex;gap:10px;margin-bottom:12px">
-        <div style="flex:1">
-          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VALOR (R$)</label>
-          <input id="rde_valor" type="text" inputmode="decimal" value="${rdNumeroParaMoeda(i.Valor||0)}" oninput="rdFormatarMoedaInput(this)" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);box-sizing:border-box">
-        </div>
-        <div style="flex:1">
-          <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">VENCIMENTO</label>
-          <input id="rde_vencimento" type="date" value="${i.Vencimento||''}" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);box-sizing:border-box">
-        </div>
-      </div>
-
-      <label style="font-size:.75rem;font-weight:700;display:block;margin-bottom:4px">📎 COMPROVANTE (upload ou digitalizar)</label>
-      ${i.ComprovanteUrl ? `<div style="font-size:.75rem;margin-bottom:6px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver comprovante atual</a></div>` : ''}
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px">
-        <button type="button" onclick="document.getElementById('rde_comprovante_scan').click()" style="flex:1;min-width:130px;background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border);cursor:pointer;color:var(--text)">📷 Escanear</button>
-        <button type="button" onclick="document.getElementById('rde_comprovante_galeria').click()" style="flex:1;min-width:130px;background:var(--surface2);padding:8px;border-radius:8px;border:1px dashed var(--border);cursor:pointer;color:var(--text)">🖼️ Galeria/Arquivo</button>
-      </div>
-      <input type="file" id="rde_comprovante_scan" accept=".pdf,.jpg,.jpeg,.png" capture="environment" onchange="rdeAnexarComprovante(this)" style="display:none">
-      <input type="file" id="rde_comprovante_galeria" accept=".pdf,.jpg,.jpeg,.png" onchange="rdeAnexarComprovante(this)" style="display:none">
-      <div id="rde_comprovante_status" style="font-size:.72rem;color:var(--text-muted);margin-bottom:16px"></div>
-
-      <div style="display:flex;gap:8px">
-        <button class="btn-primary" style="flex:1" onclick="rdSalvarEdicaoDespesa(${id})">💾 Salvar</button>
-        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('rd-edit-modal').remove()">Cancelar</button>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-  setTimeout(() => rdeAtualizarMedicaoPorCC(i.CentroCusto || ''), 50);
-}
-
-/* -- Busca de Contrato (Centro de Custo) dentro do modal de edição de uma parcela/
-   lançamento de Despesa já existente — mesmo padrão do formulário de Nova Despesa,
-   mas escopado aos ids rde_* e à empresa do lançamento sendo editado (window._rdeEmpresaAtual),
-   não à empresa ativa no submenu, pra funcionar corretamente mesmo editando algo de outra
-   empresa. Permite reatribuir uma parcela pra outro contrato quando ela foi custeada por
-   um centro de custo diferente do lançamento original. -- */
-function rdeCCsDisponiveis() {
-  const empresa = normalizarEmpresa(window._rdeEmpresaAtual || (RD_EMPRESAS && RD_EMPRESAS[0]) || '');
-  return (centrosCustoData||[]).filter(c => {
-    return normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo';
-  });
-}
-function rdeFiltrarCCs(texto) {
-  const dd = document.getElementById('rde_cc_dropdown');
-  if (!dd) return;
-  const t = (texto||'').trim().toLowerCase();
-  const disponiveis = rdeCCsDisponiveis();
-  const matches = (t ? disponiveis.filter(c => (c.id+' '+c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0,40);
-  let html = matches.map(c => {
-    const label = (c.id + ' · ' + c.contrato).replace(/'/g,"\\'");
-    return '<div onclick="rdeSelecionarCC(\''+label+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
-      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
-      '<strong>'+c.id+'</strong> <span style="color:var(--text-muted)">· '+c.contrato+'</span>' +
-    '</div>';
-  }).join('');
-  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum centro de custo encontrado.</div>';
-  dd.innerHTML = html;
-  dd.style.display = 'block';
-}
-function rdeFecharDropdownCC() {
-  const dd = document.getElementById('rde_cc_dropdown');
-  if (dd) dd.style.display = 'none';
-}
-function rdeSelecionarCC(valor) {
-  const inp = document.getElementById('rde_cc_input'); if (inp) inp.value = valor;
-  const hid = document.getElementById('rde_cc'); if (hid) hid.value = valor;
-  rdeFecharDropdownCC();
-  rdeAtualizarMedicaoPorCC(valor);
-}
-async function rdeAtualizarMedicaoPorCC(cc) {
-  const dl = document.getElementById('rde_medicao_dl');
-  const hint = document.getElementById('rde_medicao_hint');
-  if (!cc) { if (dl) dl.innerHTML=''; if (hint) hint.textContent=''; return; }
-  if (hint) hint.textContent = 'Buscando medições deste contrato...';
-  const ccId = _ccIdPuro(cc);
-  let medicoes = [];
-  try { medicoes = await dbLer('Medicoes'); } catch(e) { medicoes = []; }
-  const doCC = medicoes.filter(m => _ccIdPuro(m.CentroCusto) === ccId)
-    .sort((a,b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, {numeric:true}));
-  if (doCC.length) {
-    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao||''} (${m.Status||''})</option>`).join('');
-    const abertas = doCC.filter(m => !['Concluída','Cancelada','Faturada'].includes(m.Status));
-    if (hint) hint.textContent = abertas.length
-      ? `Medições em aberto: ${abertas.map(m=>m.NumMedicao).join(', ')} · selecione o número correspondente.`
-      : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
-    return;
+  set('rd_modalidade', i.Modalidade);
+  if (i.Modalidade === 'servicos') {
+    const servicoOpt = i.ServicoId ? _rdServicosTodos().find(s => s.id === i.ServicoId) : null;
+    window._rdGrupoServico = servicoOpt ? servicoOpt.grupo : 'diarias';
   }
-  if (dl) dl.innerHTML = '';
-  if (hint) hint.textContent = 'Nenhuma medição formal cadastrada para este contrato ainda — pode digitar o número livremente.';
-}
+  // rdToggleModalidade() reseta os campos de serviço/beneficiário/veículo (via
+  // rdSelecionarGrupoServico) — por isso os valores reais são preenchidos
+  // de novo logo em seguida, depois que as linhas certas já estão visíveis.
+  rdToggleModalidade();
+  if (i.Modalidade === 'servicos') {
+    const servicoOpt = i.ServicoId ? _rdServicosTodos().find(s => s.id === i.ServicoId) : null;
+    set('rd_servico_sel', i.ServicoId);
+    set('rd_servico_input', servicoOpt ? (servicoOpt.id+' · '+servicoOpt.desc+(servicoOpt.unidade?' ('+servicoOpt.unidade+')':'')) : (i.ServicoDesc||''));
+    set('rd_beneficiario', i.Beneficiario); set('rd_beneficiario_input', i.Beneficiario);
+    set('rd_veiculo', i.Veiculo); set('rd_veiculo_input', i.Veiculo);
+  } else if (i.Modalidade === 'fornecedor') {
+    set('rd_fornecedor_sel', i.Fornecedor); set('rd_fornecedor_input', i.Fornecedor);
+  }
 
-async function rdeAnexarComprovante(inputEl) {
-  const file = inputEl.files[0];
-  if (!file) return;
-  window._rdeComprovanteId = null; window._rdeComprovanteDriveId = null;
-  const statusEl = document.getElementById('rde_comprovante_status');
-  if (statusEl) statusEl.textContent = '⏳ Enviando...';
-  const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.despesas);
-  if (resultado) {
-    window._rdeComprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
-    window._rdeComprovanteNome = resultado.nome;
-    window._rdeComprovanteId = resultado.id || null;
-    window._rdeComprovanteDriveId = resultado.driveId || null;
-    if (statusEl) statusEl.textContent = '📎 ' + resultado.nome + ' — clique em Salvar para vincular';
-    showToast('☁️ Comprovante enviado!');
+  set('rd_local', i.Local);
+  set('rd_valor', rdNumeroParaMoeda(i.Valor || i.ValorTotal || 0));
+
+  const tipoOriginal = i.TipoPagamento || 'avista';
+  set('rd_tipo_pagamento', tipoOriginal === 'parcelado' ? 'avista' : tipoOriginal);
+  rdTogglePagamento();
+
+  if (i.DivisaoCC && i.DivisaoCC.length) {
+    // Divisão por Centro de Custo — reabre o editor já preenchido com os
+    // mesmos contratos/valores, em vez de só avisar que existia (agora dá
+    // pra ver e ajustar direto aqui, igual a Nova Despesa).
+    window._rdDivisaoCC = JSON.parse(JSON.stringify(i.DivisaoCC));
+    const chk = document.getElementById('rd_tem_divisaocc'); if (chk) chk.checked = true;
+    rdToggleDivisaoCC();
   } else {
-    if (statusEl) statusEl.textContent = '⚠️ Falha ao enviar';
-    showToast('⚠️ Não foi possível enviar o comprovante.');
+    set('rd_cc_input', i.CentroCusto); set('rd_cc', i.CentroCusto);
+    await rdAtualizarMedicaoPorCC(i.CentroCusto || '');
   }
-}
+  set('rd_medicao', i.NumMedicao);
 
-async function rdSalvarEdicaoDespesa(id) {
-  const status = document.getElementById('rde_status').value;
-  const dataPagamento = document.getElementById('rde_data_pagamento').value;
-  const banco = document.getElementById('rde_banco').value.trim();
-  const valor = rdMoedaParaNumero(document.getElementById('rde_valor').value);
-  const vencimento = document.getElementById('rde_vencimento').value;
-  const centroCusto = (document.getElementById('rde_cc')||{}).value || '';
-  const numMedicao = (document.getElementById('rde_medicao')||{}).value.trim() || '';
-  let comprovanteUrl = window._rdeComprovanteUrl || '';
-  let comprovanteNome = window._rdeComprovanteNome || '';
-
-  // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/fornecedor definitivos
-  if (window._rdeComprovanteId && window._rdeComprovanteDriveId) {
-    const original = (window._rdDespesasPorId || {})[id] || {};
-    const nomeDesejado = financeiroGerarNomeComprovante(original.DataLancamento, valor, original.Fornecedor || original.Beneficiario, comprovanteNome);
-    const renomeado = await renomearArquivoOneDrive(window._rdeComprovanteDriveId, window._rdeComprovanteId, nomeDesejado);
-    if (renomeado) { comprovanteUrl = renomeado.url || comprovanteUrl; comprovanteNome = renomeado.nome || comprovanteNome; }
+  if (i.Distribuicoes && i.Distribuicoes.length) {
+    window._rdDistribuicoes = JSON.parse(JSON.stringify(i.Distribuicoes));
+    const chk = document.getElementById('rd_tem_distribuicao'); if (chk) chk.checked = true;
+    rdToggleDistribuicao();
   }
 
-  const campos = {
-    Status: status,
-    DataPagamento: status === 'Pago' ? (dataPagamento || new Date().toISOString().slice(0,10)) : dataPagamento,
-    Banco: banco,
-    Valor: valor,
-    ValorTotal: valor,
-    Vencimento: vencimento,
-    CentroCusto: centroCusto,
-    NumMedicao: numMedicao,
-    Comprovante: comprovanteUrl ? 'Sim' : 'Não',
-    ComprovanteUrl: comprovanteUrl,
-    ComprovanteNome: comprovanteNome,
-  };
+  set('rd_forma_pgto', i.FormaPagamento);
+  set('rd_responsavel', i.ResponsavelLancamento);
+  set('rd_lancadopor', i.LancadoPor);
+  set('rd_data_pagamento', i.DataPagamento);
+  set('rd_banco', i.Banco);
+  const statusSel = document.getElementById('rd_status'); if (statusSel) statusSel.value = i.Status || 'Pendente';
+  set('rd_vencimento', i.Vencimento);
 
-  showToast('💾 Salvando...');
-  const ok = await dbAtualizar('Despesas', id, campos);
-  showToast(ok ? '✅ Lançamento atualizado!' : '❌ Erro ao salvar.');
-  if (ok) {
-    const modal = document.getElementById('rd-edit-modal'); if (modal) modal.remove();
-    carregarDespesas();
-  }
+  // Preserva o comprovante já vinculado até o usuário anexar um novo
+  window._rdComprovanteUrl = i.ComprovanteUrl || '';
+  window._rdComprovanteNome = i.ComprovanteNome || '';
+  window._rdComprovanteId = null; window._rdComprovanteDriveId = null;
+  const comprovStatus = document.getElementById('rd_comprovante_status');
+  if (comprovStatus) comprovStatus.innerHTML = i.ComprovanteUrl ? `<a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver comprovante atual</a> — anexe outro arquivo acima para substituir` : '';
+
+  const titulo = document.getElementById('rd-form-titulo'); if (titulo) titulo.textContent = '✏️ Editar Despesa';
+  const formEl = document.getElementById('rd-form-container'); if (formEl) formEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function exportarDespesasExcel() {
@@ -33662,6 +33584,16 @@ async function medGerarDoc(m) {
 
   // Sistema Elétrico
   campoBox(ML, CW, 0.85, 'Sistema Elétrico', m.sistemaEletrico || (frente ? (frente.sistemaEletrico || frente.nome) : '—'), { bold: true });
+  y += 0.85 + 0.15;
+
+  // SIGCO · Reg. Obras — duas colunas, logo abaixo do Sistema Elétrico e
+  // acima do Escopo dos Serviços (antes vinham só dentro da caixa de
+  // Observações, junto com o texto livre — pedido em 31/08/2026 pra separar
+  // esses dois campos de identificação do texto livre do usuário).
+  const gapSigco = 0.25, colSigco = (CW - gapSigco) / 2;
+  quebrarSeNecessario(0.85);
+  campoBox(ML, colSigco, 0.85, 'SIGCO', m.sigco || '—', { bold: true });
+  campoBox(ML + colSigco + gapSigco, colSigco, 0.85, 'Reg. Obras', m.regObras || '—', { bold: true });
   y += 0.85 + 0.25;
 
   // Escopo dos serviços (tabela de itens)
@@ -33721,30 +33653,34 @@ async function medGerarDoc(m) {
   doc.text('R$ ' + totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 2 }), xs.tot + 0.15, y + 0.39);
   y += rowH + 0.3;
 
-  // Total da medição — barra verde, sozinha na linha, alinhada à esquerda
-  // logo abaixo da linha TOTAL GERAL da tabela.
-  quebrarSeNecessario(0.95);
-  doc.setFillColor(128, 196, 118); doc.roundedRect(ML, y, CW * 0.46, 0.95, 0.12, 0.12, 'F');
+  // Total da medição — barra verde, sozinha na linha, alinhada à direita
+  // (canto oposto da tabela, mais destaque perto da margem direita), logo
+  // abaixo da linha TOTAL GERAL. Altura maior e mais espaço entre o rótulo
+  // e o valor grande — a versão anterior tinha o valor (14pt) subindo em
+  // cima do rótulo (8pt) por falta de espaço vertical entre as duas linhas.
+  const totalBoxW = CW * 0.46, totalBoxX = ML + CW - totalBoxW, totalBoxH = 1.15;
+  quebrarSeNecessario(totalBoxH);
+  doc.setFillColor(128, 196, 118); doc.roundedRect(totalBoxX, y, totalBoxW, totalBoxH, 0.12, 0.12, 'F');
   doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(63, 38, 31);
-  doc.text('TOTAL DA MEDIÇÃO', ML + 0.3, y + 0.38);
-  doc.setFontSize(14);
-  doc.text('R$ ' + totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 2 }), ML + 0.3, y + 0.74);
-  y += 0.95 + 0.25;
+  doc.text('TOTAL DA MEDIÇÃO', totalBoxX + 0.3, y + 0.32);
+  doc.setFontSize(13);
+  doc.text('R$ ' + totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 2 }), totalBoxX + 0.3, y + 0.9);
+  y += totalBoxH + 0.25;
 
-  // Observações — quadro completo ocupando a linha inteira, com SIGCO/Reg.
-  // Obras numa linha e o texto livre (multi-linha, digitado no textarea do
-  // formulário) logo abaixo, dentro da mesma caixa.
+  // Observações — quadro completo ocupando a linha inteira, só com o texto
+  // livre digitado no textarea do formulário. SIGCO/Reg. Obras saíram daqui
+  // (agora têm caixa própria logo abaixo do Sistema Elétrico — pedido em
+  // 31/08/2026, estavam duplicados: apareciam ali E também às vezes de novo
+  // dentro do texto livre desta caixa).
   const obsLinhasTexto = m.obs ? doc.splitTextToSize(m.obs, CW - 0.3) : [];
-  const obsBoxH = 0.85 + (obsLinhasTexto.length ? (0.15 + obsLinhasTexto.length * 0.36) : 0);
+  const obsBoxH = 0.5 + (obsLinhasTexto.length ? obsLinhasTexto.length * 0.36 : 0.3);
   quebrarSeNecessario(obsBoxH);
   doc.setDrawColor(200, 190, 185); doc.setLineWidth(0.02); doc.rect(ML, y, CW, obsBoxH);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(140, 120, 110);
   doc.text('OBSERVAÇÕES', ML + 0.15, y + 0.28);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(40, 40, 40);
-  doc.text('SIGCO: ' + (m.sigco || '—') + '        Reg. Obras: ' + (m.regObras || '—'), ML + 0.15, y + 0.56);
   if (obsLinhasTexto.length) {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(60, 60, 60);
-    let oy = y + 0.56 + 0.36;
+    let oy = y + 0.56;
     obsLinhasTexto.forEach(ln => { doc.text(ln, ML + 0.15, oy); oy += 0.36; });
   }
   y += obsBoxH + 0.3;
@@ -33775,8 +33711,13 @@ async function medGerarDoc(m) {
   const colW = (CW - gap * 2) / 3;
   const assinaturas = [
     { nome: m.assinaturaEnergisaNome, img: m.assinaturaEnergisa, papel: 'Contratante ERO — Energisa', x: ML },
-    { nome: m.assinaturaReEnergisaNome, img: m.assinaturaReEnergisa, papel: 'Contratante ERO — (re)energisa', x: ML + colW + gap },
-    { nome: m.assinaturaExpedianNome || 'EXPEDIAN SOLUÇÕES AMBIENTAIS', fixo: 'LTDA — CNPJ 37.553.680/0001-80', img: m.assinaturaExpedian, papel: 'Contratada — Expedian', x: ML + (colW + gap) * 2 },
+    { nome: m.assinaturaReEnergisaNome, img: m.assinaturaReEnergisa, papel: 'Contratante ERO — (Re) Energisa', x: ML + colW + gap },
+    // Contratada (Expedian): o nome de quem assina (pessoa física) fica em
+    // cima, e "Expedian Soluções Ambientais" sempre aparece embaixo — sem
+    // CNPJ aqui (pedido em 31/08/2026, ficava cortado/confuso mostrando só
+    // "LTDA — CNPJ..." sem o nome da empresa por cima). Se não tiver nome de
+    // pessoa digitado, o nome da empresa já vira a linha principal sozinho.
+    { nome: m.assinaturaExpedianNome || 'Expedian Soluções Ambientais', fixo: m.assinaturaExpedianNome ? 'Expedian Soluções Ambientais' : '', img: m.assinaturaExpedian, papel: 'Contratada — Expedian', x: ML + (colW + gap) * 2 },
   ];
   assinaturas.forEach(a => {
     if (a.img) { try { doc.addImage(a.img, 'PNG', a.x, y, colW, 1.6); } catch (ex) {} }
@@ -34189,11 +34130,11 @@ function pageChecklistMedicao() {
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">Assinaturas</div>
-    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">3 vias — Expedian e as duas identidades do lado Energisa (Energisa e (re)energisa, conforme os e-mails reais de medição da obra).</div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">3 vias — Expedian e as duas identidades do lado Energisa (Energisa e (Re) Energisa, conforme os e-mails reais de medição da obra).</div>
     <div style="display:flex;flex-direction:column;gap:20px">
       ${[
         { qual: 'Expedian', label: 'Expedian' },
-        { qual: 'ReEnergisa', label: '(re)energisa' },
+        { qual: 'ReEnergisa', label: '(Re) Energisa' },
         { qual: 'Energisa', label: 'Energisa' },
       ].map(({ qual, label }) => {
         const campoNome = 'assinatura' + qual + 'Nome';
@@ -44815,13 +44756,14 @@ function finPreencherCategoria(prefixo, sugestao) {
     if (subInp) subInp.value = sugestao.subcategoria;
     prestAtualizarCategoriaPorSubcategoria();
   } else if (prefixo === 'rd') {
-    // Financeiro > Despesas: mesma taxonomia (RD_CATEGORIAS), campos rd_categoria/rd_subcategoria.
-    const catEl = document.getElementById('rd_categoria');
-    if (!catEl) return false;
-    catEl.value = sugestao.categoria;
-    rdAtualizarSubcategorias();
+    // Financeiro > Despesas: mesma taxonomia (RD_CATEGORIAS_DESPESAS), campos
+    // rd_subcategoria (primeiro)/rd_categoria (automático a partir da sub).
     const subEl = document.getElementById('rd_subcategoria');
-    if (subEl) subEl.value = sugestao.subcategoria;
+    if (!subEl) return false;
+    subEl.value = sugestao.subcategoria;
+    const catEl = document.getElementById('rd_categoria');
+    if (catEl) catEl.value = sugestao.categoria || rdCategoriaDeSubcategoriaDespesas(sugestao.subcategoria);
+    rdAtualizarNaturezaHint();
   } else {
     const subEl = document.getElementById('pag_subcategoria');
     if (!subEl) return false;
