@@ -33513,7 +33513,6 @@ async function medExportarExcel() {
     'SIGCO': m.Sigco || '',
     'Reg. Obras': m.RegObras || '',
     'Data Medição': m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '',
-    'Prazo Pagamento': m.Prazo ? new Date(m.Prazo + 'T12:00').toLocaleDateString('pt-BR') : '',
     'Valor Total': m.Valor || 0,
     'Status': m.Status || '',
     'Observações': m.Obs || '',
@@ -33608,7 +33607,7 @@ async function medGerarDoc(m) {
   y += objetoH + 0.15;
 
   // Sistema Elétrico
-  campoBox(ML, CW, 0.85, 'Sistema Elétrico', m.sistemaEletrico || (frente ? frente.nome : '—'), { bold: true });
+  campoBox(ML, CW, 0.85, 'Sistema Elétrico', m.sistemaEletrico || (frente ? (frente.sistemaEletrico || frente.nome) : '—'), { bold: true });
   y += 0.85 + 0.25;
 
   // Escopo dos serviços (tabela de itens)
@@ -33690,7 +33689,12 @@ async function medGerarDoc(m) {
   // em branco pra assinar na cópia impressa. 3 colunas: Expedian, (re)energisa
   // e Energisa (os dois últimos são identidades/pessoas distintas do lado
   // do cliente Contratante ERO, mesmo pertencendo ao mesmo grupo — confirmado
-  // com o Tiago pelos e-mails reais de medição da obra).
+  // com o Tiago pelos e-mails reais de medição da obra). A identificação da
+  // Contratada (Expedian) é fixa e sempre aparece — não depende de ter
+  // digitado um nome no campo de assinatura, já que é sempre a mesma
+  // empresa (mesmo padrão do BM real, que já vem com "EXPEDIAN SOLUÇÕES
+  // AMBIENTAIS LTDA:37553680000180" impresso). O lado Contratante ERO fica
+  // em branco até ser preenchido/assinado — não mostra "—" de faltando.
   quebrarSeNecessario(2.9);
   y += 0.3;
   const gap = 0.3;
@@ -33698,16 +33702,28 @@ async function medGerarDoc(m) {
   const assinaturas = [
     { nome: m.assinaturaEnergisaNome, img: m.assinaturaEnergisa, papel: 'Contratante ERO — Energisa', x: ML },
     { nome: m.assinaturaReEnergisaNome, img: m.assinaturaReEnergisa, papel: 'Contratante ERO — (re)energisa', x: ML + colW + gap },
-    { nome: m.assinaturaExpedianNome, img: m.assinaturaExpedian, papel: 'Contratada — Expedian', x: ML + (colW + gap) * 2 },
+    { nome: m.assinaturaExpedianNome || 'EXPEDIAN SOLUÇÕES AMBIENTAIS', fixo: 'LTDA — CNPJ 37.553.680/0001-80', img: m.assinaturaExpedian, papel: 'Contratada — Expedian', x: ML + (colW + gap) * 2 },
   ];
   assinaturas.forEach(a => {
     if (a.img) { try { doc.addImage(a.img, 'PNG', a.x, y, colW, 1.6); } catch (ex) {} }
     doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.02);
     doc.line(a.x, y + 1.65, a.x + colW, y + 1.65);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
-    doc.text(a.nome || '—', a.x, y + 2.0);
+    let ly = y + 1.98;
+    if (a.nome) {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
+      const nomeLines = doc.splitTextToSize(a.nome, colW - 0.1);
+      doc.text(nomeLines, a.x, ly);
+      ly += nomeLines.length * 0.32;
+    }
+    if (a.fixo) {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(6.8); doc.setTextColor(100, 100, 100);
+      const fixoLines = doc.splitTextToSize(a.fixo, colW - 0.1);
+      doc.text(fixoLines, a.x, ly);
+      ly += fixoLines.length * 0.27;
+    }
+    ly += 0.12;
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(100, 100, 100);
-    doc.text(doc.splitTextToSize(a.papel, colW), a.x, y + 2.32);
+    doc.text(doc.splitTextToSize(a.papel, colW), a.x, ly);
   });
   y += 2.6;
 
@@ -33744,7 +33760,12 @@ async function medExportarPDFForm() {
       if (canvas) d['assinatura' + qual] = canvas.toDataURL('image/png');
     }
   });
-  const dComNumero = { ...d, numeroMedicao: medNumeroPreview() };
+  const frenteAtual = FLASH_FRENTES.find(f => f.id === d.frenteId);
+  const dComNumero = {
+    ...d,
+    numeroMedicao: (d.numeroMedicao !== '' && d.numeroMedicao != null) ? d.numeroMedicao : medNumeroPreview(),
+    sistemaEletrico: frenteAtual ? frenteAtual.sistemaEletrico : '',
+  };
   const doc = await medGerarDoc(dComNumero);
   doc.save(_medNomeArquivoPdf(dComNumero));
 }
@@ -33754,9 +33775,11 @@ async function medExportarPDF(id) {
   const m = (window._medHistorico || []).find(r => r.Id === id);
   if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
   showToast('🔄 Gerando PDF... aguarde.');
+  const frenteM = FLASH_FRENTES.find(f => f.id === m.FrenteId);
   const dLocal = {
-    frenteId: m.FrenteId, periodo: m.Periodo, regObras: m.RegObras, sigco: m.Sigco, sistemaEletrico: m.SistemaEletrico,
-    numeroMedicao: m.NumeroMedicao, data: m.Data, prazo: m.Prazo,
+    frenteId: m.FrenteId, periodo: m.Periodo, regObras: m.RegObras, sigco: m.Sigco,
+    sistemaEletrico: m.SistemaEletrico || (frenteM ? frenteM.sistemaEletrico : ''),
+    numeroMedicao: m.NumeroMedicao, data: m.Data,
     valor: m.Valor, status: m.Status, itens: medItensDoRegistro(m), obs: m.Obs,
     assinaturaExpedianNome: m.AssinaturaExpedianNome, assinaturaReEnergisaNome: m.AssinaturaReEnergisaNome, assinaturaEnergisaNome: m.AssinaturaEnergisaNome,
     assinaturaExpedian: m.AssinaturaExpedian, assinaturaReEnergisa: m.AssinaturaReEnergisa, assinaturaEnergisa: m.AssinaturaEnergisa,
@@ -33784,25 +33807,32 @@ function medNovoForm(frenteIdPre) {
   const frenteId = frenteIdPre || FLASH_FRENTES[0].id;
   const frente = FLASH_FRENTES.find(f => f.id === frenteId);
   window._medData = {
-    frenteId, periodo: '', regObras: '', sigco: '', sistemaEletrico: frente ? (frente.sistemaEletrico || '') : '',
-    data: '', prazo: '', status: 'Em elaboração',
+    frenteId, periodo: '', regObras: '', sigco: '',
+    numeroMedicao: ((window._medHistorico || []).filter(r => r.FrenteId === frenteId).length) + 1,
+    data: '', status: 'Em elaboração',
     itens: [{ desc: 'Fiscalização Mensal', quanti: 1, unid: 'UNT.', valorUnit: frente && frente.valorEscopo ? frente.valorEscopo : '' }],
     obs: '',
     assinaturaExpedianNome: '', assinaturaReEnergisaNome: '', assinaturaEnergisaNome: '',
     assinaturaExpedian: '', assinaturaReEnergisa: '', assinaturaEnergisa: '',
   };
 }
-/* -- Ao trocar o circuito elétrico em Nova Medição, sugere o Sistema Elétrico
-   (FLASH_FRENTES[].sistemaEletrico) e o valor de escopo mensal fixo daquele
-   circuito no primeiro item, quando ele ainda estiver vazio. Só sugere —
-   nunca sobrescreve o que a pessoa já digitou, nem mexe num registro que já
-   está sendo editado (aí os valores reais já foram lançados antes, não é
-   pra reescrever por cima). -- */
+/* -- Ao trocar o circuito elétrico em Nova Medição, sugere o Nº da Medição
+   (sequencial por circuito) e o valor de escopo mensal fixo daquele circuito
+   no primeiro item, quando ele ainda estiver vazio. O "Sistema Elétrico" do
+   boletim (FLASH_FRENTES[].sistemaEletrico) não tem campo próprio no
+   formulário — o circuito já escolhido aqui é a mesma informação, então é
+   só usado direto do FLASH_FRENTES na hora de salvar/exportar, sem pedir de
+   novo pro usuário (evita duplicar a mesma pergunta). Só sugere — nunca
+   sobrescreve o que a pessoa já digitou, nem mexe num registro que já está
+   sendo editado (aí os valores reais já foram lançados antes, não é pra
+   reescrever por cima). -- */
 function medAutoPreencherValorEscopo() {
   const d = window._medData;
   const frente = FLASH_FRENTES.find(f => f.id === d.frenteId);
   if (!frente) return;
-  if (!window._medRegistroAtualId && !d.sistemaEletrico) d.sistemaEletrico = frente.sistemaEletrico || '';
+  if (!window._medRegistroAtualId) {
+    d.numeroMedicao = ((window._medHistorico || []).filter(r => r.FrenteId === d.frenteId).length) + 1;
+  }
   if (!window._medRegistroAtualId && d.itens && d.itens.length === 1 && !d.itens[0].valorUnit && frente.valorEscopo) {
     d.itens[0].valorUnit = frente.valorEscopo;
   }
@@ -33844,8 +33874,8 @@ function medEditarRegistro(id) {
   if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
   window._medData = {
     frenteId: m.FrenteId || FLASH_FRENTES[0].id, periodo: m.Periodo || '', regObras: m.RegObras || '',
-    sigco: m.Sigco || '', sistemaEletrico: m.SistemaEletrico || '', data: m.Data || '',
-    prazo: m.Prazo || '', status: m.Status || 'Em elaboração',
+    sigco: m.Sigco || '', numeroMedicao: m.NumeroMedicao != null ? m.NumeroMedicao : '', data: m.Data || '',
+    status: m.Status || 'Em elaboração',
     itens: medItensDoRegistro(m).map(it => ({ ...it })),
     obs: m.Obs || '',
     assinaturaExpedianNome: m.AssinaturaExpedianNome || '', assinaturaReEnergisaNome: m.AssinaturaReEnergisaNome || '', assinaturaEnergisaNome: m.AssinaturaEnergisaNome || '',
@@ -33891,17 +33921,13 @@ async function medSalvar() {
       if (canvas) d['assinatura' + qual] = canvas.toDataURL('image/png');
     }
   });
-  // Nº da medição: sequencial por circuito elétrico. Ao editar, mantém o
-  // número já gravado (não recalcula, senão mudaria o número de um BM já
-  // emitido); ao criar, conta quantas medições daquele mesmo circuito já
-  // existem no histórico + 1.
-  let numeroMedicao;
-  if (editando) {
-    const existente = (window._medHistorico || []).find(r => r.Id === window._medRegistroAtualId);
-    numeroMedicao = existente && existente.NumeroMedicao ? existente.NumeroMedicao : medNumeroPreview();
-  } else {
-    numeroMedicao = (window._medHistorico || []).filter(r => r.FrenteId === d.frenteId).length + 1;
-  }
+  // Nº da medição (BM): agora é um campo editável no formulário, preenchido
+  // por padrão com a sugestão sequencial por circuito, mas o usuário pode
+  // corrigir livremente (ex.: quando o número real da Energisa não bate
+  // com a contagem local). Se deixar em branco, cai de volta pra sugestão.
+  const numeroMedicao = (d.numeroMedicao !== '' && d.numeroMedicao != null)
+    ? d.numeroMedicao
+    : ((window._medHistorico || []).filter(r => r.FrenteId === d.frenteId).length + 1);
   const itensLimpos = (d.itens || [])
     .filter(it => it && (it.desc || it.quanti || it.valorUnit))
     .map(it => ({ desc: it.desc || '', quanti: parseFloat(it.quanti) || 0, unid: it.unid || '', valorUnit: parseFloat(it.valorUnit) || 0 }));
@@ -33909,8 +33935,8 @@ async function medSalvar() {
   const registro = {
     Title: 'Medição - ' + d.periodo + ' - ' + frente.nome,
     FrenteId: d.frenteId, FrenteNome: frente.nome,
-    NumeroMedicao: numeroMedicao, SistemaEletrico: d.sistemaEletrico || frente.sistemaEletrico || '', Sigco: d.sigco || '',
-    Periodo: d.periodo, RegObras: d.regObras || '', Data: d.data || '', Prazo: d.prazo || '',
+    NumeroMedicao: numeroMedicao, SistemaEletrico: frente.sistemaEletrico || '', Sigco: d.sigco || '',
+    Periodo: d.periodo, RegObras: d.regObras || '', Data: d.data || '',
     Itens: itensLimpos, Valor: valorTotal, Status: d.status || 'Em elaboração',
     Obs: d.obs || '',
     AssinaturaExpedianNome: d.assinaturaExpedianNome || '', AssinaturaReEnergisaNome: d.assinaturaReEnergisaNome || '', AssinaturaEnergisaNome: d.assinaturaEnergisaNome || '',
@@ -33941,13 +33967,12 @@ function medHtmlHistorico() {
   const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
   const linhaM = (m) => {
     const dt = m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—';
-    const pz = m.Prazo ? new Date(m.Prazo + 'T12:00').toLocaleDateString('pt-BR') : '—';
     const itensTxt = medItensDoRegistro(m).map(it => it.desc).filter(Boolean).join(' · ');
     return `
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">💰</div>
       <div style="flex:1;min-width:0">
-        <div class="name">${m.NumeroMedicao ? 'BM ' + m.NumeroMedicao + ' · ' : ''}${m.Periodo} · ${dt}${m.Prazo ? ' · prazo ' + pz : ''}</div>
+        <div class="name">${m.NumeroMedicao ? 'BM ' + m.NumeroMedicao + ' · ' : ''}${m.Periodo} · ${dt}</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${itensTxt ? itensTxt.substring(0, 90) + (itensTxt.length > 90 ? '…' : '') : '—'}</div>
         <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
           <span class="badge" style="font-size:.62rem;background:${MED_STATUS_COR[m.Status] || '#7f8c8d'};color:#fff">${m.Status || '—'}</span>
@@ -34037,18 +34062,14 @@ function pageChecklistMedicao() {
         </select>
       </div>
       <div class="form-group" style="margin:0"><label>Período</label><input value="${(d.periodo || '').replace(/"/g, '&quot;')}" oninput="medCampo('periodo', this.value)" placeholder="Julho de 2026"></div>
-      <div class="form-group" style="margin:0"><label>Nº Medição <span style="font-weight:400;color:var(--text-muted)">(automático)</span></label>
-        <input value="${medNumeroPreview()}" disabled style="background:var(--surface2);font-weight:700">
+      <div class="form-group" style="margin:0"><label>Nº Medição (BM)</label>
+        <input type="text" value="${d.numeroMedicao != null ? d.numeroMedicao : ''}" oninput="medCampo('numeroMedicao', this.value)" placeholder="19">
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-      <div class="form-group" style="margin:0"><label>Sistema Elétrico</label><input value="${(d.sistemaEletrico || '').replace(/"/g, '&quot;')}" oninput="medCampo('sistemaEletrico', this.value)" placeholder="Sistema Elétrico Porto Velho I - Guaporé (Subestação e LDAT 69 kV)"></div>
-      <div class="form-group" style="margin:0"><label>SIGCO</label><input value="${(d.sigco || '').replace(/"/g, '&quot;')}" oninput="medCampo('sigco', this.value)" placeholder="Ex: 53780"></div>
-    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>SIGCO</label><input value="${(d.sigco || '').replace(/"/g, '&quot;')}" oninput="medCampo('sigco', this.value)" placeholder="Ex: 53780"></div>
       <div class="form-group" style="margin:0"><label>Reg. Obras</label><input value="${(d.regObras || '').replace(/"/g, '&quot;')}" oninput="medCampo('regObras', this.value)" placeholder="Ex: 8125-17"></div>
       <div class="form-group" style="margin:0"><label>Data medição</label><input type="date" value="${d.data || ''}" onchange="medCampo('data', this.value)"></div>
-      <div class="form-group" style="margin:0"><label>Prazo pagamento</label><input type="date" value="${d.prazo || ''}" onchange="medCampo('prazo', this.value)"></div>
     </div>
     <div class="form-group"><label>Status</label>
       <select onchange="medCampo('status', this.value)">${MED_STATUS_OPCOES.map(s => `<option ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
