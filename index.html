@@ -1342,6 +1342,7 @@ function renderPage(id) {
     checklist_flash: () => pageChecklistFlash(),
     checklist_notif: () => pageChecklistNotif(),
     checklist_fornecedores: () => pageChecklistFornecedores(),
+    checklist_obras: () => pageChecklistObras(),
     checklist_medicao: () => pageChecklistMedicao(),
     checklist_faturamento: () => pageChecklistFaturamento(),
     checklist_fauna: () => pageChecklistFauna(),
@@ -13531,6 +13532,7 @@ const PROJETOS_ENERGISA_OBRAS_COMPARTILHADO = [
   { rota: 'checklist_notif', icon: '⚠️', titulo: 'Notificação de NC', subtitulo: 'Notificação de não conformidade ambiental por circuito elétrico' },
   { rota: 'checklist_mitigacao', icon: '🧯', titulo: 'Kit de Mitigação Ambiental', subtitulo: 'Checklist de vistoria do kit de contenção/mitigação ambiental' },
   { rota: 'checklist_fornecedores', icon: '🧾', titulo: 'Fornecedores', subtitulo: 'Documentação legal dos fornecedores instalados em cada circuito — Conforme/Não Conforme/N.A.' },
+  { rota: 'checklist_obras', icon: '📋', titulo: 'Relatório Mensal de Obras', subtitulo: 'Entrega e aprovação do relatório mensal da empreiteira — prazo dia 5, com/sem ressalvas' },
 ];
 const PROJETOS_ENERGISA_OBRAS_EXCLUSIVO = [
   { rota: 'checklist_medicao', icon: '💰', titulo: 'Medição', subtitulo: 'Medições por período/BM em cada circuito elétrico' },
@@ -25118,6 +25120,7 @@ const FISCALIZACAO_ERO_CATALOGO = [
   { rota: 'checklist_notif', icon: '⚠️', titulo: 'Notificação de NC', subtitulo: 'Notificação de não conformidade ambiental por circuito elétrico' },
   { rota: 'checklist_mitigacao', icon: '🧯', titulo: 'Kit de Mitigação Ambiental', subtitulo: 'Checklist de vistoria do kit de contenção/mitigação ambiental' },
   { rota: 'checklist_fornecedores', icon: '🧾', titulo: 'Fornecedores', subtitulo: 'Documentação legal dos fornecedores instalados em cada circuito — Conforme/Não Conforme/N.A.' },
+  { rota: 'checklist_obras', icon: '📋', titulo: 'Relatório Mensal de Obras', subtitulo: 'Entrega e aprovação do relatório mensal da empreiteira — prazo dia 5, com/sem ressalvas' },
 ];
 
 function pageFiscalizacaoEro() {
@@ -25781,6 +25784,7 @@ async function painelGeralCarregarDados(forcar) {
       (window._ncHistorico === null || forcar) ? ncCarregarHistorico(true, true) : Promise.resolve(),
       painelGeralCarregarMitigacaoSemNavegar(),
       (_fornEnergisaLista === null || forcar) ? fornEnergisaCarregar(forcar, true) : Promise.resolve(),
+      (window._obraHistorico === null || forcar) ? obraCarregarHistorico(forcar, true) : Promise.resolve(),
     ]);
   } finally {
     window._painelGeralCarregando = false;
@@ -25812,8 +25816,13 @@ function painelGeralCalcularFrente(fr, flashList, ncList, mitList) {
   const fornValidados = fornConf + fornNaoConf;
   const fornConformePct = fornValidados ? (fornConf / fornValidados) * 100 : null;
 
-  const temDados = flashDaFrente.length > 0 || ncDaFrente.length > 0 || mitDaFrente.length > 0 || fornDaFrente.length > 0;
-  const critico = ncAbertas > 0 || ncForaPrazo > 0 || mitNaoAceitavel > 0 || mitAcoesPendentes > 0 || fornNaoConf > 0;
+  const obraDaFrente = (window._obraHistorico||[]).filter(x => x.FrenteId === fr.id);
+  const obraScores = obraDaFrente.map(r => obraCalcularScore(r)).filter(s => typeof s === 'number');
+  const obraMediaPct = obraScores.length ? (obraScores.reduce((s,n) => s+n, 0) / obraScores.length) : null;
+  const obraAtrasados = obraDaFrente.filter(r => { const s = obraSituacaoPrazo(r).situacao; return s === 'atrasado' || s === 'nao_entregue'; }).length;
+
+  const temDados = flashDaFrente.length > 0 || ncDaFrente.length > 0 || mitDaFrente.length > 0 || fornDaFrente.length > 0 || obraDaFrente.length > 0;
+  const critico = ncAbertas > 0 || ncForaPrazo > 0 || mitNaoAceitavel > 0 || mitAcoesPendentes > 0 || fornNaoConf > 0 || obraAtrasados > 0;
   const atencao = !critico && flashComOcorr > 0;
   const status = !temDados
     ? { cor: '⚪', label: 'Sem dados ainda', corCss: 'var(--border)' }
@@ -25827,7 +25836,7 @@ function painelGeralCalcularFrente(fr, flashList, ncList, mitList) {
         Kit de Mitigação, % de documentos de Fornecedores conformes),
         descontando uma penalidade por NC aberta/fora do prazo. Se nenhum
         indicador tiver dado ainda, fica null (mostra "—" no card). -- */
-  const notasDisponiveis = [flashMediaIda, mitMediaPct, fornConformePct].filter(n => typeof n === 'number');
+  const notasDisponiveis = [flashMediaIda, mitMediaPct, fornConformePct, obraMediaPct].filter(n => typeof n === 'number');
   let notaGeral = notasDisponiveis.length ? (notasDisponiveis.reduce((s,n) => s+n, 0) / notasDisponiveis.length) : null;
   if (notaGeral !== null) {
     const penalidade = (ncAbertas * 5) + (ncForaPrazo * 10);
@@ -25840,11 +25849,12 @@ function painelGeralCalcularFrente(fr, flashList, ncList, mitList) {
     ncDaFrente, ncAbertas, ncForaPrazo,
     mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes,
     fornDaFrente, fornConf, fornNaoConf, fornConformePct,
+    obraDaFrente, obraMediaPct, obraAtrasados,
   };
 }
 
 function painelGeralCardFrente(p) {
-  const { fr, status, notaGeral, flashDaFrente, flashMediaIda, flashComOcorr, ncDaFrente, ncAbertas, ncForaPrazo, mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, fornDaFrente, fornConf, fornNaoConf } = p;
+  const { fr, status, notaGeral, flashDaFrente, flashMediaIda, flashComOcorr, ncDaFrente, ncAbertas, ncForaPrazo, mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, fornDaFrente, fornConf, fornNaoConf, obraDaFrente, obraMediaPct, obraAtrasados } = p;
   const notaCorCss = notaGeral === null ? 'var(--text-muted)' : notaGeral >= 80 ? 'var(--green-main)' : notaGeral >= 50 ? '#d97706' : 'var(--red)';
   return `
   <div class="card" style="border-top:3px solid ${status.corCss}">
@@ -25853,7 +25863,7 @@ function painelGeralCardFrente(p) {
         <div style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${fr.nome}">${status.cor} ${fr.nome}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:6px">${fr.empreiteira}</div>
       </div>
-      <div style="text-align:center;flex-shrink:0" title="Nota Geral — média de Flash Report, Kit de Mitigação e Fornecedores conformes, descontando NC em aberto/fora do prazo">
+      <div style="text-align:center;flex-shrink:0" title="Nota Geral — média de Flash Report, Kit de Mitigação, Fornecedores conformes e Relatório Mensal de Obras, descontando NC em aberto/fora do prazo">
         <div style="font-size:.58rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Nota Geral</div>
         <div style="font-family:'Mont',sans-serif;font-size:1.25rem;font-weight:800;color:${notaCorCss}">${notaGeral===null?'—':notaGeral.toFixed(0)+'%'}</div>
       </div>
@@ -25876,8 +25886,12 @@ function painelGeralCardFrente(p) {
         <span style="font-size:.72rem">🧾 Fornecedores</span>
         <span style="font-size:.72rem;font-weight:700">${fornDaFrente.length ? `${fornDaFrente.length} cadastrado${fornDaFrente.length!==1?'s':''} · <span style="color:var(--green-main)">✅${fornConf}</span> · <span style="color:${fornNaoConf>0?'var(--red)':'inherit'}">❌${fornNaoConf}</span>` : 'sem cadastro'}</span>
       </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="obraFiltrarCircuito('${fr.id}')" title="Ver Relatório Mensal de Obras deste circuito">
+        <span style="font-size:.72rem">📋 Relatório de Obras</span>
+        <span style="font-size:.72rem;font-weight:700;color:${obraAtrasados>0?'var(--red)':'inherit'}">${obraDaFrente.length ? (obraMediaPct===null?'—':obraMediaPct.toFixed(0)+'%') + (obraAtrasados?` · 🔴${obraAtrasados}`:'') : 'sem registros'}</span>
+      </div>
     </div>
-    <button class="btn-secondary" style="width:100%;margin-top:10px;font-size:.72rem;padding:6px" onclick="painelGeralAbrirRelatorio('${fr.id}')">📄 Relatório Mensal</button>
+    <button class="btn-secondary" style="width:100%;margin-top:10px;font-size:.72rem;padding:6px" onclick="painelGeralAbrirRelatorio('${fr.id}')">📄 Relatório de Fiscalização</button>
   </div>`;
 }
 
@@ -25916,7 +25930,7 @@ function painelGeralHtmlRelatorioForm() {
   const anos = [anoAtual, anoAtual - 1, anoAtual - 2];
   return `
   <div class="card" id="rel-mensal-form" style="margin-bottom:18px;border-left:4px solid var(--green-main)">
-    <div class="card-title">📄 Relatório Mensal — ${fr.nome}</div>
+    <div class="card-title">📄 Relatório de Fiscalização — ${fr.nome}</div>
     <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">Gera um relatório formal (capa, sumário, apresentação, identificação, objetivo, justificativa, embasamento legal, os registros do período e até 4 fotos por registro) consolidando Flash Report, Notificação de NC e Kit de Mitigação deste empreendimento no mês selecionado. O PDF é o formato final; o Word é editável, caso seja necessário ajustar algum texto antes de enviar — mas lembre-se: edições feitas direto no Word não voltam pro app, então se o ajuste precisar valer sempre, corrija na fonte (o registro no app) e gere de novo.</div>
     <div class="form-row">
       <div class="form-group"><label>Mês</label>
@@ -26047,11 +26061,12 @@ async function _relColetarDados() {
   const fr = FLASH_FRENTES.find(f => f.id === window._relMensalPend.frenteId);
   if (!fr) { showToast('❌ Empreendimento não encontrado.'); return null; }
 
-  // Garante que os 3 históricos usados pelo Painel Geral já estão carregados.
+  // Garante que os históricos usados pelo Painel Geral já estão carregados.
   await Promise.all([
     window._flashHistorico === null ? flashCarregarHistorico(true, true) : Promise.resolve(),
     window._ncHistorico === null ? ncCarregarHistorico(true, true) : Promise.resolve(),
     window._mitHistorico === null ? painelGeralCarregarMitigacaoSemNavegar() : Promise.resolve(),
+    window._obraHistorico === null ? obraCarregarHistorico(true, true) : Promise.resolve(),
   ]);
 
   const mesStr = String(mes).padStart(2, '0');
@@ -26080,6 +26095,12 @@ async function _relColetarDados() {
   const programasCitados = new Set();
   ncMes.forEach(n => { if (n.Programa) programasCitados.add(n.Programa); (n.ProgramasExtras || []).forEach(p => p && programasCitados.add(p)); });
   const legislacaoEspecifica = Array.from(programasCitados).filter(p => NC_PROGRAMA_LEGISLACAO[p]).map(p => p + ' — ' + NC_PROGRAMA_LEGISLACAO[p]);
+
+  // ---- Relatório Mensal de Obras da empreiteira referente a este mesmo mês
+  // de referência (obrigação contratual, prazo dia 5 do mês seguinte) ----
+  const obraDoMes = (window._obraHistorico || []).find(r => r.FrenteId === fr.id && r.MesReferencia === mes && r.AnoReferencia === ano) || null;
+  const obraSituacao = obraDoMes ? obraSituacaoPrazo(obraDoMes) : null;
+  const obraScore = obraDoMes ? obraCalcularScore(obraDoMes) : null;
 
   // ---- Fotos do Kit de Mitigação: diferente do Flash Report/NC, essas fotos
   // não vêm no histórico resumido (window._mitHistorico) — só existem no
@@ -26112,6 +26133,7 @@ async function _relColetarDados() {
     flashMediaIda, flashComOcorr, ncAbertas, ncForaPrazo,
     mitMediaPct, mitNaoAceitavel, mitAcoesPendentes,
     legislacaoEspecifica, mitFotosPorId,
+    obraDoMes, obraSituacao, obraScore,
     dc: CONTRATO_ENERGISA_OBRAS,
   };
 }
@@ -26158,7 +26180,8 @@ async function painelGeralGerarRelatorioMensal() {
   if (!d) return;
   const { fr, mesStr, ano, refMesAno, flashMes, ncMes, mitMes,
     flashMediaIda, flashComOcorr, ncAbertas, ncForaPrazo,
-    mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, legislacaoEspecifica, dc } = d;
+    mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, legislacaoEspecifica,
+    obraDoMes, obraSituacao, obraScore, dc } = d;
 
   const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
   const pageW = 21.0, pageH = 29.7, ML = 1.4, CW = pageW - 2.8;
@@ -26226,7 +26249,7 @@ async function painelGeralGerarRelatorioMensal() {
   doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
   doc.text('1. APRESENTAÇÃO', ML, y); y += 0.6;
   y = _relParagrafo(doc, y, pageW, pageH, ML, CW, titPdf, subPdf,
-    'A Expedian Soluções Ambientais foi contratada pela ' + dc.contratante.nome + ' para a prestação de serviços de gestão e fiscalização ambiental de suas obras e instalações, conforme Contrato nº ' + dc.numero + '. O presente relatório apresenta, de forma consolidada, os resultados das atividades de fiscalização ambiental realizadas no empreendimento "' + fr.nome + '" (' + fr.empreiteira + ') durante o período de referência de ' + refMesAno + ', compreendendo os registros de Flash Report (fiscalização diária de campo), Notificações de Não Conformidade Ambiental e verificações do Kit de Mitigação Ambiental.');
+    'A Expedian Soluções Ambientais foi contratada pela ' + dc.contratante.nome + ' para a prestação de serviços de gestão e fiscalização ambiental de suas obras e instalações, conforme Contrato nº ' + dc.numero + '. O presente relatório apresenta, de forma consolidada, os resultados das atividades de fiscalização ambiental realizadas no empreendimento "' + fr.nome + '" (' + fr.empreiteira + ') durante o período de referência de ' + refMesAno + ', compreendendo os registros de Flash Report (fiscalização diária de campo), Notificações de Não Conformidade Ambiental, verificações do Kit de Mitigação Ambiental e a entrega/aprovação do Relatório Mensal de Obras apresentado pela empreiteira.');
 
   // ===== 2. IDENTIFICAÇÃO DO EMPREENDIMENTO =====
   if (y > pageH - 6) { y = _pdfNovaPagina(doc, pageW, pageH, titPdf, subPdf); }
@@ -26306,6 +26329,10 @@ async function painelGeralGerarRelatorioMensal() {
       ['Pontuação média (Kit de Mitigação)', mitMediaPct === null ? '—' : mitMediaPct.toFixed(0) + '%'],
       ['Verificações "Não Aceitável"', String(mitNaoAceitavel)],
       ['Ações corretivas pendentes (Mitigação)', String(mitAcoesPendentes)],
+      ['Relatório Mensal de Obras (empreiteira)', obraDoMes ? 'Registrado' : 'Sem registro cadastrado para o período'],
+      ['Data de Entrega do Relatório de Obras', obraDoMes && obraDoMes.DataEntrega ? new Date(obraDoMes.DataEntrega + 'T00:00:00').toLocaleDateString('pt-BR') : '—'],
+      ['Situação de Prazo (Relatório de Obras)', obraDoMes ? (OBRA_SITUACAO_LABEL_PLANO[obraSituacao.situacao] || '—') : '—'],
+      ['Status de Aprovação (Relatório de Obras)', obraDoMes ? (OBRA_STATUS_APROVACAO_LABEL_PLANO[obraDoMes.StatusAprovacao || ''] || '—') : '—'],
     ]);
 
   // ===== 7. FLASH REPORTS DO PERÍODO =====
@@ -26390,7 +26417,8 @@ async function painelGeralGerarRelatorioMensalWord() {
   if (!d) return;
   const { fr, mesStr, ano, refMesAno, flashMes, ncMes, mitMes,
     flashMediaIda, flashComOcorr, ncAbertas, ncForaPrazo,
-    mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, legislacaoEspecifica, dc } = d;
+    mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, legislacaoEspecifica,
+    obraDoMes, obraSituacao, obraScore, dc } = d;
 
   const D = window.docx;
   const COR_MARROM = '3F261F';
@@ -26451,7 +26479,7 @@ async function painelGeralGerarRelatorioMensalWord() {
 
   children.push(
     tituloSecao('1. Apresentação'),
-    paragrafo('A Expedian Soluções Ambientais foi contratada pela ' + dc.contratante.nome + ' para a prestação de serviços de gestão e fiscalização ambiental de suas obras e instalações, conforme Contrato nº ' + dc.numero + '. O presente relatório apresenta, de forma consolidada, os resultados das atividades de fiscalização ambiental realizadas no empreendimento "' + fr.nome + '" (' + fr.empreiteira + ') durante o período de referência de ' + refMesAno + ', compreendendo os registros de Flash Report (fiscalização diária de campo), Notificações de Não Conformidade Ambiental e verificações do Kit de Mitigação Ambiental.'),
+    paragrafo('A Expedian Soluções Ambientais foi contratada pela ' + dc.contratante.nome + ' para a prestação de serviços de gestão e fiscalização ambiental de suas obras e instalações, conforme Contrato nº ' + dc.numero + '. O presente relatório apresenta, de forma consolidada, os resultados das atividades de fiscalização ambiental realizadas no empreendimento "' + fr.nome + '" (' + fr.empreiteira + ') durante o período de referência de ' + refMesAno + ', compreendendo os registros de Flash Report (fiscalização diária de campo), Notificações de Não Conformidade Ambiental, verificações do Kit de Mitigação Ambiental e a entrega/aprovação do Relatório Mensal de Obras apresentado pela empreiteira.'),
   );
 
   children.push(
@@ -26507,6 +26535,10 @@ async function painelGeralGerarRelatorioMensalWord() {
         ['Pontuação média (Kit de Mitigação)', mitMediaPct === null ? '—' : mitMediaPct.toFixed(0) + '%'],
         ['Verificações "Não Aceitável"', String(mitNaoAceitavel)],
         ['Ações corretivas pendentes (Mitigação)', String(mitAcoesPendentes)],
+        ['Relatório Mensal de Obras (empreiteira)', obraDoMes ? 'Registrado' : 'Sem registro cadastrado para o período'],
+        ['Data de Entrega do Relatório de Obras', obraDoMes && obraDoMes.DataEntrega ? new Date(obraDoMes.DataEntrega + 'T00:00:00').toLocaleDateString('pt-BR') : '—'],
+        ['Situação de Prazo (Relatório de Obras)', obraDoMes ? (OBRA_SITUACAO_LABEL_PLANO[obraSituacao.situacao] || '—') : '—'],
+        ['Status de Aprovação (Relatório de Obras)', obraDoMes ? (OBRA_STATUS_APROVACAO_LABEL_PLANO[obraDoMes.StatusAprovacao || ''] || '—') : '—'],
       ]),
     new D.Paragraph({ spacing: { after: 200 } }),
   );
@@ -26601,7 +26633,7 @@ async function painelGeralGerarRelatorioMensalWord() {
 }
 
 function pagePainelGeralEro() {
-  if (window._flashHistorico === null || window._ncHistorico === null || window._mitHistorico === null) {
+  if (window._flashHistorico === null || window._ncHistorico === null || window._mitHistorico === null || window._obraHistorico === null) {
     painelGeralCarregarDados();
   }
   const flashList = window._flashHistorico || [];
@@ -26629,7 +26661,7 @@ function pagePainelGeralEro() {
   ${painelGeralHtmlRelatorioForm()}
 
   <div style="font-size:.72rem;color:var(--text-muted);background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:16px">
-    ℹ️ <strong>Como a Nota Geral é calculada:</strong> média entre Flash Report (% IDA), Kit de Mitigação (% de conformidade) e Fornecedores (% de documentos validados como Conforme) — só entram na média os indicadores que já têm dado. Depois é descontada uma penalidade de 5 pontos por Notificação de NC aberta e 10 pontos por NC fora do prazo. Sem nenhum indicador disponível, a nota fica em "—".
+    ℹ️ <strong>Como a Nota Geral é calculada:</strong> média entre Flash Report (% IDA), Kit de Mitigação (% de conformidade), Fornecedores (% de documentos validados como Conforme) e Relatório Mensal de Obras (entrega no prazo + resultado da aprovação) — só entram na média os indicadores que já têm dado. Depois é descontada uma penalidade de 5 pontos por Notificação de NC aberta e 10 pontos por NC fora do prazo. Sem nenhum indicador disponível, a nota fica em "—".
   </div>
 
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px">
@@ -27262,6 +27294,257 @@ async function fornEnergisaCarregarSeed(circuitoId) {
   }
   showToast(algumFalhou ? ('⚠️ Alguns fornecedores não foram salvos.' + syncErrorDetalhe()) : '✅ Fornecedores cadastrados!');
   await fornEnergisaCarregar(true);
+}
+
+/* =====================================================================
+   RELATÓRIO MENSAL DE OBRAS (EMPREITEIRA) — contratualmente, cada
+   empreiteira é obrigada a apresentar até o dia 5 de cada mês subsequente
+   um relatório evidenciando o cumprimento do Plano de Controle Ambiental
+   daquela obra. Registramos aqui, por circuito elétrico e mês de
+   referência, se a entrega foi dentro do prazo e o resultado da análise
+   (aprovado sem ressalvas / com ressalvas / reprovado). Pedido em
+   01/09/2026 — vira também um indicador na Nota Geral do Painel Geral,
+   junto com Flash Report, Kit de Mitigação e Fornecedores. Tabela própria
+   'RelatoriosObraEmpreiteira'. ===================================================================== */
+if (typeof window._obraHistorico === 'undefined') window._obraHistorico = null;
+let _obraCircuitoFiltro = null;
+
+async function obraCarregarHistorico(forcar, semNavegar) {
+  if (window._obraHistorico !== null && !forcar) { if (!semNavegar) navigate('checklist_obras'); return; }
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('obra_historico_cache') || '[]'); } catch(e) { cacheLocal = []; }
+  if (window._obraHistorico === null) window._obraHistorico = cacheLocal;
+  try {
+    const lista = await dbLer('RelatoriosObraEmpreiteira');
+    if (Array.isArray(lista)) {
+      window._obraHistorico = lista;
+      try { localStorage.setItem('obra_historico_cache', JSON.stringify(lista)); } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('[Relatório de Obras] Falha ao carregar histórico, usando cache local.', e);
+  }
+  if (!semNavegar) navigate('checklist_obras');
+}
+
+function obraFiltrarCircuito(id) { _obraCircuitoFiltro = id || null; window._obraFormAberto = false; window._obraEditandoId = null; navigate('checklist_obras'); }
+
+const OBRA_STATUS_APROVACAO = [
+  { valor: '', label: '⏳ Em Análise' },
+  { valor: 'sem_ressalvas', label: '✅ Aprovado sem Ressalvas' },
+  { valor: 'com_ressalvas', label: '🟡 Aprovado com Ressalvas' },
+  { valor: 'reprovado', label: '❌ Reprovado' },
+];
+function obraStatusAprovacaoLabel(v) { const o = OBRA_STATUS_APROVACAO.find(x => x.valor === (v||'')); return o ? o.label : '⏳ Em Análise'; }
+
+/* -- Versões sem emoji (Situação de Prazo / Status de Aprovação), usadas nas
+   tabelas do Relatório de Fiscalização em PDF/Word — a fonte padrão do jsPDF
+   (Helvetica) e a maioria dos leitores de Word não renderizam emoji, então o
+   relatório formal usa texto simples, igual ao resto das tabelas dele. -- */
+const OBRA_SITUACAO_LABEL_PLANO = {
+  pontual: 'Entregue no Prazo',
+  atrasado: 'Entregue com Atraso',
+  nao_entregue: 'Não Entregue (prazo vencido)',
+  aguardando: 'Aguardando Entrega (prazo em aberto)',
+};
+const OBRA_STATUS_APROVACAO_LABEL_PLANO = {
+  '': 'Em Análise',
+  sem_ressalvas: 'Aprovado sem Ressalvas',
+  com_ressalvas: 'Aprovado com Ressalvas',
+  reprovado: 'Reprovado',
+};
+
+/* -- Prazo contratual: dia 5 do mês seguinte ao mês de referência do
+   relatório (ex: relatório referente a Agosto/2026 vence em 05/09/2026).
+   new Date(ano, mes, 5) já cai no mês seguinte porque `mes` (1-12) usado
+   como índice de mês (0-based) do JS é, por si só, "um mês à frente". -- */
+function obraPrazoData(mes, ano) { return new Date(ano, mes, 5); }
+function obraPrazoLabel(mes, ano) { return obraPrazoData(mes, ano).toLocaleDateString('pt-BR'); }
+
+/* -- Situação de pontualidade: compara Data de Entrega (ou hoje, se ainda
+   não entregue) com o prazo. Um registro do mês corrente cujo prazo ainda
+   não venceu e que ainda não foi entregue fica "Aguardando" — não pontua
+   nem penaliza até o prazo vencer ou a empreiteira entregar. -- */
+function obraSituacaoPrazo(reg) {
+  const prazo = obraPrazoData(reg.MesReferencia, reg.AnoReferencia);
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  if (reg.DataEntrega) {
+    const dataEntrega = new Date(reg.DataEntrega + 'T00:00:00');
+    return dataEntrega <= prazo
+      ? { situacao: 'pontual', label: '🟢 Entregue no Prazo', cor: 'var(--green-main)' }
+      : { situacao: 'atrasado', label: '🔴 Entregue com Atraso', cor: 'var(--red)' };
+  }
+  if (hoje > prazo) return { situacao: 'nao_entregue', label: '🔴 Não Entregue (atrasado)', cor: 'var(--red)' };
+  return { situacao: 'aguardando', label: '🟡 Aguardando Entrega', cor: '#d97706' };
+}
+
+/* -- Pontuação (0-100) de UM registro, usada tanto no card do circuito
+   quanto na Nota Geral do empreendimento no Painel Geral. null = ainda não
+   deve entrar na média (aguardando entrega dentro do prazo, ou já
+   entregue mas ainda em análise). Critério (pedido em 01/09/2026): 50 pts
+   de pontualidade + 50 pts de aprovação — "com ressalvas" vale metade dos
+   50 (25 pts); não entregue com prazo vencido zera o registro inteiro. -- */
+function obraCalcularScore(reg) {
+  const sit = obraSituacaoPrazo(reg);
+  if (sit.situacao === 'aguardando') return null;
+  if (sit.situacao === 'nao_entregue') return 0;
+  const pontualidadePts = sit.situacao === 'pontual' ? 50 : 0;
+  const status = reg.StatusAprovacao || '';
+  if (status === '') return null; // entregue, mas ainda em análise — aguarda resultado antes de pontuar
+  const aprovacaoPts = status === 'sem_ressalvas' ? 50 : status === 'com_ressalvas' ? 25 : 0;
+  return pontualidadePts + aprovacaoPts;
+}
+
+function obraAtualizarPrazoPreview() {
+  const me = document.getElementById('obra_mes'), an = document.getElementById('obra_ano'), pv = document.getElementById('obra_prazo_preview');
+  if (!me || !an || !pv) return;
+  pv.textContent = obraPrazoLabel(parseInt(me.value, 10), parseInt(an.value, 10));
+}
+
+function pageChecklistObras() {
+  if (window._obraHistorico === null) { setTimeout(() => obraCarregarHistorico(), 100); }
+  const lista = window._obraHistorico || [];
+  const circuito = FLASH_FRENTES.find(f => f.id === _obraCircuitoFiltro);
+  const porCircuito = {};
+  FLASH_FRENTES.forEach(f => { porCircuito[f.id] = lista.filter(x => x.FrenteId === f.id); });
+  const registrosDoCircuito = circuito ? lista.filter(x => x.FrenteId === circuito.id).slice().sort((a,b) => (b.AnoReferencia - a.AnoReferencia) || (b.MesReferencia - a.MesReferencia)) : [];
+
+  return `
+  <div class="page-header">
+    <h1>📋 Relatório Mensal de Obras</h1>
+    <p>Entrega e aprovação do relatório mensal que cada empreiteira apresenta evidenciando o cumprimento do Plano de Controle Ambiental — prazo contratual: dia 5 de cada mês subsequente</p>
+  </div>
+
+  <div style="margin-bottom:16px">
+    <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">Selecione o Circuito Elétrico</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px">
+      ${FLASH_FRENTES.map(f => {
+        const doCirc = porCircuito[f.id] || [];
+        const atrasados = doCirc.filter(r => { const s = obraSituacaoPrazo(r).situacao; return s === 'atrasado' || s === 'nao_entregue'; }).length;
+        const ativo = _obraCircuitoFiltro === f.id;
+        return `<div class="kpi-card${ativo?' green':''}" style="padding:10px;cursor:pointer;${ativo?'border-color:var(--brand-brown,#3F261F)':''}${atrasados>0?';border-color:var(--red)':''}" onclick="obraFiltrarCircuito('${f.id}')">
+          <div style="font-size:.72rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${f.nome}">${ativo?'📍 ':''}${f.nome}</div>
+          <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">${doCirc.length} registro${doCirc.length!==1?'s':''}</div>
+          <div style="font-size:.65rem;margin-top:3px;color:${atrasados>0?'var(--red)':'var(--text-muted)'};font-weight:700">${atrasados>0?`🔴 ${atrasados} atrasado${atrasados!==1?'s':''}`:'em dia'}</div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>
+
+  ${!circuito ? `<div class="card" style="text-align:center;padding:40px 24px;color:var(--text-muted)">👆 Selecione um circuito acima para ver os relatórios registrados.</div>` : `
+
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📍 ${circuito.nome} — ${circuito.empreiteira||'—'}</div>
+    <button class="btn-primary" onclick="obraAbrirForm(null,'${circuito.id}')">➕ Novo Registro</button>
+  </div>
+
+  ${window._obraFormAberto ? obraHtmlForm(circuito.id) : ''}
+
+  ${registrosDoCircuito.length === 0
+    ? `<div class="card" style="text-align:center;padding:32px 24px;color:var(--text-muted)">Nenhum registro de relatório mensal ainda.</div>`
+    : `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Referência</th><th>Prazo</th><th>Data de Entrega</th><th>Pontualidade</th><th>Aprovação</th><th>Nota</th><th>Ações</th></tr></thead><tbody>
+      ${registrosDoCircuito.map(r => {
+        const sit = obraSituacaoPrazo(r);
+        const score = obraCalcularScore(r);
+        return `<tr>
+          <td style="font-weight:700">${PAINEL_MESES_NOMES[r.MesReferencia-1]}/${r.AnoReferencia}</td>
+          <td style="font-size:.78rem">${obraPrazoLabel(r.MesReferencia, r.AnoReferencia)}</td>
+          <td style="font-size:.78rem">${r.DataEntrega ? new Date(r.DataEntrega+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
+          <td style="font-size:.75rem;font-weight:700;color:${sit.cor}">${sit.label}</td>
+          <td style="font-size:.75rem;font-weight:700">${obraStatusAprovacaoLabel(r.StatusAprovacao)}</td>
+          <td style="font-size:.8rem;font-weight:800">${score===null?'—':score+'%'}</td>
+          <td style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px">
+            <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="obraAbrirForm(${r.Id},'${circuito.id}')">✏️ Editar</button>
+            ${currentProfile === 'diretoria' ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="obraExcluir(${r.Id})">🗑️ Excluir</button>` : ''}
+          </td>
+        </tr>`;
+      }).join('')}
+    </tbody></table></div>`
+  }
+  `}`;
+}
+
+function obraHtmlForm(circuitoId) {
+  const editando = window._obraEditandoId ? (window._obraHistorico||[]).find(x => x.Id === window._obraEditandoId) : null;
+  const hoje = new Date();
+  const anoAtual = hoje.getFullYear();
+  const anos = [anoAtual - 1, anoAtual, anoAtual + 1];
+  const mes = editando ? editando.MesReferencia : hoje.getMonth() + 1;
+  const ano = editando ? editando.AnoReferencia : anoAtual;
+  return `
+  <div class="card" style="margin-bottom:18px;border-left:4px solid var(--green-main)">
+    <div class="card-title">${editando?'✏️ Editar':'➕ Novo'} Relatório Mensal de Obras</div>
+    <div class="form-row">
+      <div class="form-group"><label>Mês de Referência</label>
+        <select id="obra_mes" onchange="obraAtualizarPrazoPreview()">${PAINEL_MESES_NOMES.map((m,i) => `<option value="${i+1}" ${mes===i+1?'selected':''}>${m}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Ano de Referência</label>
+        <select id="obra_ano" onchange="obraAtualizarPrazoPreview()">${anos.map(a => `<option value="${a}" ${ano===a?'selected':''}>${a}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin:-6px 0 12px">📅 Prazo contratual (automático): <strong id="obra_prazo_preview">${obraPrazoLabel(mes, ano)}</strong></div>
+    <div class="form-row">
+      <div class="form-group"><label>Data de Entrega</label><input type="date" id="obra_data_entrega" value="${editando&&editando.DataEntrega||''}"></div>
+      <div class="form-group"><label>Status de Aprovação</label>
+        <select id="obra_status_aprovacao">
+          ${OBRA_STATUS_APROVACAO.map(o => `<option value="${o.valor}" ${(editando?(editando.StatusAprovacao||''):'')===o.valor?'selected':''}>${o.label}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:12px"><label>Observações</label><textarea id="obra_obs" rows="2" placeholder="Ex: ressalva referente a...">${(editando&&editando.Observacoes||'')}</textarea></div>
+    <div style="display:flex;gap:10px">
+      <button class="btn-primary" onclick="obraSalvar('${circuitoId}')">✅ Salvar</button>
+      <button class="btn-secondary" onclick="obraFecharForm()">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+function obraAbrirForm(id, circuitoId) {
+  window._obraEditandoId = id || null;
+  window._obraFormAberto = true;
+  _obraCircuitoFiltro = circuitoId;
+  navigate('checklist_obras');
+  setTimeout(() => { const el = document.querySelector('.card-title'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 50);
+}
+
+function obraFecharForm() {
+  window._obraFormAberto = false;
+  window._obraEditandoId = null;
+  navigate('checklist_obras');
+}
+
+async function obraSalvar(circuitoId) {
+  const mes = parseInt((document.getElementById('obra_mes')||{}).value, 10);
+  const ano = parseInt((document.getElementById('obra_ano')||{}).value, 10);
+  const dataEntrega = (document.getElementById('obra_data_entrega')||{}).value || '';
+  const statusAprovacao = (document.getElementById('obra_status_aprovacao')||{}).value || '';
+  const obs = (document.getElementById('obra_obs')||{}).value || '';
+  if (!mes || !ano) { showToast('⚠️ Selecione o mês e ano de referência.'); return; }
+  const editandoId = window._obraEditandoId;
+  const lista = window._obraHistorico || [];
+  const duplicado = lista.some(r => r.Id !== editandoId && r.FrenteId === circuitoId && r.MesReferencia === mes && r.AnoReferencia === ano);
+  if (duplicado) { showToast('⚠️ Já existe um registro para este circuito neste mês de referência — edite o existente.'); return; }
+  _limparSyncError();
+  const dados = { FrenteId: circuitoId, MesReferencia: mes, AnoReferencia: ano, DataEntrega: dataEntrega, StatusAprovacao: statusAprovacao, Observacoes: obs };
+  let ok;
+  if (editandoId) {
+    ok = await dbAtualizar('RelatoriosObraEmpreiteira', editandoId, dados);
+  } else {
+    ok = await dbInserir('RelatoriosObraEmpreiteira', Object.assign({ CriadoPor: window._currentUser ? window._currentUser.name : '', DataCriacao: new Date().toISOString() }, dados));
+  }
+  showToast(ok ? '✅ Relatório registrado!' : ('❌ Erro ao salvar.' + syncErrorDetalhe()));
+  if (ok) { window._obraFormAberto = false; window._obraEditandoId = null; await obraCarregarHistorico(true); }
+}
+
+async function obraExcluir(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  if (!confirm('Excluir este registro de relatório mensal de obras? Essa ação não pode ser desfeita.')) return;
+  const { ok } = await dbRemover('RelatoriosObraEmpreiteira', id);
+  showToast(ok ? '🗑️ Registro excluído.' : '❌ Erro ao excluir.');
+  if (ok) await obraCarregarHistorico(true);
 }
 
 function pageChecklistMitigacao() {
@@ -39496,7 +39779,8 @@ const BACKUP_TABELAS = [
   'Equipamentos','EscopoMedidoEnergisa','FaturamentoEnergisa','FlashReportsEnergisa','FlashReportsFauna',
   'Fornecedores','FornecedoresEnergisa','GestaoDocumental','Inspecoes','Lancamentos_Servicos','Licencas',
   'Medicoes','MedicoesContratosEnergisa','MedicoesEnergisa','NotificacoesEnergisa','OrcamentosProjetos',
-  'OrdensServicoEnergisa','Outorgas','PerfilUsuario','Prazos','PrestacaoContas','Receitas','ServicosCatalogo',
+  'OrdensServicoEnergisa','Outorgas','PerfilUsuario','Prazos','PrestacaoContas','Receitas',
+  'RelatoriosObraEmpreiteira','ServicosCatalogo',
   'SolicitacoesGerais','TermosEquipamento','TreinamentosEventos','bpo_saidas_v4','contratos',
 ];
 const BACKUP_DIAS_RETENCAO = 30;
