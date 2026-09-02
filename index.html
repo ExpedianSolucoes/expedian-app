@@ -26943,6 +26943,8 @@ function pagePainelGeralEro() {
   const totalAtencao = porFrente.filter(p => p.status.cor === '🟡').length;
   const totalOk = porFrente.filter(p => p.status.cor === '🟢').length;
   const totalSemDados = porFrente.filter(p => p.status.cor === '⚪').length;
+  const totalFlashRealizados = porFrente.reduce((s, p) => s + p.flashDaFrente.length, 0);
+  const totalFlashNaoConforme = porFrente.reduce((s, p) => s + p.flashComOcorr, 0);
 
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
@@ -26962,7 +26964,7 @@ function pagePainelGeralEro() {
     ℹ️ <strong>Como a Nota Geral é calculada:</strong> média entre Flash Report (% IDA), Kit de Mitigação (% de conformidade), Fornecedores (% de documentos validados como Conforme) e Relatório Mensal de Obras (entrega no prazo + resultado da aprovação) — só entram na média os indicadores que já têm dado. Depois é descontada uma penalidade de 5 pontos por Notificação de NC aberta e 10 pontos por NC fora do prazo. Sem nenhum indicador disponível, a nota fica em "—".
   </div>
 
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px">
     <div class="kpi-card red" style="padding:12px">
       <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🔴 Requerem atenção</div>
       <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${totalCritico > 0 ? 'var(--red)' : 'inherit'}">${totalCritico}</div>
@@ -26978,6 +26980,17 @@ function pagePainelGeralEro() {
     <div class="kpi-card" style="padding:12px">
       <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">⚪ Sem dados ainda</div>
       <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${totalSemDados}</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:18px">
+    <div class="kpi-card" style="padding:12px;cursor:pointer" onclick="navigate('checklist_flash')" title="Ver todos os Flash Reports">
+      <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">🚧 Flash Reports realizados (todos os circuitos)</div>
+      <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${totalFlashRealizados}</div>
+    </div>
+    <div class="kpi-card" style="padding:12px;cursor:pointer" onclick="navigate('checklist_flash')" title="Ver todos os Flash Reports">
+      <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">❌ Flash Reports não conformes (com ocorrência)</div>
+      <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800;color:${totalFlashNaoConforme > 0 ? 'var(--red)' : 'inherit'}">${totalFlashNaoConforme}</div>
     </div>
   </div>
 
@@ -31594,9 +31607,23 @@ async function flashSalvar() {
     registro.DataCriacao = new Date().toISOString();
     ok = await dbInserir('FlashReportsEnergisa', registro);
   }
-  showToast(ok ? '✅ Flash Report salvo!' : '❌ Erro ao salvar.');
-  showSyncStatus(ok ? 'Flash Report salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
-  if (ok) { window._flashMostrarForm = false; window._flashRegistroAtualId = null; flashNovoForm(); await flashCarregarHistorico(true); }
+  const offline = !!(ok && ok._offlinePendente);
+  showToast(!ok ? '❌ Erro ao salvar.' : offline ? '📵 Sem conexão — salvo neste aparelho, vai sincronizar sozinho quando a internet voltar.' : '✅ Flash Report salvo!');
+  showSyncStatus(!ok ? 'Falha ao salvar' : offline ? 'Salvo neste aparelho — aguardando conexão' : 'Flash Report salvo!', !ok ? 'err' : offline ? 'offline' : 'ok', !ok ? 5000 : offline ? 6000 : 3000);
+  if (ok) {
+    window._flashMostrarForm = false; window._flashRegistroAtualId = null; flashNovoForm();
+    if (offline) {
+      // Salvo só na fila local — recarregar do OneDrive agora NÃO traria esse
+      // registro (ele ainda não chegou lá) e faria sumir da tela até
+      // sincronizar de verdade. Insere na lista em memória pra continuar
+      // visível (com indicação de pendente) até o próximo carregamento real.
+      window._flashHistorico = [ok, ...(window._flashHistorico || [])];
+      try { localStorage.setItem('flash_historico_cache', JSON.stringify(window._flashHistorico)); } catch (e) {}
+      navigate('checklist_flash');
+    } else {
+      await flashCarregarHistorico(true);
+    }
+  }
 }
 
 /* -- Abre uma janela somente-leitura com todos os dados + fotos de um
@@ -31828,7 +31855,7 @@ function flashHtmlHistorico() {
   const statusFiltro = window._flashStatusFiltro || null;
   const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
 
-  const linhaF = (f, numFR) => {
+  const linhaF = (f, numFR, frenteNome) => {
     const { pct, temOcorr } = flashCalcularPontuacao(f);
     const statusNC = flashCalcularStatusResolucaoNC(f);
     // Se todas as NC do registro já foram cumpridas (Atendido/Finalizado),
@@ -31859,7 +31886,7 @@ function flashHtmlHistorico() {
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">🚧</div>
       <div style="flex:1;min-width:0">
-        <div class="name">FR-${numFR} · ${dataFmt}</div>
+        <div class="name">FR-${numFR} · ${dataFmt}${frenteNome ? ` · ⚡ ${frenteNome}` : ''}</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${f.ResponsavelTecnico || '—'} · por ${f.CriadoPorNome || '—'}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">${linhaDetalhe}</div>
       </div>
@@ -31883,19 +31910,43 @@ function flashHtmlHistorico() {
     </div>`;
   };
 
+  const passaStatus = f => !statusFiltro || (statusFiltro === 'naoconforme' && flashCalcularPontuacao(f).temOcorr
+      && !(flashCalcularStatusResolucaoNC(f) && flashCalcularStatusResolucaoNC(f).todosResolvidos));
+
+  // FR-XXX é sempre numerado por circuito elétrico (ordem cronológica dentro do
+  // próprio circuito) — calculado uma vez aqui pra valer tanto na visão agrupada
+  // por circuito quanto na visão "Todos os circuitos" (lista única por data).
+  const numeracaoPorFrente = {};
+  FLASH_FRENTES.forEach(fr => {
+    todos.filter(f => f.FrenteId === fr.id).slice().sort((a, b) => (a.Data || '').localeCompare(b.Data || ''))
+      .forEach((f, i) => { numeracaoPorFrente[f.Id] = String(i + 1).padStart(3, '0'); });
+  });
+
+  if (!filtro) {
+    // "Todos os circuitos": lista única ordenada por data (mais recente primeiro),
+    // com o nome do circuito em cada linha pra não perder essa referência.
+    const itens = todos.filter(passaStatus).slice()
+      .sort((a, b) => (b.Data || '').localeCompare(a.Data || '') || (b.Id || 0) - (a.Id || 0));
+    if (!itens.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum Flash Report registrado para este filtro.</div>';
+    return `
+    <div style="font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--brown-dark,#3F261F);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+      ⚡ Todos os circuitos
+      <span style="background:var(--surface2);border-radius:20px;padding:1px 8px;font-weight:700;letter-spacing:0">${itens.length} registro${itens.length > 1 ? 's' : ''}</span>
+      <span style="font-weight:400;color:var(--text-muted);text-transform:none">— por data, mais recente primeiro</span>
+    </div>
+    <div class="alert-list">${itens.map(f => linhaF(f, numeracaoPorFrente[f.Id], (FLASH_FRENTES.find(fr => fr.id === f.FrenteId) || {}).nome)).join('')}</div>`;
+  }
+
   const blocos = frentes.map(fr => {
-    const itens = todos.filter(f => f.FrenteId === fr.id
-      && (!statusFiltro || (statusFiltro === 'naoconforme' && flashCalcularPontuacao(f).temOcorr
-          && !(flashCalcularStatusResolucaoNC(f) && flashCalcularStatusResolucaoNC(f).todosResolvidos)))
-    ).slice().sort((a, b) => (a.Data || '').localeCompare(b.Data || ''));
+    const itens = todos.filter(f => f.FrenteId === fr.id && passaStatus(f)).slice().sort((a, b) => (a.Data || '').localeCompare(b.Data || ''));
     if (!itens.length) return '';
-    const comNumero = itens.map((f, i) => ({ f, num: String(i + 1).padStart(3, '0') })).reverse().slice(0, 30);
+    const comNumero = itens.map(f => ({ f, num: numeracaoPorFrente[f.Id] })).reverse().slice(0, 30);
     return `
     <div style="margin-bottom:18px">
-      <div style="font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--brown-dark,#3F261F);margin-bottom:6px;display:flex;align-items:center;gap:6px;cursor:pointer" onclick="flashFiltrarCircuito('${filtro ? '' : fr.id}')">
+      <div style="font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--brown-dark,#3F261F);margin-bottom:6px;display:flex;align-items:center;gap:6px;cursor:pointer" onclick="flashFiltrarCircuito('')">
         ⚡ ${fr.nome} <span style="font-weight:400;color:var(--text-muted)">— ${fr.empreiteira}</span>
         <span style="background:var(--surface2);border-radius:20px;padding:1px 8px;font-weight:700;letter-spacing:0">${itens.length} registro${itens.length > 1 ? 's' : ''}</span>
-        ${filtro ? '<span style="font-weight:400;color:var(--text-muted);text-transform:none">← todos os circuitos</span>' : ''}
+        <span style="font-weight:400;color:var(--text-muted);text-transform:none">← todos os circuitos</span>
       </div>
       <div class="alert-list">${comNumero.map(x => linhaF(x.f, x.num)).join('')}</div>
     </div>`;
@@ -44930,9 +44981,15 @@ async function _dbGravarComRetry(tabela, mutarFn, tentativas) {
 
 async function dbInserir(tabela, registro) {
   // Offline (ou sem sessão Microsoft): guarda na fila local e sincroniza sozinho quando voltar a conexão.
+  // Marca `_offlinePendente:true` no retorno pra quem chamou saber que isso
+  // NÃO foi pro OneDrive ainda — sem essa marca, uma tela que recarrega o
+  // histórico direto do OneDrive logo depois de salvar (ex.: flashSalvar)
+  // sobrescreve a lista em memória e o registro "some" da tela, mesmo tendo
+  // sido salvo com sucesso neste aparelho. Bug relatado em 02/09/2026 (Flash
+  // Report de Presidente Médici "sumiu" depois de salvar).
   const token = navigator.onLine ? await getOneDriveToken() : null;
   if (!token) {
-    const novoOffline = { ...registro, Id: registro.Id || Date.now(), Created: new Date().toISOString() };
+    const novoOffline = { ...registro, Id: registro.Id || Date.now(), Created: new Date().toISOString(), _offlinePendente: true };
     queueSync(tabela, { op: 'inserir', registro: novoOffline });
     return novoOffline;
   }
