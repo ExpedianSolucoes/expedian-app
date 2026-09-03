@@ -13879,13 +13879,13 @@ function cmedCampo(campo, valor) { window._cmedData[campo] = valor; }
 function cmedItemAdicionar() {
   window._cmedData.itens = window._cmedData.itens || [];
   window._cmedData.itens.push({ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' });
-  navigate('projetos');
+  cmedAtualizarBloco();
 }
 function cmedItemRemover(idx) {
   if (!window._cmedData.itens) return;
   window._cmedData.itens.splice(idx, 1);
   if (!window._cmedData.itens.length) window._cmedData.itens.push({ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' });
-  navigate('projetos');
+  cmedAtualizarBloco();
 }
 function cmedItemCampo(idx, campo, valor) {
   if (!window._cmedData.itens || !window._cmedData.itens[idx]) return;
@@ -13895,8 +13895,8 @@ function cmedItemCampo(idx, campo, valor) {
 /* -- Ao escolher um serviço da lista suspensa do escopo técnico, puxa
    Descrição/Unidade/R$ Unitário automaticamente daquele item do contrato.
    '_outro' limpa esses campos pra edição manual (serviço fora do escopo
-   cadastrado). Precisa de navigate() porque troca a estrutura visível do
-   formulário (mostra/esconde o campo de descrição manual). -- */
+   cadastrado). Precisa reconstruir o HTML porque troca a estrutura visível
+   do formulário (mostra/esconde o campo de descrição manual). -- */
 function cmedItemSelecionarEscopo(idx, codigo) {
   if (!window._cmedData.itens || !window._cmedData.itens[idx]) return;
   const item = window._cmedData.itens[idx];
@@ -13911,7 +13911,7 @@ function cmedItemSelecionarEscopo(idx, codigo) {
       item.valorUnit = escopo.valorUnitario;
     }
   }
-  navigate('projetos');
+  cmedAtualizarBloco();
 }
 function cmedCalcularTotalItens(itens) {
   return (itens || []).reduce((s, it) => s + (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0), 0);
@@ -13927,6 +13927,26 @@ function cmedAtualizarTotaisItens() {
   if (totalEl) totalEl.textContent = 'R$ ' + cmedCalcularTotalItens(itens).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/* -- Atualiza só o bloco de Medição (dashboard+histórico+form) dentro da
+   página do contrato já aberta, em vez de um navigate('projetos') que
+   re-renderiza a página INTEIRA (visão geral + escopo + OS + medição, cada
+   bloco recarregando do zero com um "Carregando..." por ~100ms) — era isso
+   que fazia a tela "voltar pro início" toda vez que a pessoa clicava em
+   "Nova Medição" ou "Adicionar Serviço". Pedido em 03/09/2026. Se o
+   elemento ainda não existir na tela (ex.: 1ª entrada na página do
+   contrato), cai pra navigate('projetos') normal. -- */
+function cmedAtualizarBloco(chave) {
+  const chaveAlvo = chave || (window._cmedData && window._cmedData.contratoChave);
+  const alvo = chaveAlvo ? document.getElementById('projetos-' + chaveAlvo + '-medicao') : null;
+  if (!alvo) { navigate('projetos'); return; }
+  const dadosContrato = CONTRATOS_ENERGISA_DADOS[chaveAlvo];
+  alvo.innerHTML = cmedHtmlBloco(chaveAlvo, dadosContrato ? dadosContrato.valorGlobal : 0);
+  setTimeout(() => {
+    const form = document.querySelector('[data-cmed-form-topo]');
+    if (form) form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, 30);
+}
+
 function cmedNovoForm(chave) {
   window._cmedData = { contratoChave: chave, numeroBM: '', data: '', status: 'Enviada', nf: '', itens: [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }] };
 }
@@ -13935,13 +13955,13 @@ function cmedAbrirNovo(chave) {
   cmedNovoForm(chave);
   window._cmedRegistroAtualId = null;
   window._cmedMostrarForm = true;
-  navigate('projetos');
+  cmedAtualizarBloco(chave);
 }
 
 function cmedFecharForm() {
   window._cmedMostrarForm = false;
   window._cmedRegistroAtualId = null;
-  navigate('projetos');
+  cmedAtualizarBloco();
 }
 
 /* -- Registros antigos (seed dos 18 BMs já emitidos, ou qualquer medição salva
@@ -13950,7 +13970,7 @@ function cmedFecharForm() {
    que já existia; a pessoa pode reclassificar em itens do escopo depois, se
    quiser, mas não é obrigatório. -- */
 function cmedEditar(id) {
-  const m = (window._cmedHistorico || []).find(r => r.Id === id);
+  const m = (window._cmedHistorico || []).find(r => String(r.Id) === String(id));
   if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
   const itens = Array.isArray(m.Itens) && m.Itens.length
     ? JSON.parse(JSON.stringify(m.Itens))
@@ -13961,7 +13981,7 @@ function cmedEditar(id) {
   };
   window._cmedRegistroAtualId = id;
   window._cmedMostrarForm = true;
-  navigate('projetos');
+  cmedAtualizarBloco(m.ContratoChave);
 }
 
 async function cmedSalvar() {
@@ -13998,20 +14018,30 @@ async function cmedSalvar() {
   }
   showToast(ok ? '✅ Medição salva!' : '❌ Erro ao salvar.');
   showSyncStatus(ok ? 'Medição salva!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
-  if (ok) { window._cmedMostrarForm = false; window._cmedRegistroAtualId = null; await cmedCarregarSemNavegar(true); navigate('projetos'); }
+  if (ok) {
+    const chaveSalva = d.contratoChave;
+    window._cmedMostrarForm = false; window._cmedRegistroAtualId = null;
+    await cmedCarregarSemNavegar(true);
+    cmedAtualizarBloco(chaveSalva);
+  }
 }
 
 async function cmedExcluir(id) {
   if (!confirm('Tem certeza que deseja excluir esta medição?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo medição...');
   const lista = await dbLer('MedicoesContratosEnergisa');
-  const idx = lista.findIndex(r => r.Id === id);
-  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
+  const idx = lista.findIndex(r => String(r.Id) === String(id));
+  if (idx === -1) {
+    showToast('❌ Registro não encontrado.');
+    showSyncStatus('Registro não encontrado', 'err', 4000);
+    return;
+  }
+  const chaveExcluida = lista[idx].ContratoChave;
   lista.splice(idx, 1);
   const ok = await dbSalvar('MedicoesContratosEnergisa', lista);
   showToast(ok ? '🗑️ Medição excluída.' : '❌ Erro ao excluir.');
   showSyncStatus(ok ? 'Excluída!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
-  if (ok) { await cmedCarregarSemNavegar(true); navigate('projetos'); }
+  if (ok) { await cmedCarregarSemNavegar(true); cmedAtualizarBloco(chaveExcluida); }
 }
 
 function cmedHtmlDashboard(lista, valorGlobal) {
@@ -14057,8 +14087,11 @@ function cmedHtmlHistorico(lista, chave) {
           <td style="padding:6px 8px;color:${CMED_STATUS_COR[m.Status] || 'inherit'};font-weight:700">${m.Status}</td>
           <td style="padding:6px 8px">${m.NF || '—'}</td>
           <td style="padding:6px 8px;white-space:nowrap">
-            <button onclick="cmedEditar('${m.Id}')" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">✏️</button>
-            <button onclick="cmedExcluir('${m.Id}')" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer;color:var(--red)">🗑️</button>
+            <button onclick="cmedVisualizar(${m.Id})" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">👁️</button>
+            <button onclick="cmedExportarPDFUm(${m.Id})" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">📄</button>
+            <button onclick="cmedExportarExcelUm(${m.Id})" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">📊</button>
+            <button onclick="cmedEditar(${m.Id})" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">✏️</button>
+            <button onclick="cmedExcluir(${m.Id})" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer;color:var(--red)">🗑️</button>
           </td>
         </tr>`).join('')}
       </table>
@@ -14141,6 +14174,136 @@ async function cmedExportarPDF(chave) {
   showToast('✅ PDF gerado!');
 }
 
+/* -- Modal de visualização rápida de UMA medição (BM) — mesmo padrão do
+   medVisualizar (Contrato 2025022101). Pedido em 03/09/2026. -- */
+function cmedVisualizar(id) {
+  const m = (window._cmedHistorico || []).find(r => String(r.Id) === String(id));
+  if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
+  const dc = CONTRATOS_ENERGISA_DADOS[m.ContratoChave];
+  const itens = Array.isArray(m.Itens) && m.Itens.length ? m.Itens : [{ desc: m.Descricao || '', obs: m.Obs || '', quanti: 1, unid: '', valorUnit: m.Valor || 0 }];
+  const fmt = v => 'R$ ' + (parseFloat(v) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const linha = (label, val) => `<div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:12px"><span style="color:var(--text-muted);font-size:.78rem">${label}</span><span style="font-weight:600;font-size:.85rem;text-align:right">${val}</span></div>`;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:520px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h3 style="margin:0">💰 Medição BM ${m.NumeroBM || ''}</h3>
+        <span style="cursor:pointer;font-size:1.2rem" onclick="this.closest('.modal-overlay').remove()">✕</span>
+      </div>
+      ${linha('Contrato', dc ? dc.numero : m.ContratoChave)}
+      ${linha('Data', m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—')}
+      ${linha('NF', m.NF || '—')}
+      ${linha('Status', m.Status || '—')}
+      ${linha('Valor Total', fmt(m.Valor))}
+      ${itens.length ? `<div style="margin-top:12px;margin-bottom:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Serviços do Escopo</div>
+        <div style="font-size:.78rem">${itens.map(it => `<div style="padding:6px 0;border-bottom:1px solid var(--border)">${it.desc || '—'} — ${it.quanti || 0} ${it.unid || ''} × ${fmt(it.valorUnit)} = <strong>${fmt((parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0))}</strong>${it.obs ? `<div style="font-style:italic;color:var(--text-muted);margin-top:2px">${it.obs}</div>` : ''}</div>`).join('')}</div>` : ''}
+      <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+        <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="cmedExportarPDFUm(${m.Id})">📄 PDF</button>
+        <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="cmedExportarExcelUm(${m.Id})">📊 Excel</button>
+        <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="this.closest('.modal-overlay').remove()">Fechar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+/* -- PDF de UMA medição (BM) só — mesma infra jsPDF compartilhada do
+   cmedExportarPDF (histórico completo), listando os itens do BM com
+   observação em itálico abaixo de cada linha. Pedido em 03/09/2026. -- */
+async function cmedExportarPDFUm(id) {
+  const m = (window._cmedHistorico || []).find(r => String(r.Id) === String(id));
+  if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
+  showToast('🔄 Gerando PDF... aguarde.');
+  await _garantirJsPDF();
+  const dc = CONTRATOS_ENERGISA_DADOS[m.ContratoChave];
+  const itens = Array.isArray(m.Itens) && m.Itens.length ? m.Itens : [{ desc: m.Descricao || '', obs: m.Obs || '', quanti: 1, unid: '', valorUnit: m.Valor || 0 }];
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'BOLETIM DE MEDIÇÃO — BM ' + (m.NumeroBM || '');
+  const subtitulo = 'Contrato ' + (dc ? dc.numero : m.ContratoChave) + ' · Energisa RO';
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.4, CW = pageW - 2.8;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
+  doc.text('Data: ' + (m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—') + '    NF: ' + (m.NF || '—') + '    Status: ' + (m.Status || '—'), ML, y);
+  y += 0.7;
+  const cols = [
+    { label: 'Descrição', w: CW - 1.6 - 1.6 - 2.6 },
+    { label: 'Quanti', w: 1.6 }, { label: 'Unid', w: 1.6 }, { label: 'Valor Total', w: 2.6 },
+  ];
+  function cabecalhoTabela() {
+    doc.setFillColor(63, 38, 31); doc.rect(ML, y, CW, 0.55, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(255, 255, 255);
+    let x = ML + 0.15;
+    cols.forEach(c => { doc.text(c.label, x, y + 0.37); x += c.w; });
+    y += 0.65;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(30, 30, 30);
+  }
+  cabecalhoTabela();
+  let total = 0;
+  itens.forEach(it => {
+    if (y > pageH - 3.5) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); cabecalhoTabela(); }
+    const subtotal = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
+    total += subtotal;
+    const vals = [it.desc || '—', String(it.quanti || 0), it.unid || '—', 'R$ ' + subtotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })];
+    let x = ML + 0.15;
+    cols.forEach((c, i) => { doc.text(doc.splitTextToSize(String(vals[i]), c.w - 0.15)[0] || '', x, y + 0.35); x += c.w; });
+    y += 0.5;
+    if (it.obs) {
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(7.5); doc.setTextColor(90, 90, 90);
+      const obsLines = doc.splitTextToSize(it.obs, CW - 0.3);
+      doc.text(obsLines, ML + 0.15, y + 0.05);
+      y += obsLines.length * 0.35 + 0.1;
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(30, 30, 30);
+    }
+    doc.setDrawColor(220, 215, 208); doc.setLineWidth(0.01);
+    doc.line(ML, y, ML + CW, y);
+    y += 0.15;
+  });
+  y += 0.2;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(63, 38, 31);
+  doc.text('VALOR TOTAL DO BM: R$ ' + total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), ML, y);
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  doc.save('Medicao_BM' + (m.NumeroBM || '') + '_' + (dc ? dc.numero.replace(/\s+/g, '_') : m.ContratoChave) + '.pdf');
+  showToast('✅ PDF gerado!');
+}
+
+/* -- Excel "espelho" de UMA medição (BM) só — mesmas abas do
+   cmedExportarExcel geral, filtrado a um registro. Pedido em 03/09/2026. -- */
+async function cmedExportarExcelUm(id) {
+  const m = (window._cmedHistorico || []).find(r => String(r.Id) === String(id));
+  if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
+  showToast('📊 Gerando planilha...');
+  if (typeof XLSX === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  const dc = CONTRATOS_ENERGISA_DADOS[m.ContratoChave];
+  const itens = Array.isArray(m.Itens) && m.Itens.length ? m.Itens : [{ desc: m.Descricao || '', obs: m.Obs || '', quanti: 1, unid: '', valorUnit: m.Valor || 0 }];
+  const rows = [{
+    'BM': m.NumeroBM || '', 'Contrato': dc ? dc.numero : m.ContratoChave,
+    'Data': m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '',
+    'Valor Total': m.Valor || 0, 'Status': m.Status || '', 'NF': m.NF || '', 'Observações': m.Obs || '',
+  }];
+  const rowsItens = itens.map((it, i) => ({
+    'BM': m.NumeroBM || '', 'Seq': i + 1, 'Descrição': it.desc || '',
+    'Quanti': parseFloat(it.quanti) || 0, 'Unid': it.unid || '', 'R$ Unitário': parseFloat(it.valorUnit) || 0,
+    'Valor Total do Item': (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0), 'Observação': it.obs || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wsItens = XLSX.utils.json_to_sheet(rowsItens);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Medição');
+  XLSX.utils.book_append_sheet(wb, wsItens, 'Serviços');
+  XLSX.writeFile(wb, 'Espelho_Medicao_BM' + (m.NumeroBM || '') + '_' + (dc ? dc.numero.replace(/\s+/g, '_') : m.ContratoChave) + '.xlsx');
+  showToast('✅ Planilha gerada!');
+}
+
 function cmedHtmlForm() {
   const d = window._cmedData;
   const chave = d.contratoChave;
@@ -14148,7 +14311,7 @@ function cmedHtmlForm() {
   if (!d.itens || !d.itens.length) d.itens = [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }];
   const itens = d.itens;
   return `
-  <div class="card" style="margin-bottom:16px;border-top:3px solid var(--brand-brown,#3F261F)">
+  <div class="card" data-cmed-form-topo style="margin-bottom:16px;border-top:3px solid var(--brand-brown,#3F261F)">
     <div class="card-title" style="margin-bottom:10px">${window._cmedRegistroAtualId ? '✏️ Editar Medição' : '➕ Nova Medição'} — ${d.contratoChave.toUpperCase()}</div>
     <div class="form-row">
       <div class="form-group"><label>Número do BM</label><input value="${(d.numeroBM || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroBM', this.value)" placeholder="Ex: 11"></div>
@@ -35037,8 +35200,12 @@ async function medExcluirRegistro(id) {
   if (!confirm('Tem certeza que deseja excluir esta medição?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo medição...');
   const lista = await dbLer('MedicoesEnergisa');
-  const idx = lista.findIndex(r => r.Id === id);
-  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
+  const idx = lista.findIndex(r => String(r.Id) === String(id));
+  if (idx === -1) {
+    showToast('❌ Registro não encontrado.');
+    showSyncStatus('Registro não encontrado', 'err', 4000);
+    return;
+  }
   lista.splice(idx, 1);
   const ok = await dbSalvar('MedicoesEnergisa', lista);
   showToast(ok ? '🗑️ Medição excluída.' : '❌ Erro ao excluir.');
