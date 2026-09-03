@@ -14211,61 +14211,200 @@ function cmedVisualizar(id) {
 /* -- PDF de UMA medição (BM) só — mesma infra jsPDF compartilhada do
    cmedExportarPDF (histórico completo), listando os itens do BM com
    observação em itálico abaixo de cada linha. Pedido em 03/09/2026. -- */
+/* -- Gera o Boletim de Medição em PDF no MESMO padrão visual do
+   medGerarDoc (Contrato 2025022101 — modelo "BM 19"): campos em caixa,
+   tabela de escopo com cabeçalho marrom, barra verde "TOTAL DA MEDIÇÃO" e
+   bloco de assinaturas Contratante/Contratada. Pedido em 03/09/2026 pra
+   igualar o padrão entre os contratos WS/CLM e o 2025022101. -- */
+async function cmedGerarDoc(m, dc) {
+  await _garantirJsPDF();
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'BOLETIM DE MEDIÇÃO DETALHADO';
+  const subtitulo = 'Contrato ' + (dc ? dc.numero : m.ContratoChave) + ' · Energisa RO' + (m.NumeroBM ? ' · BM ' + m.NumeroBM : '');
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.4, CW = pageW - 2.8;
+
+  function quebrarSeNecessario(altura) {
+    if (y + altura > pageH - 1.6) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  }
+  function campoBox(x, w, h, label, valor, opts) {
+    opts = opts || {};
+    quebrarSeNecessario(h);
+    doc.setDrawColor(200, 190, 185); doc.setLineWidth(0.02);
+    if (opts.destaque) { doc.setFillColor(224, 238, 219); doc.rect(x, y, w, h, 'FD'); }
+    else { doc.rect(x, y, w, h); }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(140, 120, 110);
+    doc.text(label.toUpperCase(), x + 0.15, y + 0.28);
+    doc.setFont('helvetica', opts.bold ? 'bold' : 'normal'); doc.setFontSize(opts.size || 9.5); doc.setTextColor(40, 40, 40);
+    const lines = doc.splitTextToSize(String(valor || '—'), w - 0.3);
+    doc.text(lines, x + 0.15, y + 0.56);
+  }
+
+  // Contrato
+  campoBox(ML, CW, 0.85, 'Contrato', (dc ? dc.numero + ' - ' + (dc.objeto ? dc.objeto.split('.')[0] : '') : m.ContratoChave), { bold: true, size: 10 });
+  y += 0.85 + 0.15;
+
+  // Data medição · Nº BM · Status
+  const gap3 = 0.25, col3 = (CW - gap3 * 2) / 3;
+  quebrarSeNecessario(0.85);
+  campoBox(ML, col3, 0.85, 'Data medição', m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—', { bold: true });
+  campoBox(ML + col3 + gap3, col3, 0.85, 'Status', m.Status || '—', { bold: true });
+  campoBox(ML + (col3 + gap3) * 2, col3, 0.85, 'Nº BM', m.NumeroBM != null ? String(m.NumeroBM) : '—', { bold: true, destaque: true, size: 12 });
+  y += 0.85 + 0.15;
+
+  // Objeto do contrato
+  if (dc && dc.objeto) {
+    const objetoLines = doc.splitTextToSize(dc.objeto, CW - 0.3);
+    const objetoH = 0.45 + objetoLines.length * 0.37;
+    campoBox(ML, CW, objetoH, 'Objeto do contrato', dc.objeto, { size: 8.2 });
+    y += objetoH + 0.15;
+  }
+
+  // NF
+  quebrarSeNecessario(0.85);
+  campoBox(ML, CW, 0.85, 'NF (nº)', m.NF || '—', { bold: true });
+  y += 0.85 + 0.25;
+
+  // Escopo dos serviços (tabela de itens)
+  quebrarSeNecessario(0.55);
+  doc.setFillColor(63, 38, 31); doc.rect(ML, y, CW, 0.55, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(255, 255, 255);
+  doc.text('SERVIÇOS DO ESCOPO MEDIDOS NESTE BM' + (dc ? ' (Conforme Anexo 07 do Contrato)' : ''), ML + 0.25, y + 0.37);
+  y += 0.55;
+
+  const colSeq = 0.9, colQtd = 1.5, colUnid = 1.3, colUnit = 2.5, colTot = 2.6;
+  const colDesc = CW - (colSeq + colQtd + colUnid + colUnit + colTot);
+  const xs = { seq: ML, desc: ML + colSeq, qtd: ML + colSeq + colDesc, unid: ML + colSeq + colDesc + colQtd, unit: ML + colSeq + colDesc + colQtd + colUnid, tot: ML + colSeq + colDesc + colQtd + colUnid + colUnit };
+  const rowH = 0.6;
+  function linhaTabelaCabecalho() {
+    doc.setFillColor(245, 240, 237); doc.rect(ML, y, CW, rowH, 'F');
+    doc.setDrawColor(200, 190, 185); doc.setLineWidth(0.02); doc.rect(ML, y, CW, rowH);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(63, 38, 31);
+    doc.text('Seq.', xs.seq + 0.15, y + 0.37);
+    doc.text('Serviço', xs.desc + 0.15, y + 0.37);
+    doc.text('Quanti', xs.qtd + 0.15, y + 0.37);
+    doc.text('Unid', xs.unid + 0.15, y + 0.37);
+    doc.text('R$ Unitário', xs.unit + 0.15, y + 0.37);
+    doc.text('Valor Total', xs.tot + 0.15, y + 0.37);
+    y += rowH;
+  }
+  quebrarSeNecessario(rowH * 2);
+  linhaTabelaCabecalho();
+  const itens = (m.Itens && m.Itens.length ? m.Itens : [{ desc: m.Descricao || '', obs: m.Obs || '', quanti: 1, unid: '', valorUnit: m.Valor || 0 }]).filter(it => it && (it.desc || it.quanti || it.valorUnit));
+  let totalGeral = 0;
+  (itens.length ? itens : [{ desc: 'Não informado', quanti: '', unid: '', valorUnit: '' }]).forEach((it, i) => {
+    // Descrição + observação (itálico) podem quebrar em mais de uma linha —
+    // a altura da linha acompanha as duas, senão fica cortado/sobreposto
+    // (mesmo cuidado do medGerarDoc com "Trabalhos Previstos" longos).
+    const descLines = doc.splitTextToSize(it.desc || '—', colDesc - 0.3);
+    const obsLines = it.obs ? doc.splitTextToSize(it.obs, colDesc - 0.3) : [];
+    const rowHItem = Math.max(rowH, 0.24 + descLines.length * 0.34 + obsLines.length * 0.32);
+    quebrarSeNecessario(rowHItem);
+    if (i % 2 === 1) { doc.setFillColor(250, 248, 246); doc.rect(ML, y, CW, rowHItem, 'F'); }
+    doc.setDrawColor(220, 213, 209); doc.setLineWidth(0.015); doc.rect(ML, y, CW, rowHItem);
+    const st = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
+    totalGeral += st;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(40, 40, 40);
+    doc.text(String(i + 1), xs.seq + 0.15, y + 0.38);
+    doc.text(descLines, xs.desc + 0.15, y + 0.38);
+    doc.text(it.quanti !== '' && it.quanti != null ? String(it.quanti) : '—', xs.qtd + 0.15, y + 0.38);
+    doc.text(it.unid || '—', xs.unid + 0.15, y + 0.38);
+    doc.text(it.valorUnit !== '' && it.valorUnit != null ? 'R$ ' + (parseFloat(it.valorUnit) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—', xs.unit + 0.15, y + 0.38);
+    doc.setFont('helvetica', 'bold');
+    doc.text('R$ ' + st.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), xs.tot + 0.15, y + 0.38);
+    if (obsLines.length) {
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(7); doc.setTextColor(110, 100, 95);
+      doc.text(obsLines, xs.desc + 0.15, y + 0.38 + descLines.length * 0.34);
+    }
+    y += rowHItem;
+  });
+  quebrarSeNecessario(rowH);
+  doc.setFillColor(224, 238, 219); doc.rect(ML, y, CW, rowH, 'F');
+  doc.setDrawColor(200, 190, 185); doc.setLineWidth(0.02); doc.rect(ML, y, CW, rowH);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
+  doc.text('TOTAL GERAL', xs.unid + 0.15, y + 0.39);
+  doc.text('R$ ' + totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), xs.tot + 0.15, y + 0.39);
+  y += rowH + 0.3;
+
+  // Total da medição — barra verde, alinhada à direita (mesmo padrão do
+  // Contrato 2025022101).
+  const totalBoxW = CW * 0.46, totalBoxX = ML + CW - totalBoxW, totalBoxH = 1.15;
+  quebrarSeNecessario(totalBoxH);
+  doc.setFillColor(128, 196, 118); doc.roundedRect(totalBoxX, y, totalBoxW, totalBoxH, 0.12, 0.12, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(63, 38, 31);
+  doc.text('TOTAL DA MEDIÇÃO', totalBoxX + 0.3, y + 0.32);
+  doc.setFontSize(13);
+  doc.text('R$ ' + totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), totalBoxX + 0.3, y + 0.9);
+  y += totalBoxH + 0.25;
+
+  // Observações — quadro full-width, só com o texto livre (obs geral do BM,
+  // separado das observações por item já mostradas na tabela).
+  const obsLinhasTexto = m.Obs ? doc.splitTextToSize(m.Obs, CW - 0.3) : [];
+  const obsBoxH = 0.5 + (obsLinhasTexto.length ? obsLinhasTexto.length * 0.36 : 0.3);
+  quebrarSeNecessario(obsBoxH);
+  doc.setDrawColor(200, 190, 185); doc.setLineWidth(0.02); doc.rect(ML, y, CW, obsBoxH);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(140, 120, 110);
+  doc.text('OBSERVAÇÕES', ML + 0.15, y + 0.28);
+  if (obsLinhasTexto.length) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(60, 60, 60);
+    let oy = y + 0.56;
+    obsLinhasTexto.forEach(ln => { doc.text(ln, ML + 0.15, oy); oy += 0.36; });
+  }
+  y += obsBoxH + 0.5;
+
+  // Assinaturas — 2 colunas: Contratante (Energisa) e Contratada (Expedian),
+  // mesmo padrão visual do bloco de assinaturas do Contrato 2025022101
+  // (linha em branco pra assinar na cópia impressa; sem canvas de assinatura
+  // aqui porque o formulário de cmed não coleta assinatura digital).
+  quebrarSeNecessario(2.2);
+  const gap = 0.4;
+  const colW = (CW - gap) / 2;
+  const assinaturas = [
+    { fixo: dc ? dc.contratante.nome : 'Energisa Rondônia', papel: 'Contratante — Energisa RO', x: ML },
+    { fixo: dc ? dc.contratada.nome : 'Expedian Soluções Ambientais', papel: 'Contratada — Expedian', x: ML + colW + gap },
+  ];
+  assinaturas.forEach(a => {
+    doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.02);
+    doc.line(a.x, y + 1.4, a.x + colW, y + 1.4);
+    let ly = y + 1.73;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(63, 38, 31);
+    const fixoLines = doc.splitTextToSize(a.fixo, colW - 0.1);
+    doc.text(fixoLines, a.x, ly);
+    ly += fixoLines.length * 0.3 + 0.12;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(100, 100, 100);
+    doc.text(doc.splitTextToSize(a.papel, colW), a.x, ly);
+  });
+  y += 2.2;
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  return doc;
+}
+
+/* -- Nome de arquivo no mesmo padrão do BM real recebido da Energisa. -- */
+function _cmedNomeArquivoPdf(m, dc) {
+  const total = Array.isArray(m.Itens) && m.Itens.length
+    ? m.Itens.reduce((s, it) => s + (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0), 0)
+    : (parseFloat(m.Valor) || 0);
+  const valorFmt = total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const MESES = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
+  let mesAno = '';
+  if (m.Data) {
+    const dt = new Date(m.Data + 'T12:00');
+    mesAno = MESES[dt.getMonth()] + String(dt.getFullYear()).slice(-2);
+  }
+  const contratoSigla = dc ? dc.numero.replace(/\s+/g, '_') : m.ContratoChave;
+  return `BM ${m.NumeroBM || 'S_N'} - R$ ${valorFmt} - ${contratoSigla}${mesAno ? ' - ' + mesAno : ''}.pdf`;
+}
+
 async function cmedExportarPDFUm(id) {
   const m = (window._cmedHistorico || []).find(r => String(r.Id) === String(id));
   if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
   showToast('🔄 Gerando PDF... aguarde.');
-  await _garantirJsPDF();
   const dc = CONTRATOS_ENERGISA_DADOS[m.ContratoChave];
-  const itens = Array.isArray(m.Itens) && m.Itens.length ? m.Itens : [{ desc: m.Descricao || '', obs: m.Obs || '', quanti: 1, unid: '', valorUnit: m.Valor || 0 }];
-  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
-  const pageW = 21.0, pageH = 29.7;
-  const titulo = 'BOLETIM DE MEDIÇÃO — BM ' + (m.NumeroBM || '');
-  const subtitulo = 'Contrato ' + (dc ? dc.numero : m.ContratoChave) + ' · Energisa RO';
-  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
-  let y = 2.1;
-  const ML = 1.4, CW = pageW - 2.8;
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(63, 38, 31);
-  doc.text('Data: ' + (m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—') + '    NF: ' + (m.NF || '—') + '    Status: ' + (m.Status || '—'), ML, y);
-  y += 0.7;
-  const cols = [
-    { label: 'Descrição', w: CW - 1.6 - 1.6 - 2.6 },
-    { label: 'Quanti', w: 1.6 }, { label: 'Unid', w: 1.6 }, { label: 'Valor Total', w: 2.6 },
-  ];
-  function cabecalhoTabela() {
-    doc.setFillColor(63, 38, 31); doc.rect(ML, y, CW, 0.55, 'F');
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(255, 255, 255);
-    let x = ML + 0.15;
-    cols.forEach(c => { doc.text(c.label, x, y + 0.37); x += c.w; });
-    y += 0.65;
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(30, 30, 30);
-  }
-  cabecalhoTabela();
-  let total = 0;
-  itens.forEach(it => {
-    if (y > pageH - 3.5) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); cabecalhoTabela(); }
-    const subtotal = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
-    total += subtotal;
-    const vals = [it.desc || '—', String(it.quanti || 0), it.unid || '—', 'R$ ' + subtotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })];
-    let x = ML + 0.15;
-    cols.forEach((c, i) => { doc.text(doc.splitTextToSize(String(vals[i]), c.w - 0.15)[0] || '', x, y + 0.35); x += c.w; });
-    y += 0.5;
-    if (it.obs) {
-      doc.setFont('helvetica', 'italic'); doc.setFontSize(7.5); doc.setTextColor(90, 90, 90);
-      const obsLines = doc.splitTextToSize(it.obs, CW - 0.3);
-      doc.text(obsLines, ML + 0.15, y + 0.05);
-      y += obsLines.length * 0.35 + 0.1;
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(30, 30, 30);
-    }
-    doc.setDrawColor(220, 215, 208); doc.setLineWidth(0.01);
-    doc.line(ML, y, ML + CW, y);
-    y += 0.15;
-  });
-  y += 0.2;
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(63, 38, 31);
-  doc.text('VALOR TOTAL DO BM: R$ ' + total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), ML, y);
-  _pdfNumerarPaginas(doc, pageW, pageH);
-  doc.save('Medicao_BM' + (m.NumeroBM || '') + '_' + (dc ? dc.numero.replace(/\s+/g, '_') : m.ContratoChave) + '.pdf');
+  const doc = await cmedGerarDoc(m, dc);
+  doc.save(_cmedNomeArquivoPdf(m, dc));
   showToast('✅ PDF gerado!');
 }
 
