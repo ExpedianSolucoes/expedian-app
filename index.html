@@ -34204,7 +34204,7 @@ function medCalcularDashboard(lista) {
   const porCircuitoMap = {};
   lista.forEach(m => {
     const chave = m.FrenteNome || 'Outros';
-    if (!porCircuitoMap[chave]) porCircuitoMap[chave] = { nome: chave, qtd: 0, valor: 0 };
+    if (!porCircuitoMap[chave]) porCircuitoMap[chave] = { nome: chave, id: m.FrenteId || null, qtd: 0, valor: 0 };
     porCircuitoMap[chave].qtd++;
     porCircuitoMap[chave].valor += parseFloat(m.Valor) || 0;
   });
@@ -34218,11 +34218,21 @@ function medCalcularDashboard(lista) {
 }
 function medHtmlDashboard(lista) {
   if (!lista || !lista.length) return '';
-  const dash = medCalcularDashboard(lista);
+  const dataFiltro = window._medDataFiltro || '';
+  const listaFiltrada = dataFiltro ? lista.filter(m => (m.Data || '').slice(0, 7) === dataFiltro) : lista;
+  const dash = medCalcularDashboard(listaFiltrada);
   const fmt = v => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const kpi = (cor, label, icone, dados) => `
     <div class="kpi-card ${cor}"><div class="kpi-label">${label}</div><div class="kpi-value">${dados.qtd}</div><div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${fmt(dados.valor)}</div><div class="kpi-icon">${icone}</div></div>`;
+  const circuitoAtivo = window._medCircuitoFiltro || null;
+  const filtroAtivo = !!(dataFiltro || circuitoAtivo);
   return `
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+    <label style="font-size:.72rem;color:var(--text-muted);display:flex;align-items:center;gap:5px">📅 Filtrar por período
+      <input type="month" value="${dataFiltro}" onchange="medFiltrarData(this.value)" style="font-size:.72rem;padding:3px 6px;border:1px solid var(--border);border-radius:5px">
+    </label>
+    ${filtroAtivo ? `<button class="btn-secondary" style="padding:3px 10px;font-size:.7rem" onclick="medLimparFiltros()">✕ Limpar filtros</button>` : ''}
+  </div>
   <div class="kpi-grid" style="margin-bottom:16px">
     ${kpi('blue', 'Total de Medições', '💰', dash.total)}
     ${kpi('amber', 'Emitidas', '📤', dash.emitidas)}
@@ -34230,16 +34240,45 @@ function medHtmlDashboard(lista) {
     ${kpi('green', 'Recebidas', '💵', dash.recebidas)}
   </div>
   <div style="margin-bottom:16px">
-    <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:8px">⚡ Total por Circuito Elétrico</div>
+    <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:8px">⚡ Total por Circuito Elétrico ${dataFiltro ? '<span style="font-weight:400">(no período selecionado)</span>' : ''} <span style="font-weight:400">— clique para filtrar</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
-      ${dash.porCircuito.map(c => `
-      <div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
-        <div style="font-size:.74rem;font-weight:700">${c.nome}</div>
+      ${dash.porCircuito.map(c => {
+        const clicavel = c.id && FLASH_FRENTES.some(fr => fr.id === c.id);
+        const ativo = clicavel && circuitoAtivo === c.id;
+        return `
+      <div style="padding:10px 12px;border:1px solid ${ativo ? 'var(--brand-brown,#3F261F)' : 'var(--border)'};border-radius:8px;background:${ativo ? 'var(--surface)' : 'var(--surface2)'};${clicavel ? 'cursor:pointer' : ''}" ${clicavel ? `onclick="medFiltrarCircuitoCard('${c.id}')"` : ''} title="${clicavel ? 'Clique para filtrar o histórico abaixo por este circuito' : ''}">
+        <div style="font-size:.74rem;font-weight:700">${ativo ? '📍 ' : ''}${c.nome}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${c.qtd} medição${c.qtd !== 1 ? 'ões' : ''}</div>
         <div style="font-size:.8rem;font-weight:700;color:var(--green-main);margin-top:3px">${fmt(c.valor)}</div>
-      </div>`).join('')}
+      </div>`;
+      }).join('')}
     </div>
   </div>`;
+}
+
+/* -- Atualiza a view de medições no lugar certo, dependendo de onde a página
+   está sendo exibida: embutida em Projetos > Energisa > Obras (patch de DOM,
+   sem navegar) ou na página dedicada checklist_medicao (via navigate). Usada
+   pelos filtros de circuito (clique no card) e de período (mês/ano), que
+   agora funcionam nos dois lugares sem duplicar lógica — pedido em
+   03/09/2026. -- */
+function medHistoricoAtualizarView() {
+  const alvo = document.getElementById('projetos-obras-medicoes-historico');
+  if (alvo) { alvo.innerHTML = medHtmlDashboard(window._medHistorico || []) + medHtmlHistorico(); }
+  else { navigate('checklist_medicao'); }
+}
+function medFiltrarCircuitoCard(frenteId) {
+  window._medCircuitoFiltro = (window._medCircuitoFiltro === frenteId) ? null : (frenteId || null);
+  medHistoricoAtualizarView();
+}
+function medFiltrarData(valor) {
+  window._medDataFiltro = valor || null;
+  medHistoricoAtualizarView();
+}
+function medLimparFiltros() {
+  window._medCircuitoFiltro = null;
+  window._medDataFiltro = null;
+  medHistoricoAtualizarView();
 }
 
 /* -- Exporta o histórico inteiro (mesma lista carregada em window._medHistorico)
@@ -34850,8 +34889,11 @@ async function medSalvar() {
 }
 
 function medHtmlHistorico() {
-  const todos = window._medHistorico || [];
-  if (!todos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma medição registrada ainda.</div>';
+  const brutos = window._medHistorico || [];
+  if (!brutos.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma medição registrada ainda.</div>';
+  const dataFiltro = window._medDataFiltro || '';
+  const todos = dataFiltro ? brutos.filter(m => (m.Data || '').slice(0, 7) === dataFiltro) : brutos;
+  if (!todos.length) return `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma medição em ${dataFiltro} — <span style="cursor:pointer;text-decoration:underline" onclick="medFiltrarData('')">limpar filtro de período</span>.</div>`;
   const filtro = window._medCircuitoFiltro || null;
   const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
   const linhaM = (m) => {
