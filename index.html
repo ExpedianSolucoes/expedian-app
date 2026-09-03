@@ -34243,10 +34243,16 @@ function medHtmlDashboard(lista) {
     <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:8px">⚡ Total por Circuito Elétrico ${dataFiltro ? '<span style="font-weight:400">(no período selecionado)</span>' : ''} <span style="font-weight:400">— clique para filtrar</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
       ${dash.porCircuito.map(c => {
-        const clicavel = c.id && FLASH_FRENTES.some(fr => fr.id === c.id);
-        const ativo = clicavel && circuitoAtivo === c.id;
+        // Circuitos reais (FLASH_FRENTES) filtram pelo id de sempre; locais avulsos
+        // sem frente (ex.: Nova Mamoré/Cerejeiras-Corumbiara — serviços de Malarigenos)
+        // não têm FrenteId nas frentes de fiscalização, então filtram pelo nome do
+        // local (chave "outros:Nome") — ambos os tipos de card ficam clicáveis
+        // (pedido em 03/09/2026, os cards "Outros" não estavam clicáveis).
+        const ehFrenteConhecida = c.id && FLASH_FRENTES.some(fr => fr.id === c.id);
+        const chave = ehFrenteConhecida ? c.id : ('outros:' + c.nome);
+        const ativo = circuitoAtivo === chave;
         return `
-      <div style="padding:10px 12px;border:1px solid ${ativo ? 'var(--brand-brown,#3F261F)' : 'var(--border)'};border-radius:8px;background:${ativo ? 'var(--surface)' : 'var(--surface2)'};${clicavel ? 'cursor:pointer' : ''}" ${clicavel ? `onclick="medFiltrarCircuitoCard('${c.id}')"` : ''} title="${clicavel ? 'Clique para filtrar o histórico abaixo por este circuito' : ''}">
+      <div style="padding:10px 12px;border:1px solid ${ativo ? 'var(--brand-brown,#3F261F)' : 'var(--border)'};border-radius:8px;background:${ativo ? 'var(--surface)' : 'var(--surface2)'};cursor:pointer" onclick="medFiltrarCircuitoCard('${chave.replace(/'/g, "\\'")}')" title="Clique para filtrar o histórico abaixo por este ${ehFrenteConhecida ? 'circuito' : 'local'}">
         <div style="font-size:.74rem;font-weight:700">${ativo ? '📍 ' : ''}${c.nome}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${c.qtd} medição${c.qtd !== 1 ? 'ões' : ''}</div>
         <div style="font-size:.8rem;font-weight:700;color:var(--green-main);margin-top:3px">${fmt(c.valor)}</div>
@@ -34895,15 +34901,27 @@ function medHtmlHistorico() {
   const todos = dataFiltro ? brutos.filter(m => (m.Data || '').slice(0, 7) === dataFiltro) : brutos;
   if (!todos.length) return `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma medição em ${dataFiltro} — <span style="cursor:pointer;text-decoration:underline" onclick="medFiltrarData('')">limpar filtro de período</span>.</div>`;
   const filtro = window._medCircuitoFiltro || null;
-  const frentes = filtro ? FLASH_FRENTES.filter(fr => fr.id === filtro) : FLASH_FRENTES;
-  const linhaM = (m) => {
+  // Filtro pode ser um id de FLASH_FRENTES (circuito de verdade) ou, pros locais
+  // avulsos sem frente (Nova Mamoré, Cerejeiras-Corumbiara etc.), a chave
+  // sintética "outros:Nome do Local" — ver medHtmlDashboard/medFiltrarCircuitoCard.
+  const filtroOutros = filtro && filtro.startsWith('outros:') ? filtro.slice(7) : null;
+  const filtroFrente = filtro && !filtroOutros ? filtro : null;
+  const frentes = filtroFrente ? FLASH_FRENTES.filter(fr => fr.id === filtroFrente) : (filtroOutros ? [] : FLASH_FRENTES);
+  const idsConhecidos = FLASH_FRENTES.map(fr => fr.id);
+  const visao = window._medVisaoHistorico || 'circuito';
+  const abas = `
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button class="btn-secondary" style="padding:4px 12px;font-size:.72rem;${visao==='circuito'?'border-color:var(--brand-brown,#3F261F);background:var(--surface2);font-weight:700':''}" onclick="medMudarVisaoHistorico('circuito')">⚡ Por Circuito</button>
+      <button class="btn-secondary" style="padding:4px 12px;font-size:.72rem;${visao==='consolidado'?'border-color:var(--brand-brown,#3F261F);background:var(--surface2);font-weight:700':''}" onclick="medMudarVisaoHistorico('consolidado')">📅 Consolidado por Data</button>
+    </div>`;
+  const linhaM = (m, mostrarCircuito) => {
     const dt = m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—';
     const itensTxt = medItensDoRegistro(m).map(it => it.desc).filter(Boolean).join(' · ');
     return `
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">💰</div>
       <div style="flex:1;min-width:0">
-        <div class="name">${m.NumeroMedicao ? 'BM ' + m.NumeroMedicao + ' · ' : ''}${m.Periodo} · ${dt}</div>
+        <div class="name">${m.NumeroMedicao ? 'BM ' + m.NumeroMedicao + ' · ' : ''}${m.Periodo} · ${dt}${mostrarCircuito ? ` · ⚡ ${m.FrenteNome || 'Outros'}` : ''}</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${itensTxt ? itensTxt.substring(0, 90) + (itensTxt.length > 90 ? '…' : '') : '—'}</div>
         <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
           <span class="badge" style="font-size:.62rem;background:${MED_STATUS_COR[m.Status] || '#7f8c8d'};color:#fff">${m.Status || '—'}</span>
@@ -34922,20 +34940,37 @@ function medHtmlHistorico() {
       </div>
     </div>`;
   };
+  if (visao === 'consolidado') {
+    // Lista única com TODAS as medições (de todos os circuitos, e também os
+    // registros "Outros" sem frente correspondente), ordenada por data — sem
+    // agrupar por circuito. Continua respeitando o filtro de circuito (se
+    // algum card/dropdown estiver selecionado) e o de período. Pedido em
+    // 03/09/2026, no mesmo espírito do "Todos os circuitos" do Flash Report.
+    const base = filtroOutros
+      ? todos.filter(m => !idsConhecidos.includes(m.FrenteId) && (m.FrenteNome || 'Outros') === filtroOutros)
+      : (filtroFrente ? todos.filter(m => m.FrenteId === filtroFrente) : todos);
+    const itens = base.slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || '') || (b.Id || 0) - (a.Id || 0));
+    if (!itens.length) return abas + '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma medição para este filtro.</div>';
+    return abas + `
+    <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">📅 Todas as medições <span style="font-weight:400">(${itens.length}) — mais recente primeiro</span></div>
+    ${itens.map(m => linhaM(m, true)).join('')}`;
+  }
   const blocos = frentes.map(fr => {
     const doCircuito = todos.filter(m => m.FrenteId === fr.id).sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
     if (!doCircuito.length) return '';
     return `
     <div style="margin-bottom:14px">
       <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">⚡ ${fr.nome} — ${fr.empreiteira} <span style="font-weight:400">(${doCircuito.length})</span></div>
-      ${doCircuito.map(linhaM).join('')}
+      ${doCircuito.map(m => linhaM(m, false)).join('')}
     </div>`;
   }).join('');
   // Registros cujo FrenteId não corresponde a nenhuma frente de fiscalização diária (ex.: serviços
   // avulsos de Malarigenos em locais como Nova Mamoré/Cerejeiras-Corumbiara, que não entram no
-  // rodízio do Flash Report). Só aparecem quando nenhum filtro de circuito específico está ativo.
-  const idsConhecidos = FLASH_FRENTES.map(fr => fr.id);
-  const outros = !filtro ? todos.filter(m => !idsConhecidos.includes(m.FrenteId)) : [];
+  // rodízio do Flash Report). Aparecem quando nenhum filtro de circuito está ativo, OU quando o
+  // filtro ativo é justamente um desses locais (clique no card "Outros" — ver medFiltrarCircuitoCard).
+  const outros = filtroOutros
+    ? todos.filter(m => !idsConhecidos.includes(m.FrenteId) && (m.FrenteNome || 'Outros') === filtroOutros)
+    : (!filtro ? todos.filter(m => !idsConhecidos.includes(m.FrenteId)) : []);
   const outrosPorLocal = {};
   outros.forEach(m => { const chave = m.FrenteNome || 'Outros'; (outrosPorLocal[chave] = outrosPorLocal[chave] || []).push(m); });
   const blocoOutros = Object.keys(outrosPorLocal).map(nomeLocal => {
@@ -34943,11 +34978,16 @@ function medHtmlHistorico() {
     return `
     <div style="margin-bottom:14px">
       <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">📍 ${nomeLocal} <span style="font-weight:400">(${doLocal.length})</span></div>
-      ${doLocal.map(linhaM).join('')}
+      ${doLocal.map(m => linhaM(m, false)).join('')}
     </div>`;
   }).join('');
   const tudo = blocos + blocoOutros;
-  return tudo || '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma medição para este circuito.</div>';
+  return abas + (tudo || '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma medição para este circuito.</div>');
+}
+
+function medMudarVisaoHistorico(v) {
+  window._medVisaoHistorico = v;
+  medHistoricoAtualizarView();
 }
 
 function pageChecklistMedicao() {
