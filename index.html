@@ -13869,8 +13869,66 @@ async function cmedCarregarSemNavegar(forcar) {
 
 function cmedCampo(campo, valor) { window._cmedData[campo] = valor; }
 
+/* -- Itens do escopo medidos neste BM (mesmo padrão de "itens" da Medição de
+   Obras): cada item tem um "codigo" que aponta pra um serviço do
+   ESCOPO_CONTRATUAL_ENERGISA[chave] (Descrição/Unid/R$ Unitário puxados
+   automaticamente ao selecionar), ou '_outro' pra digitar um serviço fora do
+   escopo cadastrado. Um único BM normalmente cobre vários itens do escopo de
+   uma vez (ex.: RAS+PCA+Fauna+Malarígeno juntos) — por isso permite adicionar
+   quantos itens forem necessários, cada um com sua própria observação. -- */
+function cmedItemAdicionar() {
+  window._cmedData.itens = window._cmedData.itens || [];
+  window._cmedData.itens.push({ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' });
+  navigate('projetos');
+}
+function cmedItemRemover(idx) {
+  if (!window._cmedData.itens) return;
+  window._cmedData.itens.splice(idx, 1);
+  if (!window._cmedData.itens.length) window._cmedData.itens.push({ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' });
+  navigate('projetos');
+}
+function cmedItemCampo(idx, campo, valor) {
+  if (!window._cmedData.itens || !window._cmedData.itens[idx]) return;
+  window._cmedData.itens[idx][campo] = valor;
+  cmedAtualizarTotaisItens();
+}
+/* -- Ao escolher um serviço da lista suspensa do escopo técnico, puxa
+   Descrição/Unidade/R$ Unitário automaticamente daquele item do contrato.
+   '_outro' limpa esses campos pra edição manual (serviço fora do escopo
+   cadastrado). Precisa de navigate() porque troca a estrutura visível do
+   formulário (mostra/esconde o campo de descrição manual). -- */
+function cmedItemSelecionarEscopo(idx, codigo) {
+  if (!window._cmedData.itens || !window._cmedData.itens[idx]) return;
+  const item = window._cmedData.itens[idx];
+  item.codigo = codigo;
+  if (codigo === '_outro') {
+    // mantém o que já tiver digitado; só habilita o campo manual
+  } else {
+    const escopo = (ESCOPO_CONTRATUAL_ENERGISA[window._cmedData.contratoChave] || []).find(e => e.codigo === codigo);
+    if (escopo) {
+      item.desc = escopo.descricao;
+      item.unid = escopo.unidade;
+      item.valorUnit = escopo.valorUnitario;
+    }
+  }
+  navigate('projetos');
+}
+function cmedCalcularTotalItens(itens) {
+  return (itens || []).reduce((s, it) => s + (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0), 0);
+}
+function cmedAtualizarTotaisItens() {
+  const itens = window._cmedData.itens || [];
+  itens.forEach((it, i) => {
+    const st = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
+    const el = document.getElementById('cmed-item-total-' + i);
+    if (el) el.textContent = 'R$ ' + st.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  });
+  const totalEl = document.getElementById('cmed-total-geral');
+  if (totalEl) totalEl.textContent = 'R$ ' + cmedCalcularTotalItens(itens).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function cmedNovoForm(chave) {
-  window._cmedData = { contratoChave: chave, numeroBM: '', data: '', descricao: '', valor: '', status: 'Enviada', nf: '', obs: '' };
+  window._cmedData = { contratoChave: chave, numeroBM: '', data: '', status: 'Enviada', nf: '', itens: [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }] };
 }
 
 function cmedAbrirNovo(chave) {
@@ -13886,12 +13944,20 @@ function cmedFecharForm() {
   navigate('projetos');
 }
 
+/* -- Registros antigos (seed dos 18 BMs já emitidos, ou qualquer medição salva
+   antes desta mudança) não têm 'Itens' — só Descricao/Valor/Obs num campo só.
+   Pra não perder esse histórico, embrulha num item único '_outro' com o texto
+   que já existia; a pessoa pode reclassificar em itens do escopo depois, se
+   quiser, mas não é obrigatório. -- */
 function cmedEditar(id) {
   const m = (window._cmedHistorico || []).find(r => r.Id === id);
   if (!m) { showToast('⚠️ Registro não encontrado.'); return; }
+  const itens = Array.isArray(m.Itens) && m.Itens.length
+    ? JSON.parse(JSON.stringify(m.Itens))
+    : [{ codigo: '_outro', desc: m.Descricao || '', obs: m.Obs || '', quanti: 1, unid: 'UNT.', valorUnit: m.Valor || '' }];
   window._cmedData = {
-    contratoChave: m.ContratoChave, numeroBM: m.NumeroBM || '', data: m.Data || '', descricao: m.Descricao || '',
-    valor: m.Valor || '', status: m.Status || 'Enviada', nf: m.NF || '', obs: m.Obs || '',
+    contratoChave: m.ContratoChave, numeroBM: m.NumeroBM || '', data: m.Data || '',
+    status: m.Status || 'Enviada', nf: m.NF || '', itens,
   };
   window._cmedRegistroAtualId = id;
   window._cmedMostrarForm = true;
@@ -13902,9 +13968,23 @@ async function cmedSalvar() {
   const d = window._cmedData;
   if (!d.numeroBM) { showToast('⚠️ Informe o número do BM.'); return; }
   if (!d.data) { showToast('⚠️ Informe a data.'); return; }
+  const itensValidos = (d.itens || []).filter(it => (it.desc || '').trim());
+  if (!itensValidos.length) { showToast('⚠️ Adicione ao menos um serviço com descrição (selecione do escopo ou escolha "Outro").'); return; }
+  const itensLimpos = itensValidos.map(it => ({
+    codigo: it.codigo || '', desc: it.desc || '', obs: it.obs || '',
+    quanti: parseFloat(it.quanti) || 0, unid: it.unid || '', valorUnit: parseFloat(it.valorUnit) || 0,
+  }));
+  // Descricao/Valor/Obs no nível do registro continuam preenchidos (agora
+  // derivados dos itens) porque outras partes do app ainda leem esses campos
+  // direto: sincronização com Centro de Custo (medicoesDoCCviaProjetos),
+  // exportação Excel/PDF e o histórico em tabela.
   const registro = {
-    ContratoChave: d.contratoChave, NumeroBM: d.numeroBM, Data: d.data, Descricao: d.descricao,
-    Valor: parseFloat(d.valor) || 0, Status: d.status || 'Enviada', NF: d.nf || '', Obs: d.obs || '',
+    ContratoChave: d.contratoChave, NumeroBM: d.numeroBM, Data: d.data,
+    Itens: itensLimpos,
+    Descricao: itensLimpos.map(i => i.desc).filter(Boolean).join(' + '),
+    Valor: cmedCalcularTotalItens(itensLimpos),
+    Status: d.status || 'Enviada', NF: d.nf || '',
+    Obs: itensLimpos.map(i => i.obs).filter(Boolean).join(' | '),
   };
   showSyncStatus('Salvando medição...');
   const editandoId = window._cmedRegistroAtualId;
@@ -14063,16 +14143,16 @@ async function cmedExportarPDF(chave) {
 
 function cmedHtmlForm() {
   const d = window._cmedData;
+  const chave = d.contratoChave;
+  const escopo = ESCOPO_CONTRATUAL_ENERGISA[chave] || [];
+  if (!d.itens || !d.itens.length) d.itens = [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }];
+  const itens = d.itens;
   return `
   <div class="card" style="margin-bottom:16px;border-top:3px solid var(--brand-brown,#3F261F)">
     <div class="card-title" style="margin-bottom:10px">${window._cmedRegistroAtualId ? '✏️ Editar Medição' : '➕ Nova Medição'} — ${d.contratoChave.toUpperCase()}</div>
     <div class="form-row">
       <div class="form-group"><label>Número do BM</label><input value="${(d.numeroBM || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroBM', this.value)" placeholder="Ex: 11"></div>
       <div class="form-group"><label>Data</label><input type="date" value="${d.data || ''}" oninput="cmedCampo('data', this.value)"></div>
-      <div class="form-group"><label>Valor (R$)</label><input type="number" step="0.01" value="${d.valor || ''}" oninput="cmedCampo('valor', this.value)"></div>
-    </div>
-    <div class="form-row">
-      <div class="form-group" style="grid-column:span 2"><label>Descrição do serviço medido</label><input value="${(d.descricao || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('descricao', this.value)" placeholder="Ex: PCA SED Nova Brasilândia"></div>
       <div class="form-group"><label>Status</label>
         <select onchange="cmedCampo('status', this.value)">
           ${CMED_STATUS_OPCOES.map(s => `<option value="${s}" ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}
@@ -14081,12 +14161,45 @@ function cmedHtmlForm() {
     </div>
     <div class="form-row">
       <div class="form-group"><label>NF (nº)</label><input value="${(d.nf || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('nf', this.value)" placeholder="Ex: 188"></div>
-      <div class="form-group" style="grid-column:span 2"><label>Observações</label><input value="${(d.obs || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('obs', this.value)"></div>
     </div>
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <button class="btn-primary" onclick="cmedSalvar()">💾 Salvar</button>
-      <button class="btn-secondary" onclick="cmedFecharForm()">Cancelar</button>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">📋 Serviços do Escopo Medidos neste BM <span style="font-weight:400;font-size:.72rem;color:var(--text-muted)">(Conforme Anexo 07 do Contrato — adicione quantos itens este BM cobrir)</span></div>
+    ${itens.map((it, i) => `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;background:var(--surface2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <b style="font-size:.78rem">Serviço ${i + 1}</b>
+        ${itens.length > 1 ? `<span onclick="cmedItemRemover(${i})" style="cursor:pointer;color:var(--red);font-size:.76rem" title="Remover item">✕ Remover</span>` : ''}
+      </div>
+      <div class="form-group" style="margin:0 0 8px"><label>Descrição do serviço</label>
+        <select onchange="cmedItemSelecionarEscopo(${i}, this.value)">
+          <option value="">— Selecione do escopo técnico —</option>
+          ${escopo.map(e => `<option value="${e.codigo}" ${it.codigo === e.codigo ? 'selected' : ''}>${((e.grupo ? e.grupo + ' — ' : '') + e.descricao).replace(/</g, '&lt;')}</option>`).join('')}
+          <option value="_outro" ${it.codigo === '_outro' ? 'selected' : ''}>Outro (digitar manualmente)</option>
+        </select>
+      </div>
+      ${it.codigo === '_outro' ? `
+      <div class="form-group" style="margin:0 0 8px"><input type="text" value="${(it.desc || '').replace(/"/g, '&quot;')}" oninput="cmedItemCampo(${i},'desc',this.value)" placeholder="Descreva o serviço"></div>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+        <div class="form-group" style="margin:0"><label>Quanti</label><input type="number" step="0.01" value="${it.quanti != null ? it.quanti : ''}" oninput="cmedItemCampo(${i},'quanti',this.value)"></div>
+        <div class="form-group" style="margin:0"><label>Unid</label><input type="text" value="${(it.unid || '').replace(/"/g, '&quot;')}" oninput="cmedItemCampo(${i},'unid',this.value)" placeholder="UNT."></div>
+        <div class="form-group" style="margin:0"><label>R$ Unitário</label><input type="number" step="0.01" value="${it.valorUnit != null ? it.valorUnit : ''}" oninput="cmedItemCampo(${i},'valorUnit',this.value)"></div>
+      </div>
+      <div class="form-group" style="margin:0"><label>Observação sobre este serviço (opcional)</label>
+        <textarea rows="2" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:6px 8px;font-size:.8rem;background:var(--surface);resize:vertical" placeholder="Alguma observação específica sobre este item?" oninput="cmedItemCampo(${i},'obs',this.value)">${it.obs || ''}</textarea>
+      </div>
+      <div style="text-align:right;font-size:.8rem;margin-top:6px"><b>Subtotal:</b> <span id="cmed-item-total-${i}" style="font-weight:700">R$ ${((parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0)).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+    </div>`).join('')}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;flex-wrap:wrap;gap:10px">
+      <button type="button" class="btn-secondary" style="font-size:.78rem;padding:6px 12px" onclick="cmedItemAdicionar()">➕ Adicionar Serviço</button>
+      <div style="font-size:.9rem"><b>VALOR TOTAL DO BM:</b> <span id="cmed-total-geral" style="font-weight:700;color:var(--green-main)">R$ ${cmedCalcularTotalItens(itens).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
     </div>
+  </div>
+
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="btn-primary" onclick="cmedSalvar()">💾 Salvar</button>
+    <button class="btn-secondary" onclick="cmedFecharForm()">Cancelar</button>
   </div>`;
 }
 
