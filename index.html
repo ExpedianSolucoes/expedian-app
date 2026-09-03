@@ -13948,7 +13948,7 @@ function cmedAtualizarBloco(chave) {
 }
 
 function cmedNovoForm(chave) {
-  window._cmedData = { contratoChave: chave, numeroBM: '', data: '', status: 'Enviada', nf: '', itens: [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }] };
+  window._cmedData = { contratoChave: chave, numeroBM: '', data: '', status: 'Enviada', numeroOS: '', obsGeral: '', itens: [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }] };
 }
 
 function cmedAbrirNovo(chave) {
@@ -13977,7 +13977,7 @@ function cmedEditar(id) {
     : [{ codigo: '_outro', desc: m.Descricao || '', obs: m.Obs || '', quanti: 1, unid: 'UNT.', valorUnit: m.Valor || '' }];
   window._cmedData = {
     contratoChave: m.ContratoChave, numeroBM: m.NumeroBM || '', data: m.Data || '',
-    status: m.Status || 'Enviada', nf: m.NF || '', itens,
+    status: m.Status || 'Enviada', numeroOS: m.NumeroOS || m.NF || '', obsGeral: m.Obs || '', itens,
   };
   window._cmedRegistroAtualId = id;
   window._cmedMostrarForm = true;
@@ -14003,8 +14003,12 @@ async function cmedSalvar() {
     Itens: itensLimpos,
     Descricao: itensLimpos.map(i => i.desc).filter(Boolean).join(' + '),
     Valor: cmedCalcularTotalItens(itensLimpos),
-    Status: d.status || 'Enviada', NF: d.nf || '',
-    Obs: itensLimpos.map(i => i.obs).filter(Boolean).join(' | '),
+    Status: d.status || 'Enviada', NumeroOS: d.numeroOS || '',
+    // Observações gerais é campo próprio do formulário — não deriva mais das
+    // observações por item (essas já aparecem na tabela de escopo do PDF/
+    // Excel, então repetir tudo aqui de novo era redundante — pedido em
+    // 03/09/2026).
+    Obs: d.obsGeral || '',
   };
   showSyncStatus('Salvando medição...');
   const editandoId = window._cmedRegistroAtualId;
@@ -14026,22 +14030,31 @@ async function cmedSalvar() {
   }
 }
 
+/* -- Exclui via dbRemover (leitura+escrita com eTag/retry — mesma proteção
+   contra condição de corrida já usada em Flash Report/Fauna/Despesas/etc.,
+   task #56). O bug relatado em 03/09/2026 ("mostra excluída mas continua no
+   histórico") era o padrão antigo: dbLer + splice + dbSalvar sem eTag, e
+   depois um cmedCarregarSemNavegar(true) que relia a tabela — se essa
+   releitura pegasse o OneDrive antes de propagar a escrita (consistência
+   eventual), a tela voltava a mostrar a lista antiga. Agora usa a lista já
+   atualizada que dbRemover devolve, sem precisar reler do zero. -- */
 async function cmedExcluir(id) {
   if (!confirm('Tem certeza que deseja excluir esta medição?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo medição...');
-  const lista = await dbLer('MedicoesContratosEnergisa');
-  const idx = lista.findIndex(r => String(r.Id) === String(id));
-  if (idx === -1) {
+  const registroAtual = (window._cmedHistorico || []).find(r => String(r.Id) === String(id));
+  const chaveExcluida = registroAtual ? registroAtual.ContratoChave : null;
+  const { ok, lista } = await dbRemover('MedicoesContratosEnergisa', id);
+  if (!ok && lista === null) {
     showToast('❌ Registro não encontrado.');
     showSyncStatus('Registro não encontrado', 'err', 4000);
     return;
   }
-  const chaveExcluida = lista[idx].ContratoChave;
-  lista.splice(idx, 1);
-  const ok = await dbSalvar('MedicoesContratosEnergisa', lista);
   showToast(ok ? '🗑️ Medição excluída.' : '❌ Erro ao excluir.');
   showSyncStatus(ok ? 'Excluída!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
-  if (ok) { await cmedCarregarSemNavegar(true); cmedAtualizarBloco(chaveExcluida); }
+  if (ok) {
+    window._cmedHistorico = lista;
+    cmedAtualizarBloco(chaveExcluida);
+  }
 }
 
 function cmedHtmlDashboard(lista, valorGlobal) {
@@ -14076,7 +14089,7 @@ function cmedHtmlHistorico(lista, chave) {
         <tr style="text-align:left;border-bottom:1px solid var(--border-soft, #e5e0d8)">
           <td style="padding:6px 8px;font-weight:700">BM</td><td style="padding:6px 8px;font-weight:700">Data</td>
           <td style="padding:6px 8px;font-weight:700">Descrição</td><td style="padding:6px 8px;font-weight:700">Valor</td>
-          <td style="padding:6px 8px;font-weight:700">Status</td><td style="padding:6px 8px;font-weight:700">NF</td><td></td>
+          <td style="padding:6px 8px;font-weight:700">Status</td><td style="padding:6px 8px;font-weight:700">OS</td><td></td>
         </tr>
         ${ordenada.map(m => `
         <tr style="border-bottom:1px solid var(--border-soft, #e5e0d8)">
@@ -14085,7 +14098,7 @@ function cmedHtmlHistorico(lista, chave) {
           <td style="padding:6px 8px">${m.Descricao || '—'}</td>
           <td style="padding:6px 8px;font-weight:700">R$ ${(parseFloat(m.Valor) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
           <td style="padding:6px 8px;color:${CMED_STATUS_COR[m.Status] || 'inherit'};font-weight:700">${m.Status}</td>
-          <td style="padding:6px 8px">${m.NF || '—'}</td>
+          <td style="padding:6px 8px">${m.NumeroOS || m.NF || '—'}</td>
           <td style="padding:6px 8px;white-space:nowrap">
             <button onclick="cmedVisualizar(${m.Id})" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">👁️</button>
             <button onclick="cmedExportarPDFUm(${m.Id})" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">📄</button>
@@ -14115,7 +14128,7 @@ async function cmedExportarExcel(chave) {
   }
   const rows = lista.map(m => ({
     'BM': m.NumeroBM || '', 'Data': m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '',
-    'Descrição': m.Descricao || '', 'Valor': m.Valor || 0, 'Status': m.Status || '', 'NF': m.NF || '', 'Observações': m.Obs || '',
+    'Descrição': m.Descricao || '', 'Valor': m.Valor || 0, 'Status': m.Status || '', 'OS': m.NumeroOS || m.NF || '', 'Observações': m.Obs || '',
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
@@ -14142,7 +14155,7 @@ async function cmedExportarPDF(chave) {
   const ML = 1.4, CW = pageW - 2.8;
   const cols = [
     { label: 'BM', w: 1.4 }, { label: 'Data', w: 2.0 }, { label: 'Descrição', w: CW - 1.4 - 2.0 - 2.6 - 2.0 - 2.2 },
-    { label: 'Valor', w: 2.6 }, { label: 'Status', w: 2.0 }, { label: 'NF', w: 2.2 },
+    { label: 'Valor', w: 2.6 }, { label: 'Status', w: 2.0 }, { label: 'OS', w: 2.2 },
   ];
   function cabecalhoTabela() {
     doc.setFillColor(63, 38, 31); doc.rect(ML, y, CW, 0.55, 'F');
@@ -14158,7 +14171,7 @@ async function cmedExportarPDF(chave) {
     if (y > pageH - 3.0) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); cabecalhoTabela(); }
     const valor = parseFloat(m.Valor) || 0;
     total += valor;
-    const vals = [m.NumeroBM || '—', m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—', m.Descricao || '—', 'R$ ' + valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), m.Status || '—', m.NF || '—'];
+    const vals = [m.NumeroBM || '—', m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—', m.Descricao || '—', 'R$ ' + valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), m.Status || '—', m.NumeroOS || m.NF || '—'];
     let x = ML + 0.15;
     cols.forEach((c, i) => { doc.text(doc.splitTextToSize(String(vals[i]), c.w - 0.15)[0] || '', x, y + 0.35); x += c.w; });
     doc.setDrawColor(220, 215, 208); doc.setLineWidth(0.01);
@@ -14193,11 +14206,12 @@ function cmedVisualizar(id) {
       </div>
       ${linha('Contrato', dc ? dc.numero : m.ContratoChave)}
       ${linha('Data', m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—')}
-      ${linha('NF', m.NF || '—')}
+      ${linha('OS', m.NumeroOS || m.NF || '—')}
       ${linha('Status', m.Status || '—')}
       ${linha('Valor Total', fmt(m.Valor))}
       ${itens.length ? `<div style="margin-top:12px;margin-bottom:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Serviços do Escopo</div>
         <div style="font-size:.78rem">${itens.map(it => `<div style="padding:6px 0;border-bottom:1px solid var(--border)">${it.desc || '—'} — ${it.quanti || 0} ${it.unid || ''} × ${fmt(it.valorUnit)} = <strong>${fmt((parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0))}</strong>${it.obs ? `<div style="font-style:italic;color:var(--text-muted);margin-top:2px">${it.obs}</div>` : ''}</div>`).join('')}</div>` : ''}
+      ${m.Obs ? `<div style="margin-top:12px;font-size:.78rem;color:var(--text-muted)"><strong>Observações gerais:</strong> ${m.Obs}</div>` : ''}
       <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
         <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="cmedExportarPDFUm(${m.Id})">📄 PDF</button>
         <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="cmedExportarExcelUm(${m.Id})">📊 Excel</button>
@@ -14242,8 +14256,11 @@ async function cmedGerarDoc(m, dc) {
     doc.text(lines, x + 0.15, y + 0.56);
   }
 
-  // Contrato
-  campoBox(ML, CW, 0.85, 'Contrato', (dc ? dc.numero + ' - ' + (dc.objeto ? dc.objeto.split('.')[0] : '') : m.ContratoChave), { bold: true, size: 10 });
+  // Contrato — só o número aqui (o Objeto do contrato, logo abaixo, já traz
+  // a descrição completa; repetir tudo de novo nesta caixa curta era o que
+  // estourava a altura da caixa e sobrepunha a linha seguinte — corrigido em
+  // 03/09/2026).
+  campoBox(ML, CW, 0.85, 'Contrato', dc ? dc.numero : m.ContratoChave, { bold: true, size: 11 });
   y += 0.85 + 0.15;
 
   // Data medição · Nº BM · Status
@@ -14262,9 +14279,9 @@ async function cmedGerarDoc(m, dc) {
     y += objetoH + 0.15;
   }
 
-  // NF
+  // Número da OS
   quebrarSeNecessario(0.85);
-  campoBox(ML, CW, 0.85, 'NF (nº)', m.NF || '—', { bold: true });
+  campoBox(ML, CW, 0.85, 'Número da OS', m.NumeroOS || m.NF || '—', { bold: true });
   y += 0.85 + 0.25;
 
   // Escopo dos serviços (tabela de itens)
@@ -14297,16 +14314,35 @@ async function cmedGerarDoc(m, dc) {
   (itens.length ? itens : [{ desc: 'Não informado', quanti: '', unid: '', valorUnit: '' }]).forEach((it, i) => {
     // Descrição + observação (itálico) podem quebrar em mais de uma linha —
     // a altura da linha acompanha as duas, senão fica cortado/sobreposto
-    // (mesmo cuidado do medGerarDoc com "Trabalhos Previstos" longos).
+    // (mesmo cuidado do medGerarDoc com "Trabalhos Previstos" longos). Usa a
+    // altura de linha real do jsPDF (fontSize * 1.15, convertida de pt pra
+    // cm) em vez de uma constante arredondada — a estimativa anterior (0.34/
+    // 0.32) ficava um pouco menor que o espaçamento real e acumulava
+    // sobreposição a partir da 2ª linha (bug relatado em 03/09/2026).
+    const descFont = 8.5, obsFont = 7;
+    const lh = pt => (pt * 1.15 / 72) * 2.54;
+    const descLineH = lh(descFont), obsLineH = lh(obsFont);
+    // CRÍTICO: setFont/setFontSize tem que vir ANTES do splitTextToSize —
+    // o splitTextToSize mede a largura do texto usando a fonte/tamanho que
+    // estiverem ativos NO MOMENTO DA CHAMADA (aqui ainda era a fonte do
+    // cabeçalho da tabela, 7.5pt bold). Como 7.5pt bold é mais estreita que
+    // 8.5pt normal, o texto "cabia" numa linha só na conta mas na hora de
+    // desenhar (já em 8.5pt) ficava mais largo que a coluna e invadia a
+    // coluna "Quanti" ao lado — bug relatado em 03/09/2026 ("Poços" colado
+    // no "1"). Corrigido fixando a fonte antes de medir.
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(descFont);
     const descLines = doc.splitTextToSize(it.desc || '—', colDesc - 0.3);
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(obsFont);
     const obsLines = it.obs ? doc.splitTextToSize(it.obs, colDesc - 0.3) : [];
-    const rowHItem = Math.max(rowH, 0.24 + descLines.length * 0.34 + obsLines.length * 0.32);
+    const descBlocoH = descLines.length * descLineH;
+    const obsBlocoH = obsLines.length ? 0.12 + obsLines.length * obsLineH : 0;
+    const rowHItem = Math.max(rowH, 0.3 + descBlocoH + obsBlocoH);
     quebrarSeNecessario(rowHItem);
     if (i % 2 === 1) { doc.setFillColor(250, 248, 246); doc.rect(ML, y, CW, rowHItem, 'F'); }
     doc.setDrawColor(220, 213, 209); doc.setLineWidth(0.015); doc.rect(ML, y, CW, rowHItem);
     const st = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
     totalGeral += st;
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(40, 40, 40);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(descFont); doc.setTextColor(40, 40, 40);
     doc.text(String(i + 1), xs.seq + 0.15, y + 0.38);
     doc.text(descLines, xs.desc + 0.15, y + 0.38);
     doc.text(it.quanti !== '' && it.quanti != null ? String(it.quanti) : '—', xs.qtd + 0.15, y + 0.38);
@@ -14315,8 +14351,8 @@ async function cmedGerarDoc(m, dc) {
     doc.setFont('helvetica', 'bold');
     doc.text('R$ ' + st.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), xs.tot + 0.15, y + 0.38);
     if (obsLines.length) {
-      doc.setFont('helvetica', 'italic'); doc.setFontSize(7); doc.setTextColor(110, 100, 95);
-      doc.text(obsLines, xs.desc + 0.15, y + 0.38 + descLines.length * 0.34);
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(obsFont); doc.setTextColor(110, 100, 95);
+      doc.text(obsLines, xs.desc + 0.15, y + 0.38 + descBlocoH + 0.12);
     }
     y += rowHItem;
   });
@@ -14427,7 +14463,7 @@ async function cmedExportarExcelUm(id) {
   const rows = [{
     'BM': m.NumeroBM || '', 'Contrato': dc ? dc.numero : m.ContratoChave,
     'Data': m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '',
-    'Valor Total': m.Valor || 0, 'Status': m.Status || '', 'NF': m.NF || '', 'Observações': m.Obs || '',
+    'Valor Total': m.Valor || 0, 'Status': m.Status || '', 'OS': m.NumeroOS || m.NF || '', 'Observações': m.Obs || '',
   }];
   const rowsItens = itens.map((it, i) => ({
     'BM': m.NumeroBM || '', 'Seq': i + 1, 'Descrição': it.desc || '',
@@ -14462,7 +14498,7 @@ function cmedHtmlForm() {
       </div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>NF (nº)</label><input value="${(d.nf || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('nf', this.value)" placeholder="Ex: 188"></div>
+      <div class="form-group"><label>Número da OS</label><input value="${(d.numeroOS || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroOS', this.value)" placeholder="Ex: 015/2026"></div>
     </div>
   </div>
 
@@ -14496,6 +14532,13 @@ function cmedHtmlForm() {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;flex-wrap:wrap;gap:10px">
       <button type="button" class="btn-secondary" style="font-size:.78rem;padding:6px 12px" onclick="cmedItemAdicionar()">➕ Adicionar Serviço</button>
       <div style="font-size:.9rem"><b>VALOR TOTAL DO BM:</b> <span id="cmed-total-geral" style="font-weight:700;color:var(--green-main)">R$ ${cmedCalcularTotalItens(itens).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title" style="margin-bottom:8px">Observações Gerais <span style="font-weight:400;font-size:.72rem;color:var(--text-muted)">(sobre o BM como um todo — separado das observações de cada serviço acima)</span></div>
+    <div class="form-group" style="margin:0">
+      <textarea rows="2" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:6px 8px;font-size:.8rem;background:var(--surface);resize:vertical" placeholder="Observação geral sobre este BM (opcional)" oninput="cmedCampo('obsGeral', this.value)">${d.obsGeral || ''}</textarea>
     </div>
   </div>
 
