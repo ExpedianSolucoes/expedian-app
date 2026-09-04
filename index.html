@@ -5334,13 +5334,25 @@ function pagePagar() {
         <div id="pag_divisaocc_editor" style="display:none;margin-top:10px;background:var(--surface2);border-radius:10px;padding:12px">
           <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Quanto vai pra cada Centro de Custo:</div>
           <div id="pag_divisaocc_lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+          <!-- Mesmo padrão typeahead + medição do modal "Divisão por Contrato" (rdcc*,
+               usado em Despesas já lançadas) — digitável (filtra enquanto digita, em
+               vez de <select> fixo) e permite escolher o MESMO Centro de Custo mais de
+               uma vez com uma Medição diferente em cada (dedup agora é por CC+Medição,
+               não só por CC). Pedido em 04/09/2026. -->
+          <div style="position:relative;margin-bottom:6px">
+            <input type="text" id="pag_divcc_cc_input" placeholder="Centro de Custo — digite para buscar..." autocomplete="off"
+              oninput="pagDivccFiltrarCCs(this.value)" onfocus="pagDivccFiltrarCCs(this.value)" onblur="setTimeout(()=>pagDivccFecharDropdownCC(),150)"
+              style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;box-sizing:border-box">
+            <input type="hidden" id="pag_divcc_cc">
+            <div id="pag_divcc_cc_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+          </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-            <select id="pag_divcc_sel" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;flex:1;min-width:180px">
-              <option value="">Selecione a empresa acima primeiro...</option>
-            </select>
+            <input type="text" id="pag_divcc_medicao" list="pag_divcc_medicao_dl" placeholder="Nº Medição (opcional)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;flex:1;min-width:110px">
+            <datalist id="pag_divcc_medicao_dl"></datalist>
             <input type="text" id="pag_divcc_valor" placeholder="Valor R$" inputmode="decimal" oninput="rdFormatarMoedaInput(this)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px">
             <button type="button" class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="pagAdicionarDivisaoCC()">+ Adicionar</button>
           </div>
+          <div id="pag_divcc_medicao_hint" style="font-size:.66rem;color:var(--text-muted);margin-top:4px"></div>
           <div id="pag_divisaocc_total" style="font-size:.75rem;margin-top:8px"></div>
         </div>
       </div>
@@ -5568,23 +5580,80 @@ function atualizarCCsEmpresa() {
   const inp = document.getElementById('pag_cc_input'); if (inp) inp.value = '';
   const hid = document.getElementById('pag_cc'); if (hid) hid.value = '';
   pagFecharDropdownCC();
-  pagAtualizarSelectDivisaoCC();
+  // Empresa mudou — qualquer CC já escolhido na divisão (ou digitado, ainda
+  // não adicionado) pode não pertencer mais à empresa nova. Limpa só o campo
+  // de digitação da divisão (a lista de itens JÁ adicionados continua, quem
+  // adicionou sabia o que estava fazendo).
+  const divInp = document.getElementById('pag_divcc_cc_input'); if (divInp) divInp.value = '';
+  const divHid = document.getElementById('pag_divcc_cc'); if (divHid) divHid.value = '';
+  pagDivccFecharDropdownCC();
 }
 
-/* -- Divisão por Centro de Custo em Contas a Pagar: mesma mecânica de Nova
-   Despesa. O <select> de CC precisa ser repopulado sempre que a empresa muda
-   (diferente de Nova Despesa, aqui a empresa é escolhida dentro do próprio
-   formulário, não por aba fixa da página). -- */
-function pagAtualizarSelectDivisaoCC() {
-  const sel = document.getElementById('pag_divcc_sel');
-  if (!sel) return;
-  const disponiveis = _pagCCsDisponiveis();
-  if (!disponiveis.length) {
-    sel.innerHTML = '<option value="">Selecione a empresa acima primeiro...</option>';
+/* -- Divisão por Centro de Custo em Contas a Pagar: mesmo padrão typeahead +
+   medição do modal "Divisão por Contrato" de Despesas já lançadas (rdcc*).
+   Antes era um <select> fixo (não filtrava digitando) e só deixava escolher
+   cada Centro de Custo uma vez — impedia dividir uma mesma conta em duas
+   partes do MESMO contrato/CC com valores diferentes (ex.: uma medição e
+   outra). Corrigido em 04/09/2026: campo de texto com busca (igual ao CC
+   principal do formulário, escopado à empresa escolhida) + campo de Nº de
+   Medição opcional, e o "já está na divisão" agora compara CC+Medição juntos,
+   não só o CC. -- */
+function pagDivccCCsDisponiveis() { return _pagCCsDisponiveis(); }
+function pagDivccFiltrarCCs(texto) {
+  const dd = document.getElementById('pag_divcc_cc_dropdown');
+  if (!dd) return;
+  const empresa = (document.getElementById('pag_empresa') || {}).value || '';
+  if (!empresa) {
+    dd.innerHTML = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Selecione a empresa acima primeiro...</div>';
+    dd.style.display = 'block';
     return;
   }
-  sel.innerHTML = '<option value="">Selecione o Centro de Custo...</option>' +
-    disponiveis.map(c => `<option value="${(c.id+' · '+c.contrato).replace(/"/g,'&quot;')}">${c.id} · ${c.contrato}</option>`).join('');
+  const t = (texto || '').trim().toLowerCase();
+  const disponiveis = pagDivccCCsDisponiveis();
+  const matches = (t ? disponiveis.filter(c => (c.id + ' ' + c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0, 40);
+  let html = matches.map(c => {
+    const label = (c.id + ' · ' + c.contrato).replace(/'/g, "\\'");
+    return '<div onclick="pagDivccSelecionarCC(\'' + label + '\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>' + c.id + '</strong> <span style="color:var(--text-muted)">· ' + c.contrato + '</span>' +
+      '</div>';
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum centro de custo encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function pagDivccFecharDropdownCC() {
+  const dd = document.getElementById('pag_divcc_cc_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+function pagDivccSelecionarCC(valor) {
+  const inp = document.getElementById('pag_divcc_cc_input'); if (inp) inp.value = valor;
+  const hid = document.getElementById('pag_divcc_cc'); if (hid) hid.value = valor;
+  pagDivccFecharDropdownCC();
+  pagDivccAtualizarMedicaoPorCC(valor);
+}
+/* -- Sugere (datalist) as medições em aberto do contrato/CC escolhido, sem
+   travar quem quiser digitar um número livre (mesma lógica de
+   rdccAtualizarMedicaoPorCC/rdeAtualizarMedicaoPorCC). -- */
+async function pagDivccAtualizarMedicaoPorCC(cc) {
+  const dl = document.getElementById('pag_divcc_medicao_dl');
+  const hint = document.getElementById('pag_divcc_medicao_hint');
+  if (!cc) { if (dl) dl.innerHTML = ''; if (hint) hint.textContent = ''; return; }
+  if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  const ccId = _ccIdPuro(cc);
+  let medicoes = [];
+  try { medicoes = await medicoesParaCC(ccId); } catch (e) { medicoes = []; }
+  const doCC = medicoes.sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  if (doCC.length) {
+    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao || ''} (${m.Status || ''})</option>`).join('');
+    const abertas = doCC.filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status));
+    if (hint) hint.textContent = abertas.length
+      ? `Medições em aberto: ${abertas.map(m => m.NumMedicao).join(', ')}.`
+      : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+    return;
+  }
+  if (dl) dl.innerHTML = '';
+  if (hint) hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.';
 }
 
 function pagToggleDivisaoCC() {
@@ -5592,7 +5661,6 @@ function pagToggleDivisaoCC() {
   const editor = document.getElementById('pag_divisaocc_editor');
   if (chk && chk.checked) {
     if (editor) editor.style.display = 'block';
-    pagAtualizarSelectDivisaoCC();
     pagRenderizarDivisaoCC();
   } else {
     if (editor) editor.style.display = 'none';
@@ -5600,15 +5668,19 @@ function pagToggleDivisaoCC() {
 }
 
 function pagAdicionarDivisaoCC() {
-  const cc = (document.getElementById('pag_divcc_sel')||{}).value;
+  const cc = (document.getElementById('pag_divcc_cc')||{}).value;
+  const medicao = (document.getElementById('pag_divcc_medicao')||{}).value.trim();
   const valor = rdMoedaParaNumero((document.getElementById('pag_divcc_valor')||{}).value);
   if (!cc) { showToast('⚠️ Selecione o Centro de Custo.'); return; }
   if (!valor) { showToast('⚠️ Informe o valor deste Centro de Custo.'); return; }
   window._pagDivisaoCC = window._pagDivisaoCC || [];
-  if (window._pagDivisaoCC.some(d => d.cc === cc)) { showToast('⚠️ Esse Centro de Custo já está na divisão — remova antes de adicionar de novo.'); return; }
-  window._pagDivisaoCC.push({ cc, valor });
-  const selEl = document.getElementById('pag_divcc_sel'); if (selEl) selEl.selectedIndex = 0;
+  if (window._pagDivisaoCC.some(d => d.cc === cc && (d.medicao||'') === medicao)) { showToast('⚠️ Esse Centro de Custo (com essa mesma Medição) já está na divisão — remova antes de adicionar de novo, ou informe uma Medição diferente.'); return; }
+  window._pagDivisaoCC.push({ cc, medicao, valor });
+  const ccInp = document.getElementById('pag_divcc_cc_input'); if (ccInp) ccInp.value = '';
+  const ccHid = document.getElementById('pag_divcc_cc'); if (ccHid) ccHid.value = '';
+  const medEl = document.getElementById('pag_divcc_medicao'); if (medEl) medEl.value = '';
   const valorEl = document.getElementById('pag_divcc_valor'); if (valorEl) valorEl.value = '';
+  const hint = document.getElementById('pag_divcc_medicao_hint'); if (hint) hint.textContent = '';
   pagRenderizarDivisaoCC();
 }
 
@@ -5625,7 +5697,7 @@ function pagRenderizarDivisaoCC() {
   const itens = window._pagDivisaoCC || [];
   lista.innerHTML = itens.map((d,i) => `
     <div style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:6px 10px;border-radius:8px;font-size:.8rem">
-      <span style="flex:1">🧩 ${d.cc}</span>
+      <span style="flex:1">🧩 ${d.cc}${d.medicao ? ` <span style="color:var(--text-muted)">— Medição ${d.medicao}</span>` : ''}</span>
       <span style="font-weight:700">R$ ${rdNumeroParaMoeda(d.valor)}</span>
       <span style="cursor:pointer;color:var(--text-muted)" onclick="pagRemoverDivisaoCC(${i})" title="Remover">✕</span>
     </div>`).join('') || '<div style="font-size:.75rem;color:var(--text-muted)">Nenhum Centro de Custo adicionado ainda.</div>';
@@ -13878,7 +13950,7 @@ function medicaoPrazosCamposHtml(dadosForm, nomeFnCampo) {
 function medicaoPrazosTimelineHtml(registro) {
   const fmtBR = iso => { try { return new Date(iso + 'T12:00').toLocaleDateString('pt-BR'); } catch (e) { return iso; } };
   const statusAtualIdx = MEDICAO_ETAPAS.findIndex(e => e.status === (registro.Status || ''));
-  return `<div style="display:flex;align-items:center;gap:0" title="Linha do tempo do BM">
+  const dots = `<div style="display:flex;align-items:center;gap:0" title="Linha do tempo do BM — passe o mouse em cada bolinha pra ver a data">
     ${MEDICAO_ETAPAS.map((e, i) => {
       const data = registro[e.campoDataSalvo];
       const atingida = !!data;
@@ -13887,6 +13959,16 @@ function medicaoPrazosTimelineHtml(registro) {
       return `${i > 0 ? `<div style="width:9px;height:2px;background:${(atingida && !!registro[MEDICAO_ETAPAS[i - 1].campoDataSalvo]) ? '#a8c9a8' : '#e3e3dc'}"></div>` : ''}<div title="${e.emoji} ${e.label}${data ? ': ' + fmtBR(data) : ' — ainda não'}" style="width:8px;height:8px;border-radius:50%;background:${cor};${atual ? 'box-shadow:0 0 0 2px rgba(45,140,90,.25)' : ''};flex-shrink:0"></div>`;
     }).join('')}
   </div>`;
+  // Datas de cada etapa já atingida, por extenso (abreviado dd/mm) — sem isso
+  // a única forma de ver a data era passar o mouse em cima da bolinha, o que
+  // não é óbvio (e nem funciona em celular). Pedido em 04/09/2026. Só lista
+  // as etapas que já têm data (pula as futuras, senão fica poluído de "—").
+  const fmtCurto = iso => { try { const d = new Date(iso + 'T12:00'); return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0'); } catch (e) { return iso; } };
+  const alcancadas = MEDICAO_ETAPAS.filter(e => registro[e.campoDataSalvo]);
+  const datasTxt = alcancadas.length
+    ? `<div style="font-size:.65rem;color:var(--text-muted);margin-top:2px;white-space:nowrap">${alcancadas.map(e => e.emoji + ' ' + fmtCurto(registro[e.campoDataSalvo])).join('  ')}</div>`
+    : '';
+  return dots + datasTxt;
 }
 
 // Seed inicial (só usado na 1ª vez que a tabela 'MedicoesContratosEnergisa' é lida
@@ -14309,23 +14391,33 @@ function cmedVisualizar(id) {
   const itens = Array.isArray(m.Itens) && m.Itens.length ? m.Itens : [{ desc: m.Descricao || '', obs: m.Obs || '', quanti: 1, unid: '', valorUnit: m.Valor || 0 }];
   const fmt = v => 'R$ ' + (parseFloat(v) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const linha = (label, val) => `<div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:12px"><span style="color:var(--text-muted);font-size:.78rem">${label}</span><span style="font-weight:600;font-size:.85rem;text-align:right">${val}</span></div>`;
+  const fmtData = iso => { try { return new Date(iso + 'T12:00').toLocaleDateString('pt-BR'); } catch (e) { return '—'; } };
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
-    <div class="modal-box" style="max-width:520px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+    <div class="modal-box" style="max-width:680px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding:20px 20px 0">
         <h3 style="margin:0">💰 Medição BM ${m.NumeroBM || ''}</h3>
         <span style="cursor:pointer;font-size:1.2rem" onclick="this.closest('.modal-overlay').remove()">✕</span>
       </div>
+      <div class="modal-body">
       ${linha('Contrato', dc ? dc.numero : m.ContratoChave)}
-      ${linha('Data', m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—')}
+      ${linha('Data', m.Data ? fmtData(m.Data) : '—')}
       ${linha('OS', m.NumeroOS || m.NF || '—')}
       ${linha('Status', m.Status || '—')}
       ${linha('Valor Total', fmt(m.Valor))}
+      <div style="margin-top:14px;margin-bottom:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">📅 Linha do Tempo — data de cada etapa</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:6px">
+        ${MEDICAO_ETAPAS.map(e => `<div style="background:var(--surface2);border-radius:8px;padding:8px 10px">
+          <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em">${e.emoji} ${e.label}</div>
+          <div style="font-size:.85rem;font-weight:700;margin-top:2px">${m[e.campoDataSalvo] ? fmtData(m[e.campoDataSalvo]) : '—'}</div>
+        </div>`).join('')}
+      </div>
       ${itens.length ? `<div style="margin-top:12px;margin-bottom:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Serviços do Escopo</div>
         <div style="font-size:.78rem">${itens.map(it => `<div style="padding:6px 0;border-bottom:1px solid var(--border)">${it.desc || '—'} — ${it.quanti || 0} ${it.unid || ''} × ${fmt(it.valorUnit)} = <strong>${fmt(cmedCalcularSubtotalItem(it))}</strong>${it.obs ? `<div style="font-style:italic;color:var(--text-muted);margin-top:2px">${it.obs}</div>` : ''}${(it.subitens || []).filter(s => s && (s.desc||'').trim()).map(s => `<div style="color:#a05a28;margin-top:2px">+ ${s.desc}: ${fmt(s.valor)}</div>`).join('')}</div>`).join('')}</div>` : ''}
       ${m.Obs ? `<div style="margin-top:12px;font-size:.78rem;color:var(--text-muted)"><strong>Observações gerais:</strong> ${m.Obs}</div>` : ''}
-      <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 20px 20px">
         <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="cmedExportarPDFUm(${m.Id})">📄 PDF</button>
         <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="cmedExportarExcelUm(${m.Id})">📊 Excel</button>
         <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="this.closest('.modal-overlay').remove()">Fechar</button>
