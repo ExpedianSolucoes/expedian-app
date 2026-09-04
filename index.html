@@ -29817,16 +29817,30 @@ function faunaCarregarFotosMultiplas(event) {
   event.target.value = '';
 }
 
+/* -- Usa dbLerComEtag + checagem de "sucesso" (em vez de dbLer puro) — mesmo
+   padrão já usado em flashCarregarHistorico/ncCarregarHistorico. dbLer()
+   sozinho devolve [] tanto quando a tabela está de fato vazia quanto quando
+   a leitura FALHA (rede instável, ou — o caso mais provável aqui — o
+   arquivo ChecklistFauna.json/FlashReportsFauna.json ficou grande demais
+   (fotos embutidas em base64, dezenas de MB) e o fetch no navegador demora
+   demais ou falha); sem essa distinção, uma falha de leitura sobrescrevia
+   silenciosamente o histórico em memória (e o cache local) com uma lista
+   vazia — fazendo TODOS os registros "sumirem" da tela mesmo intactos no
+   OneDrive. Bug relatado em 04/09/2026 ("não está aparecendo nem 364 nem
+   Jirau"), mesma causa raiz já documentada em dbLerComEtag/_dbGravarComRetry
+   pro Flash Report de Fauna em 21/08. -- */
 async function faunaCarregarHistorico(forcar) {
   if (window._faunaHistorico !== null && !forcar) return;
   let cacheLocal = [];
   try { cacheLocal = JSON.parse(localStorage.getItem('fauna_historico_cache') || '[]'); } catch(e) { cacheLocal = []; }
   if (window._faunaHistorico === null) window._faunaHistorico = cacheLocal;
   try {
-    const lista = await dbLer('ChecklistFauna');
-    if (Array.isArray(lista)) {
+    const { lista, sucesso } = await dbLerComEtag('ChecklistFauna');
+    if (sucesso && Array.isArray(lista)) {
       window._faunaHistorico = lista;
       try { localStorage.setItem('fauna_historico_cache', JSON.stringify(lista)); } catch(e) {}
+    } else {
+      console.warn('[Fauna] Falha ao buscar do OneDrive — mantendo cache local, nada foi apagado.');
     }
   } catch(e) { console.warn('[Fauna] Falha ao carregar histórico, usando cache local.', e); }
   navigate('checklist_fauna');
@@ -30453,16 +30467,24 @@ function faunaFlashCarregarFotosMultiplas(event) {
   event.target.value = '';
 }
 
+/* -- Usa dbLerComEtag + checagem de "sucesso" (mesma correção aplicada em
+   faunaCarregarHistorico logo acima) — o FlashReportsFauna.json está por
+   volta de 33MB (fotos ainda embutidas em base64, task pendente de
+   externalizar), então uma leitura que falha/expira no navegador é bem
+   provável, e sem essa checagem apagava o histórico em memória com uma
+   lista vazia mesmo os dados estando intactos no OneDrive. -- */
 async function faunaFlashCarregarHistorico(forcar) {
   if (window._faunaFlashHistorico !== null && !forcar) return;
   let cacheLocal = [];
   try { cacheLocal = JSON.parse(localStorage.getItem('fauna_flash_historico_cache') || '[]'); } catch(e) { cacheLocal = []; }
   if (window._faunaFlashHistorico === null) window._faunaFlashHistorico = cacheLocal;
   try {
-    const lista = await dbLer('FlashReportsFauna');
-    if (Array.isArray(lista)) {
+    const { lista, sucesso } = await dbLerComEtag('FlashReportsFauna');
+    if (sucesso && Array.isArray(lista)) {
       window._faunaFlashHistorico = lista;
       try { localStorage.setItem('fauna_flash_historico_cache', JSON.stringify(lista)); } catch(e) {}
+    } else {
+      console.warn('[Flash Report Fauna] Falha ao buscar do OneDrive — mantendo cache local, nada foi apagado.');
     }
   } catch(e) { console.warn('[Flash Report Fauna] Falha ao carregar histórico, usando cache local.', e); }
   navigate('checklist_fauna');
@@ -30527,6 +30549,8 @@ async function faunaFlashSalvar() {
   const d = window._faunaFlashData;
   if (!d.data) { showToast('⚠️ Informe a data do relatório.'); return; }
   const editandoId = window._faunaFlashRegistroAtualId;
+  showSyncStatus('Enviando fotos...');
+  const fotosParaSalvar = await faunaFlashPrepararFotosParaSalvar(d.fotos || [], d.data);
   const registro = {
     Title: 'FR-' + (d.numero || '') + ' - Flash Report Fauna - ' + d.data,
     numero: d.numero || '', data: d.data || '', empreendimento: d.empreendimento || '', cliente: d.cliente || '', trechoFrente: d.trechoFrente || '',
@@ -30534,7 +30558,7 @@ async function faunaFlashSalvar() {
     atividadesExecutadas: d.atividadesExecutadas || '', registroFauna: d.registroFauna || '',
     ocorrencias: d.ocorrencias || '', previsaoProximoDia: d.previsaoProximoDia || '',
     responsavelNome: d.responsavelNome || '', responsavelCargo: d.responsavelCargo || '',
-    fotos: d.fotos || [],
+    fotos: fotosParaSalvar,
   };
   showSyncStatus('Salvando Flash Report de Fauna...');
   let ok;
@@ -30551,15 +30575,18 @@ async function faunaFlashSalvar() {
   if (ok) { window._faunaFlashMostrarForm = false; window._faunaFlashRegistroAtualId = null; faunaFlashNovoForm(); await faunaFlashCarregarHistorico(true); }
 }
 
-function faunaFlashEditarRegistro(id) {
+async function faunaFlashEditarRegistro(id) {
   const f = (window._faunaFlashHistorico || []).find(r => r.Id === id);
   if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
+  showSyncStatus('Carregando fotos...');
+  const fotosHidratadas = await faunaFlashHidratarFotos(f.fotos || []);
+  showSyncStatus('', '', 1);
   window._faunaFlashData = {
     numero: f.numero || '', data: f.data || '', empreendimento: f.empreendimento || '', cliente: f.cliente || '', trechoFrente: f.trechoFrente || '', condicaoClimatica: f.condicaoClimatica || 'Ensolarado',
     fase: f.fase || '', equipe: f.equipe || '', atividadesExecutadas: f.atividadesExecutadas || '', registroFauna: f.registroFauna || '',
     ocorrencias: f.ocorrencias || '', previsaoProximoDia: f.previsaoProximoDia || '',
     responsavelNome: f.responsavelNome || '', responsavelCargo: f.responsavelCargo || '',
-    fotos: (f.fotos || []).map(x => ({ ...x })),
+    fotos: fotosHidratadas.map(x => ({ ...x })),
   };
   window._faunaFlashRegistroAtualId = id;
   window._faunaFlashMostrarForm = true;
@@ -30713,6 +30740,7 @@ async function faunaFlashVerRegistro(id) {
   const f = (window._faunaFlashHistorico || []).find(r => r.Id === id);
   if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
   showSyncStatus('Gerando PDF...');
+  await faunaFlashHidratarFotosEmLugar(f);
   const doc = await _faunaFlashGerarDoc(f);
   showSyncStatus('PDF gerado!', 'ok', 2000);
   window.open(doc.output('bloburl'), '_blank');
@@ -30723,6 +30751,7 @@ async function faunaFlashExportarRegistro(id) {
   const f = (window._faunaFlashHistorico || []).find(r => r.Id === id);
   if (!f) { showToast('⚠️ Registro não encontrado.'); return; }
   showSyncStatus('Gerando PDF...');
+  await faunaFlashHidratarFotosEmLugar(f);
   const doc = await _faunaFlashGerarDoc(f);
   showSyncStatus('PDF gerado!', 'ok', 2000);
   doc.save('FlashReport_FR-' + (f.numero||'') + '_' + faunaSlugEmpreendimento(f.empreendimento) + '_' + (f.data||'') + '.pdf');
@@ -30780,6 +30809,8 @@ function pageFaunaFlash() {
     <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
       <div style="font-size:.85rem;color:var(--text-muted)">Relatório diário de acompanhamento de fauna silvestre. Escolha o empreendimento para começar:</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${(window._faunaFlashHistorico || []).some(r => (r.fotos || []).some(f => f && f.dataUrl)) ? `
+        <button class="btn-secondary" style="font-size:.75rem" onclick="faunaFlashMigrarFotosAntigasParaOneDrive()" title="Move as fotos que ainda estão embutidas nos registros antigos para arquivos separados no OneDrive, reduzindo bastante o tamanho do arquivo principal">🧹 Migrar fotos antigas</button>` : ''}
         ${FAUNA_EMPREENDIMENTOS.map(e => `<button class="btn-primary" onclick="faunaFlashAbrirNovo('${e.nome.replace(/'/g, "\\'")}')">➕ ${e.nome}</button>`).join('')}
       </div>
     </div>
@@ -40299,6 +40330,7 @@ const OD_FOLDERS = {
   solicitacoes: 'Solicitacoes/Anexos',
   fornecedoresEnergisa: 'Energisa/FornecedoresLegais',
   flashReportsFotos: 'Energisa/FlashReports/Fotos',
+  flashReportsFaunaFotos: 'Fauna/FlashReports/Fotos',
   licenciamentoProcessos: 'Licenciamento/Processos',
 };
 
@@ -41287,6 +41319,152 @@ async function flashMigrarFotosAntigasParaOneDrive() {
     showSyncStatus('Falha ao salvar', 'err', 5000);
   }
   navigate('checklist_flash');
+}
+
+/* -- Flash Report Fauna: mesmo esquema acima (fotos em arquivo próprio no
+   OneDrive, não embutidas no JSON) — aplicado em 04/09/2026 depois do
+   FlashReportsFauna.json ter chegado a ~33MB (36 registros, quase tudo
+   foto em base64), o que causava falha silenciosa de leitura (dbLer não
+   distinguia "erro de leitura" de "tabela vazia") e fazia a tela mostrar
+   "nenhum Flash Report" mesmo com os dados intactos no arquivo. -- */
+async function faunaFlashUploadFotoParaOneDrive(dataUrl, nomeArquivo) {
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const resultado = await uploadParaOneDrive(blob, OD_FOLDERS.flashReportsFaunaFotos, nomeArquivo, { retornarNome: true, conflictBehavior: 'rename' });
+    if (!resultado || typeof resultado !== 'object') return null;
+    return { id: resultado.id, driveId: resultado.driveId, nome: resultado.nome, url: resultado.url };
+  } catch (e) {
+    console.warn('[Flash Report Fauna] Falha ao enviar foto pro OneDrive:', e);
+    return null;
+  }
+}
+
+window._faunaFlashFotoHidratacaoCache = window._faunaFlashFotoHidratacaoCache || {};
+async function faunaFlashHidratarFoto(foto) {
+  if (!foto || foto.dataUrl) return foto;
+  if (foto.id && foto.driveId) {
+    const chave = foto.driveId + '/' + foto.id;
+    if (window._faunaFlashFotoHidratacaoCache[chave]) {
+      return Object.assign({}, foto, { dataUrl: window._faunaFlashFotoHidratacaoCache[chave] });
+    }
+    try {
+      const token = await getOneDriveToken();
+      if (!token) return foto;
+      const url = 'https://graph.microsoft.com/v1.0/drives/' + foto.driveId + '/items/' + foto.id + '/content';
+      const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!resp.ok) { console.warn('[Flash Report Fauna] Falha ao baixar foto', foto.id, resp.status); return foto; }
+      const blob = await resp.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      window._faunaFlashFotoHidratacaoCache[chave] = dataUrl;
+      return Object.assign({}, foto, { dataUrl });
+    } catch (e) {
+      console.warn('[Flash Report Fauna] Erro ao hidratar foto:', e);
+      return foto;
+    }
+  }
+  if (foto.nome) {
+    const chave = 'nome:' + foto.nome;
+    if (window._faunaFlashFotoHidratacaoCache[chave]) {
+      return Object.assign({}, foto, { dataUrl: window._faunaFlashFotoHidratacaoCache[chave] });
+    }
+    try {
+      const token = await getOneDriveToken();
+      if (!token) return foto;
+      const pasta = await _resolverRaizPara(OD_FOLDERS.flashReportsFaunaFotos, false, token);
+      if (!pasta) return foto;
+      const subId = await garantirPastaOneDrive(token, pasta.driveId, pasta.itemId, OD_FOLDERS.flashReportsFaunaFotos);
+      if (!subId) return foto;
+      const url = 'https://graph.microsoft.com/v1.0/drives/' + pasta.driveId + '/items/' + subId + ':/' + encodeURIComponent(foto.nome) + ':/content';
+      const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!resp.ok) { console.warn('[Flash Report Fauna] Falha ao baixar foto (por nome)', foto.nome, resp.status); return foto; }
+      const blob = await resp.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      window._faunaFlashFotoHidratacaoCache[chave] = dataUrl;
+      return Object.assign({}, foto, { dataUrl });
+    } catch (e) {
+      console.warn('[Flash Report Fauna] Erro ao hidratar foto (por nome):', e);
+      return foto;
+    }
+  }
+  return foto;
+}
+async function faunaFlashHidratarFotos(fotos) {
+  if (!Array.isArray(fotos) || !fotos.length) return fotos || [];
+  return Promise.all(fotos.map(faunaFlashHidratarFoto));
+}
+async function faunaFlashHidratarFotosEmLugar(objComFotos) {
+  if (!objComFotos || !Array.isArray(objComFotos.fotos) || !objComFotos.fotos.length) return objComFotos;
+  const hidratadas = await faunaFlashHidratarFotos(objComFotos.fotos);
+  for (let i = 0; i < objComFotos.fotos.length; i++) objComFotos.fotos[i] = hidratadas[i];
+  return objComFotos;
+}
+async function faunaFlashPrepararFotosParaSalvar(fotos, dataStr) {
+  if (!Array.isArray(fotos) || !fotos.length) return [];
+  return Promise.all(fotos.map(async (f, i) => {
+    if (!f || !f.dataUrl) return f;
+    const nomeArquivo = 'FRFauna_' + (dataStr || 'sem-data') + '_' + Date.now() + '_' + i + '.jpg';
+    const enviado = await faunaFlashUploadFotoParaOneDrive(f.dataUrl, nomeArquivo);
+    if (!enviado) {
+      console.warn('[Flash Report Fauna] Falha ao enviar foto pro OneDrive, mantendo inline:', nomeArquivo);
+      return f;
+    }
+    return { desc: f.desc || '', horizontal: !!f.horizontal, url: enviado.url, id: enviado.id, driveId: enviado.driveId, nome: enviado.nome };
+  }));
+}
+
+/* -- Migração única (botão "🧹 Migrar fotos antigas", só aparece quando
+   existe algo pra migrar) — extrai as fotos já embutidas (dataUrl) dos
+   Flash Reports de Fauna já salvos e manda pro OneDrive como arquivos
+   separados, do mesmo jeito que salvamentos novos já fazem. Existe pra
+   encolher de vez o FlashReportsFauna.json (chegou a ~33MB). Usa
+   _dbGravarComRetry pra não perder gravações concorrentes durante a
+   migração. As fotos já enviadas não se perdem mesmo se a gravação final
+   falhar: rodar de novo só reenvia o que ainda tiver dataUrl. -- */
+async function faunaFlashMigrarFotosAntigasParaOneDrive() {
+  showSyncStatus('Verificando Flash Reports de Fauna...');
+  const { lista, sucesso } = await dbLerComEtag('FlashReportsFauna');
+  if (!sucesso) { showToast('❌ Não consegui ler o histórico agora — tente de novo em instantes.'); showSyncStatus('', '', 1); return; }
+  const pendentes = lista.filter(r => (r.fotos || []).some(f => f && f.dataUrl));
+  if (!pendentes.length) { showToast('✅ Nenhum Flash Report de Fauna com fotos embutidas — já está tudo externalizado.'); showSyncStatus('', '', 1); navigate('checklist_fauna'); return; }
+  const totalFotos = pendentes.reduce((s, r) => s + (r.fotos || []).filter(f => f && f.dataUrl).length, 0);
+  if (!confirm('Migrar fotos de ' + pendentes.length + ' Flash Report(s) de Fauna (' + totalFotos + ' fotos) para arquivos separados no OneDrive?\n\nIsso reduz bastante o tamanho do arquivo principal. Pode levar alguns minutos — não feche esta aba enquanto estiver rodando.')) return;
+
+  const migradas = {};
+  for (let i = 0; i < pendentes.length; i++) {
+    const r = pendentes[i];
+    showSyncStatus('Enviando fotos... (' + (i + 1) + '/' + pendentes.length + ')');
+    try {
+      migradas[r.Id] = await faunaFlashPrepararFotosParaSalvar(r.fotos || [], r.data);
+    } catch (e) {
+      console.warn('[Flash Report Fauna] Falha ao migrar fotos do registro', r.Id, e);
+    }
+  }
+
+  showSyncStatus('Salvando histórico atualizado...');
+  const { ok, lista: listaFinal } = await _dbGravarComRetry('FlashReportsFauna', listaFresca =>
+    listaFresca.map(r => migradas[r.Id] ? { ...r, fotos: migradas[r.Id] } : r)
+  );
+
+  if (ok) {
+    window._faunaFlashHistorico = listaFinal;
+    try { localStorage.setItem('fauna_flash_historico_cache', JSON.stringify(listaFinal)); } catch (e) {}
+    showToast('✅ Fotos migradas! O arquivo principal deve ficar bem menor agora.');
+    showSyncStatus('Migração concluída!', 'ok', 3000);
+  } else {
+    showToast('⚠️ As fotos já foram enviadas ao OneDrive, mas não consegui salvar o histórico agora. Rode a migração de novo em instantes.');
+    showSyncStatus('Falha ao salvar', 'err', 5000);
+  }
+  navigate('checklist_fauna');
 }
 
 /* =============================================================
