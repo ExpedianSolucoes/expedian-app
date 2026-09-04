@@ -14296,6 +14296,7 @@ function cmedNovoForm(chave) {
     contratoChave: chave, numeroBM: '', data: '', status: 'Enviada', numeroOS: '', obsGeral: '',
     itens: [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }],
     dataElaboracao: '', dataEnvio: '', dataAprovacao: '', dataFaturamento: '', dataRecebimento: '', numeroNF: '',
+    revisoes: [],
   };
 }
 /* -- Wrapper do onchange do Status: além de trocar o valor, preenche
@@ -14320,6 +14321,25 @@ function cmedFecharForm() {
   cmedAtualizarBloco();
 }
 
+/* -- Revisões/retificações do BM — lista livre (Data + Motivo), pra
+   registrar quando um BM já emitido precisou ser corrigido/retificado
+   depois. Mesmo padrão de add/remove usado nos subitens de cobrança extra.
+   Pedido em 04/09/2026. -- */
+function cmedRevisaoAdicionar() {
+  window._cmedData.revisoes = window._cmedData.revisoes || [];
+  window._cmedData.revisoes.push({ data: '', motivo: '' });
+  cmedAtualizarBloco();
+}
+function cmedRevisaoRemover(idx) {
+  if (!window._cmedData.revisoes) return;
+  window._cmedData.revisoes.splice(idx, 1);
+  cmedAtualizarBloco();
+}
+function cmedRevisaoCampo(idx, campo, valor) {
+  if (!window._cmedData.revisoes || !window._cmedData.revisoes[idx]) return;
+  window._cmedData.revisoes[idx][campo] = valor;
+}
+
 /* -- Registros antigos (seed dos 18 BMs já emitidos, ou qualquer medição salva
    antes desta mudança) não têm 'Itens' — só Descricao/Valor/Obs num campo só.
    Pra não perder esse histórico, embrulha num item único '_outro' com o texto
@@ -14336,6 +14356,7 @@ function cmedEditar(id) {
     status: m.Status || 'Enviada', numeroOS: m.NumeroOS || m.NF || '', obsGeral: m.Obs || '', itens,
     dataElaboracao: m.DataElaboracao || '', dataEnvio: m.DataEnvio || '', dataAprovacao: m.DataAprovacao || '',
     dataFaturamento: m.DataFaturamento || '', dataRecebimento: m.DataRecebimento || '', numeroNF: m.NumeroNF || '',
+    revisoes: Array.isArray(m.Revisoes) ? JSON.parse(JSON.stringify(m.Revisoes)) : [],
   };
   window._cmedRegistroAtualId = id;
   window._cmedMostrarForm = true;
@@ -14375,6 +14396,12 @@ async function cmedSalvar() {
     DataElaboracao: d.dataElaboracao || '', DataEnvio: d.dataEnvio || '', DataAprovacao: d.dataAprovacao || '',
     DataFaturamento: d.dataFaturamento || '', DataRecebimento: d.dataRecebimento || '',
     NumeroNF: d.numeroNF || '',
+    // Revisões/retificações do BM DEPOIS de emitido (ex: Energisa pediu ajuste
+    // de quantidade, ou algum valor foi corrigido após o envio original) —
+    // fica como uma lista porque um BM pode ser retificado mais de uma vez.
+    // Pedido em 04/09/2026: "campo... de revisão para adicionar data da
+    // revisão ou retificação de medições".
+    Revisoes: (d.revisoes || []).filter(r => r && r.data).map(r => ({ data: r.data, motivo: r.motivo || '' })),
   };
   showSyncStatus('Salvando medição...');
   const editandoId = window._cmedRegistroAtualId;
@@ -14486,7 +14513,7 @@ function cmedHtmlHistorico(lista, chave) {
         <tr>
           <td style="padding:6px 8px">${m.NumeroBM}</td>
           <td style="padding:6px 8px">${dataBR(m.Data)}</td>
-          <td style="padding:6px 8px">${m.Descricao || '—'}</td>
+          <td style="padding:6px 8px">${m.Descricao || '—'}${(m.Revisoes && m.Revisoes.length) ? ` <span style="color:var(--blue)" title="${m.Revisoes.length} revisão(ões)/retificação(ões) — veja em 👁️">🔁${m.Revisoes.length}</span>` : ''}</td>
           <td style="padding:6px 8px;font-weight:700">R$ ${(parseFloat(m.Valor) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
           <td style="padding:6px 8px"><div style="color:${CMED_STATUS_COR[m.Status] || 'inherit'};font-weight:700">${m.Status}</div></td>
           <td style="padding:6px 8px">${m.NumeroOS || m.NF || '—'}</td>
@@ -14616,6 +14643,8 @@ function cmedVisualizar(id) {
       ${itens.length ? `<div style="margin-top:12px;margin-bottom:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Serviços do Escopo</div>
         <div style="font-size:.78rem">${itens.map(it => `<div style="padding:6px 0;border-bottom:1px solid var(--border)">${it.desc || '—'} — ${it.quanti || 0} ${it.unid || ''} × ${fmt(it.valorUnit)} = <strong>${fmt(cmedCalcularSubtotalItem(it))}</strong>${it.obs ? `<div style="font-style:italic;color:var(--text-muted);margin-top:2px">${it.obs}</div>` : ''}${(it.subitens || []).filter(s => s && (s.desc||'').trim()).map(s => `<div style="color:#a05a28;margin-top:2px">+ ${s.desc}${s.quanti ? ` — ${s.quanti} ${s.unid || ''} × ${fmt(s.valorUnit)}` : ''}: ${fmt(cmedSubitemValorTotal(s))}</div>`).join('')}</div>`).join('')}</div>` : ''}
       ${m.Obs ? `<div style="margin-top:12px;font-size:.78rem;color:var(--text-muted)"><strong>Observações gerais:</strong> ${m.Obs}</div>` : ''}
+      ${(m.Revisoes && m.Revisoes.length) ? `<div style="margin-top:12px;margin-bottom:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">🔁 Revisões / Retificações</div>
+        <div style="font-size:.78rem">${m.Revisoes.map(r => `<div style="padding:4px 0;border-bottom:1px solid var(--border)"><strong>${r.data ? fmtData(r.data) : '—'}</strong>${r.motivo ? ' — ' + r.motivo : ''}</div>`).join('')}</div>` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 20px 20px">
         <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="cmedExportarPDFUm(${m.Id})">📄 PDF</button>
@@ -14859,6 +14888,26 @@ async function cmedGerarDoc(m, dc) {
   }
   y += obsBoxH + 0.5;
 
+  // Revisões/retificações — só aparece se o BM tiver alguma (pedido em
+  // 04/09/2026), listando data + motivo de cada uma.
+  if (m.Revisoes && m.Revisoes.length) {
+    const revLinhasTexto = m.Revisoes.map(r => {
+      const dataFmt = r.data ? (() => { try { return new Date(r.data + 'T12:00').toLocaleDateString('pt-BR'); } catch (e) { return r.data; } })() : '—';
+      return dataFmt + (r.motivo ? ' — ' + r.motivo : '');
+    });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
+    const revLines = revLinhasTexto.flatMap(t => doc.splitTextToSize(t, CW - 0.3));
+    const revBoxH = 0.5 + revLines.length * 0.36;
+    quebrarSeNecessario(revBoxH);
+    doc.setDrawColor(200, 190, 185); doc.setLineWidth(0.02); doc.rect(ML, y, CW, revBoxH);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(140, 120, 110);
+    doc.text('REVISÕES / RETIFICAÇÕES', ML + 0.15, y + 0.28);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(60, 60, 60);
+    let ry = y + 0.56;
+    revLines.forEach(ln => { doc.text(ln, ML + 0.15, ry); ry += 0.36; });
+    y += revBoxH + 0.5;
+  }
+
   // Assinaturas — 2 colunas: Contratante (Energisa) e Contratada (Expedian),
   // mesmo padrão visual do bloco de assinaturas do Contrato 2025022101
   // (linha em branco pra assinar na cópia impressa; sem canvas de assinatura
@@ -15031,6 +15080,17 @@ function cmedHtmlForm() {
     <div class="form-group" style="margin:0">
       <textarea rows="2" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:6px 8px;font-size:.8rem;background:var(--surface);resize:vertical" placeholder="Observação geral sobre este BM (opcional)" oninput="cmedCampo('obsGeral', this.value)">${d.obsGeral || ''}</textarea>
     </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title" style="margin-bottom:8px">🔁 Revisões / Retificações <span style="font-weight:400;font-size:.72rem;color:var(--text-muted)">(se este BM foi corrigido/retificado depois de emitido — pode registrar mais de uma)</span></div>
+    ${(d.revisoes || []).map((r, ri) => `
+    <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
+      <div class="form-group" style="margin:0"><label style="font-size:.66rem">Data da revisão</label><input type="date" value="${r.data || ''}" oninput="cmedRevisaoCampo(${ri},'data',this.value)"></div>
+      <div class="form-group" style="margin:0;flex:1"><label style="font-size:.66rem">Motivo da revisão/retificação</label><input type="text" value="${(r.motivo || '').replace(/"/g, '&quot;')}" oninput="cmedRevisaoCampo(${ri},'motivo',this.value)" placeholder="Ex: correção de quantidade solicitada pela Energisa"></div>
+      <span onclick="cmedRevisaoRemover(${ri})" style="cursor:pointer;color:var(--red);font-size:.85rem;margin-top:22px" title="Remover revisão">✕</span>
+    </div>`).join('')}
+    <button type="button" class="btn-secondary" style="font-size:.78rem;padding:6px 12px" onclick="cmedRevisaoAdicionar()">➕ Adicionar revisão</button>
   </div>
 
   <div style="display:flex;gap:8px;margin-top:8px">
