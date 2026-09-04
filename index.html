@@ -14732,22 +14732,36 @@ async function cmedGerarDoc(m, dc) {
     const subitensValidos = (it.subitens || []).filter(sub => sub && (sub.desc || '').trim());
     doc.setFont('helvetica', 'normal'); doc.setFontSize(obsFont);
     const subLinhasTexto = subitensValidos.map(sub => '+ ' + _semEmoji(sub.desc) + (sub.quanti ? ' — ' + sub.quanti + ' ' + (sub.unid || '') + ' × R$ ' + (parseFloat(sub.valorUnit) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '') + ': R$ ' + cmedSubitemValorTotal(sub).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    const subLines = subLinhasTexto.length ? subLinhasTexto.flatMap(t => doc.splitTextToSize(t, colDesc - 0.3)) : [];
     // Linha "Subtotal item N: R$ X" — SEMPRE aparece (não só quando tem
     // cobrança extra), pra não depender só da coluna "Valor Total" lá na
     // ponta pra achar o total de cada serviço, e ficar padronizado item a
     // item (item 1, item 2...). Quando tem cobrança extra, mostra a conta
     // detalhada (serviço + extras); quando não tem, só o valor. Pedido em
     // 04/09/2026: "deve haver uma linha subtotal item 1, subtotal item 2 e
-    // assim sucessivamente".
+    // assim sucessivamente". Fica numa linha PRÓPRIA (não misturada com as
+    // linhas de cobrança extra, que podem quebrar), alinhada à direita —
+    // mesma borda direita usada pelos valores da coluna "Valor Total" —
+    // pra nunca quebrar em duas linhas e ficar sempre enfileirada entre os
+    // itens. Pedido em 04/09/2026: "subtotal de item deve vir toda em uma
+    // linha justificada sem quebra de texto... fique do lado direito,
+    // sincronizado no alinhamento que já existe os valores totais".
     const baseItem = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
     const extrasItem = subitensValidos.reduce((s, sub) => s + cmedSubitemValorTotal(sub), 0);
     const totalItemLinha = baseItem + extrasItem;
-    subLinhasTexto.push('Subtotal item ' + (i + 1) + (subitensValidos.length ? ' (' + baseItem.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' + ' + extrasItem.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')' : '') + ': R$ ' + totalItemLinha.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-    const subLines = subLinhasTexto.length ? subLinhasTexto.flatMap(t => doc.splitTextToSize(t, colDesc - 0.3)) : [];
+    const subtotalTexto = 'Subtotal item ' + (i + 1) + (subitensValidos.length ? ' (' + baseItem.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' + ' + extrasItem.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')' : '') + ': R$ ' + totalItemLinha.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const xDireitaSubtotal = ML + CW - 0.15;
+    // Reduz a fonte até caber numa linha só dentro da largura da tabela
+    // (raro precisar, mas evita quebra se o item tiver muita cobrança extra
+    // somada a um Nº de item de 2 dígitos).
+    let subtotalFont = obsFont;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(subtotalFont);
+    while (subtotalFont > 5.5 && doc.getTextWidth(subtotalTexto) > CW - 0.3) { subtotalFont -= 0.5; doc.setFontSize(subtotalFont); }
     const descBlocoH = descLines.length * descLineH;
     const obsBlocoH = obsLines.length ? 0.12 + obsLines.length * obsLineH : 0;
-    const subBlocoH = subLines.length ? 0.12 + subLines.length * obsLineH : 0;
-    const rowHItem = Math.max(rowH, 0.3 + descBlocoH + obsBlocoH + subBlocoH);
+    const subExtrasBlocoH = subLines.length ? 0.12 + subLines.length * obsLineH : 0;
+    const subtotalBlocoH = 0.12 + lh(subtotalFont);
+    const rowHItem = Math.max(rowH, 0.3 + descBlocoH + obsBlocoH + subExtrasBlocoH + subtotalBlocoH);
     quebrarSeNecessario(rowHItem);
     if (i % 2 === 1) { doc.setFillColor(250, 248, 246); doc.rect(ML, y, CW, rowHItem, 'F'); }
     doc.setDrawColor(220, 213, 209); doc.setLineWidth(0.015); doc.rect(ML, y, CW, rowHItem);
@@ -14771,7 +14785,10 @@ async function cmedGerarDoc(m, dc) {
     if (subLines.length) {
       doc.setFont('helvetica', 'normal'); doc.setFontSize(obsFont); doc.setTextColor(150, 90, 40);
       doc.text(subLines, xs.desc + 0.15, blocoY + 0.12);
+      blocoY += 0.12 + subLines.length * obsLineH;
     }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(subtotalFont); doc.setTextColor(150, 90, 40);
+    doc.text(subtotalTexto, xDireitaSubtotal, blocoY + 0.12, { align: 'right' });
     y += rowHItem;
   });
   quebrarSeNecessario(rowH);
