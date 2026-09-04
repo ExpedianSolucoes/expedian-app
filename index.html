@@ -13933,6 +13933,13 @@ function medicaoPrazoAutoData(dadosForm, novoStatus) {
    passada por nome porque cmed e med guardam o form em variáveis globais
    diferentes). -- */
 function medicaoPrazosCamposHtml(dadosForm, nomeFnCampo) {
+  // Campo de Nº da Nota Fiscal só aparece a partir do momento em que o BM
+  // chega na etapa de Faturamento (dataFaturamento preenchida — que já
+  // acontece sozinho assim que o Status vira "NF emitida"), já que antes
+  // disso não existe NF nenhuma pra informar. Pedido em 04/09/2026: "quando
+  // colocar no status faturamento abrir campo para inserir número da nota
+  // fiscal".
+  const mostrarNF = !!dadosForm.dataFaturamento;
   return `
   <div class="card" style="margin-bottom:16px">
     <div class="card-title" style="margin-bottom:8px">📅 Linha do Tempo do BM <span style="font-weight:400;font-size:.72rem;color:var(--text-muted)">(preenchida automaticamente ao mudar o Status — pode corrigir à mão)</span></div>
@@ -13940,6 +13947,8 @@ function medicaoPrazosCamposHtml(dadosForm, nomeFnCampo) {
       ${MEDICAO_ETAPAS.map(e => `
       <div class="form-group" style="margin:0"><label>${e.emoji} ${e.label}</label><input type="date" value="${dadosForm[e.campoData] || ''}" onchange="${nomeFnCampo}('${e.campoData}', this.value)"></div>`).join('')}
     </div>
+    ${mostrarNF ? `
+    <div class="form-group" style="margin:12px 0 0"><label>🧾 Número da Nota Fiscal</label><input value="${(dadosForm.numeroNF || '').replace(/"/g, '&quot;')}" oninput="${nomeFnCampo}('numeroNF', this.value)" placeholder="Ex: 201/2026"></div>` : ''}
   </div>`;
 }
 /* -- Mini linha do tempo visual pro card/linha do histórico (registro já
@@ -14062,7 +14071,12 @@ function cmedSubitemRemover(idxItem, idxSub) {
    do contrato, puxa automaticamente a Unidade e o R$ Unitário daquele item
    — a pessoa só precisa informar o Quanti (quantas vezes isso aconteceu
    NESTE BM; não usa a quantidade total do contrato, que é outra coisa).
-   Pedido em 04/09/2026: "não aparece o quantitativo e o valor do escopo". -- */
+   Pedido em 04/09/2026: "não aparece o quantitativo e o valor do escopo".
+   Compara e grava só a Descrição "limpa" do escopo (sub.desc = escopo.
+   descricao), SEM o prefixo de "grupo" (ex: "🛣️ Pedágios — ") que a lista
+   de sugestão mostra — esse prefixo tem emoji, que o gerador de PDF não
+   sabe desenhar (saía caractere ilegível no PDF, reclamado em 04/09/2026:
+   "ficou caracteres identificáveis... nome de BR que não inseri"). -- */
 function cmedSubitemCampo(idxItem, idxSub, campo, valor) {
   const it = window._cmedData.itens && window._cmedData.itens[idxItem];
   if (!it || !Array.isArray(it.subitens) || !it.subitens[idxSub]) return;
@@ -14070,8 +14084,9 @@ function cmedSubitemCampo(idxItem, idxSub, campo, valor) {
   sub[campo] = valor;
   if (campo === 'desc') {
     const escopo = (ESCOPO_CONTRATUAL_ENERGISA[window._cmedData.contratoChave] || [])
-      .find(e => ((e.grupo ? e.grupo + ' — ' : '') + e.descricao).trim().toLowerCase() === (valor || '').trim().toLowerCase());
+      .find(e => e.descricao.trim().toLowerCase() === (valor || '').trim().toLowerCase());
     if (escopo) {
+      sub.desc = escopo.descricao;
       sub.unid = escopo.unidade;
       sub.valorUnit = escopo.valorUnitario;
       if (!sub.quanti) sub.quanti = 1;
@@ -14165,7 +14180,7 @@ function cmedNovoForm(chave) {
   window._cmedData = {
     contratoChave: chave, numeroBM: '', data: '', status: 'Enviada', numeroOS: '', obsGeral: '',
     itens: [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }],
-    dataElaboracao: '', dataEnvio: '', dataAprovacao: '', dataFaturamento: '', dataRecebimento: '',
+    dataElaboracao: '', dataEnvio: '', dataAprovacao: '', dataFaturamento: '', dataRecebimento: '', numeroNF: '',
   };
 }
 /* -- Wrapper do onchange do Status: além de trocar o valor, preenche
@@ -14205,7 +14220,7 @@ function cmedEditar(id) {
     contratoChave: m.ContratoChave, numeroBM: m.NumeroBM || '', data: m.Data || '',
     status: m.Status || 'Enviada', numeroOS: m.NumeroOS || m.NF || '', obsGeral: m.Obs || '', itens,
     dataElaboracao: m.DataElaboracao || '', dataEnvio: m.DataEnvio || '', dataAprovacao: m.DataAprovacao || '',
-    dataFaturamento: m.DataFaturamento || '', dataRecebimento: m.DataRecebimento || '',
+    dataFaturamento: m.DataFaturamento || '', dataRecebimento: m.DataRecebimento || '', numeroNF: m.NumeroNF || '',
   };
   window._cmedRegistroAtualId = id;
   window._cmedMostrarForm = true;
@@ -14244,6 +14259,7 @@ async function cmedSalvar() {
     // Linha do tempo de prazos (pedido em 04/09/2026) — ver MEDICAO_ETAPAS.
     DataElaboracao: d.dataElaboracao || '', DataEnvio: d.dataEnvio || '', DataAprovacao: d.dataAprovacao || '',
     DataFaturamento: d.dataFaturamento || '', DataRecebimento: d.dataRecebimento || '',
+    NumeroNF: d.numeroNF || '',
   };
   showSyncStatus('Salvando medição...');
   const editandoId = window._cmedRegistroAtualId;
@@ -14444,6 +14460,7 @@ function cmedVisualizar(id) {
       ${linha('Contrato', dc ? dc.numero : m.ContratoChave)}
       ${linha('Data', m.Data ? fmtData(m.Data) : '—')}
       ${linha('OS', m.NumeroOS || m.NF || '—')}
+      ${m.NumeroNF ? linha('Nota Fiscal', m.NumeroNF) : ''}
       ${linha('Status', m.Status || '—')}
       ${linha('Valor Total', fmt(m.Valor))}
       <div style="margin-top:14px;margin-bottom:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">📅 Linha do Tempo — data de cada etapa</div>
@@ -14524,9 +14541,15 @@ async function cmedGerarDoc(m, dc) {
     y += objetoH + 0.15;
   }
 
-  // Número da OS
+  // Número da OS (+ Número da NF, quando já emitida)
   quebrarSeNecessario(0.85);
-  campoBox(ML, CW, 0.85, 'Número da OS', m.NumeroOS || m.NF || '—', { bold: true });
+  if (m.NumeroNF) {
+    const colOS = CW * 0.5 - 0.08;
+    campoBox(ML, colOS, 0.85, 'Número da OS', m.NumeroOS || m.NF || '—', { bold: true });
+    campoBox(ML + colOS + 0.16, CW - colOS - 0.16, 0.85, 'Número da Nota Fiscal', m.NumeroNF, { bold: true });
+  } else {
+    campoBox(ML, CW, 0.85, 'Número da OS', m.NumeroOS || m.NF || '—', { bold: true });
+  }
   y += 0.85 + 0.25;
 
   // Escopo dos serviços (tabela de itens)
@@ -14583,9 +14606,22 @@ async function cmedGerarDoc(m, dc) {
     // "+ Descrição ... R$ valor" logo abaixo da observação, e somadas ao
     // subtotal do item (coluna Valor Total) e ao Total Geral. Pedido em
     // 04/09/2026: nem todo serviço tem, então fica opcional por item.
+    // _semEmoji: o jsPDF (fonte helvetica padrão) não sabe desenhar emoji —
+    // se algum subitem antigo ainda tiver o prefixo de "grupo" do escopo
+    // (ex: "🛣️ Pedágios — ..."), tira esses caracteres antes de imprimir
+    // pra não sair glifo quebrado no PDF (reclamado em 04/09/2026).
+    const _semEmoji = s => String(s || '').replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}️‍]/gu, '').trim();
     const subitensValidos = (it.subitens || []).filter(sub => sub && (sub.desc || '').trim());
     doc.setFont('helvetica', 'normal'); doc.setFontSize(obsFont);
-    const subLinhasTexto = subitensValidos.map(sub => '+ ' + sub.desc + (sub.quanti ? ' — ' + sub.quanti + ' ' + (sub.unid || '') + ' × R$ ' + (parseFloat(sub.valorUnit) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '') + ': R$ ' + cmedSubitemValorTotal(sub).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    const subLinhasTexto = subitensValidos.map(sub => '+ ' + _semEmoji(sub.desc) + (sub.quanti ? ' — ' + sub.quanti + ' ' + (sub.unid || '') + ' × R$ ' + (parseFloat(sub.valorUnit) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '') + ': R$ ' + cmedSubitemValorTotal(sub).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    // Soma explícita "serviço + cobranças extras" logo abaixo, pra não
+    // depender só da coluna "Valor Total" lá na ponta pra enxergar o
+    // somatório do item quando ele tem cobrança extra. Pedido em 04/09/2026.
+    if (subitensValidos.length) {
+      const baseItem = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
+      const extrasItem = subitensValidos.reduce((s, sub) => s + cmedSubitemValorTotal(sub), 0);
+      subLinhasTexto.push('Subtotal do serviço (' + baseItem.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' + ' + extrasItem.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '): R$ ' + (baseItem + extrasItem).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    }
     const subLines = subLinhasTexto.length ? subLinhasTexto.flatMap(t => doc.splitTextToSize(t, colDesc - 0.3)) : [];
     const descBlocoH = descLines.length * descLineH;
     const obsBlocoH = obsLines.length ? 0.12 + obsLines.length * obsLineH : 0;
@@ -14768,7 +14804,7 @@ function cmedHtmlForm() {
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">📋 Serviços do Escopo Medidos neste BM <span style="font-weight:400;font-size:.72rem;color:var(--text-muted)">(Conforme Anexo 07 do Contrato — adicione quantos itens este BM cobrir)</span></div>
     <datalist id="cmed-escopo-datalist">
-      ${escopo.map(e => `<option value="${((e.grupo ? e.grupo + ' — ' : '') + e.descricao).replace(/"/g, '&quot;')}">`).join('')}
+      ${escopo.map(e => `<option value="${e.descricao.replace(/"/g, '&quot;')}">`).join('')}
     </datalist>
     ${itens.map((it, i) => `
     <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;background:var(--surface2)">
@@ -35645,7 +35681,7 @@ function medNovoForm(frenteIdPre) {
     obs: '', localData: frente && frente.municipio ? frente.municipio : '', _localDataAuto: true,
     assinaturaExpedianNome: '', assinaturaReEnergisaNome: '', assinaturaEnergisaNome: '',
     assinaturaExpedian: '', assinaturaReEnergisa: '', assinaturaEnergisa: '',
-    dataElaboracao: '', dataEnvio: '', dataAprovacao: '', dataFaturamento: '', dataRecebimento: '',
+    dataElaboracao: '', dataEnvio: '', dataAprovacao: '', dataFaturamento: '', dataRecebimento: '', numeroNF: '',
   };
 }
 /* -- Ao trocar o circuito elétrico em Nova Medição, sugere o Nº da Medição
@@ -35722,7 +35758,7 @@ function medEditarRegistro(id) {
     assinaturaExpedianNome: m.AssinaturaExpedianNome || '', assinaturaReEnergisaNome: m.AssinaturaReEnergisaNome || '', assinaturaEnergisaNome: m.AssinaturaEnergisaNome || '',
     assinaturaExpedian: m.AssinaturaExpedian || '', assinaturaReEnergisa: m.AssinaturaReEnergisa || '', assinaturaEnergisa: m.AssinaturaEnergisa || '',
     dataElaboracao: m.DataElaboracao || '', dataEnvio: m.DataEnvio || '', dataAprovacao: m.DataAprovacao || '',
-    dataFaturamento: m.DataFaturamento || '', dataRecebimento: m.DataRecebimento || '',
+    dataFaturamento: m.DataFaturamento || '', dataRecebimento: m.DataRecebimento || '', numeroNF: m.NumeroNF || '',
   };
   window._medRegistroAtualId = id;
   window._medMostrarForm = true;
@@ -35793,6 +35829,7 @@ async function medSalvar() {
     // Linha do tempo de prazos (pedido em 04/09/2026) — ver MEDICAO_ETAPAS.
     DataElaboracao: d.dataElaboracao || '', DataEnvio: d.dataEnvio || '', DataAprovacao: d.dataAprovacao || '',
     DataFaturamento: d.dataFaturamento || '', DataRecebimento: d.dataRecebimento || '',
+    NumeroNF: d.numeroNF || '',
     CriadoPorNome: window._currentUser ? window._currentUser.name : '',
     CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
   };
