@@ -13820,8 +13820,74 @@ if (window._cmedData === undefined) window._cmedData = null;
 if (window._cmedMostrarForm === undefined) window._cmedMostrarForm = false;
 if (window._cmedRegistroAtualId === undefined) window._cmedRegistroAtualId = null;
 
-const CMED_STATUS_OPCOES = ['Enviada', 'NF emitida', 'Paga'];
-const CMED_STATUS_COR = { 'Enviada': '#d97706', 'NF emitida': '#2563eb', 'Paga': 'var(--green-main)' };
+// Alinhado com MED_STATUS_OPCOES (Contrato 2025022101) — mesmas 6 etapas em
+// todos os módulos de medição da Energisa, pra dar pra comparar prazos entre
+// contratos (pedido em 04/09/2026, junto com a linha do tempo de datas
+// abaixo). Antes eram só 3 status aqui (Enviada/NF emitida/Paga).
+const CMED_STATUS_OPCOES = ['Em elaboração', 'Enviada', 'Em análise', 'Aprovada', 'NF emitida', 'Paga'];
+const CMED_STATUS_COR = { 'Em elaboração': '#7f8c8d', Enviada: '#2980b9', 'Em análise': '#f39c12', Aprovada: 'var(--green-main)', 'NF emitida': 'var(--green-main)', Paga: 'var(--green-main)' };
+
+/* =============================================================
+   LINHA DO TEMPO DE PRAZOS — compartilhada entre os módulos de medição
+   Energisa (cmed: WS108437/WS108438/CLM108942/CLM108943 · med: Contrato
+   2025022101). Pedido em 04/09/2026: em vez de só um Status atual, guardar
+   a DATA em que o BM passou por cada etapa (elaboração/envio/aprovação/
+   faturamento/recebimento), pra dar noção de prazo/atraso entre etapas.
+   A data de cada etapa é preenchida automaticamente na 1ª vez que o Status
+   muda pra ela (nunca sobrescreve uma já preenchida), mas continua editável
+   à mão nos campos do formulário — pra corrigir ou lançar retroativo.
+   "Em análise" fica só como estado intermediário (sem data própria — não
+   era uma das 5 etapas pedidas), a etapa de Aprovação é que fecha esse
+   trecho.
+   ============================================================= */
+const MEDICAO_ETAPAS = [
+  { campoData: 'dataElaboracao', campoDataSalvo: 'DataElaboracao', status: 'Em elaboração', label: 'Elaboração', emoji: '📝' },
+  { campoData: 'dataEnvio', campoDataSalvo: 'DataEnvio', status: 'Enviada', label: 'Envio', emoji: '📤' },
+  { campoData: 'dataAprovacao', campoDataSalvo: 'DataAprovacao', status: 'Aprovada', label: 'Aprovação', emoji: '✅' },
+  { campoData: 'dataFaturamento', campoDataSalvo: 'DataFaturamento', status: 'NF emitida', label: 'Faturamento', emoji: '🧾' },
+  { campoData: 'dataRecebimento', campoDataSalvo: 'DataRecebimento', status: 'Paga', label: 'Recebimento', emoji: '💰' },
+];
+/* -- Chamada ao trocar o Status no formulário: se a etapa correspondente
+   ainda não tem data, preenche com hoje (nunca sobrescreve uma já
+   existente — corrigir data errada continua sendo manual, no campo). -- */
+function medicaoPrazoAutoData(dadosForm, novoStatus) {
+  const etapa = MEDICAO_ETAPAS.find(e => e.status === novoStatus);
+  if (etapa && !dadosForm[etapa.campoData]) {
+    dadosForm[etapa.campoData] = new Date().toISOString().slice(0, 10);
+  }
+}
+/* -- Bloco de campos de data por etapa, pro formulário (editável). Usa a
+   mesma função de campo genérica que o módulo já tem (cmedCampo/medCampo —
+   passada por nome porque cmed e med guardam o form em variáveis globais
+   diferentes). -- */
+function medicaoPrazosCamposHtml(dadosForm, nomeFnCampo) {
+  return `
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title" style="margin-bottom:8px">📅 Linha do Tempo do BM <span style="font-weight:400;font-size:.72rem;color:var(--text-muted)">(preenchida automaticamente ao mudar o Status — pode corrigir à mão)</span></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
+      ${MEDICAO_ETAPAS.map(e => `
+      <div class="form-group" style="margin:0"><label>${e.emoji} ${e.label}</label><input type="date" value="${dadosForm[e.campoData] || ''}" onchange="${nomeFnCampo}('${e.campoData}', this.value)"></div>`).join('')}
+    </div>
+  </div>`;
+}
+/* -- Mini linha do tempo visual pro card/linha do histórico (registro já
+   salvo, campos em PascalCase — DataElaboracao etc). Pontinhos conectados,
+   preenchido = já passou por aquela etapa (verde-claro), o pontinho da
+   etapa = Status atual fica destacado (verde forte com halo), o resto
+   cinza claro. Passar o mouse mostra a data de cada etapa. -- */
+function medicaoPrazosTimelineHtml(registro) {
+  const fmtBR = iso => { try { return new Date(iso + 'T12:00').toLocaleDateString('pt-BR'); } catch (e) { return iso; } };
+  const statusAtualIdx = MEDICAO_ETAPAS.findIndex(e => e.status === (registro.Status || ''));
+  return `<div style="display:flex;align-items:center;gap:0" title="Linha do tempo do BM">
+    ${MEDICAO_ETAPAS.map((e, i) => {
+      const data = registro[e.campoDataSalvo];
+      const atingida = !!data;
+      const atual = i === statusAtualIdx;
+      const cor = atingida ? (atual ? '#2d8c5a' : '#a8c9a8') : '#dcdcd4';
+      return `${i > 0 ? `<div style="width:9px;height:2px;background:${(atingida && !!registro[MEDICAO_ETAPAS[i - 1].campoDataSalvo]) ? '#a8c9a8' : '#e3e3dc'}"></div>` : ''}<div title="${e.emoji} ${e.label}${data ? ': ' + fmtBR(data) : ' — ainda não'}" style="width:8px;height:8px;border-radius:50%;background:${cor};${atual ? 'box-shadow:0 0 0 2px rgba(45,140,90,.25)' : ''};flex-shrink:0"></div>`;
+    }).join('')}
+  </div>`;
+}
 
 // Seed inicial (só usado na 1ª vez que a tabela 'MedicoesContratosEnergisa' é lida
 // vazia) — extraído dos 18 Boletins de Medição em PDF já emitidos pra WS 108437
@@ -13878,19 +13944,48 @@ function cmedCampo(campo, valor) { window._cmedData[campo] = valor; }
    quantos itens forem necessários, cada um com sua própria observação. -- */
 function cmedItemAdicionar() {
   window._cmedData.itens = window._cmedData.itens || [];
-  window._cmedData.itens.push({ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' });
+  window._cmedData.itens.push({ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '', subitens: [] });
   cmedAtualizarBloco();
 }
 function cmedItemRemover(idx) {
   if (!window._cmedData.itens) return;
   window._cmedData.itens.splice(idx, 1);
-  if (!window._cmedData.itens.length) window._cmedData.itens.push({ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' });
+  if (!window._cmedData.itens.length) window._cmedData.itens.push({ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '', subitens: [] });
   cmedAtualizarBloco();
 }
 function cmedItemCampo(idx, campo, valor) {
   if (!window._cmedData.itens || !window._cmedData.itens[idx]) return;
   window._cmedData.itens[idx][campo] = valor;
   cmedAtualizarTotaisItens();
+}
+/* -- Cobranças extras por serviço (ex: pedágio, hospedagem) — algo que só
+   acontece em ALGUNS BMs/serviços, não faz parte do valor unitário do
+   escopo contratual, então fica como um adicional dentro do próprio item
+   em vez de um campo genérico no BM inteiro. Pedido em 04/09/2026. -- */
+function cmedSubitemAdicionar(idxItem) {
+  const it = window._cmedData.itens && window._cmedData.itens[idxItem];
+  if (!it) return;
+  if (!Array.isArray(it.subitens)) it.subitens = [];
+  it.subitens.push({ desc: '', valor: '' });
+  cmedAtualizarBloco();
+}
+function cmedSubitemRemover(idxItem, idxSub) {
+  const it = window._cmedData.itens && window._cmedData.itens[idxItem];
+  if (!it || !Array.isArray(it.subitens)) return;
+  it.subitens.splice(idxSub, 1);
+  cmedAtualizarBloco();
+}
+function cmedSubitemCampo(idxItem, idxSub, campo, valor) {
+  const it = window._cmedData.itens && window._cmedData.itens[idxItem];
+  if (!it || !Array.isArray(it.subitens) || !it.subitens[idxSub]) return;
+  it.subitens[idxSub][campo] = valor;
+  cmedAtualizarTotaisItens();
+}
+/* -- Subtotal de um item = quanti × valorUnit + soma das cobranças extras. -- */
+function cmedCalcularSubtotalItem(it) {
+  const base = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
+  const extras = (it.subitens || []).reduce((s, sub) => s + (parseFloat(sub.valor) || 0), 0);
+  return base + extras;
 }
 /* -- Ao escolher um serviço da lista suspensa do escopo técnico, puxa
    Descrição/Unidade/R$ Unitário automaticamente daquele item do contrato.
@@ -13914,12 +14009,12 @@ function cmedItemSelecionarEscopo(idx, codigo) {
   cmedAtualizarBloco();
 }
 function cmedCalcularTotalItens(itens) {
-  return (itens || []).reduce((s, it) => s + (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0), 0);
+  return (itens || []).reduce((s, it) => s + cmedCalcularSubtotalItem(it), 0);
 }
 function cmedAtualizarTotaisItens() {
   const itens = window._cmedData.itens || [];
   itens.forEach((it, i) => {
-    const st = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
+    const st = cmedCalcularSubtotalItem(it);
     const el = document.getElementById('cmed-item-total-' + i);
     if (el) el.textContent = 'R$ ' + st.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   });
@@ -13948,7 +14043,19 @@ function cmedAtualizarBloco(chave) {
 }
 
 function cmedNovoForm(chave) {
-  window._cmedData = { contratoChave: chave, numeroBM: '', data: '', status: 'Enviada', numeroOS: '', obsGeral: '', itens: [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }] };
+  window._cmedData = {
+    contratoChave: chave, numeroBM: '', data: '', status: 'Enviada', numeroOS: '', obsGeral: '',
+    itens: [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }],
+    dataElaboracao: '', dataEnvio: '', dataAprovacao: '', dataFaturamento: '', dataRecebimento: '',
+  };
+}
+/* -- Wrapper do onchange do Status: além de trocar o valor, preenche
+   automaticamente a data da etapa correspondente na linha do tempo (se
+   ainda não tiver). Pedido em 04/09/2026. -- */
+function cmedCampoStatus(valor) {
+  window._cmedData.status = valor;
+  medicaoPrazoAutoData(window._cmedData, valor);
+  cmedAtualizarBloco();
 }
 
 function cmedAbrirNovo(chave) {
@@ -13978,6 +14085,8 @@ function cmedEditar(id) {
   window._cmedData = {
     contratoChave: m.ContratoChave, numeroBM: m.NumeroBM || '', data: m.Data || '',
     status: m.Status || 'Enviada', numeroOS: m.NumeroOS || m.NF || '', obsGeral: m.Obs || '', itens,
+    dataElaboracao: m.DataElaboracao || '', dataEnvio: m.DataEnvio || '', dataAprovacao: m.DataAprovacao || '',
+    dataFaturamento: m.DataFaturamento || '', dataRecebimento: m.DataRecebimento || '',
   };
   window._cmedRegistroAtualId = id;
   window._cmedMostrarForm = true;
@@ -13993,6 +14102,7 @@ async function cmedSalvar() {
   const itensLimpos = itensValidos.map(it => ({
     codigo: it.codigo || '', desc: it.desc || '', obs: it.obs || '',
     quanti: parseFloat(it.quanti) || 0, unid: it.unid || '', valorUnit: parseFloat(it.valorUnit) || 0,
+    subitens: (it.subitens || []).filter(sub => (sub.desc || '').trim()).map(sub => ({ desc: sub.desc || '', valor: parseFloat(sub.valor) || 0 })),
   }));
   // Descricao/Valor/Obs no nível do registro continuam preenchidos (agora
   // derivados dos itens) porque outras partes do app ainda leem esses campos
@@ -14009,6 +14119,9 @@ async function cmedSalvar() {
     // Excel, então repetir tudo aqui de novo era redundante — pedido em
     // 03/09/2026).
     Obs: d.obsGeral || '',
+    // Linha do tempo de prazos (pedido em 04/09/2026) — ver MEDICAO_ETAPAS.
+    DataElaboracao: d.dataElaboracao || '', DataEnvio: d.dataEnvio || '', DataAprovacao: d.dataAprovacao || '',
+    DataFaturamento: d.dataFaturamento || '', DataRecebimento: d.dataRecebimento || '',
   };
   showSyncStatus('Salvando medição...');
   const editandoId = window._cmedRegistroAtualId;
@@ -14097,7 +14210,7 @@ function cmedHtmlHistorico(lista, chave) {
           <td style="padding:6px 8px">${dataBR(m.Data)}</td>
           <td style="padding:6px 8px">${m.Descricao || '—'}</td>
           <td style="padding:6px 8px;font-weight:700">R$ ${(parseFloat(m.Valor) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-          <td style="padding:6px 8px;color:${CMED_STATUS_COR[m.Status] || 'inherit'};font-weight:700">${m.Status}</td>
+          <td style="padding:6px 8px"><div style="color:${CMED_STATUS_COR[m.Status] || 'inherit'};font-weight:700">${m.Status}</div>${medicaoPrazosTimelineHtml(m)}</td>
           <td style="padding:6px 8px">${m.NumeroOS || m.NF || '—'}</td>
           <td style="padding:6px 8px;white-space:nowrap">
             <button onclick="cmedVisualizar(${m.Id})" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">👁️</button>
@@ -14210,7 +14323,7 @@ function cmedVisualizar(id) {
       ${linha('Status', m.Status || '—')}
       ${linha('Valor Total', fmt(m.Valor))}
       ${itens.length ? `<div style="margin-top:12px;margin-bottom:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Serviços do Escopo</div>
-        <div style="font-size:.78rem">${itens.map(it => `<div style="padding:6px 0;border-bottom:1px solid var(--border)">${it.desc || '—'} — ${it.quanti || 0} ${it.unid || ''} × ${fmt(it.valorUnit)} = <strong>${fmt((parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0))}</strong>${it.obs ? `<div style="font-style:italic;color:var(--text-muted);margin-top:2px">${it.obs}</div>` : ''}</div>`).join('')}</div>` : ''}
+        <div style="font-size:.78rem">${itens.map(it => `<div style="padding:6px 0;border-bottom:1px solid var(--border)">${it.desc || '—'} — ${it.quanti || 0} ${it.unid || ''} × ${fmt(it.valorUnit)} = <strong>${fmt(cmedCalcularSubtotalItem(it))}</strong>${it.obs ? `<div style="font-style:italic;color:var(--text-muted);margin-top:2px">${it.obs}</div>` : ''}${(it.subitens || []).filter(s => s && (s.desc||'').trim()).map(s => `<div style="color:#a05a28;margin-top:2px">+ ${s.desc}: ${fmt(s.valor)}</div>`).join('')}</div>`).join('')}</div>` : ''}
       ${m.Obs ? `<div style="margin-top:12px;font-size:.78rem;color:var(--text-muted)"><strong>Observações gerais:</strong> ${m.Obs}</div>` : ''}
       <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
         <button class="btn-secondary" style="font-size:.8rem;padding:8px 16px" onclick="cmedExportarPDFUm(${m.Id})">📄 PDF</button>
@@ -14334,13 +14447,23 @@ async function cmedGerarDoc(m, dc) {
     const descLines = doc.splitTextToSize(it.desc || '—', colDesc - 0.3);
     doc.setFont('helvetica', 'italic'); doc.setFontSize(obsFont);
     const obsLines = it.obs ? doc.splitTextToSize(it.obs, colDesc - 0.3) : [];
+    // Cobranças extras deste serviço (ex: pedágio) — mostradas como linhas
+    // "+ Descrição ... R$ valor" logo abaixo da observação, e somadas ao
+    // subtotal do item (coluna Valor Total) e ao Total Geral. Pedido em
+    // 04/09/2026: nem todo serviço tem, então fica opcional por item.
+    const subitensValidos = (it.subitens || []).filter(sub => sub && (sub.desc || '').trim());
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(obsFont);
+    const subLinhasTexto = subitensValidos.map(sub => '+ ' + sub.desc + ': R$ ' + (parseFloat(sub.valor) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    const subLines = subLinhasTexto.length ? subLinhasTexto.flatMap(t => doc.splitTextToSize(t, colDesc - 0.3)) : [];
     const descBlocoH = descLines.length * descLineH;
     const obsBlocoH = obsLines.length ? 0.12 + obsLines.length * obsLineH : 0;
-    const rowHItem = Math.max(rowH, 0.3 + descBlocoH + obsBlocoH);
+    const subBlocoH = subLines.length ? 0.12 + subLines.length * obsLineH : 0;
+    const rowHItem = Math.max(rowH, 0.3 + descBlocoH + obsBlocoH + subBlocoH);
     quebrarSeNecessario(rowHItem);
     if (i % 2 === 1) { doc.setFillColor(250, 248, 246); doc.rect(ML, y, CW, rowHItem, 'F'); }
     doc.setDrawColor(220, 213, 209); doc.setLineWidth(0.015); doc.rect(ML, y, CW, rowHItem);
-    const st = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0);
+    const extras = subitensValidos.reduce((s, sub) => s + (parseFloat(sub.valor) || 0), 0);
+    const st = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0) + extras;
     totalGeral += st;
     doc.setFont('helvetica', 'normal'); doc.setFontSize(descFont); doc.setTextColor(40, 40, 40);
     doc.text(String(i + 1), xs.seq + 0.15, y + 0.38);
@@ -14350,9 +14473,15 @@ async function cmedGerarDoc(m, dc) {
     doc.text(it.valorUnit !== '' && it.valorUnit != null ? 'R$ ' + (parseFloat(it.valorUnit) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—', xs.unit + 0.15, y + 0.38);
     doc.setFont('helvetica', 'bold');
     doc.text('R$ ' + st.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), xs.tot + 0.15, y + 0.38);
+    let blocoY = y + 0.38 + descBlocoH;
     if (obsLines.length) {
       doc.setFont('helvetica', 'italic'); doc.setFontSize(obsFont); doc.setTextColor(110, 100, 95);
-      doc.text(obsLines, xs.desc + 0.15, y + 0.38 + descBlocoH + 0.12);
+      doc.text(obsLines, xs.desc + 0.15, blocoY + 0.12);
+      blocoY += 0.12 + obsLines.length * obsLineH;
+    }
+    if (subLines.length) {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(obsFont); doc.setTextColor(150, 90, 40);
+      doc.text(subLines, xs.desc + 0.15, blocoY + 0.12);
     }
     y += rowHItem;
   });
@@ -14421,7 +14550,7 @@ async function cmedGerarDoc(m, dc) {
 /* -- Nome de arquivo no mesmo padrão do BM real recebido da Energisa. -- */
 function _cmedNomeArquivoPdf(m, dc) {
   const total = Array.isArray(m.Itens) && m.Itens.length
-    ? m.Itens.reduce((s, it) => s + (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0), 0)
+    ? cmedCalcularTotalItens(m.Itens)
     : (parseFloat(m.Valor) || 0);
   const valorFmt = total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const MESES = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
@@ -14491,16 +14620,18 @@ function cmedHtmlForm() {
     <div class="form-row">
       <div class="form-group"><label>Número do BM</label><input value="${(d.numeroBM || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroBM', this.value)" placeholder="Ex: 11"></div>
       <div class="form-group"><label>Data</label><input type="date" value="${d.data || ''}" oninput="cmedCampo('data', this.value)"></div>
+    </div>
+    <div class="form-row">
       <div class="form-group"><label>Status</label>
-        <select onchange="cmedCampo('status', this.value)">
+        <select onchange="cmedCampoStatus(this.value)">
           ${CMED_STATUS_OPCOES.map(s => `<option value="${s}" ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>
       </div>
-    </div>
-    <div class="form-row">
       <div class="form-group"><label>Número da OS</label><input value="${(d.numeroOS || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroOS', this.value)" placeholder="Ex: 015/2026"></div>
     </div>
   </div>
+
+  ${medicaoPrazosCamposHtml(d, 'cmedCampo')}
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">📋 Serviços do Escopo Medidos neste BM <span style="font-weight:400;font-size:.72rem;color:var(--text-muted)">(Conforme Anexo 07 do Contrato — adicione quantos itens este BM cobrir)</span></div>
@@ -14524,10 +14655,20 @@ function cmedHtmlForm() {
         <div class="form-group" style="margin:0"><label>Unid</label><input type="text" value="${(it.unid || '').replace(/"/g, '&quot;')}" oninput="cmedItemCampo(${i},'unid',this.value)" placeholder="UNT."></div>
         <div class="form-group" style="margin:0"><label>R$ Unitário</label><input type="number" step="0.01" value="${it.valorUnit != null ? it.valorUnit : ''}" oninput="cmedItemCampo(${i},'valorUnit',this.value)"></div>
       </div>
-      <div class="form-group" style="margin:0"><label>Observação sobre este serviço (opcional)</label>
+      <div class="form-group" style="margin:0 0 8px"><label>Observação sobre este serviço (opcional)</label>
         <textarea rows="2" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:6px 8px;font-size:.8rem;background:var(--surface);resize:vertical" placeholder="Alguma observação específica sobre este item?" oninput="cmedItemCampo(${i},'obs',this.value)">${it.obs || ''}</textarea>
       </div>
-      <div style="text-align:right;font-size:.8rem;margin-top:6px"><b>Subtotal:</b> <span id="cmed-item-total-${i}" style="font-weight:700">R$ ${((parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0)).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+      <div style="border-top:1px dashed var(--border);padding-top:8px;margin-top:2px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Cobranças extras deste serviço <span style="font-weight:400;text-transform:none">(opcional — ex: pedágio, hospedagem — só quando este serviço específico tiver)</span></div>
+        ${(it.subitens || []).map((sub, si) => `
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+          <input type="text" value="${(sub.desc || '').replace(/"/g, '&quot;')}" oninput="cmedSubitemCampo(${i},${si},'desc',this.value)" placeholder="Ex: Pedágio" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.78rem">
+          <input type="number" step="0.01" value="${sub.valor != null ? sub.valor : ''}" oninput="cmedSubitemCampo(${i},${si},'valor',this.value)" placeholder="R$" style="width:110px;border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.78rem">
+          <span onclick="cmedSubitemRemover(${i},${si})" style="cursor:pointer;color:var(--red);font-size:.85rem" title="Remover">✕</span>
+        </div>`).join('')}
+        <button type="button" class="btn-secondary" style="font-size:.7rem;padding:4px 10px" onclick="cmedSubitemAdicionar(${i})">➕ Adicionar cobrança extra</button>
+      </div>
+      <div style="text-align:right;font-size:.8rem;margin-top:8px"><b>Subtotal:</b> <span id="cmed-item-total-${i}" style="font-weight:700">R$ ${cmedCalcularSubtotalItem(it).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
     </div>`).join('')}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;flex-wrap:wrap;gap:10px">
       <button type="button" class="btn-secondary" style="font-size:.78rem;padding:6px 12px" onclick="cmedItemAdicionar()">➕ Adicionar Serviço</button>
@@ -35362,6 +35503,7 @@ function medNovoForm(frenteIdPre) {
     obs: '', localData: frente && frente.municipio ? frente.municipio : '', _localDataAuto: true,
     assinaturaExpedianNome: '', assinaturaReEnergisaNome: '', assinaturaEnergisaNome: '',
     assinaturaExpedian: '', assinaturaReEnergisa: '', assinaturaEnergisa: '',
+    dataElaboracao: '', dataEnvio: '', dataAprovacao: '', dataFaturamento: '', dataRecebimento: '',
   };
 }
 /* -- Ao trocar o circuito elétrico em Nova Medição, sugere o Nº da Medição
@@ -35404,6 +35546,14 @@ function medRestaurarAssinaturas() {
 }
 
 function medCampo(campo, valor) { window._medData[campo] = valor; }
+/* -- Wrapper do onchange do Status: além de trocar o valor, preenche
+   automaticamente a data da etapa correspondente na linha do tempo (se
+   ainda não tiver). Pedido em 04/09/2026. -- */
+function medCampoStatus(valor) {
+  window._medData.status = valor;
+  medicaoPrazoAutoData(window._medData, valor);
+  navigate('checklist_medicao');
+}
 
 function medAbrirNovo(frenteIdPre) {
   medNovoForm(frenteIdPre);
@@ -35429,6 +35579,8 @@ function medEditarRegistro(id) {
     obs: m.Obs || '', localData: m.LocalData || '', _localDataAuto: false,
     assinaturaExpedianNome: m.AssinaturaExpedianNome || '', assinaturaReEnergisaNome: m.AssinaturaReEnergisaNome || '', assinaturaEnergisaNome: m.AssinaturaEnergisaNome || '',
     assinaturaExpedian: m.AssinaturaExpedian || '', assinaturaReEnergisa: m.AssinaturaReEnergisa || '', assinaturaEnergisa: m.AssinaturaEnergisa || '',
+    dataElaboracao: m.DataElaboracao || '', dataEnvio: m.DataEnvio || '', dataAprovacao: m.DataAprovacao || '',
+    dataFaturamento: m.DataFaturamento || '', dataRecebimento: m.DataRecebimento || '',
   };
   window._medRegistroAtualId = id;
   window._medMostrarForm = true;
@@ -35439,19 +35591,21 @@ function medEditarRegistro(id) {
 async function medExcluirRegistro(id) {
   if (!confirm('Tem certeza que deseja excluir esta medição?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo medição...');
-  const lista = await dbLer('MedicoesEnergisa');
-  const idx = lista.findIndex(r => String(r.Id) === String(id));
-  if (idx === -1) {
+  const { ok, lista } = await dbRemover('MedicoesEnergisa', id);
+  if (!ok && lista === null) {
     showToast('❌ Registro não encontrado.');
     showSyncStatus('Registro não encontrado', 'err', 4000);
     return;
   }
-  lista.splice(idx, 1);
-  const ok = await dbSalvar('MedicoesEnergisa', lista);
   showToast(ok ? '🗑️ Medição excluída.' : '❌ Erro ao excluir.');
   showSyncStatus(ok ? 'Excluída!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
-  if (ok) { try { localStorage.setItem('med_historico_cache', JSON.stringify(lista)); } catch (e) {} }
-  await medCarregarHistorico(true);
+  if (ok) {
+    window._medHistorico = lista;
+    try { localStorage.setItem('med_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    navigate('checklist_medicao');
+  } else {
+    await medCarregarHistorico(true);
+  }
 }
 
 function medFiltrarCircuito(frenteId) {
@@ -35494,6 +35648,9 @@ async function medSalvar() {
     Obs: d.obs || '', LocalData: d.localData || '',
     AssinaturaExpedianNome: d.assinaturaExpedianNome || '', AssinaturaReEnergisaNome: d.assinaturaReEnergisaNome || '', AssinaturaEnergisaNome: d.assinaturaEnergisaNome || '',
     AssinaturaExpedian: d.assinaturaExpedian || '', AssinaturaReEnergisa: d.assinaturaReEnergisa || '', AssinaturaEnergisa: d.assinaturaEnergisa || '',
+    // Linha do tempo de prazos (pedido em 04/09/2026) — ver MEDICAO_ETAPAS.
+    DataElaboracao: d.dataElaboracao || '', DataEnvio: d.dataEnvio || '', DataAprovacao: d.dataAprovacao || '',
+    DataFaturamento: d.dataFaturamento || '', DataRecebimento: d.dataRecebimento || '',
     CriadoPorNome: window._currentUser ? window._currentUser.name : '',
     CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
   };
@@ -35547,6 +35704,7 @@ function medHtmlHistorico() {
           <span class="badge badge-cinza" style="font-size:.62rem">R$ ${(m.Valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
           ${m.Sigco ? `<span class="badge badge-cinza" style="font-size:.62rem">SIGCO ${m.Sigco}</span>` : ''}
         </div>
+        ${medicaoPrazosTimelineHtml(m)}
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
@@ -35664,9 +35822,11 @@ function pageChecklistMedicao() {
       <div class="form-group" style="margin:0"><label>Data medição</label><input type="date" value="${d.data || ''}" onchange="medCampo('data', this.value); medSugerirLocalData(); navigate('checklist_medicao')"></div>
     </div>
     <div class="form-group" style="margin-bottom:0"><label>Status</label>
-      <select onchange="medCampo('status', this.value)">${MED_STATUS_OPCOES.map(s => `<option ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      <select onchange="medCampoStatus(this.value)">${MED_STATUS_OPCOES.map(s => `<option ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
     </div>
   </div>
+
+  ${medicaoPrazosCamposHtml(d, 'medCampo')}
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">Observações</div>
