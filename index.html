@@ -13515,13 +13515,17 @@ const CONTRATOS_ENERGISA_DADOS = {
 /* -- Itens do escopo contratual (Anexo 7 — Planilha de Preços dos WS 108437/
    108438; tabela de preços por classe de resíduo + acionamentos dos CLM
    108942/108943), com Valor Unitário e Valor Total CONTRATADOS. O "Medido"
-   é preenchido manualmente (persistido em EscopoMedidoEnergisa) conforme os
-   BMs forem sendo emitidos — não dá pra somar automático a partir da
-   Medição porque um único BM normalmente cobre vários itens do escopo de
-   uma vez (ex.: BM04 do WS108437 = RAS+PCA+Inv.Florestal+Fauna+Malarígeno
-   juntos), então a app não tem como saber sozinha quanto de cada item foi
-   consumido em cada BM. Saldo = Valor Total - Medido, calculado na hora.
-   Conferido em 14/08/2026. -- */
+   ERA preenchido manualmente (persistido em EscopoMedidoEnergisa) — só que
+   ninguém nunca usou esse campo (ficava sempre vazio) e o comentário
+   original dizia que não dava pra calcular sozinho porque um único BM cobre
+   vários itens do escopo de uma vez. Isso deixou de ser verdade quando cada
+   item de um BM passou a ter seu próprio "codigo" apontando pro item do
+   escopo (task #315, ex.: BM04 do WS108437 = RAS+PCA+Inv.Florestal+Fauna+
+   Malarígeno, cada um como um item separado com seu codigo) — então agora
+   dá, sim, pra somar automático a partir do que já foi lançado em Medição.
+   Corrigido em 04/09/2026 ("esses campos medidos estão sincronizados?" —
+   não estavam, agora estão). Saldo = Valor Total - Medido, calculado na
+   hora. Conferido em 14/08/2026. -- */
 const ESCOPO_CONTRATUAL_ENERGISA = {
   ws108437: [
     { codigo: 'seq0', descricao: 'Mobilização de Contrato (Equipe e Equipamentos)', unidade: 'UNT.', quantidade: 1, valorUnitario: 27724.92, valorTotal: 27724.92 },
@@ -13549,7 +13553,7 @@ const ESCOPO_CONTRATUAL_ENERGISA = {
     { codigo: 'seq8', grupo: '👤 Apoio de Obra p/ Vistoria Técnica', descricao: 'Profissional de Meio Ambiente — acompanhamento de vistorias/auditorias ISO 14001', unidade: 'DIÁRIA', quantidade: 35, valorUnitario: 1100.00, valorTotal: 38500.00 },
     { codigo: 'seq9', grupo: '🔊 Monitoramento Ambiental', descricao: 'Monitoramento de Opacidade — veículos a diesel + Laudo', unidade: 'UNT.', quantidade: 360, valorUnitario: 262.00, valorTotal: 94320.00 },
     { codigo: 'seq10', grupo: '🔊 Monitoramento Ambiental', descricao: 'Estudos Ambientais + Relatório — Licença de Operação e Outorga de Poços', unidade: 'UNT.', quantidade: 27, valorUnitario: 6100.00, valorTotal: 164700.00 },
-    { codigo: 'seq11', grupo: '🛣️ Pedágios', descricao: 'Pedágios (BR-88/364)', unidade: 'UNT.', quantidade: 100, valorUnitario: 128.93, valorTotal: 12893.00 },
+    { codigo: 'seq11', grupo: '🛣️ Pedágios', descricao: 'Pedágios', unidade: 'UNT.', quantidade: 100, valorUnitario: 128.93, valorTotal: 12893.00 },
   ],
   clm108942: [
     { codigo: 'classeI', descricao: 'Coleta e destinação — Resíduo Classe I', unidade: 'KG', quantidade: 440, valorUnitario: 6.16, valorTotal: 2710.40 },
@@ -13571,82 +13575,175 @@ const ESCOPO_CONTRATUAL_FONTE = {
   clm108943: 'Proposta Comercial (Especificação Técnica CMA-04/2026), pasta 13 - RESÍDUOS REG CENTRO. Quantidades são estimativa anual — o total pode diferir ligeiramente do Valor Global do contrato por ajuste pós-proposta.',
 };
 
-if (window._escopoMedido === undefined) window._escopoMedido = null; // { chave: { codigo: valorMedido } }
+/* -- Edições manuais da descrição/unidade/quantidade/valor unitário de um
+   item do escopo (persistidas por contrato em EscopoContratualEditado,
+   mesmo padrão de "mapa por contrato" do antigo _escopoMedido). Existe
+   porque a planilha-base (ESCOPO_CONTRATUAL_ENERGISA) às vezes tem um dado
+   impreciso — ex.: "Pedágios (BR-88/364)" citava uma rodovia que não é a
+   real — e a pessoa precisa poder corrigir isso direto na tela, sem
+   depender de mexer no código. Pedido em 04/09/2026. -- */
+if (window._escopoOverride === undefined) window._escopoOverride = null; // { chave: { codigo: {descricao,unidade,quantidade,valorUnitario} } }
 
-async function escopoCarregarSemNavegar(forcar) {
-  if (window._escopoMedido !== null && !forcar) return;
+async function escopoOverrideCarregarSemNavegar(forcar) {
+  if (window._escopoOverride !== null && !forcar) return;
   try {
-    const lista = await dbLer('EscopoMedidoEnergisa') || [];
+    const lista = await dbLer('EscopoContratualEditado') || [];
     const mapa = {};
-    lista.forEach(r => { mapa[r.ContratoChave] = r.Valores || {}; });
-    window._escopoMedido = mapa;
+    lista.forEach(r => { mapa[r.ContratoChave] = r.Overrides || {}; });
+    window._escopoOverride = mapa;
   } catch (e) {
-    console.warn('[Escopo Contratual] Falha ao carregar medido, usando vazio.', e);
-    if (window._escopoMedido === null) window._escopoMedido = {};
+    console.warn('[Escopo Contratual] Falha ao carregar edições, usando vazio.', e);
+    if (window._escopoOverride === null) window._escopoOverride = {};
   }
 }
 
-function escopoCampoMedido(chave, codigo, valor) {
-  if (!window._escopoMedido) window._escopoMedido = {};
-  if (!window._escopoMedido[chave]) window._escopoMedido[chave] = {};
-  window._escopoMedido[chave][codigo] = parseFloat(valor) || 0;
-  const item = (ESCOPO_CONTRATUAL_ENERGISA[chave] || []).find(i => i.codigo === codigo);
-  if (!item) return;
-  const medido = window._escopoMedido[chave][codigo] || 0;
-  const saldo = item.valorTotal - medido;
-  const elSaldo = document.getElementById('escopo-saldo-' + chave + '-' + codigo);
-  if (elSaldo) { elSaldo.textContent = 'R$ ' + saldo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); elSaldo.style.color = saldo < 0 ? 'var(--red)' : 'inherit'; }
+/* -- Compatibilidade: mantém escopoCarregarSemNavegar() como o ponto de
+   entrada único chamado pelas páginas dos contratos (WS/CLM), agora
+   carregando as edições em vez do antigo "medido" manual. -- */
+async function escopoCarregarSemNavegar(forcar) {
+  await escopoOverrideCarregarSemNavegar(forcar);
+}
+
+/* -- Item do escopo já com a edição da pessoa aplicada por cima do valor de
+   fábrica (ESCOPO_CONTRATUAL_ENERGISA), se houver — Valor Total sempre
+   recalculado (Quantidade × Valor Unitário) pra nunca ficar dessincronizado
+   depois de uma edição. -- */
+function escopoItemComEdicao(chave, item) {
+  const over = ((window._escopoOverride || {})[chave] || {})[item.codigo];
+  if (!over) return item;
+  const mesclado = { ...item, ...over };
+  mesclado.valorTotal = (parseFloat(mesclado.quantidade) || 0) * (parseFloat(mesclado.valorUnitario) || 0);
+  return mesclado;
+}
+
+/* -- "Medido" de cada item do escopo, calculado direto do que já foi
+   lançado em Medição (window._cmedHistorico) — não é mais um número digitado
+   à mão. Soma, pra cada BM deste contrato, a Quanti de cada item do BM cujo
+   "codigo" aponta pro mesmo item do escopo, multiplicado pelo Valor
+   Unitário DO ESCOPO (não o valorUnit gravado no BM, que a pessoa pode ter
+   ajustado pontualmente naquele boletim) — assim o "Medido" sempre reflete
+   quanto da QUANTIDADE contratada já foi consumida, pelo preço do contrato.
+   Itens lançados como "Outro" (fora do escopo cadastrado, sem codigo) não
+   entram aqui — não tem como saber a qual item do escopo eles se referem. -- */
+function escopoMedidoAutoCalculado(chave) {
+  const mapa = {};
   const itens = ESCOPO_CONTRATUAL_ENERGISA[chave] || [];
-  const totalMedido = itens.reduce((s, i) => s + ((window._escopoMedido[chave] || {})[i.codigo] || 0), 0);
-  const totalContratado = itens.reduce((s, i) => s + i.valorTotal, 0);
-  const elTotalMedido = document.getElementById('escopo-total-medido-' + chave);
-  const elTotalSaldo = document.getElementById('escopo-total-saldo-' + chave);
-  if (elTotalMedido) elTotalMedido.textContent = 'R$ ' + totalMedido.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (elTotalSaldo) { const ts = totalContratado - totalMedido; elTotalSaldo.textContent = 'R$ ' + ts.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); elTotalSaldo.style.color = ts < 0 ? 'var(--red)' : 'inherit'; }
+  ((window._cmedHistorico || []).filter(m => m.ContratoChave === chave)).forEach(m => {
+    (m.Itens || []).forEach(it => {
+      if (!it.codigo || it.codigo === '_outro') return;
+      const base = itens.find(e => e.codigo === it.codigo);
+      if (!base) return;
+      mapa[it.codigo] = (mapa[it.codigo] || 0) + (parseFloat(it.quanti) || 0) * base.valorUnitario;
+    });
+  });
+  return mapa;
 }
 
-async function escopoSalvarMedido(chave) {
-  showSyncStatus('Salvando itens medidos...');
-  const valores = (window._escopoMedido && window._escopoMedido[chave]) || {};
-  const lista = await dbLer('EscopoMedidoEnergisa') || [];
+/* -- Abre um modalzinho pra editar Descrição/Unidade/Quantidade/Valor
+   Unitário de UM item do escopo. Padrão visual .modal-overlay/.modal-box já
+   usado em outros pontos do app (ex.: cmedVisualizar). -- */
+function escopoAbrirEdicaoItem(chave, codigo) {
+  const base = (ESCOPO_CONTRATUAL_ENERGISA[chave] || []).find(i => i.codigo === codigo);
+  if (!base) return;
+  const item = escopoItemComEdicao(chave, base);
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'escopo-edicao-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:460px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding:20px 20px 0">
+        <h3 style="margin:0">✏️ Editar item do escopo</h3>
+        <span style="cursor:pointer;font-size:1.2rem" onclick="this.closest('.modal-overlay').remove()">✕</span>
+      </div>
+      <div class="modal-body">
+        <div class="form-group"><label>Descrição</label><input id="escopo-ed-desc" value="${(item.descricao || '').replace(/"/g, '&quot;')}"></div>
+        <div class="form-row">
+          <div class="form-group"><label>Unidade</label><input id="escopo-ed-unid" value="${(item.unidade || '').replace(/"/g, '&quot;')}"></div>
+          <div class="form-group"><label>Quantidade</label><input id="escopo-ed-qtd" type="number" step="0.01" value="${item.quantidade != null ? item.quantidade : ''}"></div>
+        </div>
+        <div class="form-group"><label>Valor Unitário (R$)</label><input id="escopo-ed-valunit" type="number" step="0.01" value="${item.valorUnitario != null ? item.valorUnitario : ''}"></div>
+        <div style="font-size:.68rem;color:var(--text-muted)">Valor original da planilha do contrato: ${base.descricao} — ${base.quantidade} ${base.unidade} × R$ ${base.valorUnitario.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+      </div>
+      <div style="display:flex;gap:8px;padding:0 20px 20px">
+        <button class="btn-primary" onclick="escopoSalvarEdicaoItem('${chave}','${codigo}')">💾 Salvar</button>
+        <button class="btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button>
+        ${(window._escopoOverride && window._escopoOverride[chave] && window._escopoOverride[chave][codigo]) ? `<button class="btn-secondary" style="color:var(--red)" onclick="escopoRestaurarItem('${chave}','${codigo}')">↩️ Restaurar original</button>` : ''}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+async function escopoPersistirOverrides(chave) {
+  const overrides = (window._escopoOverride && window._escopoOverride[chave]) || {};
+  const lista = await dbLer('EscopoContratualEditado') || [];
   const idx = lista.findIndex(r => r.ContratoChave === chave);
-  let ok;
-  if (idx >= 0) {
-    ok = await dbAtualizar('EscopoMedidoEnergisa', lista[idx].Id, { Valores: valores });
-  } else {
-    ok = await dbInserir('EscopoMedidoEnergisa', { ContratoChave: chave, Valores: valores });
-  }
-  showToast(ok ? '✅ Itens medidos salvos!' : '❌ Erro ao salvar.');
+  if (idx >= 0) return dbAtualizar('EscopoContratualEditado', lista[idx].Id, { Overrides: overrides });
+  return dbInserir('EscopoContratualEditado', { ContratoChave: chave, Overrides: overrides });
+}
+
+async function escopoSalvarEdicaoItem(chave, codigo) {
+  const descricao = (document.getElementById('escopo-ed-desc') || {}).value || '';
+  const unidade = (document.getElementById('escopo-ed-unid') || {}).value || '';
+  const quantidade = parseFloat((document.getElementById('escopo-ed-qtd') || {}).value) || 0;
+  const valorUnitario = parseFloat((document.getElementById('escopo-ed-valunit') || {}).value) || 0;
+  if (!descricao.trim()) { showToast('⚠️ Informe a descrição do item.'); return; }
+  showSyncStatus('Salvando item do escopo...');
+  if (!window._escopoOverride) window._escopoOverride = {};
+  if (!window._escopoOverride[chave]) window._escopoOverride[chave] = {};
+  window._escopoOverride[chave][codigo] = { descricao, unidade, quantidade, valorUnitario };
+  const ok = await escopoPersistirOverrides(chave);
+  showToast(ok ? '✅ Item do escopo atualizado!' : '❌ Erro ao salvar.');
   showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  const modal = document.getElementById('escopo-edicao-modal');
+  if (modal) modal.remove();
+  if (ok) escopoAtualizarBloco(chave);
+}
+
+async function escopoRestaurarItem(chave, codigo) {
+  if (!confirm('Restaurar este item pro valor original da planilha do contrato?')) return;
+  showSyncStatus('Restaurando item...');
+  if (window._escopoOverride && window._escopoOverride[chave]) delete window._escopoOverride[chave][codigo];
+  const ok = await escopoPersistirOverrides(chave);
+  showToast(ok ? '✅ Item restaurado!' : '❌ Erro ao restaurar.');
+  showSyncStatus(ok ? 'Restaurado!' : 'Falha ao restaurar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  const modal = document.getElementById('escopo-edicao-modal');
+  if (modal) modal.remove();
+  if (ok) escopoAtualizarBloco(chave);
+}
+
+/* -- Atualiza só o bloco do escopo dentro da página do contrato já aberta
+   (mesmo padrão de cmedAtualizarBloco — evita recarregar a página inteira). -- */
+function escopoAtualizarBloco(chave) {
+  const alvo = document.getElementById('projetos-' + chave + '-escopo');
+  if (alvo) alvo.innerHTML = projetosHtmlEscopoContratual(chave);
 }
 
 function projetosHtmlEscopoContratual(chave) {
-  const itens = ESCOPO_CONTRATUAL_ENERGISA[chave] || [];
-  if (!itens.length) return '';
-  const medidoMap = (window._escopoMedido && window._escopoMedido[chave]) || {};
+  const itensBase = ESCOPO_CONTRATUAL_ENERGISA[chave] || [];
+  if (!itensBase.length) return '';
+  const itens = itensBase.map(i => escopoItemComEdicao(chave, i));
+  const medidoMap = escopoMedidoAutoCalculado(chave);
   const totalContratado = itens.reduce((s, i) => s + i.valorTotal, 0);
   const totalMedido = itens.reduce((s, i) => s + (medidoMap[i.codigo] || 0), 0);
   const totalSaldo = totalContratado - totalMedido;
   let grupoAtual = null;
   return `
   <div class="card" style="margin-bottom:16px">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
-      <div class="card-title" style="margin-bottom:0">📐 Itens do Escopo Contratual</div>
-      <button class="btn-secondary" style="padding:3px 10px;font-size:.72rem" onclick="escopoSalvarMedido('${chave}')">💾 Salvar Medido</button>
-    </div>
-    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:10px">Valores da planilha de preços do contrato. Preencha "Medido" conforme os BMs forem sendo emitidos — o Saldo é calculado automaticamente.</div>
+    <div class="card-title" style="margin-bottom:0">📐 Itens do Escopo Contratual</div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:10px">Valores da planilha de preços do contrato. "Medido" é calculado automaticamente a partir dos BMs já lançados em Medição — não precisa preencher à mão. Descrição/Unidade/Qtd/Valor Unitário errados? Clique no ✏️ pra corrigir.</div>
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:.74rem">
         <tr style="text-align:left;border-bottom:1px solid var(--border-soft, #e5e0d8)">
           <td style="padding:6px 8px;font-weight:700">Item</td><td style="padding:6px 8px;font-weight:700">Unid.</td><td style="padding:6px 8px;font-weight:700">Qtd</td>
           <td style="padding:6px 8px;font-weight:700">Valor Unit.</td><td style="padding:6px 8px;font-weight:700">Valor Total</td>
-          <td style="padding:6px 8px;font-weight:700">Medido</td><td style="padding:6px 8px;font-weight:700">Saldo</td>
+          <td style="padding:6px 8px;font-weight:700">Medido</td><td style="padding:6px 8px;font-weight:700">Saldo</td><td></td>
         </tr>
         ${itens.map(i => {
           const medido = medidoMap[i.codigo] || 0;
           const saldo = i.valorTotal - medido;
           let linhaGrupo = '';
-          if (i.grupo && i.grupo !== grupoAtual) { grupoAtual = i.grupo; linhaGrupo = `<tr><td colspan="7" style="padding:8px 8px 2px;font-weight:800;font-size:.7rem;color:var(--brand-brown,#3F261F)">${i.grupo}</td></tr>`; }
+          if (i.grupo && i.grupo !== grupoAtual) { grupoAtual = i.grupo; linhaGrupo = `<tr><td colspan="8" style="padding:8px 8px 2px;font-weight:800;font-size:.7rem;color:var(--brand-brown,#3F261F)">${i.grupo}</td></tr>`; }
           return `${linhaGrupo}
           <tr style="border-bottom:1px solid var(--border-soft, #e5e0d8)">
             <td style="padding:6px 8px">${i.descricao}</td>
@@ -13654,15 +13751,17 @@ function projetosHtmlEscopoContratual(chave) {
             <td style="padding:6px 8px">${i.quantidade}</td>
             <td style="padding:6px 8px">R$ ${i.valorUnitario.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
             <td style="padding:6px 8px;font-weight:700">R$ ${i.valorTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-            <td style="padding:6px 8px"><input type="number" step="0.01" value="${medido || ''}" oninput="escopoCampoMedido('${chave}','${i.codigo}',this.value)" style="width:100px;font-size:.72rem;padding:3px 6px;border:1px solid var(--border);border-radius:5px"></td>
-            <td id="escopo-saldo-${chave}-${i.codigo}" style="padding:6px 8px;font-weight:700;color:${saldo < 0 ? 'var(--red)' : 'inherit'}">R$ ${saldo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td style="padding:6px 8px;font-weight:700;color:var(--green-main)">R$ ${medido.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td style="padding:6px 8px;font-weight:700;color:${saldo < 0 ? 'var(--red)' : 'inherit'}">R$ ${saldo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td style="padding:6px 8px"><span onclick="escopoAbrirEdicaoItem('${chave}','${i.codigo}')" style="cursor:pointer" title="Editar item">✏️</span></td>
           </tr>`;
         }).join('')}
         <tr style="border-top:2px solid var(--border-soft, #e5e0d8);font-weight:800">
           <td colspan="4" style="padding:8px">TOTAL</td>
           <td style="padding:8px">R$ ${totalContratado.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-          <td id="escopo-total-medido-${chave}" style="padding:8px">R$ ${totalMedido.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-          <td id="escopo-total-saldo-${chave}" style="padding:8px;color:${totalSaldo < 0 ? 'var(--red)' : 'inherit'}">R$ ${totalSaldo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+          <td style="padding:8px">R$ ${totalMedido.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+          <td style="padding:8px;color:${totalSaldo < 0 ? 'var(--red)' : 'inherit'}">R$ ${totalSaldo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+          <td></td>
         </tr>
       </table>
     </div>
@@ -13952,32 +14051,34 @@ function medicaoPrazosCamposHtml(dadosForm, nomeFnCampo) {
   </div>`;
 }
 /* -- Mini linha do tempo visual pro card/linha do histórico (registro já
-   salvo, campos em PascalCase — DataElaboracao etc). Pontinhos conectados,
-   preenchido = já passou por aquela etapa (verde-claro), o pontinho da
-   etapa = Status atual fica destacado (verde forte com halo), o resto
-   cinza claro. Passar o mouse mostra a data de cada etapa. -- */
+   salvo, campos em PascalCase — DataElaboracao etc). Cada etapa é uma
+   colunazinha com: legenda pequena (emoji + nome) em cima, a bolinha no
+   meio, e a data (dd/mm) embaixo — assim dá pra identificar cada bolinha
+   sem precisar passar o mouse (não funciona em celular mesmo). Preenchido
+   = já passou por aquela etapa (verde-claro), a etapa = Status atual fica
+   destacada (verde forte, negrito, halo no pontinho), o resto cinza claro.
+   Pedido em 04/09/2026: "preciso de uma legenda em cima de cada bolinha...
+   identificando" — a linha do histórico (cmedHtmlHistorico) já reserva uma
+   linha própria de largura total pra isso, então cabe tranquilo. -- */
 function medicaoPrazosTimelineHtml(registro) {
-  const fmtBR = iso => { try { return new Date(iso + 'T12:00').toLocaleDateString('pt-BR'); } catch (e) { return iso; } };
+  const fmtCurto = iso => { try { const d = new Date(iso + 'T12:00'); return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0'); } catch (e) { return iso; } };
   const statusAtualIdx = MEDICAO_ETAPAS.findIndex(e => e.status === (registro.Status || ''));
-  const dots = `<div style="display:flex;align-items:center;gap:0" title="Linha do tempo do BM — passe o mouse em cada bolinha pra ver a data">
+  return `<div style="display:flex;align-items:flex-start;flex-wrap:wrap" title="Linha do tempo do BM">
     ${MEDICAO_ETAPAS.map((e, i) => {
       const data = registro[e.campoDataSalvo];
       const atingida = !!data;
       const atual = i === statusAtualIdx;
       const cor = atingida ? (atual ? '#2d8c5a' : '#a8c9a8') : '#dcdcd4';
-      return `${i > 0 ? `<div style="width:9px;height:2px;background:${(atingida && !!registro[MEDICAO_ETAPAS[i - 1].campoDataSalvo]) ? '#a8c9a8' : '#e3e3dc'}"></div>` : ''}<div title="${e.emoji} ${e.label}${data ? ': ' + fmtBR(data) : ' — ainda não'}" style="width:8px;height:8px;border-radius:50%;background:${cor};${atual ? 'box-shadow:0 0 0 2px rgba(45,140,90,.25)' : ''};flex-shrink:0"></div>`;
+      const linhaAntes = i > 0
+        ? `<div style="width:14px;height:2px;background:${(atingida && !!registro[MEDICAO_ETAPAS[i - 1].campoDataSalvo]) ? '#a8c9a8' : '#e3e3dc'};margin-top:17px;flex-shrink:0"></div>`
+        : '';
+      return `${linhaAntes}<div style="display:flex;flex-direction:column;align-items:center;min-width:58px">
+        <div style="font-size:.58rem;line-height:1.1;color:${atual ? '#2d8c5a' : 'var(--text-muted)'};font-weight:${atual ? 700 : 400};white-space:nowrap">${e.emoji} ${e.label}</div>
+        <div style="width:8px;height:8px;border-radius:50%;background:${cor};margin-top:3px;${atual ? 'box-shadow:0 0 0 2px rgba(45,140,90,.25)' : ''};flex-shrink:0"></div>
+        <div style="font-size:.58rem;color:var(--text-muted);margin-top:2px">${atingida ? fmtCurto(data) : '—'}</div>
+      </div>`;
     }).join('')}
   </div>`;
-  // Datas de cada etapa já atingida, por extenso (abreviado dd/mm) — sem isso
-  // a única forma de ver a data era passar o mouse em cima da bolinha, o que
-  // não é óbvio (e nem funciona em celular). Pedido em 04/09/2026. Só lista
-  // as etapas que já têm data (pula as futuras, senão fica poluído de "—").
-  const fmtCurto = iso => { try { const d = new Date(iso + 'T12:00'); return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0'); } catch (e) { return iso; } };
-  const alcancadas = MEDICAO_ETAPAS.filter(e => registro[e.campoDataSalvo]);
-  const datasTxt = alcancadas.length
-    ? `<div style="font-size:.65rem;color:var(--text-muted);margin-top:2px;white-space:nowrap">${alcancadas.map(e => e.emoji + ' ' + fmtCurto(registro[e.campoDataSalvo])).join('  ')}</div>`
-    : '';
-  return dots + datasTxt;
 }
 
 // Seed inicial (só usado na 1ª vez que a tabela 'MedicoesContratosEnergisa' é lida
@@ -15133,6 +15234,7 @@ function projetosHtmlEnergisaContratoWS(chave) {
     cmedCarregarSemNavegar().then(() => {
       const alvo = document.getElementById(cmedElId);
       if (alvo) alvo.innerHTML = cmedHtmlBloco(chave, dadosContrato.valorGlobal);
+      escopoAtualizarBloco(chave);
     });
     osCarregarSemNavegar().then(() => {
       const alvoOs = document.getElementById('projetos-' + chave + '-os');
@@ -15232,6 +15334,7 @@ function projetosHtmlEnergisaContratoCLM(chave) {
     cmedCarregarSemNavegar().then(() => {
       const alvo = document.getElementById(cmedElId);
       if (alvo) alvo.innerHTML = cmedHtmlBloco(chave, dadosContrato.valorGlobal);
+      escopoAtualizarBloco(chave);
     });
   }, 100);
   return `
@@ -41268,7 +41371,7 @@ const BACKUP_TABELAS = [
   'APRs','Adiantamentos','Agenda','AsoRegistros','AtividadeApp','CentrosCusto','CentrosCustoValores',
   'ChecklistBombeamento','ChecklistColeta','ChecklistERO','ChecklistFauna','ChecklistLinha','ChecklistMitigacao',
   'ChecklistVeicular','Contadores','ContasPagar','ContasReceber','Despesas','Empreendimentos','EpiRegistros',
-  'Equipamentos','EscopoMedidoEnergisa','FaturamentoEnergisa','FlashReportsEnergisa','FlashReportsFauna',
+  'Equipamentos','EscopoMedidoEnergisa','EscopoContratualEditado','FaturamentoEnergisa','FlashReportsEnergisa','FlashReportsFauna',
   'Fornecedores','FornecedoresEnergisa','GestaoDocumental','Inspecoes','Lancamentos_Servicos','Licencas',
   'Medicoes','MedicoesContratosEnergisa','MedicoesEnergisa','NotificacoesEnergisa','OrcamentosProjetos',
   'OrdensServicoEnergisa','Outorgas','PerfilUsuario','Prazos','PrestacaoContas','Receitas',
