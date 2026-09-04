@@ -29711,8 +29711,12 @@ function faunaBuscarEmpreendimento(nome) {
 
 /* -- Filtro de empreendimento (Nova 364 / Jirau) usado para separar os
    históricos de Ficha de Campo e Flash Report, cada um só mostrando os
-   registros do empreendimento selecionado. -- */
-if (window._faunaFiltroEmp === undefined) window._faunaFiltroEmp = FAUNA_EMPREENDIMENTOS[0].nome;
+   registros do empreendimento selecionado. Padrão "Todos" (filtro vazio) —
+   antes vinha pré-selecionado em "Nova 364", então ao entrar na tela os
+   Flash Reports de Jirau ficavam escondidos até a pessoa notar e clicar no
+   botão "Jirau" — parecia que os registros tinham sumido (relatado em
+   04/09/2026, mas os 18 registros de Jirau seguiam intactos no OneDrive). -- */
+if (window._faunaFiltroEmp === undefined) window._faunaFiltroEmp = '';
 function faunaFiltrarEmp(nome) {
   window._faunaFiltroEmp = nome;
   navigate('checklist_fauna');
@@ -33532,18 +33536,41 @@ async function ncEditarRegistro(id) {
   navigate('checklist_notif');
 }
 
+/* -- Exclui via dbRemover (leitura+escrita com eTag/retry — mesma proteção
+   contra condição de corrida já usada em Flash Report/Fauna/Medição de
+   Contratos/etc., task #56). O padrão antigo (dbLer + splice + dbSalvar sem
+   eTag) tinha dois problemas: (1) se a leitura falhasse silenciosamente
+   (rede instável), dbLer devolvia lista vazia — parecia "registro não
+   encontrado" mesmo a notificação existindo, e esse caminho de erro nunca
+   chamava showSyncStatus com duração, deixando o aviso "Excluindo
+   notificação..." preso na tela pra sempre (bug relatado em 04/09/2026);
+   (2) dbSalvar sem eTag podia sobrescrever uma gravação concorrente sem
+   avisar. dbRemover resolve os dois. -- */
 async function ncExcluirRegistro(id) {
   if (!confirm('Tem certeza que deseja excluir esta notificação?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo notificação...');
-  const lista = await dbLer('NotificacoesEnergisa');
-  const idx = lista.findIndex(r => r.Id === id);
-  if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
-  lista.splice(idx, 1);
-  const ok = await dbSalvar('NotificacoesEnergisa', lista);
+  const { ok, lista } = await dbRemover('NotificacoesEnergisa', id);
+  if (!ok && lista === null) {
+    showToast('❌ Registro não encontrado.');
+    showSyncStatus('Registro não encontrado', 'err', 4000);
+    return;
+  }
   showToast(ok ? '🗑️ Notificação excluída.' : '❌ Erro ao excluir.');
   showSyncStatus(ok ? 'Excluída!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
-  if (ok) { try { localStorage.setItem('notif_historico_cache', JSON.stringify(lista)); } catch (e) {} }
-  await ncCarregarHistorico(true);
+  if (ok) {
+    // window._ncHistorico já fica com a lista pós-exclusão que o próprio
+    // dbRemover devolveu (a versão que realmente foi gravada) — não relê o
+    // OneDrive de novo aqui de propósito. Uma releitura logo em seguida
+    // corre o risco de pegar o arquivo antes da escrita propagar
+    // (consistência eventual), o que faria a notificação excluída
+    // "reaparecer" na tela mesmo já tendo sido removida de verdade —
+    // exatamente o sintoma relatado em 04/09/2026.
+    window._ncHistorico = lista;
+    try { localStorage.setItem('notif_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    navigate('checklist_notif');
+  } else {
+    await ncCarregarHistorico(true);
+  }
 }
 
 function ncFiltrarCircuito(frenteId) {
