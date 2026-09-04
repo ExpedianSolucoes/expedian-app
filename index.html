@@ -7585,7 +7585,18 @@ function rcRecalcularValorLiquido(prefixo) {
 }
 
 let _rdFornecedores = [];
+let _rdColaboradores = [];
 let _rcClientes = [];
+
+/* -- Descrição-padrão de uma Despesa conforme a Modalidade — usada em toda
+   listagem/modal (linha da tabela, divisão de CC, histórico de compra,
+   visualizar). Centralizado aqui pra não esquecer de atualizar algum lugar
+   quando uma modalidade nova aparecer. -- */
+function rdDescricaoModalidade(i) {
+  if (i.Modalidade === 'servicos') return '🛠️ ' + (i.ServicoDesc || '—');
+  if (i.Modalidade === 'colaborador') return '👤 ' + (i.Colaborador || '—');
+  return '🏭 ' + (i.Fornecedor || '—');
+}
 let RD_FILTRO_KPI = '';
 
 function _rdSemanaDoAno(dataStr) {
@@ -7636,7 +7647,7 @@ function pageReceitasDespesas() {
   }
   const tab = window._rdTab || 'despesas';
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarDespesas(); carregarMunicipiosLista(); }, 200);
+  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarDespesas(); carregarMunicipiosLista(); }, 200);
   if (tab === 'receitas') setTimeout(() => { carregarClientesListaRc(); carregarReceitas(); carregarMunicipiosLista(); }, 200);
 
   // Título/subtítulo dinâmicos por aba — antes era sempre "Receitas e Despesas"
@@ -9518,6 +9529,7 @@ function renderDespesasTab() {
           <option value="">Selecione...</option>
           <option value="servicos">Serviços (Catálogo de Serviços)</option>
           <option value="fornecedor">Fornecedor</option>
+          <option value="colaborador">Colaborador (Pagamento/Folha)</option>
         </select>
       </div>
       <div class="form-group" id="rd_cc_top_group" style="position:relative">
@@ -9598,6 +9610,21 @@ function renderDespesasTab() {
           </div>
           <button onclick="rdAbrirCadastroFornecedor()" class="btn-secondary" style="padding:6px 12px;font-size:.78rem;white-space:nowrap">+ Novo</button>
         </div>
+      </div>
+      <div class="form-group" id="rd_colaborador_row" style="display:none;position:relative;grid-column:span 2">
+        <label>Colaborador</label>
+        <div style="display:flex;gap:8px">
+          <div style="flex:1;position:relative">
+            <input type="text" id="rd_colaborador_input" placeholder="Digite para buscar..." autocomplete="off"
+              oninput="rdFiltrarColaboradores(this.value)" onfocus="rdFiltrarColaboradores(this.value)"
+              onblur="setTimeout(()=>rdFecharDropdownColaborador(),150)"
+              style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none">
+            <input type="hidden" id="rd_colaborador_sel">
+            <div id="rd_colaborador_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+          </div>
+          <button onclick="rdAbrirCadastroColaborador()" class="btn-secondary" style="padding:6px 12px;font-size:.78rem;white-space:nowrap">+ Novo</button>
+        </div>
+        <div id="rd_colaborador_funcao_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:4px"></div>
       </div>
     </div>
 
@@ -9793,6 +9820,21 @@ function renderDespesasTab() {
     </div>
   </div>
 
+  <!-- Cadastro rápido de Colaborador (pagamento/folha) — enxuto de propósito:
+       só Nome + Função, sem os campos de fornecedor (CNPJ/Município/Categoria)
+       que não fazem sentido pra pagar um colaborador. Pedido em 04/09/2026. -->
+  <div id="modal-colaborador-rd" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center">
+    <div style="background:var(--surface);border-radius:14px;padding:24px;width:min(420px,90vw);box-shadow:0 20px 60px rgba(0,0,0,.4)">
+      <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;margin-bottom:16px">Cadastrar Novo Colaborador</div>
+      <div class="form-group" style="margin-bottom:12px"><label>Nome</label><input type="text" id="rd_colab_nome" placeholder="Nome completo do colaborador"></div>
+      <div class="form-group" style="margin-bottom:16px"><label>Função</label><input type="text" id="rd_colab_funcao" placeholder="Ex: Auxiliar de campo, Motorista..."></div>
+      <div style="display:flex;gap:10px">
+        <button class="btn-primary" onclick="rdConfirmarCadastroColaborador()" style="flex:1">✅ Cadastrar</button>
+        <button class="btn-secondary" onclick="rdFecharModalColaborador()" style="flex:1">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Dashboard: KPIs (valores) + calendário mensal lado a lado. O gráfico de linha
        (Pago x A Pagar x Vencido) fica pequeno, encaixado no espaço em branco que sobra
        abaixo dos cards de KPI — mesma altura do calendário ao lado, sem esticar a página
@@ -9909,6 +9951,7 @@ function rdToggleModalidade() {
   const v = (document.getElementById('rd_modalidade')||{}).value;
   const servRow = document.getElementById('rd_servico_row');
   const fornRow = document.getElementById('rd_fornecedor_row');
+  const colabRow = document.getElementById('rd_colaborador_row');
   const benefRow = document.getElementById('rd_beneficiario_row');
   // Importante: usar 'flex' (não 'block') — .form-group depende de display:flex para
   // esticar label/select na largura da coluna do grid; 'block' fazia o campo encolher
@@ -9916,6 +9959,7 @@ function rdToggleModalidade() {
   // Serviço agora ocupa a linha inteira (pills de categoria + busca), por isso grid-column: 1 / -1.
   if (servRow) { servRow.style.display = v === 'servicos' ? 'flex' : 'none'; servRow.style.gridColumn = v === 'servicos' ? '1 / -1' : ''; }
   if (fornRow) fornRow.style.display = v === 'fornecedor' ? 'flex' : 'none';
+  if (colabRow) colabRow.style.display = v === 'colaborador' ? 'flex' : 'none';
   if (benefRow) benefRow.style.display = v === 'servicos' ? 'flex' : 'none';
   if (v === 'servicos') {
     rdSelecionarGrupoServico(window._rdGrupoServico || 'diarias');
@@ -10115,6 +10159,86 @@ async function rdConfirmarCadastroFornecedor() {
     rdSelecionarFornecedor(nome);
   } else {
     showToast('❌ Erro ao cadastrar fornecedor.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():''));
+  }
+}
+
+/* -- Combobox de colaborador (pagamento/folha) — mesmo padrão do de Fornecedor,
+   mas com um catálogo próprio (Nome+Função) só pra esse fim: os colaboradores
+   que recebem pagamento aqui nem sempre são os mesmos usuários com login no
+   app (_servicosTodosColaboradores), nem precisam da papelada completa da
+   Gestão Documental (CPF/ASO/EPI) só pra registrar uma despesa.
+   Pedido em 04/09/2026. -- */
+async function carregarColaboradoresListaRd() {
+  try { _rdColaboradores = await dbLer('ColaboradoresPagamento'); }
+  catch(e) { _rdColaboradores = []; }
+}
+
+function rdFiltrarColaboradores(texto) {
+  const dd = document.getElementById('rd_colaborador_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  let matches = t ? _rdColaboradores.filter(f => (f.Title||'').toLowerCase().includes(t)) : _rdColaboradores;
+  matches = matches.slice(0, 30);
+  let html = matches.map(f => {
+    const esc = String(f.Title).replace(/'/g,"\\'");
+    return '<div onclick="rdSelecionarColaborador(\''+esc+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>'+f.Title+'</strong>'+(f.Funcao?' <span style="color:var(--text-muted);font-size:.72rem">· '+f.Funcao+'</span>':'') +
+    '</div>';
+  }).join('');
+  if (t && !_rdColaboradores.some(f => (f.Title||'').toLowerCase() === t)) {
+    html += '<div onclick="rdNovoColaboradorComNome(\''+t.replace(/'/g,"\\'")+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;color:var(--green-main);font-weight:700">+ Cadastrar "'+texto+'" como novo colaborador</div>';
+  }
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum colaborador encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+
+function rdFecharDropdownColaborador() {
+  const dd = document.getElementById('rd_colaborador_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+
+function rdSelecionarColaborador(nome) {
+  const inp = document.getElementById('rd_colaborador_input'); if (inp) inp.value = nome;
+  const hid = document.getElementById('rd_colaborador_sel'); if (hid) hid.value = nome;
+  rdFecharDropdownColaborador();
+  const c = _rdColaboradores.find(x => (x.Title||'').toLowerCase() === nome.toLowerCase());
+  const hint = document.getElementById('rd_colaborador_funcao_hint');
+  if (hint) hint.textContent = (c && c.Funcao) ? ('Função: ' + c.Funcao) : '';
+}
+
+function rdNovoColaboradorComNome(nomeSugerido) {
+  rdFecharDropdownColaborador();
+  rdAbrirCadastroColaborador();
+  const el = document.getElementById('rd_colab_nome');
+  if (el) el.value = nomeSugerido;
+}
+
+function rdAbrirCadastroColaborador() {
+  const el = document.getElementById('modal-colaborador-rd'); if (el) el.style.display = 'flex';
+}
+
+function rdFecharModalColaborador() {
+  const el = document.getElementById('modal-colaborador-rd'); if (el) el.style.display = 'none';
+  ['rd_colab_nome','rd_colab_funcao'].forEach(id => { const e = document.getElementById(id); if (e) e.value=''; });
+}
+
+async function rdConfirmarCadastroColaborador() {
+  const nome = (document.getElementById('rd_colab_nome').value||'').trim();
+  const funcao = (document.getElementById('rd_colab_funcao').value||'').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do colaborador.'); return; }
+  const jaExiste = _rdColaboradores.some(f => (f.Title||'').toLowerCase() === nome.toLowerCase());
+  if (jaExiste) { showToast('⚠️ Colaborador já cadastrado!'); return; }
+  const dados = { Title: nome, Funcao: funcao };
+  const ok = await salvarNoSharePoint('ColaboradoresPagamento', dados);
+  if (ok) {
+    showToast('✅ Colaborador cadastrado!');
+    rdFecharModalColaborador();
+    await carregarColaboradoresListaRd();
+    rdSelecionarColaborador(nome);
+  } else {
+    showToast('❌ Erro ao cadastrar colaborador.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():''));
   }
 }
 
@@ -10567,6 +10691,7 @@ async function salvarDespesa() {
   const servicoOpt = servicoId ? _rdServicosTodos().find(s=>s.id===servicoId) : null;
   const ehServicoVeiculo = !!(servicoOpt && servicoOpt.grupo === 'veiculos');
   const fornecedor = (document.getElementById('rd_fornecedor_sel')||{}).value || '';
+  const colaboradorPagto = (document.getElementById('rd_colaborador_sel')||{}).value || '';
   const beneficiario = (document.getElementById('rd_beneficiario')||{}).value || '';
   const veiculo = (document.getElementById('rd_veiculo')||{}).value || '';
   const cc = (document.getElementById('rd_cc')||{}).value || '';
@@ -10592,11 +10717,12 @@ async function salvarDespesa() {
 
   if (!dataLancamento) { showToast('⚠️ Informe a data de lançamento.'); return; }
   if (!categoria) { showToast('⚠️ Selecione a categoria.'); return; }
-  if (!modalidade) { showToast('⚠️ Selecione a modalidade (Serviços ou Fornecedor).'); return; }
+  if (!modalidade) { showToast('⚠️ Selecione a modalidade (Serviços, Fornecedor ou Colaborador).'); return; }
   if (modalidade === 'servicos' && !servicoId) { showToast('⚠️ Selecione o serviço.'); return; }
   if (modalidade === 'servicos' && !beneficiario) { showToast('⚠️ Selecione o beneficiário.'); return; }
   if (modalidade === 'servicos' && ehServicoVeiculo && !veiculo) { showToast('⚠️ Selecione o veículo da empresa usado nessa diária.'); return; }
   if (modalidade === 'fornecedor' && !fornecedor) { showToast('⚠️ Selecione o fornecedor.'); return; }
+  if (modalidade === 'colaborador' && !colaboradorPagto) { showToast('⚠️ Selecione o colaborador.'); return; }
   // No parcelado o Contrato é escolhido por parcela (campo do topo fica oculto),
   // então só exige o campo do topo fora do parcelado. Com divisão de CC marcada,
   // o contrato é escolhido linha a linha no editor de divisão, não no campo do topo.
@@ -10618,11 +10744,11 @@ async function salvarDespesa() {
     if (Math.abs(diffDivisao) > 0.01) { showToast(`⚠️ A soma da divisão de Centro de Custo (R$ ${rdNumeroParaMoeda(somaDivisao)}) não bate com o valor total (R$ ${rdNumeroParaMoeda(valorTotal)}).`); return; }
   }
 
-  const descricao = modalidade === 'servicos' ? (servicoOpt ? servicoOpt.id+' · '+servicoOpt.desc : '') : fornecedor;
+  const descricao = modalidade === 'servicos' ? (servicoOpt ? servicoOpt.id+' · '+servicoOpt.desc : '') : modalidade === 'colaborador' ? colaboradorPagto : fornecedor;
 
   // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/fornecedor definitivos
   if (window._rdComprovanteId && window._rdComprovanteDriveId) {
-    const nomeDesejado = financeiroGerarNomeComprovante(dataLancamento, valorTotal, fornecedor || beneficiario || descricao, comprovanteNome);
+    const nomeDesejado = financeiroGerarNomeComprovante(dataLancamento, valorTotal, fornecedor || colaboradorPagto || beneficiario || descricao, comprovanteNome);
     const renomeado = await renomearArquivoOneDrive(window._rdComprovanteDriveId, window._rdComprovanteId, nomeDesejado);
     if (renomeado) { comprovanteUrl = renomeado.url || comprovanteUrl; comprovanteNome = renomeado.nome || comprovanteNome; }
   }
@@ -10631,7 +10757,8 @@ async function salvarDespesa() {
     DataLancamento: dataLancamento, Semana: semana, Categoria: categoria, Subcategoria: subcategoria, Modalidade: modalidade,
     NaturezaEconomica: rdNaturezaDeSubcategoriaDespesas(subcategoria),
     ServicoId: modalidade==='servicos' ? servicoId : '', ServicoDesc: modalidade==='servicos' ? (servicoOpt?servicoOpt.desc:'') : '',
-    Fornecedor: modalidade==='fornecedor' ? fornecedor : '', Beneficiario: modalidade==='servicos' ? beneficiario : '',
+    Fornecedor: modalidade==='fornecedor' ? fornecedor : '', Colaborador: modalidade==='colaborador' ? colaboradorPagto : '',
+    Beneficiario: modalidade==='servicos' ? beneficiario : '',
     Veiculo: (modalidade==='servicos' && ehServicoVeiculo) ? veiculo : '',
     CentroCusto: temDivisaoCC ? divisaoCC.map(d=>d.cc).join(' + ') : cc, Local: local, TipoPagamento: tipoPagamento, FormaPagamento: formaPgto,
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: dataPagamento, Banco: banco,
@@ -10699,7 +10826,8 @@ async function salvarDespesa() {
   const rdLancEl=document.getElementById('rd_lancadopor');if(rdLancEl)rdLancEl.value=window._currentUser?window._currentUser.name:'';
   rdSincronizarResponsavel();
   ['rd_servico_input','rd_servico_sel','rd_beneficiario_input','rd_veiculo_input',
-   'rd_fornecedor_input','rd_fornecedor_sel'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
+   'rd_fornecedor_input','rd_fornecedor_sel','rd_colaborador_input','rd_colaborador_sel'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
+  const colabFuncaoHint = document.getElementById('rd_colaborador_funcao_hint'); if (colabFuncaoHint) colabFuncaoHint.textContent = '';
   const modalidadeSel = document.getElementById('rd_modalidade'); if (modalidadeSel) modalidadeSel.selectedIndex = 0;
   const medHint = document.getElementById('rd_medicao_hint'); if (medHint) medHint.textContent = '';
   const natHint = document.getElementById('rd_natureza_hint'); if (natHint) natHint.textContent = '';
@@ -10826,7 +10954,7 @@ async function carregarDespesas() {
     if (fDia) items = items.filter(r => (r.DataLancamento||'') === fDia);
     else if (fMes) items = items.filter(r => (r.DataLancamento||'').slice(0,7) === fMes);
     if (fCategoria) items = items.filter(r => r.Categoria === fCategoria);
-    if (fBusca) items = items.filter(r => (r.Fornecedor||'').toLowerCase().includes(fBusca) || (r.ServicoDesc||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca) || (r.Subcategoria||'').toLowerCase().includes(fBusca));
+    if (fBusca) items = items.filter(r => (r.Fornecedor||'').toLowerCase().includes(fBusca) || (r.Colaborador||'').toLowerCase().includes(fBusca) || (r.ServicoDesc||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca) || (r.Subcategoria||'').toLowerCase().includes(fBusca));
     if (fStatus) items = items.filter(r => r.Status === fStatus);
     if (fValorExato > 0) items = items.filter(r => Math.abs((r.Valor||0) - fValorExato) < 0.01);
     else {
@@ -10874,7 +11002,7 @@ async function carregarDespesas() {
     const avisoBusca = fBusca ? '<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">🔍 Buscando em Em Aberto + Histórico de Pagos ao mesmo tempo.</div>' : '';
     el.innerHTML = avisoBusca + '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Data Pagto</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
-        const desc = i.Modalidade === 'servicos' ? ('🛠️ ' + (i.ServicoDesc||'—')) : ('🏭 ' + (i.Fornecedor||'—'));
+        const desc = rdDescricaoModalidade(i);
         const ehParcelado = i.TotalParcelas > 1;
         const pgtoTxt = ehParcelado ? `${i.FormaPagamento||''} · ${i.NumParcela}/${i.TotalParcelas}` : (i.FormaPagamento || i.TipoPagamento || '—');
         const pgtoCel = ehParcelado
@@ -10928,7 +11056,7 @@ function rdVerDivisaoCC(id) {
         <div style="font-weight:800;font-size:1rem">🧩 Divisão por Contrato</div>
         <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('rd-dist-modal').remove()">✕</div>
       </div>
-      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:14px">${i.Modalidade==='servicos' ? ('🛠️ '+(i.ServicoDesc||'—')) : ('🏭 '+(i.Fornecedor||'—'))} · R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:14px">${rdDescricaoModalidade(i)} · R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
       <div id="rdcc_lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
       <div style="background:var(--surface2);border-radius:10px;padding:10px;margin-bottom:10px">
         <div style="position:relative;margin-bottom:6px">
@@ -11215,7 +11343,7 @@ async function rdVerHistoricoCompra(id) {
 
   const totalCompra = parcelas.reduce((s,p)=>s+(p.Valor||0),0);
   const totalPago = parcelas.filter(p=>p.Status==='Pago').reduce((s,p)=>s+(p.Valor||0),0);
-  const desc = i.Modalidade === 'servicos' ? (i.ServicoDesc||'—') : (i.Fornecedor||'—');
+  const desc = rdDescricaoModalidade(i);
   const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Cancelado')?'red':'amber';
 
   const modal = document.createElement('div');
@@ -11272,7 +11400,7 @@ async function rdVerHistoricoCompra(id) {
 async function rdExcluirDespesa(id) {
   if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
   const i = (window._rdDespesasPorId || {})[id];
-  const desc = i ? ((i.Fornecedor||i.ServicoDesc||'—') + ' · R$ ' + (i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})) : ('#' + id);
+  const desc = i ? ((i.Fornecedor||i.Colaborador||i.ServicoDesc||'—') + ' · R$ ' + (i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})) : ('#' + id);
   const avisoSync = (i && (i.OrigemPrestacaoContas || i.OrigemContaPagar))
     ? '\n\n⚠️ Esse lançamento veio de uma sincronização automática (Prestação de Contas/Contas a Pagar) — excluir aqui não remove o registro de origem.'
     : '';
@@ -11297,7 +11425,7 @@ async function rdVisualizarDespesa(id) {
   const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR') : '—';
   const linha = (label, valor) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
     <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>`;
-  const desc = i.Modalidade === 'servicos' ? ('🛠️ ' + (i.ServicoDesc||'—')) : ('🏭 ' + (i.Fornecedor||'—'));
+  const desc = rdDescricaoModalidade(i);
   const pgtoTxt = i.TotalParcelas > 1 ? `${i.FormaPagamento||''} · parcela ${i.NumParcela}/${i.TotalParcelas}` : (i.FormaPagamento || i.TipoPagamento || '—');
 
   const modal = document.createElement('div');
@@ -11376,6 +11504,11 @@ async function rdAbrirEdicaoDespesa(id) {
     set('rd_veiculo', i.Veiculo); set('rd_veiculo_input', i.Veiculo);
   } else if (i.Modalidade === 'fornecedor') {
     set('rd_fornecedor_sel', i.Fornecedor); set('rd_fornecedor_input', i.Fornecedor);
+  } else if (i.Modalidade === 'colaborador') {
+    set('rd_colaborador_sel', i.Colaborador); set('rd_colaborador_input', i.Colaborador);
+    const colab = _rdColaboradores.find(x => (x.Title||'').toLowerCase() === (i.Colaborador||'').toLowerCase());
+    const hint = document.getElementById('rd_colaborador_funcao_hint');
+    if (hint) hint.textContent = (colab && colab.Funcao) ? ('Função: ' + colab.Funcao) : '';
   }
 
   set('rd_local', i.Local);
@@ -11446,8 +11579,8 @@ async function exportarDespesasExcel() {
     'Categoria': i.Categoria || '',
     'Subcategoria': i.Subcategoria || '',
     'Natureza Econômica': i.NaturezaEconomica || '',
-    'Modalidade': i.Modalidade === 'servicos' ? 'Serviços' : 'Fornecedor',
-    'Serviço/Fornecedor': i.Modalidade === 'servicos' ? (i.ServicoDesc||'') : (i.Fornecedor||''),
+    'Modalidade': i.Modalidade === 'servicos' ? 'Serviços' : i.Modalidade === 'colaborador' ? 'Colaborador' : 'Fornecedor',
+    'Serviço/Fornecedor/Colaborador': i.Modalidade === 'servicos' ? (i.ServicoDesc||'') : i.Modalidade === 'colaborador' ? (i.Colaborador||'') : (i.Fornecedor||''),
     'Beneficiário': i.Beneficiario || '',
     'Veículo': i.Veiculo || '',
     'Centro de Custo': i.CentroCusto || '',
@@ -41709,7 +41842,7 @@ async function deletarArquivoCentral(caminhoRelativo) {
 const BACKUP_TABELAS = [
   'APRs','Adiantamentos','Agenda','AsoRegistros','AtividadeApp','CentrosCusto','CentrosCustoValores',
   'ChecklistBombeamento','ChecklistColeta','ChecklistERO','ChecklistFauna','ChecklistLinha','ChecklistMitigacao',
-  'ChecklistVeicular','Contadores','ContasPagar','ContasReceber','Despesas','Empreendimentos','EpiRegistros',
+  'ChecklistVeicular','ColaboradoresPagamento','Contadores','ContasPagar','ContasReceber','Despesas','Empreendimentos','EpiRegistros',
   'Equipamentos','EscopoMedidoEnergisa','EscopoContratualEditado','FaturamentoEnergisa','FlashReportsEnergisa','FlashReportsFauna',
   'Fornecedores','FornecedoresEnergisa','GestaoDocumental','Inspecoes','Lancamentos_Servicos','Licencas',
   'Medicoes','MedicoesContratosEnergisa','MedicoesEnergisa','NotificacoesEnergisa','OrcamentosProjetos',
