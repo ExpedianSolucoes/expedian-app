@@ -9627,7 +9627,7 @@ function renderDespesasTab() {
     <div class="form-row" id="rd_vencimento_unico_row">
       <div class="form-group">
         <label id="rd_vencimento_label">Vencimento</label>
-        <input type="date" id="rd_vencimento">
+        <input type="date" id="rd_vencimento" oninput="rdAtualizarStatusAuto()">
       </div>
       <div class="form-group">
         <label>Forma de Pagamento</label>
@@ -9642,26 +9642,29 @@ function renderDespesasTab() {
       </div>
     </div>
 
-    <!-- Linha 5: Responsável (Empresa já é definida pelo submenu acima — sem necessidade de repetir aqui) -->
-    <div class="form-row">
-      <div class="form-group" style="grid-column:span 2">
-        <label>Responsável pelo Lançamento</label>
-        <select id="rd_responsavel">
-          <option value="">Selecione...</option>
-          ${responsaveis.map(n => `<option>${n}</option>`).join('')}
-        </select>
-      </div>
-    </div>
-
-    <!-- Linha 5b: Lançado por — quem de fato preencheu este lançamento (diferente do
-         "Responsável pelo Lançamento" acima, que é o gestor pelo qual o gasto responde).
-         Mesmo padrão da Prestação de Contas e Contas a Pagar, pra diferenciar lançamentos
-         feitos por quem usa o login de outra pessoa (ex.: estagiário sem login próprio). -->
+    <!-- Linha 5b: Lançado por — quem de fato preencheu este lançamento. Também
+         alimenta "Responsável pelo Lançamento" (abaixo, escondido por padrão)
+         automaticamente quando o nome digitado é de Diretoria/Coordenador —
+         evita digitar o mesmo nome duas vezes quando as duas coisas são a
+         mesma pessoa (caso mais comum), mas mesmo assim distingue quem tem
+         login próprio de quem usa login compartilhado (ex.: estagiário sem
+         login — daí o Responsável fica em branco/outro nome, mesmo com
+         Lançado por preenchido). Pedido em 04/09/2026: "tem duas vezes
+         lançado e responsavel lançamento, trata-se da mesma coisa". -->
     <div class="form-row">
       <div class="form-group" style="grid-column:span 2">
         <label>Lançado por</label>
-        <input list="rd_lancadopor_dl" id="rd_lancadopor" placeholder="Nome de quem está fazendo este lançamento" value="${prestNomeSugeridoLancadoPor().replace(/"/g, '&quot;')}">
+        <input list="rd_lancadopor_dl" id="rd_lancadopor" placeholder="Nome de quem está fazendo este lançamento" value="${prestNomeSugeridoLancadoPor().replace(/"/g, '&quot;')}" oninput="rdSincronizarResponsavel()">
         <datalist id="rd_lancadopor_dl">${prestListaLancadores().map(n => `<option value="${n}">`).join('')}</datalist>
+      </div>
+    </div>
+    <div class="form-row" id="rd_responsavel_row" style="${responsaveis.includes(prestNomeSugeridoLancadoPor()) ? 'display:none' : ''}">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Responsável pelo Lançamento <span style="font-weight:400;font-size:.68rem;color:var(--text-muted)">(preenchido automaticamente pelo "Lançado por" acima — só aparece separado quando quem lançou não é da Diretoria/Coordenação)</span></label>
+        <select id="rd_responsavel">
+          <option value="">Selecione...</option>
+          ${responsaveis.map(n => `<option ${n === prestNomeSugeridoLancadoPor() ? 'selected' : ''}>${n}</option>`).join('')}
+        </select>
       </div>
     </div>
 
@@ -9669,7 +9672,7 @@ function renderDespesasTab() {
     <div class="form-row">
       <div class="form-group">
         <label>Data de Pagamento</label>
-        <input type="date" id="rd_data_pagamento">
+        <input type="date" id="rd_data_pagamento" oninput="rdAtualizarStatusAuto()">
       </div>
       <div class="form-group">
         <label>Banco</label>
@@ -9681,7 +9684,7 @@ function renderDespesasTab() {
     <!-- Linha 7: Status + Nº Medição (Comprovante virou o 1º campo do formulário) -->
     <div class="form-row">
       <div class="form-group">
-        <label>Status de Pagamento</label>
+        <label>Status de Pagamento <span style="font-weight:400;font-size:.68rem;color:var(--text-muted)">(automático pela Data de Pagamento/Vencimento — pode ajustar manualmente se precisar, ex. Cancelado)</span></label>
         <select id="rd_status">
           ${RD_STATUS.map(s => `<option>${s}</option>`).join('')}
         </select>
@@ -10161,6 +10164,58 @@ async function rdAtualizarMedicaoPorCC(cc) {
   }
 }
 
+/* -- Sincroniza "Responsável pelo Lançamento" a partir do que foi digitado em
+   "Lançado por" — só quando o nome bate com uma opção válida de Diretoria/
+   Coordenador (a lista de _servicosResponsaveisDiretoria()); do contrário
+   deixa como estava (ex.: estagiário lançando em nome de outra pessoa, onde
+   os dois campos legitimamente precisam continuar diferentes). Pedido em
+   04/09/2026 pra não ter que digitar o mesmo nome duas vezes. -- */
+function rdSincronizarResponsavel() {
+  const lancado = ((document.getElementById('rd_lancadopor') || {}).value || '').trim();
+  const respSel = document.getElementById('rd_responsavel');
+  const respRow = document.getElementById('rd_responsavel_row');
+  if (!respSel) return;
+  const opcoes = Array.from(respSel.options).map(o => o.value);
+  if (opcoes.includes(lancado)) {
+    respSel.value = lancado;
+    if (respRow) respRow.style.display = 'none';
+  } else if (respRow) {
+    respRow.style.display = '';
+  }
+}
+/* -- Versão só de exibição (não mexe no valor selecionado) — usada ao abrir
+   uma despesa já salva pra editar, onde os dois campos já vêm preenchidos
+   do registro e não devem ser sobrescritos um pelo outro. -- */
+function rdAtualizarVisibilidadeResponsavel() {
+  const lancado = ((document.getElementById('rd_lancadopor') || {}).value || '').trim();
+  const resp = ((document.getElementById('rd_responsavel') || {}).value || '').trim();
+  const respRow = document.getElementById('rd_responsavel_row');
+  if (respRow) respRow.style.display = (lancado && resp && lancado === resp) ? 'none' : '';
+}
+
+/* -- Status de Pagamento automático: se tem Data de Pagamento preenchida, é
+   porque já foi pago — vira "Pago" direto, sem precisar escolher na mão.
+   Sem data de pagamento, cai no mesmo cálculo por vencimento já usado em
+   Contas a Pagar (calcularStatusVencimento). Continua editável manualmente
+   depois (ex.: marcar "Cancelado"), só não fica mais em branco por padrão.
+   Pedido em 04/09/2026: "o status de pagamento deve ficar automático
+   conforme a data de pagamento". -- */
+function rdAtualizarStatusAuto() {
+  const statusSel = document.getElementById('rd_status');
+  if (!statusSel) return;
+  // Não mexe se já foi marcado manualmente como Cancelado — o automático
+  // é só pra não deixar em branco/desatualizado, nunca pra desfazer um
+  // cancelamento que a pessoa marcou de propósito.
+  if (statusSel.value === 'Cancelado') return;
+  const dataPag = (document.getElementById('rd_data_pagamento') || {}).value || '';
+  if (dataPag) {
+    statusSel.value = 'Pago';
+    return;
+  }
+  const venc = (document.getElementById('rd_vencimento') || {}).value || '';
+  statusSel.value = calcularStatusVencimento(venc);
+}
+
 /* -- Tipo de pagamento: à vista / parcelado / faturado -- */
 function rdTogglePagamento() {
   const v = (document.getElementById('rd_tipo_pagamento')||{}).value;
@@ -10605,6 +10660,7 @@ async function salvarDespesa() {
    'rd_num_parcelas','rd_venc_1parcela','rd_vencimento','rd_responsavel','rd_data_pagamento',
    'rd_banco','rd_medicao','rd_beneficiario','rd_veiculo'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const rdLancEl=document.getElementById('rd_lancadopor');if(rdLancEl)rdLancEl.value=window._currentUser?window._currentUser.name:'';
+  rdSincronizarResponsavel();
   ['rd_servico_input','rd_servico_sel','rd_beneficiario_input','rd_veiculo_input',
    'rd_fornecedor_input','rd_fornecedor_sel'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const modalidadeSel = document.getElementById('rd_modalidade'); if (modalidadeSel) modalidadeSel.selectedIndex = 0;
@@ -11314,6 +11370,11 @@ async function rdAbrirEdicaoDespesa(id) {
   set('rd_forma_pgto', i.FormaPagamento);
   set('rd_responsavel', i.ResponsavelLancamento);
   set('rd_lancadopor', i.LancadoPor);
+  // Só decide se mostra a linha "Responsável" separada (quando o registro
+  // salvo já tinha os dois nomes diferentes) — NÃO usa rdSincronizarResponsavel()
+  // aqui pra não sobrescrever um Responsável real que seja diferente de quem
+  // lançou (ex.: um coordenador lançou em nome de outro).
+  rdAtualizarVisibilidadeResponsavel();
   set('rd_data_pagamento', i.DataPagamento);
   set('rd_banco', i.Banco);
   const statusSel = document.getElementById('rd_status'); if (statusSel) statusSel.value = i.Status || 'Pendente';
@@ -12112,8 +12173,10 @@ async function solicVisualizar(id) {
       ${linha('Projeto/Obra', r.Projeto)}
       ${linha('Urgência', r.Urgencia)}
       ${linha('Descrição', r.Descricao)}
-      ${linha('Horário de Entrada Correto', r.HorarioEntradaCorreto)}
-      ${linha('Horário de Saída Correto', r.HorarioSaidaCorreto)}
+      ${linha('1ª Entrada', r.HorarioEntradaCorreto)}
+      ${linha('1ª Saída', r.HorarioSaidaCorreto)}
+      ${linha('2ª Entrada', r.HorarioEntrada2Correto)}
+      ${linha('2ª Saída', r.HorarioSaida2Correto)}
       ${r.AnexoUrl ? `<div style="margin-top:10px"><a href="${r.AnexoUrl}" target="_blank" class="btn-secondary" style="display:inline-block;padding:6px 12px;font-size:.78rem;text-decoration:none">📎 Ver anexo${r.AnexoNome ? ' — ' + r.AnexoNome : ''}</a></div>` : ''}
       ${linha('Status', r.Status)}
       ${r.MotivoReprovacao ? linha('Motivo da Reprovação/Devolução', r.MotivoReprovacao) : ''}
@@ -20088,6 +20151,7 @@ function solicNovoForm() {
     dataNecessaria: '', descricao: '', projeto: '', urgencia: 'Normal',
     valorAdiantamento: '', periodoAdiantamento: '', justificativaAdiantamento: '',
     foiFalta: '', dataOcorrencia: '', motivoPonto: '', horarioEntradaCorreto: '', horarioSaidaCorreto: '',
+    horarioEntrada2Correto: '', horarioSaida2Correto: '',
   };
   window._solicAnexoArquivo = null;
   window._solicEditId = null;
@@ -20242,6 +20306,7 @@ async function solicEditarHistorico(id, origem) {
       dataNecessaria: '', descricao: '', projeto: '', urgencia: 'Normal',
       valorAdiantamento: r.ValorTotal || '', periodoAdiantamento: r.Periodo || '', justificativaAdiantamento: r.Justificativa || '',
       foiFalta: '', dataOcorrencia: '', motivoPonto: '', horarioEntradaCorreto: '', horarioSaidaCorreto: '',
+      horarioEntrada2Correto: '', horarioSaida2Correto: '',
     };
   } else if (r.Tipo === 'ajuste_ponto') {
     window._solicData = {
@@ -20250,6 +20315,7 @@ async function solicEditarHistorico(id, origem) {
       valorAdiantamento: '', periodoAdiantamento: '', justificativaAdiantamento: '',
       foiFalta: r.SubTipo === 'Falta' ? 'sim' : 'nao', dataOcorrencia: r.DataNecessaria || '', motivoPonto: r.Descricao || '',
       horarioEntradaCorreto: r.HorarioEntradaCorreto || '', horarioSaidaCorreto: r.HorarioSaidaCorreto || '',
+      horarioEntrada2Correto: r.HorarioEntrada2Correto || '', horarioSaida2Correto: r.HorarioSaida2Correto || '',
     };
   } else {
     window._solicData = {
@@ -20257,6 +20323,7 @@ async function solicEditarHistorico(id, origem) {
       dataNecessaria: r.DataNecessaria || '', descricao: r.Descricao || '', projeto: r.Projeto || '', urgencia: r.Urgencia || 'Normal',
       valorAdiantamento: '', periodoAdiantamento: '', justificativaAdiantamento: '',
       foiFalta: '', dataOcorrencia: '', motivoPonto: '', horarioEntradaCorreto: '', horarioSaidaCorreto: '',
+      horarioEntrada2Correto: '', horarioSaida2Correto: '',
     };
   }
   window._solicAnexoArquivo = null;
@@ -20380,8 +20447,12 @@ function pageSolicitacoes() {
     </div>
     ` : `
     <div class="form-row">
-      <div class="form-group"><label>Horário de Entrada Correto</label><input type="time" value="${d.horarioEntradaCorreto || ''}" onchange="solicCampo('horarioEntradaCorreto', this.value)"></div>
-      <div class="form-group"><label>Horário de Saída Correto</label><input type="time" value="${d.horarioSaidaCorreto || ''}" onchange="solicCampo('horarioSaidaCorreto', this.value)"></div>
+      <div class="form-group"><label>1ª Entrada</label><input type="time" value="${d.horarioEntradaCorreto || ''}" onchange="solicCampo('horarioEntradaCorreto', this.value)"></div>
+      <div class="form-group"><label>1ª Saída</label><input type="time" value="${d.horarioSaidaCorreto || ''}" onchange="solicCampo('horarioSaidaCorreto', this.value)"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>2ª Entrada <span style="font-weight:400;font-size:.68rem;color:var(--text-muted)">(opcional — volta do almoço)</span></label><input type="time" value="${d.horarioEntrada2Correto || ''}" onchange="solicCampo('horarioEntrada2Correto', this.value)"></div>
+      <div class="form-group"><label>2ª Saída <span style="font-weight:400;font-size:.68rem;color:var(--text-muted)">(opcional)</span></label><input type="time" value="${d.horarioSaida2Correto || ''}" onchange="solicCampo('horarioSaida2Correto', this.value)"></div>
     </div>
     <div class="form-row full">
       <div class="form-group"><label>Motivo</label><textarea oninput="solicCampo('motivoPonto', this.value)" placeholder="Explique o motivo do ajuste de horário...">${d.motivoPonto || ''}</textarea></div>
@@ -20497,7 +20568,7 @@ async function solicEnviar() {
     if (!d.foiFalta) { showToast('⚠️ Informe se foi falta ou ajuste de horário.'); return; }
     if (!d.dataOcorrencia) { showToast('⚠️ Informe a data da ocorrência.'); return; }
     if (!(d.motivoPonto || '').trim()) { showToast('⚠️ Descreva o motivo.'); return; }
-    if (d.foiFalta === 'nao' && !d.horarioEntradaCorreto && !d.horarioSaidaCorreto) { showToast('⚠️ Informe ao menos um horário correto (entrada ou saída).'); return; }
+    if (d.foiFalta === 'nao' && !d.horarioEntradaCorreto && !d.horarioSaidaCorreto && !d.horarioEntrada2Correto && !d.horarioSaida2Correto) { showToast('⚠️ Informe ao menos um horário correto.'); return; }
     showSyncStatus(editando ? 'Salvando alterações...' : 'Enviando solicitação...');
     let anexoUrl = '', anexoNome = '';
     if (d.foiFalta === 'sim') {
@@ -20517,6 +20588,8 @@ async function solicEnviar() {
       DataNecessaria: d.dataOcorrencia, Descricao: d.motivoPonto,
       HorarioEntradaCorreto: d.foiFalta === 'nao' ? d.horarioEntradaCorreto : '',
       HorarioSaidaCorreto: d.foiFalta === 'nao' ? d.horarioSaidaCorreto : '',
+      HorarioEntrada2Correto: d.foiFalta === 'nao' ? d.horarioEntrada2Correto : '',
+      HorarioSaida2Correto: d.foiFalta === 'nao' ? d.horarioSaida2Correto : '',
       Solicitante: nome, SolicitanteEmail: email, GestorDestino: d.gestorDestino,
     };
     if (anexoUrl) { campos.AnexoUrl = anexoUrl; campos.AnexoNome = anexoNome; }
