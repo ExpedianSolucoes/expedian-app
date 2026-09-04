@@ -14765,8 +14765,17 @@ async function cmedGerarDoc(m, dc) {
     quebrarSeNecessario(rowHItem);
     if (i % 2 === 1) { doc.setFillColor(250, 248, 246); doc.rect(ML, y, CW, rowHItem, 'F'); }
     doc.setDrawColor(220, 213, 209); doc.setLineWidth(0.015); doc.rect(ML, y, CW, rowHItem);
-    const extras = subitensValidos.reduce((s, sub) => s + cmedSubitemValorTotal(sub), 0);
-    const st = (parseFloat(it.quanti) || 0) * (parseFloat(it.valorUnit) || 0) + extras;
+    // Coluna "Valor Total" da linha do item = SÓ o serviço em si (Quanti ×
+    // R$ Unitário, ou seja "baseItem") — não soma mais a cobrança extra
+    // aqui. Antes ela já vinha somada (baseItem+extras), o que fazia a
+    // conta "Quanti × R$ Unitário" bater errado com o que aparecia na
+    // coluna (reclamado em 04/09/2026: "na linha do valor total ficou
+    // errado, ali deve ser o valor unitário pela quantidade"). A cobrança
+    // extra continua detalhada nas sublinhas "+ ..." logo abaixo, e o total
+    // combinado (serviço + extras) já aparece na linha "Subtotal item N"
+    // também abaixo — só o TOTAL GERAL (que soma tudo do BM) continua
+    // incluindo as extras.
+    const st = baseItem + extrasItem;
     totalGeral += st;
     doc.setFont('helvetica', 'normal'); doc.setFontSize(descFont); doc.setTextColor(40, 40, 40);
     doc.text(String(i + 1), xs.seq + 0.15, y + 0.38);
@@ -14775,7 +14784,7 @@ async function cmedGerarDoc(m, dc) {
     doc.text(it.unid || '—', xs.unid + 0.15, y + 0.38);
     doc.text(it.valorUnit !== '' && it.valorUnit != null ? 'R$ ' + (parseFloat(it.valorUnit) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—', xs.unit + 0.15, y + 0.38);
     doc.setFont('helvetica', 'bold');
-    doc.text('R$ ' + st.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), xs.tot + 0.15, y + 0.38);
+    doc.text('R$ ' + baseItem.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), xs.tot + 0.15, y + 0.38);
     let blocoY = y + 0.38 + descBlocoH;
     if (obsLines.length) {
       doc.setFont('helvetica', 'italic'); doc.setFontSize(obsFont); doc.setTextColor(110, 100, 95);
@@ -15063,14 +15072,23 @@ function osFecharForm() {
 }
 
 function osEditar(id) {
-  const o = (window._osHistorico || []).find(r => r.Id === id);
+  // -- Comparação por String() — o id que chega aqui vem sempre como texto
+  // (o onclick do botão é montado com '${o.Id}', então vira string), mas
+  // o.Id salvo no registro pode ser number. "r.Id === id" (estrito) nunca
+  // batia nesse caso, então Editar/Excluir sempre caíam no "Registro não
+  // encontrado" — bug relatado em 04/09/2026. Também guarda o o.Id REAL
+  // (não a string do botão) em _osRegistroAtualId, porque o Salvar usa
+  // esse valor pra achar o registro de novo lá no dbAtualizar (que faz a
+  // mesma comparação estrita) — se guardasse a string, o Salvar quebraria
+  // do mesmo jeito.
+  const o = (window._osHistorico || []).find(r => String(r.Id) === String(id));
   if (!o) { showToast('⚠️ Registro não encontrado.'); return; }
   window._osData = {
     contratoChave: o.ContratoChave, numero: o.Numero || '', dataRecebimento: o.DataRecebimento || '', prazo: o.Prazo || '',
     dataEntrega: o.DataEntrega || '', status: o.Status || 'No prazo', descricao: o.Descricao || '',
     valor: o.Valor || '', responsavel: o.Responsavel || '', obs: o.Obs || '',
   };
-  window._osRegistroAtualId = id;
+  window._osRegistroAtualId = o.Id;
   window._osMostrarForm = true;
   navigate('projetos');
 }
@@ -15102,7 +15120,10 @@ async function osExcluir(id) {
   if (!confirm('Tem certeza que deseja excluir esta Ordem de Serviço?\n\nEssa ação não pode ser desfeita.')) return;
   showSyncStatus('Excluindo OS...');
   const lista = await dbLer('OrdensServicoEnergisa');
-  const idx = lista.findIndex(r => r.Id === id);
+  // Comparação por String() — mesmo motivo do osEditar (o id do botão vem
+  // como string, o.Id salvo pode ser number; comparação estrita nunca
+  // batia e a exclusão sempre caía em "Registro não encontrado").
+  const idx = lista.findIndex(r => String(r.Id) === String(id));
   if (idx === -1) { showToast('❌ Registro não encontrado.'); return; }
   lista.splice(idx, 1);
   const ok = await dbSalvar('OrdensServicoEnergisa', lista);
@@ -15153,6 +15174,7 @@ function osHtmlHistorico(lista, chave) {
           <td style="padding:6px 8px;font-weight:700">${o.Valor ? 'R$ ' + parseFloat(o.Valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
           <td style="padding:6px 8px;color:${OS_STATUS_COR[o.Status] || 'inherit'};font-weight:700">${o.Status}</td>
           <td style="padding:6px 8px;white-space:nowrap">
+            <button onclick="osExportarPDFUm('${o.Id}')" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer" title="Exportar PDF desta OS">📄</button>
             <button onclick="osEditar('${o.Id}')" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">✏️</button>
             <button onclick="osExcluir('${o.Id}')" style="font-size:.68rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer;color:var(--red)">🗑️</button>
           </td>
@@ -15202,6 +15224,97 @@ async function osExportarPDF(chave) {
   });
   _pdfNumerarPaginas(doc, pageW, pageH);
   doc.save('Ordens_Servico_' + (dc ? dc.numero.replace(/\s+/g, '_') : chave) + ' - ' + new Date().toLocaleDateString('pt-BR').replace(/\//g, '.') + '.pdf');
+  showToast('✅ PDF gerado!');
+}
+
+/* -- PDF de UMA Ordem de Serviço só (mesma infra jsPDF/campoBox usada na
+   medição — cmedGerarDoc) — pedido em 04/09/2026: "preciso exportar tbm
+   ordem de serviço... habilitar por [OS] pdf de cada", análogo ao PDF
+   individual que já existe por BM (cmedExportarPDFUm). Antes só existia o
+   PDF consolidado com TODAS as OS do contrato (osExportarPDF). -- */
+async function osGerarDocIndividual(o, dc) {
+  await _garantirJsPDF();
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'ORDEM DE SERVIÇO';
+  const subtitulo = 'Contrato ' + (dc ? dc.numero : o.ContratoChave) + ' · Energisa RO' + (o.Numero ? ' · OS ' + o.Numero : '');
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.4, CW = pageW - 2.8;
+  const dataBR = iso => { try { return iso ? new Date(iso + 'T12:00').toLocaleDateString('pt-BR') : '—'; } catch (e) { return iso; } };
+
+  function quebrarSeNecessario(altura) {
+    if (y + altura > pageH - 1.6) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  }
+  function campoBox(x, w, h, label, valor, opts) {
+    opts = opts || {};
+    quebrarSeNecessario(h);
+    doc.setDrawColor(200, 190, 185); doc.setLineWidth(0.02);
+    if (opts.destaque) { doc.setFillColor(224, 238, 219); doc.rect(x, y, w, h, 'FD'); }
+    else { doc.rect(x, y, w, h); }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(140, 120, 110);
+    doc.text(label.toUpperCase(), x + 0.15, y + 0.28);
+    doc.setFont('helvetica', opts.bold ? 'bold' : 'normal'); doc.setFontSize(opts.size || 9.5); doc.setTextColor(40, 40, 40);
+    const lines = doc.splitTextToSize(String(valor || '—'), w - 0.3);
+    doc.text(lines, x + 0.15, y + 0.56);
+  }
+
+  campoBox(ML, CW, 0.85, 'Contrato', dc ? dc.numero : o.ContratoChave, { bold: true, size: 11 });
+  y += 0.85 + 0.15;
+
+  const gap3 = 0.25, col3 = (CW - gap3 * 2) / 3;
+  quebrarSeNecessario(0.85);
+  campoBox(ML, col3, 0.85, 'Data de recebimento', dataBR(o.DataRecebimento), { bold: true });
+  campoBox(ML + col3 + gap3, col3, 0.85, 'Prazo', dataBR(o.Prazo), { bold: true });
+  campoBox(ML + (col3 + gap3) * 2, col3, 0.85, 'Nº OS', o.Numero || '—', { bold: true, destaque: true, size: 12 });
+  y += 0.85 + 0.15;
+
+  const gap2 = 0.25, col2 = (CW - gap2) / 2;
+  quebrarSeNecessario(0.85);
+  campoBox(ML, col2, 0.85, 'Status', o.Status || '—', { bold: true });
+  campoBox(ML + col2 + gap2, col2, 0.85, 'Data de entrega real', dataBR(o.DataEntrega), { bold: true });
+  y += 0.85 + 0.15;
+
+  const descLines = doc.splitTextToSize(o.Descricao || '—', CW - 0.3);
+  const descH = Math.max(0.85, 0.5 + descLines.length * 0.37);
+  campoBox(ML, CW, descH, 'Descrição do serviço solicitado', o.Descricao, { size: 9 });
+  y += descH + 0.15;
+
+  const gap2b = 0.25, col2b = (CW - gap2b) / 2;
+  quebrarSeNecessario(0.85);
+  campoBox(ML, col2b, 0.85, 'Responsável', o.Responsavel || '—', { bold: true });
+  campoBox(ML + col2b + gap2b, col2b, 0.85, 'Valor', o.Valor ? 'R$ ' + parseFloat(o.Valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—', { bold: true });
+  y += 0.85 + 0.25;
+
+  if (o.Obs) {
+    const obsLinhasTexto = doc.splitTextToSize(o.Obs, CW - 0.3);
+    const obsBoxH = 0.5 + obsLinhasTexto.length * 0.36;
+    quebrarSeNecessario(obsBoxH);
+    doc.setDrawColor(200, 190, 185); doc.setLineWidth(0.02); doc.rect(ML, y, CW, obsBoxH);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(140, 120, 110);
+    doc.text('OBSERVAÇÕES', ML + 0.15, y + 0.28);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(60, 60, 60);
+    let oy = y + 0.56;
+    obsLinhasTexto.forEach(ln => { doc.text(ln, ML + 0.15, oy); oy += 0.36; });
+    y += obsBoxH + 0.3;
+  }
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  return doc;
+}
+
+function _osNomeArquivoPdf(o, dc) {
+  const contratoSigla = dc ? dc.numero.replace(/\s+/g, '_') : o.ContratoChave;
+  return 'OS ' + (o.Numero || 'S_N').replace(/\//g, '-') + ' - ' + contratoSigla + '.pdf';
+}
+
+async function osExportarPDFUm(id) {
+  const o = (window._osHistorico || []).find(r => String(r.Id) === String(id));
+  if (!o) { showToast('⚠️ Registro não encontrado.'); return; }
+  showToast('🔄 Gerando PDF... aguarde.');
+  const dc = CONTRATOS_ENERGISA_DADOS[o.ContratoChave];
+  const doc = await osGerarDocIndividual(o, dc);
+  doc.save(_osNomeArquivoPdf(o, dc));
   showToast('✅ PDF gerado!');
 }
 
