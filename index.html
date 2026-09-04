@@ -10499,8 +10499,11 @@ function rdToggleDivisaoCC() {
   if (chk && chk.checked) {
     if (editor) editor.style.display = 'block';
     rdRenderizarDivisaoCC();
+    rdAtualizarMedicaoPorDivisaoCC();
   } else {
     if (editor) editor.style.display = 'none';
+    // Desmarcou a divisão — volta a sugerir pelo contrato único do topo (se já tiver um selecionado).
+    rdAtualizarMedicaoPorCC((document.getElementById('rd_cc')||{}).value || '');
   }
 }
 
@@ -10515,12 +10518,49 @@ function rdAdicionarDivisaoCC() {
   const selEl = document.getElementById('rd_divcc_sel'); if (selEl) selEl.selectedIndex = 0;
   const valorEl = document.getElementById('rd_divcc_valor'); if (valorEl) valorEl.value = '';
   rdRenderizarDivisaoCC();
+  rdAtualizarMedicaoPorDivisaoCC();
 }
 
 function rdRemoverDivisaoCC(i) {
   if (!window._rdDivisaoCC) return;
   window._rdDivisaoCC.splice(i, 1);
   rdRenderizarDivisaoCC();
+  rdAtualizarMedicaoPorDivisaoCC();
+}
+
+/* -- Nº Medição quando a despesa está dividida entre vários Centros de Custo:
+   o campo de sugestão (rd_medicao_dl/hint) só era alimentado pelo contrato
+   único do topo (rdAtualizarMedicaoPorCC), então ao usar "Dividir esta
+   despesa entre mais de um Centro de Custo" ele ficava sempre vazio — o
+   campo existia mas nunca sugeria nada, como se tivesse sumido.
+   Agora junta as medições de TODOS os contratos da divisão (uma despesa
+   dividida pode envolver mais de um contrato/medição ao mesmo tempo).
+   Pedido em 04/09/2026: "aqui em despesa, não aparece o número de medição
+   que nem em contas a pagar". -- */
+async function rdAtualizarMedicaoPorDivisaoCC() {
+  const dl = document.getElementById('rd_medicao_dl');
+  const hint = document.getElementById('rd_medicao_hint');
+  const lista = window._rdDivisaoCC || [];
+  if (!lista.length) { if (dl) dl.innerHTML = ''; if (hint) hint.textContent = ''; return; }
+  if (hint) hint.textContent = 'Buscando medições dos contratos divididos...';
+  let todas = [];
+  for (const item of lista) {
+    const ccId = _ccIdPuro(item.cc);
+    try {
+      const medicoes = await medicoesParaCC(ccId);
+      medicoes.forEach(m => todas.push(Object.assign({}, m, { _cc: item.cc })));
+    } catch (e) {}
+  }
+  todas.sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  if (todas.length) {
+    if (dl) dl.innerHTML = todas.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao||''} (${m._cc})</option>`).join('');
+    const abertas = todas.filter(m => !['Concluída','Cancelada','Faturada'].includes(m.Status));
+    if (hint) hint.textContent = abertas.length
+      ? `Medições em aberto nos contratos divididos: ${abertas.map(m=>m.NumMedicao).join(', ')} · selecione o número correspondente.`
+      : `Todas as ${todas.length} medições destes contratos já estão faturadas/concluídas.`;
+  } else {
+    if (hint) hint.textContent = 'Nenhuma medição cadastrada ainda para os contratos desta divisão.';
+  }
 }
 
 function rdRenderizarDivisaoCC() {
