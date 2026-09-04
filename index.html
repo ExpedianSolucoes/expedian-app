@@ -4651,11 +4651,15 @@ async function carregarPrestacoes() {
         <td>
           <span class="status-pill ${scColor(i.Status)}">${i.Status||'—'}</span>
           ${atrasado?`<div style="font-size:.62rem;color:#b45309;font-weight:700;margin-top:2px">⏰ ${dias}d aguardando</div>`:''}
+          ${i.Status==='Ag. Financeiro'&&i.Conferido?`<div style="font-size:.62rem;color:var(--green-mid);font-weight:700;margin-top:2px">📝 Conferido por ${i.ConferidoPor||''}</div>`:''}
           ${(i.Status==='Devolvida'||i.Status==='Suspensa')&&i.MotivoReprovacao?`<div style="font-size:.62rem;color:var(--red);margin-top:2px" title="${i.MotivoReprovacao}">↩️ ${i.MotivoReprovacao.substring(0,40)}${i.MotivoReprovacao.length>40?'...':''}</div>`:''}
         </td>
         <td style="display:flex;gap:3px;padding:8px 6px;flex-wrap:wrap">
           <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="pcAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
-          ${podeAgirFinanceiro?`
+          ${podeAgirFinanceiro&&!i.Conferido?`
+            <button class="btn-primary" style="padding:2px 6px;font-size:.65rem;background:var(--blue)" onclick="pcConferirPrestacao(${i.Id})">📝 Conferir p/ Aprovação</button>
+            <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`:''}
+          ${podeAgirFinanceiro&&i.Conferido?`
             <button class="btn-primary" style="padding:2px 6px;font-size:.65rem" onclick="pcAbrirVisualizar(${i.Id})">✅ Aprovar</button>
             <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`:''}
           ${i.Status==='Aprovada'&&currentProfile==='diretoria'?`
@@ -4864,6 +4868,8 @@ async function _finalizarReenvio(id, comprovanteUrl, comprovanteNome) {
     DataLancamento: new Date().toISOString(), // reinicia contagem dos 3 dias
     ComprovanteUrl: comprovanteUrl,
     ComprovanteNome: comprovanteNome,
+    // Precisa ser conferido de novo — o que mudou pode ter afetado o comprovante/valor.
+    Conferido: false, ConferidoPor: '', DataConferencia: '',
   });
   showToast(ok ? '🔄 Reenviado ao Financeiro!' : ('❌ Erro ao reenviar.' + syncErrorDetalhe()));
   setTimeout(() => carregarPrestacoes(), 600);
@@ -4951,6 +4957,29 @@ async function devolverPrestacaoFinanceiro(id) {
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
 }
 
+/* -- Passo de conferência (Levi/estagiário): antes da aprovação final, alguém
+   confere o comprovante e lança o gasto na planilha de controle paralela.
+   Como o login é compartilhado (LOGINS_COMPARTILHADOS), não dá pra saber pelo
+   perfil quem clicou — por isso pergunta o nome, igual ao padrão do "Lançado
+   por". Depois de conferido, o botão "Aprovar" (final) libera no modal.
+   Pedido em 04/09/2026: "preciso de um botão para o levi quando lançar ou ver
+   outro nome... depois que ele lançou significa que conferiu e registrou na
+   nossa planilha e mandou para eu aprovar". -- */
+async function pcConferirPrestacao(id) {
+  const nome = prompt('Quem está conferindo e lançando na planilha de controle?', 'Levi Rabelo');
+  if (nome === null) return;
+  if (!nome.trim()) { showToast('⚠️ Informe quem está conferindo.'); return; }
+  _limparSyncError();
+  const ok = await dbAtualizar('PrestacaoContas', id, {
+    Conferido: true,
+    ConferidoPor: nome.trim(),
+    DataConferencia: new Date().toISOString().split('T')[0],
+  });
+  showToast(ok ? '📝 Conferido! Enviado para aprovação final.' : ('❌ Erro' + syncErrorDetalhe()));
+  const modalAberto = document.getElementById('pc-view-modal'); if (modalAberto) modalAberto.remove();
+  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
+}
+
 /* -- Modal de visualização de uma Prestação de Contas, com as ações
       contextuais conforme o Status (Aprovar/Indeferir, Registrar Pagamento,
       ou só exibir o resultado se já Paga/Devolvida). Mesmo padrão do
@@ -4995,10 +5024,17 @@ async function pcAbrirVisualizar(id) {
           </div>
         </div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:10px">Se o contrato ou o valor deste lançamento não estiverem corretos, ajuste aqui — a correção é salva junto com a aprovação.</div>
+        ${(i.Status === 'Ag. Financeiro' && !i.Conferido) ? `
+        <div style="font-size:.72rem;color:#1e5a8a;background:#eaf2fb;border-radius:8px;padding:8px 10px;margin-bottom:10px">📝 Ainda não foi conferido/lançado na planilha de controle. Confira o comprovante, lance na planilha e clique abaixo.</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-primary" style="flex:1;background:var(--blue)" onclick="pcConferirPrestacao(${id})">📝 Conferir e Enviar p/ Aprovação</button>
+          <button class="btn-secondary" style="flex:1" onclick="document.getElementById('pc-view-modal').remove();devolverPrestacaoFinanceiro(${id})">↩️ Indeferir</button>
+        </div>` : `
+        ${(i.Status === 'Ag. Financeiro' && i.Conferido) ? `<div style="font-size:.7rem;color:var(--green-mid);margin-bottom:10px">📝 Conferido por ${i.ConferidoPor||'—'}${i.DataConferencia?(' em '+fmtData(i.DataConferencia)):''}</div>` : ''}
         <div style="display:flex;gap:8px">
           <button class="btn-primary" style="flex:1" onclick="aprovarPrestacaoFinanceiroComAjustes(${id})">✅ Aprovar</button>
           <button class="btn-secondary" style="flex:1" onclick="document.getElementById('pc-view-modal').remove();devolverPrestacaoFinanceiro(${id})">↩️ Indeferir</button>
-        </div>
+        </div>`}
       </div>`;
   } else if (i.Status === 'Aprovada' && isDir) {
     acoesHtml = `
@@ -5054,6 +5090,7 @@ async function pcAbrirVisualizar(id) {
       ${linha('NF/Recibo', i.NumeroNF||'—')}
       ${linha('Responsável', i.Responsavel||i.EnviadoPor||'—')}
       ${i.LancadoPor && i.LancadoPor !== i.Responsavel ? linha('Lançado por', i.LancadoPor) : ''}
+      ${i.Conferido ? linha('Conferido por', i.ConferidoPor + (i.DataConferencia ? ' em ' + fmtData(i.DataConferencia) : '')) : ''}
       ${linha('Status', i.Status||'—')}
       ${i.Observacoes ? linha('Observações', i.Observacoes) : ''}
       ${i.ComprovanteUrl ? `<div style="margin-top:8px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.8rem">📎 Ver comprovante</a></div>` : ''}
