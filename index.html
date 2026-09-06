@@ -5519,6 +5519,21 @@ function pagePagar() {
       </div>
     </div>
 
+    <!-- Linha 5a: Nº Medição — quando NÃO está dividindo entre vários Centros
+         de Custo (a divisão já tem seu próprio campo de medição por linha,
+         pag_divcc_medicao). Antes só existia dentro do editor de divisão —
+         uma conta simples, de um contrato só, não tinha onde vincular a
+         medição, o que também fazia a Despesa gerada automaticamente ao pagar
+         (pagSincronizarDespesa) nascer sem Nº Medição. Pedido em 05/09/2026. -->
+    <div class="form-row" id="pag_medicao_row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Nº Medição <span style="font-size:.7rem;color:var(--text-muted)">(se este contrato tiver medição/BM)</span></label>
+        <input type="text" id="pag_medicao" list="pag_medicao_dl" placeholder="Selecione o contrato acima...">
+        <datalist id="pag_medicao_dl"></datalist>
+        <div id="pag_medicao_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
+      </div>
+    </div>
+
     <!-- Linha 5b: Lançado por — quem de fato preencheu este lançamento (mesmo padrão
          da Prestação de Contas), pra diferenciar lançamentos feitos por quem usa o
          login de outra pessoa (ex.: estagiário sem login próprio no sistema). -->
@@ -5697,11 +5712,15 @@ async function pagDivccAtualizarMedicaoPorCC(cc) {
 function pagToggleDivisaoCC() {
   const chk = document.getElementById('pag_tem_divisaocc');
   const editor = document.getElementById('pag_divisaocc_editor');
+  const medicaoRow = document.getElementById('pag_medicao_row');
   if (chk && chk.checked) {
     if (editor) editor.style.display = 'block';
+    if (medicaoRow) medicaoRow.style.display = 'none';
     pagRenderizarDivisaoCC();
   } else {
     if (editor) editor.style.display = 'none';
+    if (medicaoRow) medicaoRow.style.display = '';
+    pagAtualizarMedicaoPorCC((document.getElementById('pag_cc')||{}).value || '');
   }
 }
 
@@ -5798,6 +5817,35 @@ function pagSelecionarCC(valor) {
   const inp = document.getElementById('pag_cc_input'); if (inp) inp.value = valor;
   const hid = document.getElementById('pag_cc'); if (hid) hid.value = valor;
   pagFecharDropdownCC();
+  pagAtualizarMedicaoPorCC(valor);
+}
+
+/* -- Nº Medição do contrato escolhido no campo principal (só quando NÃO está
+   dividindo entre vários CCs — nesse caso cada linha da divisão já tem sua
+   própria medição, campo pag_divcc_medicao). Mesmo padrão de
+   rdAtualizarMedicaoPorCC (Despesas). Corrigido em 05/09/2026: sem esse
+   campo, uma conta de um contrato só não tinha onde vincular a medição, e a
+   Despesa gerada automaticamente ao pagar (pagSincronizarDespesa) nascia sem
+   Nº Medição — impossível de editar depois porque o valor nunca existiu. -- */
+async function pagAtualizarMedicaoPorCC(cc) {
+  const dl = document.getElementById('pag_medicao_dl');
+  const hint = document.getElementById('pag_medicao_hint');
+  if (!cc) { if (dl) dl.innerHTML = ''; if (hint) hint.textContent = ''; return; }
+  if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  const ccId = _ccIdPuro(cc);
+  let medicoes = [];
+  try { medicoes = await medicoesParaCC(ccId); } catch (e) { medicoes = []; }
+  const doCC = medicoes.sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  if (doCC.length) {
+    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao || ''} (${m.Status || ''})</option>`).join('');
+    const abertas = doCC.filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status));
+    if (hint) hint.textContent = abertas.length
+      ? `Medições em aberto: ${abertas.map(m => m.NumMedicao).join(', ')}.`
+      : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+    return;
+  }
+  if (dl) dl.innerHTML = '';
+  if (hint) hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.';
 }
 
 function atualizarStatusAuto() {
@@ -6230,6 +6278,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   const lancadoPor=(document.getElementById('pag_lancadopor')||{}).value?.trim()||(window._currentUser?window._currentUser.name:'');
   const temDivisaoCC=(document.getElementById('pag_tem_divisaocc')||{}).checked||false;
   const divisaoCC=temDivisaoCC?(window._pagDivisaoCC||[]):[];
+  const medicao=(document.getElementById('pag_medicao')||{}).value?.trim()||'';
   const editandoId=window._pagEditandoId||null;
   if(!fornecedor){showToast('⚠️ Selecione um fornecedor.');return;}
   if(!valor){showToast('⚠️ Informe o valor.');return;}
@@ -6302,7 +6351,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
     Fornecedor:fornecedor, Descricao:desc, Empresa:empresa, CentroCusto: temDivisaoCC ? divisaoCC.map(d=>d.cc).join(' + ') : cc,
     Categoria: categoria, Subcategoria: subcategoria, NaturezaEconomica: rdNaturezaDeSubcategoria(subcategoria),
     FormaPagamento:formaPgto, Observacao:obs, NumeroBoleto:numeroBoleto, EnviadoFinanceiro:enviarFinanceiro,
-    LancadoPor:lancadoPor,
+    LancadoPor:lancadoPor, NumMedicao: temDivisaoCC ? '' : medicao,
     ComprovanteUrl: comprovanteUrlFinal, ComprovanteNome: comprovanteNomeFinal,
     DivisaoCC: temDivisaoCC ? divisaoCC : [],
   };
@@ -6347,7 +6396,9 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
 
   showToast(ok ? (editandoId ? '✅ Lançamento atualizado!' : (enviarFinanceiro?'📤 Enviado ao Financeiro!':'✅ Lançamento salvo!')) : (editandoId ? ('❌ Erro ao atualizar.'+syncErrorDetalhe()) : '✅ Salvo localmente!'));
   window._pagEditandoId = null;
-  ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_vencimento','pag_valor','pag_obs','pag_numero_boleto','pag_num_parcelas','pag_venc_1parcela'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_vencimento','pag_valor','pag_obs','pag_numero_boleto','pag_num_parcelas','pag_venc_1parcela','pag_medicao'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  const pagMedDlReset=document.getElementById('pag_medicao_dl');if(pagMedDlReset)pagMedDlReset.innerHTML='';
+  const pagMedHintReset=document.getElementById('pag_medicao_hint');if(pagMedHintReset)pagMedHintReset.textContent='';
   const pagLancEl=document.getElementById('pag_lancadopor');if(pagLancEl)pagLancEl.value=window._currentUser?window._currentUser.name:'';
   const pagDivccChkReset=document.getElementById('pag_tem_divisaocc');if(pagDivccChkReset)pagDivccChkReset.checked=false;
   window._pagDivisaoCC=[];
@@ -6545,8 +6596,8 @@ async function pagSincronizarDespesa(id, dataPag, banco) {
       Categoria: categoriaFinal, Subcategoria: subcategoriaFinal,
       Modalidade: 'fornecedor',
       NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(subcategoriaFinal) : ''),
-      Fornecedor: i.Fornecedor || '', Beneficiario: '', Veiculo: '',
-      CentroCusto: i.CentroCusto || '', Local: '', TipoPagamento: 'faturado',
+      Fornecedor: i.Fornecedor || '', Beneficiario: '', Veiculo: '', Descricao: i.Descricao || '',
+      CentroCusto: i.CentroCusto || '', NumMedicao: i.NumMedicao || '', Local: '', TipoPagamento: 'faturado',
       FormaPagamento: i.FormaPagamento || '', ResponsavelLancamento: i.LancadoPor || '', Empresa: empresaRd,
       DataPagamento: dataPag, Banco: banco, Vencimento: i.Vencimento || '', Valor: i.Valor || 0,
       Status: 'Pago', Title: (i.Fornecedor || 'Conta a Pagar') + ' · ' + (i.Vencimento || dataPag),
@@ -7035,6 +7086,10 @@ async function pagEditarLancamento(id) {
   window._pagDivisaoCC = (i.DivisaoCC && i.DivisaoCC.length) ? JSON.parse(JSON.stringify(i.DivisaoCC)) : [];
   const divccChkEd = document.getElementById('pag_tem_divisaocc');
   if (divccChkEd) { divccChkEd.checked = !!(i.DivisaoCC && i.DivisaoCC.length); pagToggleDivisaoCC(); }
+  if (!(i.DivisaoCC && i.DivisaoCC.length)) {
+    set('pag_medicao', i.NumMedicao);
+    await pagAtualizarMedicaoPorCC(i.CentroCusto || '');
+  }
   window._pagComprovanteUrl = i.ComprovanteUrl || null;
   window._pagComprovanteNome = i.ComprovanteNome || null;
   window._pagComprovanteId = null; // arquivo já está no OneDrive; só reenvia/move se anexar um novo
@@ -7655,7 +7710,7 @@ function pageReceitasDespesas() {
   // botões próprios no hub Financeiro (ver FINANCEIRO_CATALOGO) mas continuavam
   // compartilhando esta mesma função/página por trás (pedido em 27/08/2026).
   const tituloTab = { despesas: 'Despesas', receitas: 'Receitas', conciliacao: 'Conciliação Bancária' }[tab] || 'Receitas e Despesas';
-  const subtituloTab = { despesas: 'Lançamentos de despesa da empresa', receitas: 'Lançamentos de receita da empresa', conciliacao: 'Conciliação com o extrato bancário' }[tab] || 'Lançamentos financeiros detalhados da empresa';
+  const subtituloTab = { despesas: '📒 Registro consolidado de tudo que já foi pago — alimentado automaticamente por Contas a Pagar e Prestação de Contas quando aprovados/pagos', receitas: 'Lançamentos de receita da empresa', conciliacao: 'Conciliação com o extrato bancário' }[tab] || 'Lançamentos financeiros detalhados da empresa';
 
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:14px">
@@ -7682,6 +7737,12 @@ function pageReceitasDespesas() {
   </div>
   ${tab === 'despesas' ? `<div id="fh-busca-resultados"></div>` : ''}
 
+  ${tab === 'despesas' ? `
+  <div style="background:var(--surface2);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:.76rem;color:var(--text-muted);display:flex;flex-wrap:wrap;gap:14px">
+    <span><strong style="color:var(--text)">💸 Contas a Pagar</strong> — conta com vencimento que ainda precisa ser aprovada antes de pagar (boleto, NF de fornecedor).</span>
+    <span><strong style="color:var(--text)">📑 Prestação de Contas</strong> — alguém já gastou (adiantamento, campo) e precisa prestar contas/ser reembolsado.</span>
+    <span><strong style="color:var(--text)">➕ Nova Despesa</strong> — só pra lançamentos diretos, sem aprovação prévia (ajustes, algo já decidido). Se tem dúvida, use um dos dois de cima.</span>
+  </div>` : ''}
   <div style="display:flex;gap:6px;margin-bottom:22px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
     <button onclick="window._rdTab='conciliacao';navigate('receitas_despesas')"
@@ -27172,6 +27233,58 @@ async function dashFinCarregar() {
       despesaPorNatureza[nat] += Number(d.Valor) || 0;
     });
 
+    /* -- DRE Simplificado + EBITDA, mês a mês (pedido em 06/09/2026).
+       Só conta como despesa "de resultado" o que está marcado como
+       Operacional ou Não Operacional — pró-labore/retiradas de sócio
+       (Patrimônio), aportes societários/patrimoniais e aplicações
+       financeiras (CDB, fundos etc.) ficam de fora, porque não são despesa
+       do período, são movimentação de capital/investimento. Receita Líquida
+       usa ValorLiquido (já desconta ISS retido + outras retenções); cai no
+       Valor bruto pra registros antigos que não tinham esse campo. -- */
+    const receitaBrutaPorMes = {}, receitaLiquidaPorMes = {}, deducoesPorMes = {};
+    const despesaOperPorMes = {}, despesaAdmPorMes = {};
+    chavesMeses.forEach(k => { receitaBrutaPorMes[k]=0; receitaLiquidaPorMes[k]=0; deducoesPorMes[k]=0; despesaOperPorMes[k]=0; despesaAdmPorMes[k]=0; });
+    (receitas || []).forEach(r => {
+      const k = chaveMes(r.DataEmissao || r.DataPrevista);
+      if (!(k in receitaBrutaPorMes)) return;
+      const bruto = Number(r.Valor) || 0;
+      const liquido = (r.ValorLiquido != null && r.ValorLiquido !== '') ? Number(r.ValorLiquido) : Math.max(bruto - (Number(r.ISSValorRetido)||0) - (Number(r.OutrasRetencoesValor)||0), 0);
+      receitaBrutaPorMes[k] += bruto;
+      receitaLiquidaPorMes[k] += liquido;
+      deducoesPorMes[k] += (bruto - liquido);
+    });
+    (despesas || []).forEach(d => {
+      const k = chaveMes(d.DataLancamento);
+      if (!(k in despesaOperPorMes)) return;
+      const v = Number(d.Valor) || 0;
+      if (d.NaturezaEconomica === 'Operacional') despesaOperPorMes[k] += v;
+      else if (d.NaturezaEconomica === 'Não Operacional') despesaAdmPorMes[k] += v;
+      // qualquer outra natureza (Patrimônio, Aporte Patrimonial/Societário,
+      // Aplicação Financeira, Intangível, Melhoria...) fica fora do DRE.
+    });
+    const ebitdaPorMes = {}, margemEbitdaPorMes = {};
+    chavesMeses.forEach(k => {
+      ebitdaPorMes[k] = receitaLiquidaPorMes[k] - despesaOperPorMes[k] - despesaAdmPorMes[k];
+      margemEbitdaPorMes[k] = receitaLiquidaPorMes[k] > 0 ? (ebitdaPorMes[k] / receitaLiquidaPorMes[k]) * 100 : null;
+    });
+    const somaPeriodo = (obj) => chavesMeses.reduce((s, k) => s + (obj[k] || 0), 0);
+    const totalReceitaBruta = somaPeriodo(receitaBrutaPorMes);
+    const totalDeducoes = somaPeriodo(deducoesPorMes);
+    const totalReceitaLiquida = somaPeriodo(receitaLiquidaPorMes);
+    const totalDespesaOper = somaPeriodo(despesaOperPorMes);
+    const totalDespesaAdm = somaPeriodo(despesaAdmPorMes);
+    const totalEbitda = totalReceitaLiquida - totalDespesaOper - totalDespesaAdm;
+    const margemEbitdaTotal = totalReceitaLiquida > 0 ? (totalEbitda / totalReceitaLiquida) * 100 : null;
+    // Ponto de equilíbrio aproximado: como a Expedian é prestadora de serviço
+    // (sem CMV de mercadoria), a maior parte do custo é fixo/overhead — então
+    // a aproximação usada é "quanto preciso faturar líquido por mês pra cobrir
+    // a despesa média do mês", sem separar fixo de variável (o app não
+    // rastreia essa classificação hoje).
+    const breakevenMensal = (totalDespesaOper + totalDespesaAdm) / nMeses;
+    // Liquidez: a receber em aberto (Pendente + Vencido) ÷ a pagar em aberto
+    // (A Vencer + Vencido + Aguardando Aprovação) — calculado mais abaixo,
+    // reaproveitando receberBuckets/pagarBuckets já existentes.
+
     // Margem por Contrato/Centro de Custo (Receita - Despesa, dentro do período) —
     // reaproveita despesaPorCC já calculado acima e soma a receita por CC do mesmo jeito
     // (Receitas não tem DivisaoCC, é sempre um único Centro de Custo por lançamento).
@@ -27197,6 +27310,41 @@ async function dashFinCarregar() {
     const kpiSaldoEl = document.getElementById('dashfin-kpi-saldo');
     if (kpiSaldoEl) kpiSaldoEl.style.color = saldo >= 0 ? 'var(--green-main)' : 'var(--red)';
     setTxt('dashfin-kpi-media', fmt(totalDespesas / nMeses));
+    setTxt('dashfin-kpi-ebitda', fmt(totalEbitda));
+    const kpiEbitdaEl = document.getElementById('dashfin-kpi-ebitda');
+    if (kpiEbitdaEl) kpiEbitdaEl.style.color = totalEbitda >= 0 ? 'var(--green-main)' : 'var(--red)';
+    setTxt('dashfin-kpi-margem-ebitda', margemEbitdaTotal != null ? margemEbitdaTotal.toFixed(1) + '%' : '—');
+    setTxt('dashfin-kpi-breakeven', fmt(breakevenMensal));
+
+    // Renderiza a tabela do DRE (mês a mês + total do período).
+    const dreTabelaEl = document.getElementById('dashfin-dre-tabela');
+    if (dreTabelaEl) {
+      const linhaDre = (label, obj, opts) => {
+        opts = opts || {};
+        const total = somaPeriodo(obj);
+        const cels = chavesMeses.map(k => `<td style="text-align:right;white-space:nowrap;padding:4px 8px${opts.negrito?';font-weight:700':''}${(obj[k]||0)<0?';color:var(--red)':''}">${opts.pct ? (obj[k]!=null? obj[k].toFixed(1)+'%':'—') : fmt(obj[k]||0)}</td>`).join('');
+        const totalCel = `<td style="text-align:right;white-space:nowrap;padding:4px 8px;font-weight:800;border-left:2px solid var(--border)${total<0?';color:var(--red)':''}">${opts.pct ? (total!=null? total.toFixed(1)+'%':'—') : fmt(total)}</td>`;
+        return `<tr${opts.negrito?' style="border-top:1px solid var(--border)"':''}><td style="padding:4px 8px;white-space:nowrap;font-weight:${opts.negrito?800:500}">${label}</td>${cels}${opts.pct?'':totalCel}</tr>`;
+      };
+      dreTabelaEl.innerHTML = `<table style="border-collapse:collapse;font-size:.78rem;width:100%">
+        <thead><tr>
+          <th style="text-align:left;padding:4px 8px;white-space:nowrap">Linha</th>
+          ${chavesMeses.map(k => `<th style="text-align:right;padding:4px 8px;white-space:nowrap;color:var(--text-muted)">${dashFinMesLabel(k)}</th>`).join('')}
+          <th style="text-align:right;padding:4px 8px;white-space:nowrap;border-left:2px solid var(--border)">Total período</th>
+        </tr></thead>
+        <tbody>
+          ${linhaDre('Receita Bruta', receitaBrutaPorMes)}
+          ${linhaDre('(-) Deduções (ISS/retenções)', Object.fromEntries(chavesMeses.map(k=>[k,-deducoesPorMes[k]])))}
+          ${linhaDre('(=) Receita Líquida', receitaLiquidaPorMes, {negrito:true})}
+          ${linhaDre('(-) Despesas Operacionais', Object.fromEntries(chavesMeses.map(k=>[k,-despesaOperPorMes[k]])))}
+          ${linhaDre('(-) Despesas Administrativas', Object.fromEntries(chavesMeses.map(k=>[k,-despesaAdmPorMes[k]])))}
+          ${linhaDre('(=) EBITDA', ebitdaPorMes, {negrito:true})}
+          ${linhaDre('Margem EBITDA', margemEbitdaPorMes, {pct:true})}
+          ${linhaDre('(=) Resultado do Período*', ebitdaPorMes, {negrito:true})}
+        </tbody>
+      </table>
+      <div style="font-size:.68rem;color:var(--text-muted);margin-top:6px">* Sem Depreciação/Amortização e sem IR/CSLL separados — por isso é igual ao EBITDA neste modelo simplificado.</div>`;
+    }
 
     // Destrói gráficos anteriores antes de recriar nos mesmos canvas (evita
     // "Canvas is already in use" ao trocar o período sem re-renderizar a página).
@@ -27207,6 +27355,36 @@ async function dashFinCarregar() {
     const corVerde = '#28a745', corVermelho = '#dc3545', corAzul = '#0d6efd';
     const paletaCategorias = ['#28a745', '#0d6efd', '#e0a800', '#dc3545', '#6f42c1', '#20c997', '#fd7e14', '#6610f2', '#adb5bd'];
 
+    const ctxEbitda = document.getElementById('dashfin-chart-ebitda');
+    if (ctxEbitda) {
+      window._dashFinCharts.ebitda = new Chart(ctxEbitda, {
+        data: {
+          labels: chavesMeses.map(dashFinMesLabel),
+          datasets: [
+            {
+              type: 'bar', label: 'EBITDA (R$)',
+              data: chavesMeses.map(k => Math.round((ebitdaPorMes[k] || 0) * 100) / 100),
+              backgroundColor: chavesMeses.map(k => (ebitdaPorMes[k] || 0) >= 0 ? corVerde : corVermelho),
+              yAxisID: 'y',
+            },
+            {
+              type: 'line', label: 'Margem EBITDA (%)',
+              data: chavesMeses.map(k => margemEbitdaPorMes[k] != null ? Math.round(margemEbitdaPorMes[k] * 10) / 10 : null),
+              borderColor: corAzul, backgroundColor: corAzul, spanGaps: true,
+              yAxisID: 'y1', tension: 0.25,
+            },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom' } },
+          scales: {
+            y: { position: 'left', ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } },
+            y1: { position: 'right', grid: { drawOnChartArea: false }, ticks: { callback: (v) => v + '%' } },
+          },
+        },
+      });
+    }
     const ctxMensal = document.getElementById('dashfin-chart-mensal');
     if (ctxMensal) {
       window._dashFinCharts.mensal = new Chart(ctxMensal, {
@@ -27283,6 +27461,20 @@ async function dashFinCarregar() {
       }
     });
     const pagarEntries = Object.entries(pagarBuckets).filter(([, v]) => v > 0);
+
+    // Liquidez: tudo que ainda está em aberto pra receber (A Vencer + Vencido)
+    // dividido por tudo em aberto pra pagar (A Vencer + Vencido + Aguardando
+    // Aprovação) — é uma "foto" de agora, não do período de meses filtrado
+    // (mesma lógica dos gráficos de Contas a Receber/Pagar acima).
+    const abertoReceber = receberBuckets['A Vencer'] + receberBuckets['Vencido'];
+    const abertoPagar = pagarBuckets['A Vencer'] + pagarBuckets['Vencido'] + pagarBuckets['Aguardando Aprovação'];
+    const liquidezIdx = abertoPagar > 0 ? (abertoReceber / abertoPagar) : null;
+    const kpiLiquidezEl = document.getElementById('dashfin-kpi-liquidez');
+    if (kpiLiquidezEl) {
+      kpiLiquidezEl.textContent = liquidezIdx != null ? liquidezIdx.toFixed(2) : (abertoReceber > 0 ? '∞' : '—');
+      kpiLiquidezEl.style.color = (liquidezIdx == null || liquidezIdx >= 1) ? 'var(--green-main)' : 'var(--red)';
+      kpiLiquidezEl.title = `A receber em aberto: ${fmt(abertoReceber)} · A pagar em aberto: ${fmt(abertoPagar)}`;
+    }
 
     const coresReceber = { 'Recebido': corVerde, 'A Vencer': '#e0a800', 'Vencido': corVermelho, 'Cancelado': '#adb5bd' };
     const coresPagar = { 'Pago': corVerde, 'A Vencer': '#e0a800', 'Vencido': corVermelho, 'Aguardando Aprovação': corAzul };
@@ -27459,7 +27651,31 @@ function pageDashboardFinanceiro() {
     <div class="kpi-card amber"><div class="kpi-label">Despesa média/mês</div><div class="kpi-value" id="dashfin-kpi-media" style="font-size:1.15rem">—</div><div class="kpi-icon">📉</div></div>
   </div>
 
+  <!-- DRE / EBITDA e indicadores derivados — pedido em 06/09/2026. DRE
+       simplificado: Receita Líquida → Despesas Operacionais/Administrativas →
+       EBITDA. Não inclui Depreciação/Amortização nem IR/CSLL separados (o app
+       não rastreia esses itens hoje), por isso o "Resultado do Período" abaixo
+       é numericamente igual ao EBITDA — ver nota explicativa junto da tabela. -->
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card blue"><div class="kpi-label">EBITDA do período</div><div class="kpi-value" id="dashfin-kpi-ebitda" style="font-size:1.15rem">—</div><div class="kpi-icon">📈</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Margem EBITDA</div><div class="kpi-value" id="dashfin-kpi-margem-ebitda" style="font-size:1.15rem">—</div><div class="kpi-icon">📐</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Ponto de Equilíbrio (aprox./mês)</div><div class="kpi-value" id="dashfin-kpi-breakeven" style="font-size:1.05rem">—</div><div class="kpi-icon">⚖️</div></div>
+    <div class="kpi-card blue"><div class="kpi-label">Liquidez (a receber ÷ a pagar em aberto)</div><div class="kpi-value" id="dashfin-kpi-liquidez" style="font-size:1.15rem">—</div><div class="kpi-icon">💧</div></div>
+  </div>
+
+  <div class="card" style="padding:16px;margin-bottom:20px">
+    <div class="card-title" style="margin-bottom:4px">📋 DRE Simplificado — mês a mês</div>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:10px">
+      Modelo simplificado: não separa Depreciação/Amortização nem IR/CSLL (o app não rastreia esses lançamentos hoje) — por isso "Resultado do Período" = EBITDA. Pró-labore, retiradas de sócios e aportes/aplicações financeiras não entram nessa conta (não são despesa operacional).
+    </div>
+    <div id="dashfin-dre-tabela" style="overflow-x:auto"></div>
+  </div>
+
   <div id="dashfin-painel" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px">
+    <div class="card" style="padding:16px;grid-column:1/-1">
+      <div class="card-title" style="margin-bottom:10px">EBITDA e Margem EBITDA por mês</div>
+      <div style="position:relative;height:280px"><canvas id="dashfin-chart-ebitda"></canvas></div>
+    </div>
     <div class="card" style="padding:16px">
       <div class="card-title" style="margin-bottom:10px">Receitas x Despesas por mês</div>
       <div style="position:relative;height:280px"><canvas id="dashfin-chart-mensal"></canvas></div>
