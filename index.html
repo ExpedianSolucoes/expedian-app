@@ -7695,7 +7695,7 @@ function pageReceitasDespesas() {
   // botões próprios no hub Financeiro (ver FINANCEIRO_CATALOGO) mas continuavam
   // compartilhando esta mesma função/página por trás (pedido em 27/08/2026).
   const tituloTab = { despesas: 'Despesas', receitas: 'Receitas', conciliacao: 'Conciliação Bancária' }[tab] || 'Receitas e Despesas';
-  const subtituloTab = { despesas: '📒 Registro consolidado de tudo que já foi pago — alimentado automaticamente por Contas a Pagar e Prestação de Contas quando aprovados/pagos', receitas: 'Lançamentos de receita da empresa', conciliacao: 'Conciliação com o extrato bancário' }[tab] || 'Lançamentos financeiros detalhados da empresa';
+  const subtituloTab = { despesas: '', receitas: 'Lançamentos de receita da empresa', conciliacao: 'Conciliação com o extrato bancário' }[tab] || 'Lançamentos financeiros detalhados da empresa';
 
   const empresaBotoesHtml = RD_EMPRESAS.map(emp => {
     const ativo = emp === (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
@@ -7733,7 +7733,7 @@ function pageReceitasDespesas() {
   <div style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:14px">
     <div style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:12px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:nowrap;gap:12px">
-        <div style="min-width:0;flex:1"><h1 style="white-space:nowrap">${tituloTab}</h1><p style="font-size:.74rem;color:var(--text-muted);margin-top:4px">${subtituloTab}</p></div>
+        <div style="min-width:0;flex:1"><h1 style="white-space:nowrap">${tituloTab}</h1>${subtituloTab ? `<p style="font-size:.74rem;color:var(--text-muted);margin-top:4px">${subtituloTab}</p>` : ''}</div>
         <div style="display:flex;gap:6px;flex-wrap:nowrap;flex-shrink:0;align-items:center;padding-top:2px">${empresaBotoesHtml}</div>
       </div>
     </div>
@@ -7741,6 +7741,10 @@ function pageReceitasDespesas() {
       <div style="display:grid;grid-template-columns:1fr 1fr;grid-auto-rows:min-content;gap:8px 10px">
         ${botoesLateral}
       </div>
+      ${tab === 'despesas' ? `
+      <div style="background:var(--surface2);border-radius:10px;padding:10px 12px;font-size:.7rem;line-height:1.5;color:var(--text-muted)">
+        <b>Contas a Pagar</b>: lançamentos aprovados aguardando pagamento. <b>Prestação de Contas</b>: reembolsos/adiantamentos enviados para aprovação. Ao pagar/aprovar, o registro migra automaticamente para <b>Despesas</b>, o histórico consolidado do que já saiu do caixa.
+      </div>` : ''}
       ${tab === 'despesas' ? `
       <div style="position:relative">
         <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:.9rem;pointer-events:none">🔍</span>
@@ -27222,6 +27226,28 @@ async function dashFinCarregar() {
       despesaPorNatureza[nat] += Number(d.Valor) || 0;
     });
 
+    /* -- Movimentação líquida por conta bancária (pedido em 06/09/2026): o
+       app não guarda saldo inicial de cada conta, só o que entrou (Receitas +
+       Transferências recebidas) e o que saiu (Despesas + Transferências
+       enviadas) dentro do período filtrado — por isso é "movimentação",
+       não "saldo real". Usa o campo Banco de Despesas (saída) e Receitas
+       (entrada); cobre também os lançamentos de Transferência entre Contas,
+       que têm Banco preenchido dos dois lados. -- */
+    const movBanco = {};
+    const addBanco = (banco, delta) => {
+      const b = (banco || '').trim() || 'Sem conta informada';
+      movBanco[b] = (movBanco[b] || 0) + delta;
+    };
+    (despesas || []).forEach(d => {
+      if (!(chaveMes(d.DataLancamento) in despesasPorMes)) return;
+      addBanco(d.Banco, -(Number(d.Valor) || 0));
+    });
+    (receitas || []).forEach(r => {
+      if (!(chaveMes(r.DataEmissao || r.DataPrevista) in receitasPorMes)) return;
+      addBanco(r.Banco, Number(r.Valor) || 0);
+    });
+    const bancosOrdenados = Object.entries(movBanco).sort((a, b) => b[1] - a[1]);
+
     /* -- DRE Simplificado + EBITDA, mês a mês (pedido em 06/09/2026).
        Só conta como despesa "de resultado" o que está marcado como
        Operacional ou Não Operacional — pró-labore/retiradas de sócio
@@ -27234,6 +27260,7 @@ async function dashFinCarregar() {
     const despesaOperPorMes = {}, despesaAdmPorMes = {};
     chavesMeses.forEach(k => { receitaBrutaPorMes[k]=0; receitaLiquidaPorMes[k]=0; deducoesPorMes[k]=0; despesaOperPorMes[k]=0; despesaAdmPorMes[k]=0; });
     (receitas || []).forEach(r => {
+      if (r.Categoria === 'Transferencias entre contas') return; // movimentação entre contas, não é receita do período
       const k = chaveMes(r.DataEmissao || r.DataPrevista);
       if (!(k in receitaBrutaPorMes)) return;
       const bruto = Number(r.Valor) || 0;
@@ -27243,6 +27270,7 @@ async function dashFinCarregar() {
       deducoesPorMes[k] += (bruto - liquido);
     });
     (despesas || []).forEach(d => {
+      if (d.Categoria === 'Transferencias entre contas') return; // movimentação entre contas (consórcio, CDB, transferência manual) — não é despesa do período
       const k = chaveMes(d.DataLancamento);
       if (!(k in despesaOperPorMes)) return;
       const v = Number(d.Valor) || 0;
@@ -27571,6 +27599,26 @@ async function dashFinCarregar() {
       });
     }
 
+    const ctxBancos = document.getElementById('dashfin-chart-bancos');
+    if (ctxBancos) {
+      window._dashFinCharts.bancos = new Chart(ctxBancos, {
+        type: 'bar',
+        data: {
+          labels: bancosOrdenados.map(([b]) => b),
+          datasets: [{ label: 'Movimentação líquida (R$)', data: bancosOrdenados.map(([, v]) => v),
+            backgroundColor: bancosOrdenados.map(([, v]) => v >= 0 ? corVerde : corVermelho) }],
+        },
+        options: {
+          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: (ctx) => 'R$ ' + Number(ctx.parsed.x).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) } },
+          },
+          scales: { x: { ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } } },
+        },
+      });
+    }
+
     const ctxMargem = document.getElementById('dashfin-chart-margem');
     if (ctxMargem) {
       window._dashFinCharts.margem = new Chart(ctxMargem, {
@@ -27693,6 +27741,11 @@ function pageDashboardFinanceiro() {
     <div class="card" style="padding:16px">
       <div class="card-title" style="margin-bottom:10px">Despesas: Operacional x Não Operacional</div>
       <div style="position:relative;height:260px"><canvas id="dashfin-chart-natureza"></canvas></div>
+    </div>
+    <div class="card" style="padding:16px">
+      <div class="card-title" style="margin-bottom:2px">Movimentação por Conta Bancária</div>
+      <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:8px">Entradas (Receitas) − saídas (Despesas) no período, por banco — não é o saldo real da conta, só o fluxo registrado no app.</div>
+      <div style="position:relative;height:260px"><canvas id="dashfin-chart-bancos"></canvas></div>
     </div>
     <div class="card" style="padding:16px;grid-column:1/-1">
       <div class="card-title" style="margin-bottom:10px">Margem por Contrato/Centro de Custo (Receita − Despesa, top 10)</div>
