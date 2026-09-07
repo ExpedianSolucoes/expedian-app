@@ -7980,7 +7980,10 @@ function lancamentoFecharSeletor() {
 // e só then abrir o formulário — antes disso o clique não fazia nada porque
 // o container do formulário (#rd-form-container/#rc-form-container) não
 // existia ainda. Corrigido em 07/09/2026.
-const LANCAMENTO_TAB_NECESSARIA = { despesa: 'despesas', capex: 'despesas', aplicacao: 'despesas', receita: 'receitas', resgate: 'receitas' };
+// Aplicação e Resgate viraram modais simplificados (igual Transferência) — não
+// dependem mais de aba específica (pedido em 07/09/2026: "só contas e valores,
+// não precisa fornecedor e outros dados de despesa/lançamento").
+const LANCAMENTO_TAB_NECESSARIA = { despesa: 'despesas', capex: 'despesas', receita: 'receitas' };
 function lancamentoEscolherTipo(tipo) {
   lancamentoFecharSeletor();
   const tabNecessaria = LANCAMENTO_TAB_NECESSARIA[tipo];
@@ -8005,11 +8008,9 @@ function lancamentoAbrirFormDoTipo(tipo) {
     rdToggleFormNovaDespesa(true);
     setTimeout(() => rdPresetCategoriaESubcategoria('CAPEX'), 80);
   } else if (tipo === 'aplicacao') {
-    rdToggleFormNovaDespesa(true);
-    setTimeout(() => rdPresetCategoriaESubcategoria('Aplicações Financeiras'), 80);
+    aplicacaoAbrirModal();
   } else if (tipo === 'resgate') {
-    rcToggleFormNovaReceita(true);
-    setTimeout(() => rcPresetResgate(), 80);
+    resgateAbrirModal();
   }
 }
 function lancamentoRetomarPendente() {
@@ -8158,6 +8159,210 @@ async function transferenciaSalvar() {
     if (typeof carregarDespesas === 'function') carregarDespesas();
     if (typeof carregarReceitas === 'function') carregarReceitas();
     if (typeof carregarTransferencias === 'function') carregarTransferencias();
+  }
+}
+
+/* -- Aplicação e Resgate ganharam modais próprios, bem enxutos (pedido em
+   07/09/2026: "só informando as contas e valores... não precisa fornecedor e
+   outros dados que nem despesas e lançamentos") — mesmo espírito do modal de
+   Transferência acima: só o essencial (empresa, subcategoria, conta, valor,
+   data, responsável, observação), sem os campos de Despesa/Receita completa
+   (fornecedor, centro de custo, parcelamento, comprovante obrigatório etc.).
+   Aplicação grava como Despesa (Categoria "Aplicações Financeiras") e Resgate
+   como Receita (Categoria "Receitas Financeiras", só as subcategorias de
+   Resgate) — mesmas tabelas de sempre, só o formulário que muda. -- */
+function aplicacaoAbrirModal() {
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  const subs = RD_SUBCATEGORIAS_DESPESAS['Aplicações Financeiras'] || [];
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'aplicacaoModal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:520px">
+      <div class="modal-header">
+        <h2>🟣 Aplicação Financeira</h2>
+        <div class="modal-close" onclick="document.getElementById('aplicacaoModal').remove()">✕</div>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Lança automaticamente uma Despesa (saída) na conta escolhida, categoria "Aplicações Financeiras".</div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Empresa</label>
+          <select id="apl_empresa" onchange="aplicacaoEmpresaAlterada()">
+            ${RD_EMPRESAS.map(e => `<option value="${e}" ${e===empresa?'selected':''}>${e}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tipo de Aplicação</label>
+            <select id="apl_subcategoria">${subs.map(s => `<option>${s}</option>`).join('')}</select>
+          </div>
+          <div class="form-group">
+            <label>Conta (sai o dinheiro)</label>
+            <select id="apl_banco">${bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Valor</label><input type="text" id="apl_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)"></div>
+          <div class="form-group"><label>Data</label><input type="date" id="apl_data" value="${new Date().toISOString().slice(0,10)}"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Responsável pelo Lançamento</label>
+          <select id="apl_responsavel">
+            <option value="">Selecione...</option>
+            ${_servicosResponsaveisDiretoria().map(r => `<option>${r}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="apl_obs" placeholder="Ex: aplicação de excedente de caixa..."></div>
+        <div style="display:flex;gap:10px">
+          <button class="btn-primary" onclick="aplicacaoSalvar()">✅ Registrar Aplicação</button>
+          <button class="btn-secondary" onclick="document.getElementById('aplicacaoModal').remove()">Cancelar</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+function aplicacaoEmpresaAlterada() {
+  const empresa = (document.getElementById('apl_empresa')||{}).value || RD_EMPRESAS[0];
+  const sel = document.getElementById('apl_banco');
+  if (sel) sel.innerHTML = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
+}
+async function aplicacaoSalvar() {
+  const empresa = (document.getElementById('apl_empresa')||{}).value || '';
+  const subcategoria = (document.getElementById('apl_subcategoria')||{}).value || '';
+  const banco = (document.getElementById('apl_banco')||{}).value || '';
+  const valor = rdMoedaParaNumero((document.getElementById('apl_valor')||{}).value);
+  const data = (document.getElementById('apl_data')||{}).value || '';
+  const responsavel = (document.getElementById('apl_responsavel')||{}).value || '';
+  const obs = (document.getElementById('apl_obs')||{}).value.trim() || '';
+
+  if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
+  if (!subcategoria) { showToast('⚠️ Selecione o tipo de aplicação.'); return; }
+  if (!banco) { showToast('⚠️ Selecione a conta.'); return; }
+  if (!valor) { showToast('⚠️ Informe o valor.'); return; }
+  if (!data) { showToast('⚠️ Informe a data.'); return; }
+  if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
+
+  const categoria = 'Aplicações Financeiras';
+  const lancadoPor = window._currentUser ? window._currentUser.name : '';
+  const descricao = obs || ('Aplicação Financeira · ' + subcategoria);
+
+  showSyncStatus('Registrando aplicação...');
+  const dados = {
+    Title: 'Aplicação · ' + subcategoria + ' · ' + data,
+    DataLancamento: data, Categoria: categoria, Subcategoria: subcategoria,
+    Modalidade: 'fornecedor', NaturezaEconomica: rdNaturezaDeSubcategoriaDespesas(subcategoria),
+    TipoMovimentacao: rdTipoMovimentacao(categoria, subcategoria),
+    ServicoId: '', ServicoDesc: '', Fornecedor: 'Aplicação Financeira', Beneficiario: '', Veiculo: '',
+    CentroCusto: '', Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
+    ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: data, Banco: banco,
+    NumMedicao: '', Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
+    Vencimento: data, Valor: valor, ValorTotal: valor, Status: 'Pago',
+    NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: [],
+    LancadoPor: lancadoPor, Descricao: descricao,
+  };
+  const ok = await dbInserir('Despesas', dados);
+  showToast(ok ? '✅ Aplicação registrada!' : ('❌ Falha ao registrar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  showSyncStatus(ok ? 'Aplicação registrada!' : 'Falha ao registrar', ok ? 'ok' : 'err', ok?3000:5000);
+  if (ok) {
+    const modalEl = document.getElementById('aplicacaoModal'); if (modalEl) modalEl.remove();
+    if (typeof carregarDespesas === 'function') carregarDespesas();
+  }
+}
+
+function resgateAbrirModal() {
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  const subs = ['Resgate de CDB','Resgate de Fundos','Resgate de Renda Fixa','Outros Resgates'];
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'resgateModal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:520px">
+      <div class="modal-header">
+        <h2>🟡 Resgate de Aplicação</h2>
+        <div class="modal-close" onclick="document.getElementById('resgateModal').remove()">✕</div>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Lança automaticamente uma Receita (entrada) na conta escolhida, categoria "Receitas Financeiras".</div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Empresa</label>
+          <select id="rsg_empresa" onchange="resgateEmpresaAlterada()">
+            ${RD_EMPRESAS.map(e => `<option value="${e}" ${e===empresa?'selected':''}>${e}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tipo de Resgate</label>
+            <select id="rsg_subcategoria">${subs.map(s => `<option>${s}</option>`).join('')}</select>
+          </div>
+          <div class="form-group">
+            <label>Conta (entra o dinheiro)</label>
+            <select id="rsg_banco">${bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Valor</label><input type="text" id="rsg_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)"></div>
+          <div class="form-group"><label>Data</label><input type="date" id="rsg_data" value="${new Date().toISOString().slice(0,10)}"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Responsável pelo Lançamento</label>
+          <select id="rsg_responsavel">
+            <option value="">Selecione...</option>
+            ${_servicosResponsaveisDiretoria().map(r => `<option>${r}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="rsg_obs" placeholder="Ex: resgate para cobrir despesa..."></div>
+        <div style="display:flex;gap:10px">
+          <button class="btn-primary" onclick="resgateSalvar()">✅ Registrar Resgate</button>
+          <button class="btn-secondary" onclick="document.getElementById('resgateModal').remove()">Cancelar</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+function resgateEmpresaAlterada() {
+  const empresa = (document.getElementById('rsg_empresa')||{}).value || RD_EMPRESAS[0];
+  const sel = document.getElementById('rsg_banco');
+  if (sel) sel.innerHTML = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
+}
+async function resgateSalvar() {
+  const empresa = (document.getElementById('rsg_empresa')||{}).value || '';
+  const subcategoria = (document.getElementById('rsg_subcategoria')||{}).value || '';
+  const banco = (document.getElementById('rsg_banco')||{}).value || '';
+  const valor = rdMoedaParaNumero((document.getElementById('rsg_valor')||{}).value);
+  const data = (document.getElementById('rsg_data')||{}).value || '';
+  const responsavel = (document.getElementById('rsg_responsavel')||{}).value || '';
+  const obs = (document.getElementById('rsg_obs')||{}).value.trim() || '';
+
+  if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
+  if (!subcategoria) { showToast('⚠️ Selecione o tipo de resgate.'); return; }
+  if (!banco) { showToast('⚠️ Selecione a conta.'); return; }
+  if (!valor) { showToast('⚠️ Informe o valor.'); return; }
+  if (!data) { showToast('⚠️ Informe a data.'); return; }
+  if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
+
+  const categoria = 'Receitas Financeiras';
+  const lancadoPor = window._currentUser ? window._currentUser.name : '';
+  const descricao = obs || ('Resgate · ' + subcategoria);
+
+  showSyncStatus('Registrando resgate...');
+  const dados = {
+    Title: 'Resgate · ' + subcategoria + ' · ' + data,
+    DataEmissao: data, Categoria: categoria, Subcategoria: subcategoria,
+    NaturezaEconomica: rcNaturezaDeSubcategoria(subcategoria), TipoMovimentacao: rcTipoMovimentacao(categoria, subcategoria),
+    Cliente: 'Resgate de Aplicação Financeira', Descricao: descricao,
+    CentroCusto: '', Valor: valor, DataPrevista: data, FormaRecebimento: 'Transferência',
+    ResponsavelLancamento: responsavel, DataRecebimento: data, Banco: banco,
+    Status: 'Recebido', NumMedicao: '', NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
+    OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
+    ValorLiquido: valor, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
+    LancadoPor: lancadoPor,
+  };
+  const ok = await dbInserir('Receitas', dados);
+  showToast(ok ? '✅ Resgate registrado!' : ('❌ Falha ao registrar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  showSyncStatus(ok ? 'Resgate registrado!' : 'Falha ao registrar', ok ? 'ok' : 'err', ok?3000:5000);
+  if (ok) {
+    const modalEl = document.getElementById('resgateModal'); if (modalEl) modalEl.remove();
+    if (typeof carregarReceitas === 'function') carregarReceitas();
   }
 }
 
