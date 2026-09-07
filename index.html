@@ -28399,15 +28399,20 @@ async function clientesCarregar(filtro) {
       container.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Nenhum cliente encontrado.</div>';
       return;
     }
+    const isDir = currentProfile === 'diretoria' || currentProfile === 'coordenador';
     container.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:.82rem">
       <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
-        <th style="padding:8px">Nome</th><th style="padding:8px">CNPJ / CPF</th><th style="padding:8px">Município</th>
+        <th style="padding:8px">Nome</th><th style="padding:8px">CNPJ / CPF</th><th style="padding:8px">Município</th><th style="padding:8px">Ações</th>
       </tr></thead>
       <tbody>
         ${ordenada.map(c => `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:8px;font-weight:600">${c.Title || '—'}</td>
           <td style="padding:8px">${c.CNPJ || '—'}</td>
           <td style="padding:8px">${c.Municipio || '—'}</td>
+          <td style="padding:8px;display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="clientesAbrirForm(${c.Id})">✏️ Editar</button>
+            ${isDir ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="clientesExcluir(${c.Id})">🗑️ Excluir</button>` : ''}
+          </td>
         </tr>`).join('')}
       </tbody>
     </table>`;
@@ -28417,19 +28422,99 @@ async function clientesCarregar(filtro) {
 }
 function clientesBuscar(valor) { clientesCarregar(valor); }
 
+/* -- CRUD de Clientes (pedido em 07/09/2026): antes só dava pra cadastrar
+   cliente novo de dentro do formulário de Receita ("+ Cadastrar ... como
+   novo cliente"), sem editar ou excluir. Mesmo padrão de fornAbrirForm/
+   fornSalvar/fornExcluir (Fornecedores) — cadastro compartilhado, exclusão
+   restrita à Diretoria, lançamentos antigos mantêm o nome já salvo. -- */
+function clientesAbrirForm(id) {
+  window._clientesEditandoId = id || null;
+  const c = document.getElementById('clientes-form-container'); if (c) c.style.display = 'block';
+  const titulo = document.getElementById('clientes-form-titulo');
+  const btn = document.getElementById('clientes-btn-salvar');
+  if (id) {
+    const cli = (window._clientesCache || []).find(x => x.Id === id);
+    if (!cli) { showToast('⚠️ Cliente não encontrado.'); return; }
+    if (titulo) titulo.textContent = '✏️ Editar Cliente';
+    if (btn) btn.textContent = '💾 Salvar Alterações';
+    const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
+    set('clientes_nome', cli.Title); set('clientes_cnpj', cli.CNPJ);
+    set('clientes_municipio_input', cli.Municipio); set('clientes_municipio', cli.Municipio);
+  } else {
+    if (titulo) titulo.textContent = '➕ Novo Cliente';
+    if (btn) btn.textContent = '✅ Cadastrar';
+    ['clientes_nome','clientes_cnpj','clientes_municipio_input','clientes_municipio'].forEach(elId => { const e = document.getElementById(elId); if (e) e.value = ''; });
+  }
+  if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function clientesFecharForm() {
+  window._clientesEditandoId = null;
+  const c = document.getElementById('clientes-form-container'); if (c) c.style.display = 'none';
+}
+async function clientesSalvar() {
+  const nome = (document.getElementById('clientes_nome').value||'').trim();
+  const cnpj = (document.getElementById('clientes_cnpj').value||'').trim();
+  const municipio = (document.getElementById('clientes_municipio').value||'').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do cliente.'); return; }
+  const editandoId = window._clientesEditandoId;
+  const todos = window._clientesCache || await dbLer('Clientes').catch(() => []);
+  const jaExiste = todos.some(c => c.Id !== editandoId && ((c.Title||'').toLowerCase() === nome.toLowerCase() || (cnpj && c.CNPJ === cnpj)));
+  if (jaExiste) { showToast('⚠️ Já existe outro cliente com esse nome/CNPJ!'); return; }
+  const dados = { Title: nome, CNPJ: cnpj, Municipio: municipio };
+  let ok;
+  if (editandoId) {
+    ok = await dbAtualizar('Clientes', editandoId, dados);
+    showToast(ok ? '✅ Cliente atualizado!' : '❌ Erro ao atualizar.');
+  } else {
+    ok = await salvarNoSharePoint('Clientes', dados);
+    showToast(ok ? '✅ Cliente cadastrado!' : '❌ Erro ao cadastrar.');
+  }
+  if (ok) { clientesFecharForm(); window._clientesCache = null; clientesCarregar(''); }
+}
+async function clientesExcluir(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const cli = (window._clientesCache || []).find(x => x.Id === id);
+  const nome = cli ? cli.Title : ('#' + id);
+  if (!confirm(`Excluir o cliente "${nome}"? Essa ação não pode ser desfeita.\n\nReceitas já lançadas continuam com o nome salvo — só deixa de aparecer na busca pra novos lançamentos.`)) return;
+  const { ok } = await dbRemover('Clientes', id);
+  showToast(ok ? '🗑️ Cliente excluído.' : '❌ Erro ao excluir.');
+  if (ok) { window._clientesCache = null; clientesCarregar(''); }
+}
+
 function pageClientes() {
   window._clientesCache = null; // sempre busca fresco ao entrar na página
-  setTimeout(() => clientesCarregar(''), 50);
+  setTimeout(() => { carregarMunicipiosLista(); clientesCarregar(''); }, 50);
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
-    <div><h1>🧑‍💼 Clientes</h1><p>Consulta dos clientes cadastrados no sistema</p></div>
+    <div><h1>🧑‍💼 Clientes</h1><p>Consulta e cadastro dos clientes do sistema</p></div>
     <button class="btn-secondary" onclick="window._rdTab='receitas';navigate('receitas_despesas')">← Receitas</button>
   </div>
-  <div class="card" style="margin-bottom:14px;font-size:.8rem;color:var(--text-muted)">
-    ℹ️ Para cadastrar um cliente novo, lance uma Receita e use "+ Cadastrar ... como novo cliente" no campo Cliente.
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+    <button class="btn-primary" onclick="clientesAbrirForm()">➕ Novo Cliente</button>
+    <input type="text" placeholder="🔍 Buscar por nome..." oninput="clientesBuscar(this.value)" style="flex:1;min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;background:var(--surface)">
   </div>
-  <div class="card" style="margin-bottom:14px">
-    <input type="text" placeholder="🔍 Buscar por nome..." oninput="clientesBuscar(this.value)" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;background:var(--surface)">
+  <div id="clientes-form-container" style="display:none;margin-bottom:20px">
+    <div class="form-card">
+      <div id="clientes-form-titulo" style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:700;color:var(--green-main);margin-bottom:14px;text-transform:uppercase;letter-spacing:.07em">➕ Novo Cliente</div>
+      <div class="form-row">
+        <div class="form-group"><label>Razão Social / Nome</label><input type="text" id="clientes_nome" placeholder="Nome completo do cliente"></div>
+        <div class="form-group"><label>CNPJ / CPF</label><input type="text" id="clientes_cnpj" placeholder="00.000.000/0001-00"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="position:relative">
+          <label>Município</label>
+          <input type="text" id="clientes_municipio_input" placeholder="Digite para buscar..." autocomplete="off"
+            oninput="municipioFiltrar(this.value,'clientes')" onfocus="municipioFiltrar(this.value,'clientes')"
+            onblur="setTimeout(()=>municipioFecharDropdown('clientes'),150)">
+          <input type="hidden" id="clientes_municipio">
+          <div id="clientes_municipio_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:6px">
+        <button class="btn-primary" id="clientes-btn-salvar" onclick="clientesSalvar()">✅ Cadastrar</button>
+        <button class="btn-secondary" onclick="clientesFecharForm()">Cancelar</button>
+      </div>
+    </div>
   </div>
   <div class="card">
     <div id="clientesLista"><div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Carregando...</div></div>
