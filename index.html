@@ -28842,7 +28842,10 @@ async function bancosResumoCarregar() {
             <td style="padding:8px;text-align:right;color:var(--green-main)">${fmt(v.receita)}</td>
             <td style="padding:8px;text-align:right;color:#dc3545">${fmt(v.despesa)}</td>
             <td style="padding:8px;text-align:right;font-weight:700;color:${saldo >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(saldo)}</td>
-            <td style="padding:8px;text-align:right;${v.aplicado > 0 ? 'font-weight:700;color:#6f42c1' : 'color:var(--text-muted)'}">${v.aplicado > 0 ? fmt(v.aplicado) : '—'}</td>
+            <td style="padding:8px;text-align:right;white-space:nowrap;${v.aplicado > 0 ? 'font-weight:700;color:#6f42c1' : 'color:var(--text-muted)'}">
+              ${v.aplicado > 0 ? fmt(v.aplicado) : '—'}
+              <button class="btn-secondary" style="padding:2px 6px;font-size:.68rem;margin-left:6px" title="Ver histórico de Aplicações/Resgates dessa conta" onclick="bancosVerHistoricoAplicacoes('${b.Title.replace(/'/g, "\\'")}','${empresa}')">📜</button>
+            </td>
             <td style="padding:8px;text-align:center;white-space:nowrap">
               <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="bancosAbrirForm(${b.Id})">✏️</button>
               ${isDir ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="bancosExcluir(${b.Id})">🗑️</button>` : ''}
@@ -28859,6 +28862,68 @@ async function bancosResumoCarregar() {
     console.error(e);
     container.innerHTML = '<div style="color:#dc3545;font-size:.85rem;padding:20px;text-align:center">Erro ao carregar.</div>';
   }
+}
+/* -- Histórico de Aplicações/Resgates por conta (pedido em 07/09/2026: "um
+   botão que eu possa visualizar histórico de aplicações e resgate") — junta
+   as Despesas > Aplicações Financeiras e Receitas > Receitas Financeiras >
+   Resgate... daquela conta específica, ordenadas da mais recente pra mais
+   antiga, num modal só de leitura. -- */
+async function bancosVerHistoricoAplicacoes(banco, empresa) {
+  showSyncStatus('Carregando histórico...');
+  const [despesas, receitas] = await Promise.all([
+    dbLer('Despesas').catch(() => []),
+    dbLer('Receitas').catch(() => []),
+  ]);
+  const itens = [];
+  (despesas || []).forEach(d => {
+    if (normalizarEmpresa(d.Empresa) !== empresa) return;
+    if ((d.Banco || '').trim() !== banco) return;
+    if (d.Categoria !== 'Aplicações Financeiras') return;
+    itens.push({ tipo: 'Aplicação', emoji: '🟣', cor: '#6f42c1', data: d.DataLancamento || d.Vencimento || '', subcategoria: d.Subcategoria, valor: Number(d.Valor) || 0, responsavel: d.ResponsavelLancamento, desc: d.Descricao || d.Fornecedor });
+  });
+  (receitas || []).forEach(r => {
+    if (normalizarEmpresa(r.Empresa) !== empresa) return;
+    if ((r.Banco || '').trim() !== banco) return;
+    if (r.Categoria !== 'Receitas Financeiras' || !/^Resgate/.test(r.Subcategoria || '')) return;
+    itens.push({ tipo: 'Resgate', emoji: '🟡', cor: '#b8960c', data: r.DataEmissao || r.DataPrevista || '', subcategoria: r.Subcategoria, valor: Number(r.Valor) || 0, responsavel: r.ResponsavelLancamento, desc: r.Descricao || r.Cliente });
+  });
+  itens.sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  showSyncStatus('', 'ok', 1);
+
+  const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const fmtData = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const totalAplicado = itens.filter(i => i.tipo === 'Aplicação').reduce((s, i) => s + i.valor, 0);
+  const totalResgatado = itens.filter(i => i.tipo === 'Resgate').reduce((s, i) => s + i.valor, 0);
+
+  const existente = document.getElementById('bancosHistoricoModal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'bancosHistoricoModal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:680px">
+      <div class="modal-header">
+        <h2>📜 Aplicações/Resgates — 🏦 ${banco}</h2>
+        <div class="modal-close" onclick="document.getElementById('bancosHistoricoModal').remove()">✕</div>
+      </div>
+      <div class="modal-body">
+        ${!itens.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Nenhuma aplicação ou resgate lançado nessa conta ainda.</div>' : `
+        <div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Data</th><th>Tipo</th><th>Subcategoria</th><th style="text-align:right">Valor</th><th>Responsável</th><th>Descrição</th></tr></thead><tbody>
+          ${itens.map(i => `<tr>
+            <td>${fmtData(i.data)}</td>
+            <td style="color:${i.cor};font-weight:700;white-space:nowrap">${i.emoji} ${i.tipo}</td>
+            <td>${i.subcategoria || '—'}</td>
+            <td style="text-align:right;font-weight:700;white-space:nowrap">${fmt(i.valor)}</td>
+            <td>${i.responsavel || '—'}</td>
+            <td style="color:var(--text-muted)">${i.desc || ''}</td>
+          </tr>`).join('')}
+        </tbody></table></div>
+        <div style="display:flex;justify-content:space-between;gap:12px;margin-top:14px;font-size:.85rem;font-weight:700;flex-wrap:wrap">
+          <span style="color:#6f42c1">🟣 Total aplicado: ${fmt(totalAplicado)}</span>
+          <span style="color:#b8960c">🟡 Total resgatado: ${fmt(totalResgatado)}</span>
+        </div>`}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
 }
 function bancosResumoMudarEmpresa(emp) {
   window._bancosResumoEmpresa = emp;
