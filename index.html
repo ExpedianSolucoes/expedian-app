@@ -4924,13 +4924,21 @@ async function aprovarPrestacaoFinanceiroComAjustes(id) {
   const ccEl = document.getElementById('pcv_cc');
   const valorEl = document.getElementById('pcv_valor');
   const medicaoEl = document.getElementById('pcv_medicao');
+  const valorRef = (valorEl && valorEl.value !== '') ? parseFloat(valorEl.value) : (window._aprovValorTotal_pcv || 0);
+  const rateio = aprovDivccValidarEColher('pcv', valorRef);
+  if (!rateio.ok) return;
   const ajustes = {};
-  if (ccEl && ccEl.value) ajustes.CentroCusto = ccEl.value;
   if (valorEl && valorEl.value !== '') {
     const v = parseFloat(valorEl.value);
     if (!isNaN(v) && v > 0) ajustes.Valor = v;
   }
-  if (medicaoEl) ajustes.NumMedicao = medicaoEl.value.trim();
+  if (rateio.ativo) {
+    ajustes.DivisaoCC = rateio.divisaoCC; ajustes.CentroCusto = rateio.centroCusto; ajustes.NumMedicao = '';
+  } else {
+    if (ccEl && ccEl.value) ajustes.CentroCusto = ccEl.value;
+    if (medicaoEl) ajustes.NumMedicao = medicaoEl.value.trim();
+    ajustes.DivisaoCC = [];
+  }
   const modal = document.getElementById('pc-view-modal'); if (modal) modal.remove();
   await aprovarPrestacaoFinanceiro(id, ajustes);
 }
@@ -4963,8 +4971,10 @@ async function _criarSaidaBPOApartirDePrestacao(pc) {
     dataPagamento: '',
     status: 'A pagar',
     banco: '',
-    medicao: '',
-    rateios: [{ contrato: pc.CentroCusto || '', medicao: '', valor: valor }],
+    medicao: (pc.DivisaoCC && pc.DivisaoCC.length) ? '' : (pc.NumMedicao || ''),
+    rateios: (pc.DivisaoCC && pc.DivisaoCC.length)
+      ? pc.DivisaoCC.map(d => ({ contrato: d.cc || '', medicao: d.medicao || '', valor: Number(d.valor) || 0 }))
+      : [{ contrato: pc.CentroCusto || '', medicao: pc.NumMedicao || '', valor: valor }],
     origemPrestacaoId: pc.Id,
   };
   arr.push(novaSaida);
@@ -5021,6 +5031,12 @@ async function pcAbrirVisualizar(id) {
   const linha = (label, valor) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
     <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>`;
 
+  // Estado do bloco de rateio por CC/Medição — precisa estar pronto antes do
+  // modal ser inserido no DOM (o onchange do checkbox já lê daqui).
+  window._aprovEmpresa_pcv = i.Empresa || '';
+  window._aprovValorTotal_pcv = i.Valor || 0;
+  window._aprovDivisaoCC_pcv = (i.DivisaoCC && i.DivisaoCC.length) ? JSON.parse(JSON.stringify(i.DivisaoCC)) : [];
+
   let acoesHtml = '';
   if ((i.Status === 'Ag. Financeiro' || i.Status === 'Ag. Aprovação Gestor') && isGestor) {
     // Financeiro pode corrigir Centro de Custo/Contrato e Valor aqui mesmo, se o
@@ -5051,6 +5067,7 @@ async function pcAbrirVisualizar(id) {
           <label>Nº Medição</label>
           <input type="text" id="pcv_medicao" value="${(i.NumMedicao||'').replace(/"/g,'&quot;')}" placeholder="Opcional">
         </div>
+        ${aprovDivccBlocoHtml('pcv')}
         <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:10px">Se o contrato, o valor ou a medição deste lançamento não estiverem corretos, ajuste aqui — a correção é salva junto com a aprovação.</div>
         ${(i.Status === 'Ag. Financeiro' && !i.Conferido) ? `
         <div style="font-size:.72rem;color:#1e5a8a;background:#eaf2fb;border-radius:8px;padding:8px 10px;margin-bottom:10px">📝 Ainda não foi conferido/lançado na planilha de controle. Confira o comprovante, lance na planilha e clique abaixo.</div>
@@ -5125,6 +5142,10 @@ async function pcAbrirVisualizar(id) {
       ${acoesHtml}
     </div>`;
   document.body.appendChild(modal);
+  if (i.DivisaoCC && i.DivisaoCC.length) {
+    const chk = document.getElementById('pcv_tem_divisaocc');
+    if (chk) { chk.checked = true; aprovDivccToggle('pcv'); }
+  }
 }
 
 async function pcConfirmarPagamento(id) {
@@ -5160,7 +5181,7 @@ async function pcSincronizarDespesa(id, dataPag, banco) {
       Modalidade: 'fornecedor',
       NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(subcategoriaFinal) : ''),
       Fornecedor: i.Fornecedor || '', Beneficiario: '', Veiculo: '',
-      CentroCusto: i.CentroCusto || '', Local: i.Municipio || '',
+      CentroCusto: i.CentroCusto || '', NumMedicao: i.NumMedicao || '', Local: i.Municipio || '',
       TipoPagamento: i.Parcelamento === 'parcelado' ? 'parcelado' : (i.Parcelamento === 'faturado' ? 'faturado' : 'avista'),
       FormaPagamento: i.FormaPagamento || '', ResponsavelLancamento: i.Responsavel || i.EnviadoPor || '', Empresa: empresaRd,
       DataPagamento: dataPag, Banco: banco, Vencimento: i.DataDespesa || '', Valor: i.Valor || 0,
@@ -5169,6 +5190,7 @@ async function pcSincronizarDespesa(id, dataPag, banco) {
       ComprovanteUrl: i.ComprovanteUrl || '', ComprovanteNome: i.ComprovanteNome || '',
       LancadoPor: window._currentUser ? window._currentUser.name : '',
       PrestacaoContasId: i.Id, OrigemPrestacaoContas: true, Distribuicoes: [],
+      DivisaoCC: i.DivisaoCC || [],
     });
     if (despesa && despesa.Id) await dbAtualizar('PrestacaoContas', id, { DespesaId: despesa.Id });
   } catch (e) { console.warn('[PrestacaoContas] Falha ao sincronizar com Despesas', e); }
@@ -5875,6 +5897,175 @@ async function pagAtualizarMedicaoPorCC(cc) {
   if (hint) hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.';
 }
 
+/* ===============================
+   RATEIO POR CENTRO DE CUSTO/MEDIÇÃO — usado dentro dos modais de
+   APROVAÇÃO (Contas a Pagar / Prestação de Contas). Mesmo padrão typeahead
+   +medição já usado em Nova Despesa/Contas a Pagar (pagDivcc-/rdcc-), só que
+   genérico por prefixo (pfx = 'pagv' ou 'pcv') pra não duplicar 80 linhas de
+   lógica idêntica por card. Estado guardado em window['_aprovDivisaoCC_'+pfx].
+   Pedido em 07/09/2026: "além das medições tem que abrir campo para saber se
+   vai ratear em caso de sim, quais centros de custos e medição". -- */
+function aprovDivccToggle(pfx) {
+  const chk = document.getElementById(pfx + '_tem_divisaocc');
+  const editor = document.getElementById(pfx + '_divisaocc_editor');
+  const medicaoEl = document.getElementById(pfx + '_medicao');
+  const medicaoGrupo = medicaoEl ? medicaoEl.closest('.form-group') : null;
+  if (chk && chk.checked) {
+    if (editor) editor.style.display = 'block';
+    if (medicaoGrupo) medicaoGrupo.style.display = 'none';
+    aprovDivccRenderizar(pfx);
+  } else {
+    if (editor) editor.style.display = 'none';
+    if (medicaoGrupo) medicaoGrupo.style.display = '';
+  }
+}
+function aprovDivccCCsDisponiveis(pfx) {
+  const empresa = normalizarEmpresa(window['_aprovEmpresa_' + pfx] || '');
+  if (!empresa) return [];
+  return (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
+}
+function aprovDivccFiltrarCCs(pfx, texto) {
+  const dd = document.getElementById(pfx + '_divcc_cc_dropdown');
+  if (!dd) return;
+  const t = (texto || '').trim().toLowerCase();
+  const disponiveis = aprovDivccCCsDisponiveis(pfx);
+  const matches = (t ? disponiveis.filter(c => (c.id + ' ' + c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0, 40);
+  let html = matches.map(c => {
+    const label = (c.id + ' · ' + c.contrato).replace(/'/g, "\\'");
+    return '<div onclick="aprovDivccSelecionarCC(\'' + pfx + '\',\'' + label + '\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>' + c.id + '</strong> <span style="color:var(--text-muted)">· ' + c.contrato + '</span>' +
+      '</div>';
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum centro de custo encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function aprovDivccFecharDropdownCC(pfx) {
+  const dd = document.getElementById(pfx + '_divcc_cc_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+function aprovDivccSelecionarCC(pfx, valor) {
+  const inp = document.getElementById(pfx + '_divcc_cc_input'); if (inp) inp.value = valor;
+  const hid = document.getElementById(pfx + '_divcc_cc'); if (hid) hid.value = valor;
+  aprovDivccFecharDropdownCC(pfx);
+  aprovDivccAtualizarMedicaoPorCC(pfx, valor);
+}
+async function aprovDivccAtualizarMedicaoPorCC(pfx, cc) {
+  const dl = document.getElementById(pfx + '_divcc_medicao_dl');
+  const hint = document.getElementById(pfx + '_divcc_medicao_hint');
+  if (!cc) { if (dl) dl.innerHTML = ''; if (hint) hint.textContent = ''; return; }
+  if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  const ccId = _ccIdPuro(cc);
+  let medicoes = [];
+  try { medicoes = await medicoesParaCC(ccId); } catch (e) { medicoes = []; }
+  const doCC = medicoes.sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  if (doCC.length) {
+    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao || ''} (${m.Status || ''})</option>`).join('');
+    const abertas = doCC.filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status));
+    if (hint) hint.textContent = abertas.length
+      ? `Medições em aberto: ${abertas.map(m => m.NumMedicao).join(', ')}.`
+      : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+    return;
+  }
+  if (dl) dl.innerHTML = '';
+  if (hint) hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.';
+}
+function aprovDivccAdicionar(pfx) {
+  const cc = (document.getElementById(pfx + '_divcc_cc') || {}).value;
+  const medicao = (document.getElementById(pfx + '_divcc_medicao') || {}).value.trim();
+  const valor = rdMoedaParaNumero((document.getElementById(pfx + '_divcc_valor') || {}).value);
+  if (!cc) { showToast('⚠️ Selecione o Centro de Custo.'); return; }
+  if (!valor) { showToast('⚠️ Informe o valor deste Centro de Custo.'); return; }
+  const key = '_aprovDivisaoCC_' + pfx;
+  window[key] = window[key] || [];
+  if (window[key].some(d => d.cc === cc && (d.medicao || '') === medicao)) { showToast('⚠️ Esse Centro de Custo/Medição já está na divisão.'); return; }
+  window[key].push({ cc, medicao, valor });
+  const ccInp = document.getElementById(pfx + '_divcc_cc_input'); if (ccInp) ccInp.value = '';
+  const ccHid = document.getElementById(pfx + '_divcc_cc'); if (ccHid) ccHid.value = '';
+  const medEl = document.getElementById(pfx + '_divcc_medicao'); if (medEl) medEl.value = '';
+  const valorEl = document.getElementById(pfx + '_divcc_valor'); if (valorEl) valorEl.value = '';
+  const hint = document.getElementById(pfx + '_divcc_medicao_hint'); if (hint) hint.textContent = '';
+  aprovDivccRenderizar(pfx);
+}
+function aprovDivccRemover(pfx, i) {
+  const key = '_aprovDivisaoCC_' + pfx;
+  if (!window[key]) return;
+  window[key].splice(i, 1);
+  aprovDivccRenderizar(pfx);
+}
+function aprovDivccRenderizar(pfx) {
+  const lista = document.getElementById(pfx + '_divisaocc_lista');
+  const totalEl = document.getElementById(pfx + '_divisaocc_total');
+  if (!lista) return;
+  const key = '_aprovDivisaoCC_' + pfx;
+  const itens = window[key] || [];
+  lista.innerHTML = itens.map((d, i) => `
+    <div style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:6px 10px;border-radius:8px;font-size:.8rem">
+      <span style="flex:1">🧩 ${d.cc}${d.medicao ? ` <span style="color:var(--text-muted)">— Medição ${d.medicao}</span>` : ''}</span>
+      <span style="font-weight:700">R$ ${rdNumeroParaMoeda(d.valor)}</span>
+      <span style="cursor:pointer;color:var(--text-muted)" onclick="aprovDivccRemover('${pfx}',${i})" title="Remover">✕</span>
+    </div>`).join('') || '<div style="font-size:.75rem;color:var(--text-muted)">Nenhum Centro de Custo adicionado ainda.</div>';
+  const soma = itens.reduce((s, d) => s + (d.valor || 0), 0);
+  const valorTotalAtual = window['_aprovValorTotal_' + pfx] || 0;
+  const diff = Math.round((valorTotalAtual - soma) * 100) / 100;
+  if (totalEl) {
+    if (!valorTotalAtual) {
+      totalEl.style.color = 'var(--text-muted)';
+      totalEl.textContent = `Dividido: R$ ${rdNumeroParaMoeda(soma)} — informe o Valor para conferir.`;
+    } else if (Math.abs(diff) < 0.01) {
+      totalEl.style.color = 'var(--green-main)';
+      totalEl.textContent = `✅ Dividido: R$ ${rdNumeroParaMoeda(soma)} de R$ ${rdNumeroParaMoeda(valorTotalAtual)} — bate certinho.`;
+    } else {
+      totalEl.style.color = 'var(--red)';
+      totalEl.textContent = diff > 0
+        ? `⚠️ Faltam R$ ${rdNumeroParaMoeda(diff)} para completar o valor (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`
+        : `⚠️ Divisão passou R$ ${rdNumeroParaMoeda(Math.abs(diff))} do valor (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`;
+    }
+  }
+}
+/* -- HTML reutilizável do bloco de rateio, embutido nos modais de aprovação. -- */
+function aprovDivccBlocoHtml(pfx) {
+  return `
+    <div style="margin-top:4px;margin-bottom:10px">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:700;font-size:.82rem">
+        <input type="checkbox" id="${pfx}_tem_divisaocc" onchange="aprovDivccToggle('${pfx}')" style="width:auto">
+        🧩 Ratear entre mais de um Centro de Custo/Medição
+      </label>
+      <div id="${pfx}_divisaocc_editor" style="display:none;margin-top:10px;background:var(--surface2);border-radius:10px;padding:12px">
+        <div id="${pfx}_divisaocc_lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+        <div style="position:relative;margin-bottom:6px">
+          <input type="text" id="${pfx}_divcc_cc_input" placeholder="Centro de Custo — digite para buscar..." autocomplete="off"
+            oninput="aprovDivccFiltrarCCs('${pfx}',this.value)" onfocus="aprovDivccFiltrarCCs('${pfx}',this.value)" onblur="setTimeout(()=>aprovDivccFecharDropdownCC('${pfx}'),150)"
+            style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;box-sizing:border-box">
+          <input type="hidden" id="${pfx}_divcc_cc">
+          <div id="${pfx}_divcc_cc_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input type="text" id="${pfx}_divcc_medicao" list="${pfx}_divcc_medicao_dl" placeholder="Nº Medição (opcional)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;flex:1;min-width:110px">
+          <datalist id="${pfx}_divcc_medicao_dl"></datalist>
+          <input type="text" id="${pfx}_divcc_valor" placeholder="Valor R$" inputmode="decimal" oninput="rdFormatarMoedaInput(this)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px">
+          <button type="button" class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="aprovDivccAdicionar('${pfx}')">+ Adicionar</button>
+        </div>
+        <div id="${pfx}_divcc_medicao_hint" style="font-size:.66rem;color:var(--text-muted);margin-top:4px"></div>
+        <div id="${pfx}_divisaocc_total" style="font-size:.75rem;margin-top:8px"></div>
+      </div>
+    </div>`;
+}
+/* -- Valida (min 2 itens + soma bate com o valor) e devolve {ok, divisaoCC,
+   centroCusto} — chamado pelos dois pontos de aprovação (Contas a Pagar e
+   Prestação de Contas) antes de gravar. -- */
+function aprovDivccValidarEColher(pfx, valorReferencia) {
+  const temDivisaoCC = (document.getElementById(pfx + '_tem_divisaocc') || {}).checked || false;
+  if (!temDivisaoCC) return { ok: true, ativo: false };
+  const divisaoCC = window['_aprovDivisaoCC_' + pfx] || [];
+  if (divisaoCC.length < 2) { showToast('⚠️ Adicione pelo menos 2 Centros de Custo na divisão, ou desmarque a opção.'); return { ok: false }; }
+  const soma = divisaoCC.reduce((s, d) => s + (d.valor || 0), 0);
+  const diff = Math.round((soma - (valorReferencia || 0)) * 100) / 100;
+  if (Math.abs(diff) > 0.01) { showToast(`⚠️ A soma da divisão de Centro de Custo (R$ ${rdNumeroParaMoeda(soma)}) não bate com o valor (R$ ${rdNumeroParaMoeda(valorReferencia || 0)}).`); return { ok: false }; }
+  return { ok: true, ativo: true, divisaoCC, centroCusto: divisaoCC.map(d => d.cc).join(' + ') };
+}
+
 function atualizarStatusAuto() {
   const venc = document.getElementById('pag_vencimento').value;
   if (!venc) return;
@@ -6475,6 +6666,13 @@ async function pagAbrirVisualizar(id) {
   const linha = (label, valor) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
     <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>`;
 
+  // Estado do bloco de rateio por CC/Medição (aprovDivcc* — ver definição
+  // próximo de pagAtualizarMedicaoPorCC) — precisa estar pronto antes do
+  // modal ser inserido no DOM, pois o onchange do checkbox já lê daqui.
+  window._aprovEmpresa_pagv = i.Empresa || '';
+  window._aprovValorTotal_pagv = i.Valor || 0;
+  window._aprovDivisaoCC_pagv = (i.DivisaoCC && i.DivisaoCC.length) ? JSON.parse(JSON.stringify(i.DivisaoCC)) : [];
+
   let acoesHtml = '';
   if (i.Status === 'Aguardando Aprovação' && isDir) {
     acoesHtml = `
@@ -6482,6 +6680,7 @@ async function pagAbrirVisualizar(id) {
         <div style="font-weight:700;font-size:.82rem;margin-bottom:10px">✅ Confirmar e Agendar Pagamento</div>
         <div class="form-group" style="margin-bottom:10px"><label>Data Agendada de Pagamento</label><input type="date" id="pagv_data_agendada" value="${i.Vencimento||''}"></div>
         <div class="form-group" style="margin-bottom:10px"><label>Nº Medição</label><input type="text" id="pagv_medicao" value="${(i.NumMedicao||'').replace(/"/g,'&quot;')}" placeholder="Opcional"></div>
+        ${aprovDivccBlocoHtml('pagv')}
         <div style="display:flex;gap:8px">
           <button class="btn-primary" style="flex:1" onclick="pagConfirmarAgendamento(${id})">✅ Confirmar e Agendar</button>
           <button class="btn-secondary" style="flex:1" onclick="pagRejeitarConta(${id})">↩️ Rejeitar</button>
@@ -6566,18 +6765,29 @@ async function pagAbrirVisualizar(id) {
       ${acoesHtml}
     </div>`;
   document.body.appendChild(modal);
+  if (i.DivisaoCC && i.DivisaoCC.length) {
+    const chk = document.getElementById('pagv_tem_divisaocc');
+    if (chk) { chk.checked = true; aprovDivccToggle('pagv'); }
+  }
 }
 
 async function pagConfirmarAgendamento(id) {
   const dataAgendada = (document.getElementById('pagv_data_agendada')||{}).value;
   const medicaoEl = document.getElementById('pagv_medicao');
   if (!dataAgendada) { showToast('⚠️ Informe a data agendada de pagamento.'); return; }
+  const rateio = aprovDivccValidarEColher('pagv', window._aprovValorTotal_pagv);
+  if (!rateio.ok) return;
   _limparSyncError();
   const patch = {
     Status: 'Aprovado — Aguardando Pagamento', DataAgendada: dataAgendada,
     AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
   };
-  if (medicaoEl) patch.NumMedicao = medicaoEl.value.trim();
+  if (rateio.ativo) {
+    patch.DivisaoCC = rateio.divisaoCC; patch.CentroCusto = rateio.centroCusto; patch.NumMedicao = '';
+  } else {
+    if (medicaoEl) patch.NumMedicao = medicaoEl.value.trim();
+    patch.DivisaoCC = [];
+  }
   const ok = await dbAtualizar('ContasPagar', parseInt(id), patch);
   showToast(ok ? '✅ Confirmado e agendado!' : ('❌ Erro ao confirmar' + syncErrorDetalhe()));
   const m = document.getElementById('pag-view-modal'); if (m) m.remove();
