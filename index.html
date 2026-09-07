@@ -1383,7 +1383,7 @@ function renderPage(id) {
     resultado_contrato: () => pageFinanceiroPlaceholder('resultado_contrato'),
     resultado_empresa: () => pageFinanceiroPlaceholder('resultado_empresa'),
     consolidado_grupo: () => pageFinanceiroPlaceholder('consolidado_grupo'),
-    patrimonio_capex: () => pageFinanceiroPlaceholder('patrimonio_capex'),
+    patrimonio_capex: () => pageCapex(),
     patrimonio_aplicacoes: () => pageFinanceiroPlaceholder('patrimonio_aplicacoes'),
     patrimonio_consorcios: () => pageFinanceiroPlaceholder('patrimonio_consorcios'),
     patrimonio_financiamentos: () => pageFinanceiroPlaceholder('patrimonio_financiamentos'),
@@ -3783,7 +3783,7 @@ function prestNomeSugeridoLancadoPor() {
 }
 
 function pagePrestacao() {
-  setTimeout(()=>{ carregarFornecedoresListaPrest().then(()=>carregarPrestacoes()); carregarMunicipiosLista(); }, 200);
+  setTimeout(()=>{ carregarFornecedoresListaPrest().then(()=>carregarPrestacoes()); carregarMunicipiosLista(); carregarBancosLista(); }, 200);
   const isGestorFin = currentProfile==='diretoria'||currentProfile==='coordenador';
   return `
   <div class="page-header">
@@ -5322,7 +5322,7 @@ function pagePagar() {
       <div style="font-size:.85rem;margin-top:6px">Os dados financeiros da empresa (fornecedores, valores e vencimentos) são visíveis apenas para os perfis Diretoria e Coordenação.</div>
     </div>`;
   }
-  setTimeout(()=>{ carregarContasPagar(); carregarFornecedoresLista(); }, 200);
+  setTimeout(()=>{ carregarContasPagar(); carregarFornecedoresLista(); carregarBancosLista(); }, 200);
   return `
   <div class="page-header"><h1>Contas a Pagar</h1><p>Gestão de fornecedores e pagamentos</p></div>
 
@@ -6448,7 +6448,7 @@ async function salvarEnviarFinanceiro() { await salvarContaPagar(true); }
 // normalizarEmpresa(), que também cobre lançamentos antigos salvos com a
 // grafia anterior ("EXPEDIAN Soluções Ambientais" etc.).
 function pagBancosDaEmpresa(empresaPag) {
-  return RD_BANCOS_POR_EMPRESA[normalizarEmpresa(empresaPag)] || [];
+  return bancosDaEmpresa(empresaPag);
 }
 
 async function pagAbrirVisualizar(id) {
@@ -7563,12 +7563,29 @@ const RD_BANCOS_POR_EMPRESA = {
   'TL3':        ['Sicoob 5024','Sicoob','Bradesco','PagBank','Inter','Stone'],
   'EXP Brasil': ['PagBank'],
 };
+/* -- Contas Bancárias virou cadastro editável (pedido em 07/09/2026): a lista
+   acima (RD_BANCOS_POR_EMPRESA) continua existindo só como semente/fallback —
+   a fonte de verdade agora é a tabela 'Bancos' (dbLer/dbInserir/dbAtualizar/
+   dbRemover), carregada em _bancosCache. bancosDaEmpresa() é o único ponto que
+   os formulários (Despesa/Receita/Transferência) devem chamar pra montar a
+   lista de bancos — nunca ler RD_BANCOS_POR_EMPRESA direto, senão editar/criar/
+   excluir um banco na tela de Contas Bancárias não refletiria nos formulários. -- */
+let _bancosCache = [];
+async function carregarBancosLista() {
+  try { _bancosCache = await dbLer('Bancos') || []; } catch (e) { _bancosCache = _bancosCache || []; }
+}
+function bancosDaEmpresa(empresa) {
+  const emp = normalizarEmpresa(empresa) || empresa;
+  const daTabela = _bancosCache.filter(b => normalizarEmpresa(b.Empresa) === emp).map(b => b.Title);
+  if (daTabela.length) return daTabela.slice().sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  return RD_BANCOS_POR_EMPRESA[emp] || []; // ainda não migrado/seedado pra essa empresa
+}
 // Corrige na hora (case/espaço) o que a pessoa digitou pro nome oficial do banco,
 // pra não deixar duplicidade tipo "SICOOB 5024" vs "Sicoob 5024" entrar no banco de dados.
 function rdNormalizarBanco(valor, empresa) {
   const v = (valor || '').trim();
   if (!v) return v;
-  const lista = RD_BANCOS_POR_EMPRESA[empresa || (window._rdEmpresaAtiva || RD_EMPRESAS[0])] || [];
+  const lista = bancosDaEmpresa(empresa || (window._rdEmpresaAtiva || RD_EMPRESAS[0]));
   const oficial = lista.find(b => b.toLowerCase() === v.toLowerCase());
   return oficial || v;
 }
@@ -7798,9 +7815,9 @@ function pageReceitasDespesas() {
   }
   const tab = window._rdTab || 'despesas';
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarDespesas(); carregarMunicipiosLista(); }, 200);
-  if (tab === 'receitas') setTimeout(() => { carregarClientesListaRc(); carregarReceitas(); carregarMunicipiosLista(); }, 200);
-  if (tab === 'transferencias') setTimeout(() => carregarTransferencias(), 200);
+  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarDespesas(); carregarMunicipiosLista(); carregarBancosLista(); }, 200);
+  if (tab === 'receitas') setTimeout(() => { carregarClientesListaRc(); carregarReceitas(); carregarMunicipiosLista(); carregarBancosLista(); }, 200);
+  if (tab === 'transferencias') setTimeout(() => { carregarTransferencias(); carregarBancosLista(); }, 200);
 
   // Título/subtítulo dinâmicos por aba — antes era sempre "Receitas e Despesas"
   // mesmo quando a tela era só uma das duas, porque Receitas e Despesas viraram
@@ -7838,30 +7855,14 @@ function pageReceitasDespesas() {
     tab === 'despesas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="window._prestVindoDeDespesas=true;navigate('prestacao')">📑 Prestação de Contas</button>` : '',
     tab === 'receitas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="navigate('receber')">🧾 Ir para Notas Fiscais</button>` : '',
     tab === 'receitas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="navigate('clientes')">🧑‍💼 Clientes</button>` : '',
+    (tab === 'despesas' || tab === 'receitas' || tab === 'transferencias') ? `<button style="width:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px 14px;border-radius:10px;
+        border:${tab==='transferencias'?'2px solid var(--green-main)':'1px solid var(--border)'};
+        background:${tab==='transferencias'?'var(--green-pale)':'var(--surface2)'};
+        color:${tab==='transferencias'?'var(--green-main)':'var(--text)'};
+        font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${tab==='transferencias'?'700':'500'};cursor:pointer"
+      onclick="window._rdTab='transferencias';navigate('receitas_despesas')">🔁 Transferência entre Contas</button>` : '',
     `<button class="btn-primary" style="width:100%;box-sizing:border-box" onclick="lancamentoAbrirSeletor()">➕ Novo Lançamento</button>`,
   ].filter(Boolean).join('');
-
-  // Abas visíveis Despesas/Receitas/Transferências (pedido em 07/09/2026): antes
-  // só dava pra trocar de aba indiretamente (vindo de outra tela ou criando um
-  // lançamento novo) — quem clicava em "Lançamentos" sempre caía em Despesas e
-  // não achava como ver Receitas. Conciliação continua fora dessa barra (é um
-  // modo à parte, com botão próprio já destacado na barra lateral).
-  const abasPrincipais = [
-    { id: 'despesas', label: '💸 Despesas' },
-    { id: 'receitas', label: '💰 Receitas' },
-    { id: 'transferencias', label: '🔁 Transferências' },
-  ];
-  const abasHtml = abasPrincipais.map(a => {
-    const ativa = tab === a.id;
-    return `<button onclick="window._rdTab='${a.id}';navigate('receitas_despesas')"
-      style="padding:8px 18px;border-radius:10px;
-        border:${ativa ? '2px solid var(--green-main)' : '1px solid var(--border)'};
-        background:${ativa ? 'var(--green-pale)' : 'var(--surface2)'};
-        color:${ativa ? 'var(--green-main)' : 'var(--text)'};
-        font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${ativa ? '700' : '500'};cursor:pointer">
-      ${a.label}
-    </button>`;
-  }).join('');
 
   return `
   <div style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:14px">
@@ -7870,12 +7871,11 @@ function pageReceitasDespesas() {
         <div style="min-width:0;flex:1"><h1 style="white-space:nowrap;font-size:${tab === 'transferencias' ? '1.3rem' : ''}">${tituloTab}</h1>${subtituloTab ? `<p style="font-size:.74rem;color:var(--text-muted);margin-top:4px">${subtituloTab}</p>` : ''}</div>
         <div style="display:flex;gap:6px;flex-wrap:nowrap;flex-shrink:0;align-items:center;padding-top:2px">${empresaBotoesHtml}</div>
       </div>
-      ${tab !== 'conciliacao' ? `<div style="display:flex;gap:8px;flex-wrap:wrap">${abasHtml}</div>` : ''}
       ${tab === 'despesas' ? `
       <div style="background:var(--surface2);border-radius:10px;padding:10px 12px;font-size:.7rem;line-height:1.5;color:var(--text-muted)">
-        <div><b>Contas a Pagar</b>:<br>lançamentos aprovados aguardando pagamento.</div>
-        <div style="margin-top:6px"><b>Prestação de Contas</b>:<br>reembolsos/adiantamentos enviados para aprovação.</div>
-        <div style="margin-top:6px">Ao pagar/aprovar, o registro migra automaticamente para <b>Despesas</b>, o histórico consolidado do que já saiu do caixa.</div>
+        <div><b>Contas a Pagar</b>: lançamentos aprovados aguardando pagamento.</div>
+        <div><b>Prestação de Contas</b>: reembolsos/adiantamentos enviados para aprovação.</div>
+        <div>Ao pagar/aprovar, o registro migra automaticamente para <b>Despesas</b>, o histórico consolidado do que já saiu do caixa.</div>
       </div>` : ''}
     </div>
     <div style="display:flex;flex-direction:column;gap:10px;min-width:260px">
@@ -8038,11 +8038,11 @@ function transferenciaAbrirModal() {
         <div class="form-row">
           <div class="form-group">
             <label>Conta de Origem (sai)</label>
-            <select id="trf_origem">${(RD_BANCOS_POR_EMPRESA[empresa]||[]).map(b => `<option>${b}</option>`).join('')}</select>
+            <select id="trf_origem">${bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('')}</select>
           </div>
           <div class="form-group">
             <label>Conta de Destino (entra)</label>
-            <select id="trf_destino">${(RD_BANCOS_POR_EMPRESA[empresa]||[]).map(b => `<option>${b}</option>`).join('')}</select>
+            <select id="trf_destino">${bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('')}</select>
           </div>
         </div>
         <div class="form-row">
@@ -8068,7 +8068,7 @@ function transferenciaAbrirModal() {
 
 function transferenciaEmpresaAlterada() {
   const empresa = (document.getElementById('trf_empresa')||{}).value || RD_EMPRESAS[0];
-  const opts = (RD_BANCOS_POR_EMPRESA[empresa]||[]).map(b => `<option>${b}</option>`).join('');
+  const opts = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
   const origSel = document.getElementById('trf_origem'); if (origSel) origSel.innerHTML = opts;
   const destSel = document.getElementById('trf_destino'); if (destSel) destSel.innerHTML = opts;
 }
@@ -8434,7 +8434,7 @@ function renderReceitasTab() {
       <div class="form-group">
         <label>Banco</label>
         <input type="text" id="rc_banco" list="dl_rc_bancos" placeholder="Selecione ou digite..." onblur="this.value=rdNormalizarBanco(this.value)">
-        <datalist id="dl_rc_bancos">${(RD_BANCOS_POR_EMPRESA[window._rdEmpresaAtiva || RD_EMPRESAS[0]] || []).map(b => `<option value="${b}">`).join('')}</datalist>
+        <datalist id="dl_rc_bancos">${bancosDaEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]).map(b => `<option value="${b}">`).join('')}</datalist>
       </div>
       <div class="form-group">
         <label>Status de Recebimento</label>
@@ -9216,7 +9216,7 @@ function rcAbrirEdicaoReceita(id) {
   window._rceComprovanteNome = i.ComprovanteNome || '';
   window._rceComprovanteId = null; window._rceComprovanteDriveId = null;
 
-  const bancosEmpresa = RD_BANCOS_POR_EMPRESA[i.Empresa] || [];
+  const bancosEmpresa = bancosDaEmpresa(i.Empresa);
   const opt = (v,l) => `<option value="${v}" ${i.Status===v?'selected':''}>${l}</option>`;
 
   const modal = document.createElement('div');
@@ -9546,7 +9546,7 @@ function financeiroAbrirReconciliacaoDAS() {
   const anoAnt = mesA === 1 ? anoA - 1 : anoA;
   const mesAnt = mesA === 1 ? 12 : mesA - 1;
   const competenciaSugerida = anoAnt + '-' + String(mesAnt).padStart(2, '0');
-  const bancosEmpresa = RD_BANCOS_POR_EMPRESA[empresaAtiva] || [];
+  const bancosEmpresa = bancosDaEmpresa(empresaAtiva);
 
   const modal = document.createElement('div');
   modal.id = 'fin-das-modal';
@@ -10150,7 +10150,7 @@ function renderDespesasTab() {
       <div class="form-group">
         <label>Banco</label>
         <input type="text" id="rd_banco" list="dl_rd_bancos" placeholder="Selecione ou digite..." onblur="this.value=rdNormalizarBanco(this.value)">
-        <datalist id="dl_rd_bancos">${(RD_BANCOS_POR_EMPRESA[window._rdEmpresaAtiva || RD_EMPRESAS[0]] || []).map(b => `<option value="${b}">`).join('')}</datalist>
+        <datalist id="dl_rd_bancos">${bancosDaEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]).map(b => `<option value="${b}">`).join('')}</datalist>
       </div>
     </div>
 
@@ -23201,7 +23201,7 @@ async function servAbrirPagamento(id) {
   if (!l) { showToast('⚠️ Lançamento não encontrado.'); return; }
 
   const empresa = servEmpresaDoCC(l.cc);
-  const bancos = RD_BANCOS_POR_EMPRESA[normalizarEmpresa(empresa)] || [];
+  const bancos = bancosDaEmpresa(empresa);
 
   const modal = document.createElement('div');
   modal.id = 'serv-pag-modal';
@@ -23742,7 +23742,7 @@ function pageCustos() {
             return `
           <tr>
             <td style="font-weight:700;color:${empColors[emp]};font-size:.75rem;white-space:nowrap">${c.id}</td>
-            <td style="font-size:.8rem;font-weight:500;white-space:nowrap">${c.contrato}</td>
+            <td style="font-size:.7rem;font-weight:500;white-space:normal;word-break:break-word;text-align:justify;max-width:220px;min-width:160px">${c.contrato}</td>
             <td style="font-size:.76rem;color:var(--text-muted);white-space:nowrap">${c.cliente}</td>
             <td style="white-space:nowrap"><span style="font-size:.62rem;padding:2px 8px;border-radius:12px;background:var(--surface2);border:1px solid var(--border);white-space:nowrap">${c.categoria}</span>${c.subcategoria ? `<div style="font-size:.6rem;color:var(--text-muted);margin-top:3px;white-space:nowrap">${c.subcategoria}</div>` : ''}</td>
             <td style="font-size:.76rem;font-weight:600;color:var(--text);white-space:nowrap">${c.gestor}</td>
@@ -27304,7 +27304,8 @@ const FINANCEIRO_CATALOGO = [
   { rota: 'dashboard_financeiro', icon: '📊', titulo: 'Dashboard Financeiro', subtitulo: 'Gráficos de receitas x despesas, contratos com mais saídas e despesas por categoria', perfis: ['diretoria'] },
   { rota: 'servicos', icon: '💼', titulo: 'Catálogo de Serviços', subtitulo: 'Diárias, locação de veículos, projetos e lançamentos de serviços', perfis: ['diretoria','coordenador'] },
   { rota: 'prestacao', icon: '📑', titulo: 'Prestação de Contas', subtitulo: 'Registro de despesas com comprovante e fluxo de aprovação', perfis: ['coordenador','colaborador'] },
-  { rota: 'receitas_despesas', icon: '📝', titulo: 'Lançamentos', subtitulo: 'Receitas, Despesas e Transferências — lançar e consultar', perfis: ['diretoria'] },
+  { rota: 'receitas_despesas', preTab: 'despesas', icon: '💸', titulo: 'Despesas', subtitulo: 'Histórico consolidado do que já saiu do caixa', perfis: ['diretoria'] },
+  { rota: 'receitas_despesas', preTab: 'receitas', icon: '💰', titulo: 'Receitas', subtitulo: 'Lançamentos de receita da empresa', perfis: ['diretoria'] },
   { rota: 'pagar', icon: '💸', titulo: 'Contas a Pagar', subtitulo: 'Fornecedores, lançamentos, vencimentos e pagamentos', perfis: ['diretoria','coordenador'] },
   { rota: 'receber', icon: '💵', titulo: 'Contas a Receber', subtitulo: 'Notas fiscais e recebimentos de clientes', perfis: ['diretoria'] },
   { rota: 'financeiro_transferencias', icon: '🔁', titulo: 'Transferências', subtitulo: 'Movimentações entre contas bancárias da empresa', perfis: ['diretoria'] },
@@ -28559,7 +28560,7 @@ async function bancosResumoCarregar() {
     ]);
     const empresa = window._bancosResumoEmpresa || RD_EMPRESAS[0];
     const resumo = {};
-    (RD_BANCOS_POR_EMPRESA[empresa] || []).forEach(b => { resumo[b] = { receita: 0, despesa: 0 }; });
+    bancosDaEmpresa(empresa).forEach(b => { resumo[b] = { receita: 0, despesa: 0 }; });
     despesas.forEach(d => {
       if (normalizarEmpresa(d.Empresa) !== empresa) return;
       const b = (d.Banco || '').trim();
@@ -28608,6 +28609,86 @@ function bancosResumoMudarEmpresa(emp) {
   window._bancosResumoEmpresa = emp;
   navigate('cadastro_bancos');
 }
+
+/* -- CRUD de Bancos (pedido em 07/09/2026): editar/adicionar/excluir contas
+   bancárias na tela de Contas Bancárias. Mesmo padrão de clientesAbrirForm/
+   clientesSalvar/clientesExcluir — exclusão restrita à Diretoria, dedupe por
+   Título+Empresa. Ao salvar, invalida _bancosCache pra bancosDaEmpresa()
+   refletir na hora nos formulários de Despesa/Receita/Transferência. -- */
+function bancosAbrirForm(id) {
+  window._bancosEditandoId = id || null;
+  const c = document.getElementById('bancos-form-container'); if (c) c.style.display = 'block';
+  const titulo = document.getElementById('bancos-form-titulo');
+  const btn = document.getElementById('bancos-btn-salvar');
+  if (id) {
+    const b = (_bancosCache || []).find(x => x.Id === id);
+    if (!b) { showToast('⚠️ Banco não encontrado.'); return; }
+    if (titulo) titulo.textContent = '✏️ Editar Banco';
+    if (btn) btn.textContent = '💾 Salvar Alterações';
+    const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
+    set('bancos_nome', b.Title); set('bancos_empresa', b.Empresa);
+  } else {
+    if (titulo) titulo.textContent = '➕ Novo Banco';
+    if (btn) btn.textContent = '✅ Cadastrar';
+    const setSel = document.getElementById('bancos_empresa');
+    if (setSel) setSel.value = window._bancosResumoEmpresa || RD_EMPRESAS[0];
+    const nomeEl = document.getElementById('bancos_nome'); if (nomeEl) nomeEl.value = '';
+  }
+  if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function bancosFecharForm() {
+  window._bancosEditandoId = null;
+  const c = document.getElementById('bancos-form-container'); if (c) c.style.display = 'none';
+}
+async function bancosSalvar() {
+  const nome = (document.getElementById('bancos_nome').value||'').trim();
+  const empresa = (document.getElementById('bancos_empresa').value||'').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do banco/conta.'); return; }
+  if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
+  const editandoId = window._bancosEditandoId;
+  await carregarBancosLista();
+  const jaExiste = _bancosCache.some(b => b.Id !== editandoId && normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa) && (b.Title||'').toLowerCase() === nome.toLowerCase());
+  if (jaExiste) { showToast('⚠️ Já existe esse banco cadastrado para essa empresa!'); return; }
+  const dados = { Title: nome, Empresa: empresa };
+  let ok;
+  if (editandoId) {
+    ok = await dbAtualizar('Bancos', editandoId, dados);
+    showToast(ok ? '✅ Banco atualizado!' : '❌ Erro ao atualizar.');
+  } else {
+    ok = await salvarNoSharePoint('Bancos', dados);
+    showToast(ok ? '✅ Banco cadastrado!' : '❌ Erro ao cadastrar.');
+  }
+  if (ok) { bancosFecharForm(); await carregarBancosLista(); bancosCadCarregar(); bancosResumoCarregar(); }
+}
+async function bancosExcluir(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const b = (_bancosCache || []).find(x => x.Id === id);
+  const nome = b ? b.Title : ('#' + id);
+  if (!confirm(`Excluir o banco "${nome}"? Essa ação não pode ser desfeita.\n\nLançamentos já feitos continuam com o nome salvo — só deixa de aparecer na lista pra novos lançamentos.`)) return;
+  const { ok } = await dbRemover('Bancos', id);
+  showToast(ok ? '🗑️ Banco excluído.' : '❌ Erro ao excluir.');
+  if (ok) { await carregarBancosLista(); bancosCadCarregar(); bancosResumoCarregar(); }
+}
+async function bancosCadCarregar() {
+  const container = document.getElementById('bancosCadLista');
+  if (!container) return;
+  if (!_bancosCache || !_bancosCache.length) await carregarBancosLista();
+  const empresa = window._bancosResumoEmpresa || RD_EMPRESAS[0];
+  const lista = _bancosCache.filter(b => normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa)).slice().sort((a,b) => (a.Title||'').localeCompare(b.Title||'', 'pt-BR'));
+  const isDir = currentProfile === 'diretoria';
+  if (!lista.length) {
+    container.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:10px 0">Nenhum banco cadastrado pra essa empresa ainda.</div>';
+    return;
+  }
+  container.innerHTML = lista.map(b => `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+    <span style="font-weight:600">🏦 ${b.Title}</span>
+    <span style="display:flex;gap:6px">
+      <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="bancosAbrirForm(${b.Id})">✏️ Editar</button>
+      ${isDir ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="bancosExcluir(${b.Id})">🗑️ Excluir</button>` : ''}
+    </span>
+  </div>`).join('');
+}
+
 function pageCadastroBancos() {
   if (currentProfile !== 'diretoria') {
     return `<div class="page-header"><h1>🏦 Contas Bancárias</h1></div>
@@ -28618,11 +28699,12 @@ function pageCadastroBancos() {
     </div>`;
   }
   const empresa = window._bancosResumoEmpresa || RD_EMPRESAS[0];
-  setTimeout(() => bancosResumoCarregar(), 50);
+  setTimeout(async () => { await carregarBancosLista(); bancosCadCarregar(); bancosResumoCarregar(); }, 50);
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
     <div><h1>🏦 Contas Bancárias</h1><p>Receitas e despesas totais por conta bancária</p></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-primary" onclick="bancosAbrirForm()">➕ Novo Banco</button>
       <button class="btn-secondary" onclick="navigate('dashboard_financeiro')">← Dashboard Financeiro</button>
     </div>
   </div>
@@ -28635,6 +28717,25 @@ function pageCadastroBancos() {
         font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${emp===empresa?'700':'500'};cursor:pointer">
       🏢 ${emp}
     </button>`).join('')}
+  </div>
+  <div id="bancos-form-container" style="display:none;margin-bottom:16px">
+    <div class="form-card">
+      <div id="bancos-form-titulo" style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:700;color:var(--green-main);margin-bottom:14px;text-transform:uppercase;letter-spacing:.07em">➕ Novo Banco</div>
+      <div class="form-row">
+        <div class="form-group"><label>Nome do Banco/Conta</label><input type="text" id="bancos_nome" placeholder="Ex.: Sicoob 5024"></div>
+        <div class="form-group"><label>Empresa</label>
+          <select id="bancos_empresa">${RD_EMPRESAS.map(emp => `<option value="${emp}">${emp}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:6px">
+        <button class="btn-primary" id="bancos-btn-salvar" onclick="bancosSalvar()">✅ Cadastrar</button>
+        <button class="btn-secondary" onclick="bancosFecharForm()">Cancelar</button>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-title" style="margin-bottom:10px">Bancos cadastrados — ${empresa}</div>
+    <div id="bancosCadLista"><div style="color:var(--text-muted);font-size:.85rem;padding:10px 0;text-align:center">Carregando...</div></div>
   </div>
   <div class="card">
     <div id="bancosResumoContainer"><div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Carregando...</div></div>
@@ -28679,7 +28780,6 @@ const FINANCEIRO_EM_CONSTRUCAO = {
   resultado_contrato: { titulo: 'Resultado por Contrato', texto: 'Relatório dedicado ainda não existe.', dica: { label: 'Ver Margem por Contrato/Centro de Custo no Dashboard Financeiro', rota: 'dashboard_financeiro' } },
   resultado_empresa: { titulo: 'Resultado por Empresa', texto: 'Relatório dedicado ainda não existe.', dica: { label: 'Usar o filtro de empresa no Dashboard Financeiro', rota: 'dashboard_financeiro' } },
   consolidado_grupo: { titulo: 'Consolidado do Grupo', texto: 'Visão consolidada Expedian + TL3 + EXP Brasil ainda não existe como relatório próprio.' },
-  patrimonio_capex: { titulo: 'Ativos / CAPEX', texto: 'Relatório dedicado de ativos ainda não existe — mas todo lançamento de CAPEX já está classificado por Categoria.', dica: { label: 'Ver lançamentos em Despesas (filtre por Categoria = CAPEX)', rota: 'receitas_despesas' } },
   patrimonio_aplicacoes: { titulo: 'Aplicações Financeiras', texto: 'Relatório dedicado ainda não existe — mas todo lançamento já está classificado por Categoria.', dica: { label: 'Ver lançamentos em Despesas (filtre por Categoria = Aplicações Financeiras)', rota: 'receitas_despesas' } },
   patrimonio_consorcios: { titulo: 'Consórcios', texto: 'Relatório dedicado ainda não existe — mas todo lançamento já está classificado por Categoria.', dica: { label: 'Ver lançamentos em Despesas (filtre por Categoria = Consórcios)', rota: 'receitas_despesas' } },
   patrimonio_financiamentos: { titulo: 'Financiamentos', texto: 'Relatório dedicado ainda não existe — mas todo lançamento já está classificado por Categoria.', dica: { label: 'Ver lançamentos em Despesas (filtre por Categoria = Financiamentos)', rota: 'receitas_despesas' } },
@@ -28699,6 +28799,130 @@ function pageFinanceiroPlaceholder(chave) {
     <div style="color:var(--text-muted);font-size:.88rem;margin-bottom:${c.dica ? '20px' : '0'}">${c.texto}</div>
     ${dicaHtml}
   </div>`;
+}
+
+/* =====================================================================
+   ATIVOS / CAPEX — página real (pedido em 07/09/2026, "construir o card
+   capex/ativos, devidamente sincronizado com receitas e despesas"). Não tem
+   tabela própria: lê a tabela 'Despesas' e filtra Categoria === 'CAPEX'. Isso
+   já cobre CAPEX lançado direto em Despesas E o que veio de Contas a
+   Pagar/Prestação de Contas e migrou pra Despesas ao ser pago/aprovado
+   (mesmo mecanismo usado no resto do Financeiro) — por isso "sincronizado":
+   qualquer aquisição de ativo paga aparece aqui automaticamente, sem
+   cadastro duplicado. Não é controle contábil de depreciação, é o registro
+   das aquisições (valor pago, quando, em que ativo, por qual empresa). -- */
+function capexMudarEmpresa(emp) {
+  window._capexEmpresa = emp || '';
+  capexCarregar();
+}
+function capexMudarAno(ano) {
+  window._capexAno = ano || '';
+  capexCarregar();
+}
+async function capexCarregar() {
+  const container = document.getElementById('capexContainer');
+  if (!container) return;
+  try {
+    const despesasTodas = await dbLer('Despesas').catch(() => []);
+    const empresa = window._capexEmpresa || '';
+    const ano = window._capexAno || '';
+    let itens = despesasTodas.filter(d => (d.Categoria || '') === 'CAPEX');
+    if (empresa) itens = itens.filter(d => normalizarEmpresa(d.Empresa) === empresa);
+    if (ano) itens = itens.filter(d => (d.DataLancamento || '').slice(0, 4) === ano);
+    itens.sort((a, b) => (b.DataLancamento || '').localeCompare(a.DataLancamento || ''));
+    const fmt = (v) => (Number(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const valorDe = (d) => Number(d.ValorTotal ?? d.Valor) || 0;
+    const total = itens.reduce((s, d) => s + valorDe(d), 0);
+
+    if (!itens.length) {
+      container.innerHTML = `<div style="color:var(--text-muted);font-size:.85rem;padding:30px;text-align:center">Nenhuma aquisição de CAPEX encontrada${empresa ? ' para ' + empresa : ''}${ano ? ' em ' + ano : ''}.</div>`;
+      return;
+    }
+
+    const porSub = {};
+    itens.forEach(d => {
+      const sub = d.Subcategoria || 'Outros (CAPEX)';
+      porSub[sub] = (porSub[sub] || 0) + valorDe(d);
+    });
+    const subsOrdenadas = Object.entries(porSub).sort((a, b) => b[1] - a[1]);
+
+    const fmtData = (s) => {
+      const p = (s || '').slice(0, 10).split('-');
+      return p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : (s || '—');
+    };
+
+    container.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
+      <div class="card" style="padding:14px;text-align:center">
+        <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Total Investido</div>
+        <div style="font-size:1.3rem;font-weight:700;color:var(--green-main)">${fmt(total)}</div>
+      </div>
+      <div class="card" style="padding:14px;text-align:center">
+        <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Nº de Aquisições</div>
+        <div style="font-size:1.3rem;font-weight:700">${itens.length}</div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title" style="margin-bottom:10px">Por tipo de ativo</div>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        ${subsOrdenadas.map(([sub, val]) => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
+          <span>${sub}</span><span style="font-weight:700">${fmt(val)}</span>
+        </div>`).join('')}
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title" style="margin-bottom:10px">Histórico de aquisições</div>
+      <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+        <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:8px">Data</th><th style="padding:8px">Ativo</th><th style="padding:8px">Fornecedor/Descrição</th><th style="padding:8px">Empresa</th><th style="padding:8px;text-align:right">Valor</th><th style="padding:8px">Comprovante</th>
+        </tr></thead>
+        <tbody>
+          ${itens.map(d => `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:8px;white-space:nowrap">${fmtData(d.DataLancamento)}</td>
+            <td style="padding:8px;font-weight:600">${d.Subcategoria || '—'}</td>
+            <td style="padding:8px">${d.Fornecedor || d.Colaborador || d.Descricao || '—'}</td>
+            <td style="padding:8px">${d.Empresa || '—'}</td>
+            <td style="padding:8px;text-align:right;font-weight:700">${fmt(valorDe(d))}</td>
+            <td style="padding:8px">${d.ComprovanteUrl ? `<a href="${d.ComprovanteUrl}" target="_blank">📎 Ver</a>` : '—'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+    </div>`;
+  } catch (e) {
+    console.error(e);
+    container.innerHTML = '<div style="color:#dc3545;font-size:.85rem;padding:20px;text-align:center">Erro ao carregar.</div>';
+  }
+}
+function pageCapex() {
+  const empresa = window._capexEmpresa || '';
+  const ano = window._capexAno || '';
+  setTimeout(() => capexCarregar(), 50);
+  const anoAtual = new Date().getFullYear();
+  const anos = []; for (let a = anoAtual; a >= anoAtual - 4; a--) anos.push(String(a));
+  const chipEstilo = (ativo) => `padding:9px 16px;border-radius:10px;
+        border:${ativo ? '2px solid var(--green-main)' : '1px solid var(--border)'};
+        background:${ativo ? 'var(--green-pale)' : 'var(--surface2)'};
+        color:${ativo ? 'var(--green-main)' : 'var(--text)'};
+        font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${ativo ? '700' : '500'};cursor:pointer`;
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div><h1>🚗 Ativos / CAPEX</h1><p>Aquisições de ativos (veículos, máquinas, tecnologia, imóveis...) já pagas</p></div>
+    <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+    <button onclick="capexMudarEmpresa('')" style="${chipEstilo(!empresa)}">Todas as empresas</button>
+    ${RD_EMPRESAS.map(emp => `<button onclick="capexMudarEmpresa('${emp}')" style="${chipEstilo(emp === empresa)}">🏢 ${emp}</button>`).join('')}
+    <select onchange="capexMudarAno(this.value)" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
+      <option value="">Todos os anos</option>
+      ${anos.map(a => `<option value="${a}" ${a === ano ? 'selected' : ''}>${a}</option>`).join('')}
+    </select>
+  </div>
+  <div class="card" style="margin-bottom:14px;font-size:.78rem;color:var(--text-muted)">
+    Mostra todo lançamento com Categoria = CAPEX já registrado em Despesas — inclusive os que vieram de Contas a Pagar/Prestação de Contas e migraram pra cá ao serem pagos/aprovados. Não é um controle contábil de depreciação, é o registro das aquisições.
+  </div>
+  <div id="capexContainer"><div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Carregando...</div></div>`;
 }
 
 /* -- Painel Geral: visão consolidada de Flash Report + Notificação de NC +
