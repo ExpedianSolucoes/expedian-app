@@ -7445,10 +7445,19 @@ const RD_EMPRESAS = ['Expedian','TL3','EXP Brasil'];
 // Contas bancárias reais de cada empresa — o campo Banco no lançamento de Despesas mostra
 // só as contas da empresa ativa no submenu (mesma lógica de escopo do Centro de Custo).
 const RD_BANCOS_POR_EMPRESA = {
-  'Expedian':   ['Sicoob 5024','Sicoob 3325','PagBank','Stone','Mercado Pago'],
-  'TL3':        ['PagBank','Inter Empresas','Sicoob','Bradesco','Stone'],
+  'Expedian':   ['Sicoob 5024','Sicoob 3325','PagBank','PagBank - Pré Pago','Stone','Ticket Log','Bradesco','Caju','Mercado Pago'],
+  'TL3':        ['Sicoob 5024','Sicoob','Bradesco','PagBank','Inter','Stone'],
   'EXP Brasil': ['PagBank'],
 };
+// Corrige na hora (case/espaço) o que a pessoa digitou pro nome oficial do banco,
+// pra não deixar duplicidade tipo "SICOOB 5024" vs "Sicoob 5024" entrar no banco de dados.
+function rdNormalizarBanco(valor, empresa) {
+  const v = (valor || '').trim();
+  if (!v) return v;
+  const lista = RD_BANCOS_POR_EMPRESA[empresa || (window._rdEmpresaAtiva || RD_EMPRESAS[0])] || [];
+  const oficial = lista.find(b => b.toLowerCase() === v.toLowerCase());
+  return oficial || v;
+}
 const RD_STATUS = ['Pendente','Vence em breve','Vence hoje','Em atraso','Pago','Cancelado'];
 
 // Máscara de moeda BR — formata o campo como "R$ 1.234,56" enquanto o usuário digita
@@ -7692,13 +7701,14 @@ function pageReceitasDespesas() {
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarDespesas(); carregarMunicipiosLista(); }, 200);
   if (tab === 'receitas') setTimeout(() => { carregarClientesListaRc(); carregarReceitas(); carregarMunicipiosLista(); }, 200);
+  if (tab === 'transferencias') setTimeout(() => carregarTransferencias(), 200);
 
   // Título/subtítulo dinâmicos por aba — antes era sempre "Receitas e Despesas"
   // mesmo quando a tela era só uma das duas, porque Receitas e Despesas viraram
   // botões próprios no hub Financeiro (ver FINANCEIRO_CATALOGO) mas continuavam
   // compartilhando esta mesma função/página por trás (pedido em 27/08/2026).
-  const tituloTab = { despesas: 'Despesas', receitas: 'Receitas', conciliacao: 'Conciliação Bancária' }[tab] || 'Receitas e Despesas';
-  const subtitulosPorTab = { despesas: '', receitas: 'Lançamentos de receita da empresa', conciliacao: 'Conciliação com o extrato bancário' };
+  const tituloTab = { despesas: 'Despesas', receitas: 'Receitas', conciliacao: 'Conciliação Bancária', transferencias: 'Transferências entre Contas' }[tab] || 'Receitas e Despesas';
+  const subtitulosPorTab = { despesas: '', receitas: 'Lançamentos de receita da empresa', conciliacao: 'Conciliação com o extrato bancário', transferencias: 'Movimentações entre contas bancárias da empresa — não afeta o resultado operacional' };
   const subtituloTab = tab in subtitulosPorTab ? subtitulosPorTab[tab] : 'Lançamentos financeiros detalhados da empresa';
 
   const empresaBotoesHtml = RD_EMPRESAS.map(emp => {
@@ -7728,9 +7738,15 @@ function pageReceitasDespesas() {
     tab === 'despesas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="window._pagVindoDeDespesas=true;navigate('pagar')">💸 Contas a Pagar</button>` : '',
     tab === 'despesas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="window._prestVindoDeDespesas=true;navigate('prestacao')">📑 Prestação de Contas</button>` : '',
     tab === 'receitas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="navigate('receber')">🧾 Ir para Notas Fiscais</button>` : '',
-    (tab === 'despesas' || tab === 'receitas') ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="transferenciaAbrirModal()">🔁 Transferência entre Contas</button>` : '',
+    (tab === 'despesas' || tab === 'receitas' || tab === 'transferencias') ? `<button style="width:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px 14px;border-radius:10px;
+        border:${tab==='transferencias'?'2px solid var(--green-main)':'1px solid var(--border)'};
+        background:${tab==='transferencias'?'var(--green-pale)':'var(--surface2)'};
+        color:${tab==='transferencias'?'var(--green-main)':'var(--text)'};
+        font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${tab==='transferencias'?'700':'500'};cursor:pointer"
+      onclick="window._rdTab='transferencias';navigate('receitas_despesas')">🔁 Transferência entre Contas</button>` : '',
     tab === 'receitas' ? `<button class="btn-primary" style="width:100%;box-sizing:border-box" onclick="rcToggleFormNovaReceita()">➕ Nova Receita</button>` : '',
     tab === 'despesas' ? `<button class="btn-primary" style="width:100%;box-sizing:border-box" onclick="rdToggleFormNovaDespesa()">➕ Nova Despesa</button>` : '',
+    tab === 'transferencias' ? `<button class="btn-primary" style="width:100%;box-sizing:border-box" onclick="transferenciaAbrirModal()">🔁 Nova Transferência</button>` : '',
   ].filter(Boolean).join('');
 
   return `
@@ -7760,7 +7776,7 @@ function pageReceitasDespesas() {
     </div>
   </div>
 
-  ${tab === 'despesas' ? renderDespesasTab() : tab === 'receitas' ? renderReceitasTab() : renderConciliacaoTab()}
+  ${tab === 'despesas' ? renderDespesasTab() : tab === 'receitas' ? renderReceitasTab() : tab === 'transferencias' ? renderTransferenciasTab() : renderConciliacaoTab()}
   `;
 }
 
@@ -7914,7 +7930,128 @@ async function transferenciaSalvar() {
     const modalEl = document.getElementById('transferenciaModal'); if (modalEl) modalEl.remove();
     if (typeof carregarDespesas === 'function') carregarDespesas();
     if (typeof carregarReceitas === 'function') carregarReceitas();
+    if (typeof carregarTransferencias === 'function') carregarTransferencias();
   }
+}
+
+/* -- Aba "Transferências entre Contas" — antes o botão só abria o modal de
+   lançar uma nova transferência, sem nenhum jeito de ver as que já foram
+   feitas (pedido em 07/09/2026: "quero enxergar e pesquisar as
+   transferências"). Junta o par Despesa(saída)+Receita(entrada) pelo
+   TransferenciaId e mostra como uma linha só. -- */
+function renderTransferenciasTab() {
+  return `
+  <div class="kpi-grid" style="margin-bottom:16px">
+    <div class="kpi-card blue"><div class="kpi-label">Transferências</div><div class="kpi-value" id="trf-kpi-total">—</div><div class="kpi-icon">🔁</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Valor total movimentado</div><div class="kpi-value" id="trf-kpi-valor">—</div><div class="kpi-icon">💰</div></div>
+  </div>
+  <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+    <div style="position:relative;flex:1;min-width:220px">
+      <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:.9rem;pointer-events:none">🔍</span>
+      <input type="text" id="trf_busca" placeholder="Buscar por conta, valor, responsável ou observação..." autocomplete="off" oninput="transferenciasFiltrar()" style="width:100%;padding:9px 14px 9px 34px;border-radius:20px;border:1px solid var(--border);font-size:.85rem;background:var(--surface);box-sizing:border-box">
+    </div>
+    <input type="date" id="trf_filtro_de" onchange="transferenciasFiltrar()" title="De" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem">
+    <span style="font-size:.78rem;color:var(--text-muted)">até</span>
+    <input type="date" id="trf_filtro_ate" onchange="transferenciasFiltrar()" title="Até" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem">
+  </div>
+  <div class="card" style="overflow-x:auto;padding:0">
+    <div id="trf-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>`;
+}
+
+async function carregarTransferencias() {
+  const el = document.getElementById('trf-lista');
+  if (!el) return;
+  if (currentProfile !== 'diretoria') { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria.</div>'; return; }
+  el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div>';
+  try {
+    const [despesas, receitas] = await Promise.all([dbLer('Despesas'), dbLer('Receitas')]);
+    const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+    // Cobre tanto as transferências pareadas (feitas pelo botão "Nova Transferência",
+    // com TransferenciaId nos dois lados) quanto lançamentos que a planilha classifica
+    // como "Transferências entre contas" mas são de mão única (ex: consórcio, CDB) —
+    // esses não têm TransferenciaId e aparecem como uma linha só (pedido em 06-07/09/2026,
+    // depois de descobrir que a categoria tava sumindo de vista nos dois casos).
+    const saidas = (despesas || []).filter(d => d.Categoria === 'Transferencias entre contas' && d.Empresa === empresaAtiva);
+    const entradas = (receitas || []).filter(r => r.Categoria === 'Transferencias entre contas' && r.Empresa === empresaAtiva);
+    const porId = {};
+    saidas.forEach(d => { const chave = d.TransferenciaId || ('__d' + d.Id); porId[chave] = porId[chave] || {}; porId[chave].saida = d; });
+    entradas.forEach(r => { const chave = r.TransferenciaId || ('__r' + r.Id); porId[chave] = porId[chave] || {}; porId[chave].entrada = r; });
+    window._trfPares = Object.entries(porId).map(([id, p]) => ({ id, ...p }));
+    transferenciasFiltrar();
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--red);font-size:.85rem;padding:12px">Erro ao carregar transferências.</div>';
+  }
+}
+
+function transferenciasFiltrar() {
+  const el = document.getElementById('trf-lista');
+  if (!el) return;
+  const busca = ((document.getElementById('trf_busca')||{}).value || '').trim().toLowerCase();
+  const de = (document.getElementById('trf_filtro_de')||{}).value || '';
+  const ate = (document.getElementById('trf_filtro_ate')||{}).value || '';
+  const fmtR = v => 'R$ ' + (Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  let pares = (window._trfPares || []).slice();
+  pares = pares.filter(p => {
+    const base = p.saida || p.entrada || {};
+    const data = base.DataLancamento || base.DataEmissao || '';
+    if (de && data < de) return false;
+    if (ate && data > ate) return false;
+    if (!busca) return true;
+    const origem = p.saida ? p.saida.Banco : '';
+    const destino = p.entrada ? p.entrada.Banco : '';
+    const obs = base.Descricao || '';
+    const resp = base.ResponsavelLancamento || '';
+    const valor = String(base.Valor || '');
+    const alvo = [origem, destino, obs, resp, valor].join(' ').toLowerCase();
+    return alvo.includes(busca);
+  });
+  pares.sort((a,b) => {
+    const da = (a.saida||a.entrada||{}).DataLancamento || (a.saida||a.entrada||{}).DataEmissao || '';
+    const db = (b.saida||b.entrada||{}).DataLancamento || (b.saida||b.entrada||{}).DataEmissao || '';
+    return db.localeCompare(da);
+  });
+
+  const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
+  setKpi('trf-kpi-total', pares.length);
+  setKpi('trf-kpi-valor', fmtR(pares.reduce((s,p) => s + Number((p.saida||p.entrada||{}).Valor||0), 0)));
+
+  if (!pares.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:16px">Nenhuma transferência encontrada.</div>'; return; }
+
+  el.innerHTML = '<table class="data-table"><thead><tr><th>Data</th><th>Origem → Destino</th><th>Valor</th><th>Responsável</th><th>Observação</th><th>Lançado por</th><th>Ações</th></tr></thead><tbody>' +
+    pares.map(p => {
+      const base = p.saida || p.entrada || {};
+      const data = base.DataLancamento || base.DataEmissao || '';
+      const dataFmt = data ? new Date(data + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+      const temTransferenciaId = (p.saida && p.saida.TransferenciaId) || (p.entrada && p.entrada.TransferenciaId);
+      const origemDestino = (p.saida && p.entrada)
+        ? `${p.saida.Banco || '—'} → ${p.entrada.Banco || '—'}`
+        : p.saida ? `Saída: ${p.saida.Banco || '—'}` : `Entrada: ${p.entrada.Banco || '—'}`;
+      const avisoOrfa = (temTransferenciaId && (!p.saida || !p.entrada)) ? '<div style="color:var(--red);font-size:.65rem">Falta a contrapartida desta transferência</div>' : '';
+      return `<tr>
+        <td style="font-size:.78rem;white-space:nowrap">${dataFmt}</td>
+        <td style="font-size:.78rem">${origemDestino}${avisoOrfa}</td>
+        <td style="font-size:.78rem;font-weight:700;white-space:nowrap">${fmtR(base.Valor)}</td>
+        <td style="font-size:.75rem;color:var(--text-muted)">${base.ResponsavelLancamento || '—'}</td>
+        <td style="font-size:.75rem;color:var(--text-muted)">${base.Descricao || '—'}</td>
+        <td style="font-size:.72rem;color:var(--text-muted)">${base.LancadoPor || '—'}</td>
+        <td><button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="transferenciaExcluir('${p.id}')">🗑️ Excluir</button></td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+async function transferenciaExcluir(transferenciaId) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const par = (window._trfPares || []).find(p => p.id === transferenciaId);
+  if (!par) { showToast('⚠️ Transferência não encontrada.'); return; }
+  const mensagem = (par.saida && par.entrada) ? 'Excluir esta transferência? Remove os dois lançamentos (saída e entrada). Essa ação não pode ser desfeita.' : 'Excluir este lançamento? Essa ação não pode ser desfeita.';
+  if (!confirm(mensagem)) return;
+  let okD = true, okR = true;
+  if (par.saida) { const r = await dbRemover('Despesas', par.saida.Id); okD = r.ok; }
+  if (par.entrada) { const r = await dbRemover('Receitas', par.entrada.Id); okR = r.ok; }
+  showToast((okD && okR) ? '🗑️ Transferência excluída.' : '❌ Erro ao excluir uma das pontas.');
+  carregarTransferencias();
 }
 
 function renderReceitasTab() {
@@ -8095,7 +8232,7 @@ function renderReceitasTab() {
     <div class="form-row">
       <div class="form-group">
         <label>Banco</label>
-        <input type="text" id="rc_banco" list="dl_rc_bancos" placeholder="Selecione ou digite...">
+        <input type="text" id="rc_banco" list="dl_rc_bancos" placeholder="Selecione ou digite..." onblur="this.value=rdNormalizarBanco(this.value)">
         <datalist id="dl_rc_bancos">${(RD_BANCOS_POR_EMPRESA[window._rdEmpresaAtiva || RD_EMPRESAS[0]] || []).map(b => `<option value="${b}">`).join('')}</datalist>
       </div>
       <div class="form-group">
@@ -9810,7 +9947,7 @@ function renderDespesasTab() {
       </div>
       <div class="form-group">
         <label>Banco</label>
-        <input type="text" id="rd_banco" list="dl_rd_bancos" placeholder="Selecione ou digite...">
+        <input type="text" id="rd_banco" list="dl_rd_bancos" placeholder="Selecione ou digite..." onblur="this.value=rdNormalizarBanco(this.value)">
         <datalist id="dl_rd_bancos">${(RD_BANCOS_POR_EMPRESA[window._rdEmpresaAtiva || RD_EMPRESAS[0]] || []).map(b => `<option value="${b}">`).join('')}</datalist>
       </div>
     </div>
