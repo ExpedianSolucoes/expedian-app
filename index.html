@@ -368,6 +368,12 @@
   }
   .data-table tr:last-child td { border: none; }
   .data-table tr:hover td { background: var(--surface2); }
+  /* Histórico de Despesas tem muitas colunas (Data/Categoria/Descrição/CC/Empresa/
+     Pagamento/Vencimento/Data Pagto/Valor/Status/Comprovante/Ações) — pedido em
+     07/09/2026 pra caber tudo na página sem estourar/rolar horizontal. */
+  .data-table-compact { font-size: .72rem; }
+  .data-table-compact th { padding: 6px 8px; }
+  .data-table-compact td { padding: 6px 8px; }
 
   /* Barra de rolagem horizontal sempre visível nos containers "overflow-x:auto" de tabela
      (sem isso, em Mac/alguns navegadores a barra some e parece que não dá pra ver a tabela
@@ -11719,7 +11725,7 @@ async function carregarDespesas() {
 
     const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
     const avisoBusca = fBusca ? '<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">🔍 Buscando em Em Aberto + Histórico de Pagos ao mesmo tempo.</div>' : '';
-    el.innerHTML = avisoBusca + '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Data Pagto</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
+    el.innerHTML = avisoBusca + '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Data Pagto</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
         const desc = rdDescricaoModalidade(i);
         const ehParcelado = i.TotalParcelas > 1;
@@ -28777,55 +28783,77 @@ function pageCadastroEmpresas() {
    Transferências, que também têm Banco preenchido) por conta, escopado por
    empresa. Acessível só a partir do Dashboard Financeiro, não é mais card
    de topo do hub Financeiro (evita duplicar o Dashboard). */
+/* -- Unificada em uma tabela só (pedido em 07/09/2026: "não precisa colocar
+   duas tabelas... preciso de tabela única") — antes eram duas listas
+   separadas (cadastro com editar/excluir + resumo com valores). Agora cada
+   linha já sai com Receitas/Despesas/Saldo/Aplicado + Editar/Excluir juntos.
+   "Aplicado" = total lançado em Despesas > Aplicações Financeiras naquela
+   conta, descontando Resgates já feitos na mesma conta (Receitas > Receitas
+   Financeiras > Resgate...) — mostra quanto dessa conta está hoje "fora",
+   investido, sem precisar abrir um relatório à parte. -- */
 async function bancosResumoCarregar() {
   const container = document.getElementById('bancosResumoContainer');
   if (!container) return;
+  if (!_bancosCache || !_bancosCache.length) await carregarBancosLista();
+  const empresa = window._bancosResumoEmpresa || RD_EMPRESAS[0];
+  const isDir = currentProfile === 'diretoria';
+  const bancosDaLista = _bancosCache.filter(b => normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa)).slice().sort((a, b) => (a.Title || '').localeCompare(b.Title || '', 'pt-BR'));
+  if (!bancosDaLista.length) {
+    container.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Nenhum banco cadastrado pra essa empresa ainda.</div>';
+    return;
+  }
   try {
     const [despesas, receitas] = await Promise.all([
       dbLer('Despesas').catch(() => []),
       dbLer('Receitas').catch(() => []),
     ]);
-    const empresa = window._bancosResumoEmpresa || RD_EMPRESAS[0];
     const resumo = {};
-    bancosDaEmpresa(empresa).forEach(b => { resumo[b] = { receita: 0, despesa: 0 }; });
+    bancosDaLista.forEach(b => { resumo[b.Title] = { receita: 0, despesa: 0, aplicado: 0 }; });
     despesas.forEach(d => {
       if (normalizarEmpresa(d.Empresa) !== empresa) return;
       const b = (d.Banco || '').trim();
-      if (!b) return;
-      if (!resumo[b]) resumo[b] = { receita: 0, despesa: 0 };
+      if (!b || !resumo[b]) return;
       resumo[b].despesa += Number(d.Valor) || 0;
+      if (d.Categoria === 'Aplicações Financeiras') resumo[b].aplicado += Number(d.Valor) || 0;
     });
     receitas.forEach(r => {
       if (normalizarEmpresa(r.Empresa) !== empresa) return;
       const b = (r.Banco || '').trim();
-      if (!b) return;
-      if (!resumo[b]) resumo[b] = { receita: 0, despesa: 0 };
+      if (!b || !resumo[b]) return;
       resumo[b].receita += Number(r.Valor) || 0;
+      if (r.Categoria === 'Receitas Financeiras' && /^Resgate/.test(r.Subcategoria || '')) resumo[b].aplicado -= Number(r.Valor) || 0;
     });
-    const linhas = Object.entries(resumo).sort((a, b) => (b[1].receita + b[1].despesa) - (a[1].receita + a[1].despesa));
-    if (!linhas.length) {
-      container.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Nenhuma movimentação encontrada para essa empresa.</div>';
-      return;
-    }
     const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
     container.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:.85rem">
       <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
-        <th style="padding:8px">Banco</th><th style="padding:8px;text-align:right">Receitas</th><th style="padding:8px;text-align:right">Despesas</th><th style="padding:8px;text-align:right">Saldo (mov.)</th>
+        <th style="padding:8px">Banco</th>
+        <th style="padding:8px;text-align:right">Receitas</th>
+        <th style="padding:8px;text-align:right">Despesas</th>
+        <th style="padding:8px;text-align:right">Saldo (mov.)</th>
+        <th style="padding:8px;text-align:right">🟣 Aplicado</th>
+        <th style="padding:8px;text-align:center">Ações</th>
       </tr></thead>
       <tbody>
-        ${linhas.map(([banco, v]) => {
+        ${bancosDaLista.map(b => {
+          const v = resumo[b.Title] || { receita: 0, despesa: 0, aplicado: 0 };
           const saldo = v.receita - v.despesa;
           return `<tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:8px;font-weight:600">🏦 ${banco}</td>
+            <td style="padding:8px;font-weight:600">🏦 ${b.Title}</td>
             <td style="padding:8px;text-align:right;color:var(--green-main)">${fmt(v.receita)}</td>
             <td style="padding:8px;text-align:right;color:#dc3545">${fmt(v.despesa)}</td>
             <td style="padding:8px;text-align:right;font-weight:700;color:${saldo >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(saldo)}</td>
+            <td style="padding:8px;text-align:right;${v.aplicado > 0 ? 'font-weight:700;color:#6f42c1' : 'color:var(--text-muted)'}">${v.aplicado > 0 ? fmt(v.aplicado) : '—'}</td>
+            <td style="padding:8px;text-align:center;white-space:nowrap">
+              <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="bancosAbrirForm(${b.Id})">✏️</button>
+              ${isDir ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="bancosExcluir(${b.Id})">🗑️</button>` : ''}
+            </td>
           </tr>`;
         }).join('')}
       </tbody>
     </table>
     <div style="font-size:.7rem;color:var(--text-muted);margin-top:10px">
       Saldo = movimentação líquida (Receitas − Despesas) dentro do que o app registra, não é o saldo real da conta (não há saldo inicial cadastrado). Inclui Transferências entre Contas.
+      Aplicado = total em Aplicações Financeiras lançadas nessa conta, descontando Resgates já feitos.
     </div>`;
   } catch (e) {
     console.error(e);
@@ -28885,7 +28913,7 @@ async function bancosSalvar() {
     ok = await salvarNoSharePoint('Bancos', dados);
     showToast(ok ? '✅ Banco cadastrado!' : '❌ Erro ao cadastrar.');
   }
-  if (ok) { bancosFecharForm(); await carregarBancosLista(); bancosCadCarregar(); bancosResumoCarregar(); }
+  if (ok) { bancosFecharForm(); await carregarBancosLista(); bancosResumoCarregar(); }
 }
 async function bancosExcluir(id) {
   if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
@@ -28894,28 +28922,8 @@ async function bancosExcluir(id) {
   if (!confirm(`Excluir o banco "${nome}"? Essa ação não pode ser desfeita.\n\nLançamentos já feitos continuam com o nome salvo — só deixa de aparecer na lista pra novos lançamentos.`)) return;
   const { ok } = await dbRemover('Bancos', id);
   showToast(ok ? '🗑️ Banco excluído.' : '❌ Erro ao excluir.');
-  if (ok) { await carregarBancosLista(); bancosCadCarregar(); bancosResumoCarregar(); }
+  if (ok) { await carregarBancosLista(); bancosResumoCarregar(); }
 }
-async function bancosCadCarregar() {
-  const container = document.getElementById('bancosCadLista');
-  if (!container) return;
-  if (!_bancosCache || !_bancosCache.length) await carregarBancosLista();
-  const empresa = window._bancosResumoEmpresa || RD_EMPRESAS[0];
-  const lista = _bancosCache.filter(b => normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa)).slice().sort((a,b) => (a.Title||'').localeCompare(b.Title||'', 'pt-BR'));
-  const isDir = currentProfile === 'diretoria';
-  if (!lista.length) {
-    container.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:10px 0">Nenhum banco cadastrado pra essa empresa ainda.</div>';
-    return;
-  }
-  container.innerHTML = lista.map(b => `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
-    <span style="font-weight:600">🏦 ${b.Title}</span>
-    <span style="display:flex;gap:6px">
-      <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="bancosAbrirForm(${b.Id})">✏️ Editar</button>
-      ${isDir ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="bancosExcluir(${b.Id})">🗑️ Excluir</button>` : ''}
-    </span>
-  </div>`).join('');
-}
-
 function pageCadastroBancos() {
   if (currentProfile !== 'diretoria') {
     return `<div class="page-header"><h1>🏦 Contas Bancárias</h1></div>
@@ -28926,7 +28934,7 @@ function pageCadastroBancos() {
     </div>`;
   }
   const empresa = window._bancosResumoEmpresa || RD_EMPRESAS[0];
-  setTimeout(async () => { await carregarBancosLista(); bancosCadCarregar(); bancosResumoCarregar(); }, 50);
+  setTimeout(async () => { await carregarBancosLista(); bancosResumoCarregar(); }, 50);
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
     <div><h1>🏦 Contas Bancárias</h1><p>Receitas e despesas totais por conta bancária</p></div>
@@ -28960,12 +28968,9 @@ function pageCadastroBancos() {
       </div>
     </div>
   </div>
-  <div class="card" style="margin-bottom:14px">
-    <div class="card-title" style="margin-bottom:10px">Bancos cadastrados — ${empresa}</div>
-    <div id="bancosCadLista"><div style="color:var(--text-muted);font-size:.85rem;padding:10px 0;text-align:center">Carregando...</div></div>
-  </div>
   <div class="card">
-    <div id="bancosResumoContainer"><div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Carregando...</div></div>
+    <div class="card-title" style="margin-bottom:10px">Contas — ${empresa}</div>
+    <div id="bancosResumoContainer" style="overflow-x:auto"><div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Carregando...</div></div>
   </div>`;
 }
 
