@@ -25462,7 +25462,7 @@ function meaRegistroVazio() {
     id: meaUid(), num: '', empreendimento: '', regional: '', cnpj: '', municipio: '', endereco: '', coordenadas: '',
     processoLicenciamento: '', numeroLicenca: '', emissao: '', vencimento: '', areaLicenciada: '',
     qtdTrafo: '', potencia: '', baciaContencao: '', baciaSinalizada: '',
-    vistoria: { status: 'pendente', dataProgramada: '', responsavelProgramado: '', data: '', tecnico1: '', tecnico2: '', motivo: '' },
+    vistoria: { status: 'pendente', dataProgramada: '', responsavelProgramado: '', data: '', tecnico1: '', tecnico2: '', motivo: '', lss: { status: '', obs: '' } },
     rma: { necessario: '', status: 'pendente', art: '', tecnicoArt: '', tecnicoRma: '' },
     ruido: { status: 'pendente', data: '', obs: '' },
     poco: { existe: '', status: 'pendente', data: '', obs: '' },
@@ -25673,7 +25673,7 @@ async function meaSalvarDetalhe() {
   reg.numeroLicenca = g('mea-numlicenca');
   reg.emissao = g('mea-emissao');
   reg.vencimento = g('mea-vencimento');
-  reg.vistoria = { status: g('mea-vistoria-status'), dataProgramada: g('mea-vistoria-dataprog'), responsavelProgramado: g('mea-vistoria-respprog'), data: g('mea-vistoria-data'), tecnico1: g('mea-vistoria-tec1'), tecnico2: g('mea-vistoria-tec2'), motivo: g('mea-vistoria-motivo') };
+  reg.vistoria = { status: g('mea-vistoria-status'), dataProgramada: g('mea-vistoria-dataprog'), responsavelProgramado: g('mea-vistoria-respprog'), data: g('mea-vistoria-data'), tecnico1: g('mea-vistoria-tec1'), tecnico2: g('mea-vistoria-tec2'), motivo: g('mea-vistoria-motivo'), lss: (reg.vistoria && reg.vistoria.lss) || { status: '', obs: '' } };
   reg.rma = { necessario: g('mea-rma-necessario'), status: g('mea-rma-status'), art: g('mea-rma-art'), tecnicoArt: g('mea-rma-tecart'), tecnicoRma: g('mea-rma-tecrma') };
   reg.ruido = { status: g('mea-ruido-status'), data: g('mea-ruido-data'), obs: g('mea-ruido-obs') };
   reg.poco = { existe: g('mea-poco-existe'), status: g('mea-poco-status'), data: g('mea-poco-data'), obs: g('mea-poco-obs') };
@@ -26043,6 +26043,7 @@ async function vistSalvarModal() {
     tecnico1: g('vist-tec1'),
     tecnico2: g('vist-tec2'),
     motivo: g('vist-motivo'),
+    lss: (reg.vistoria && reg.vistoria.lss) || { status: '', obs: '' },
   };
   if (status === 'realizada' || status === 'parcial' || status === 'nao_realizada') {
     reg.csao = reg.csao || {}; reg.csao.existe = g('vist-temcsao');
@@ -26066,6 +26067,7 @@ function pageVistoriasERO() {
       <p>Programe vistorias por empreendimento e registre o resultado (realizada, parcial ou não realizada), com equipe de campo, CSAO e Poço.</p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-secondary" onclick="window._meaAba='roteiro';navigate('checklist_ero')">🗺️ Roteiro de Campo</button>
       <button class="btn-primary" onclick="vistAbrirModal(null)">+ Nova Vistoria</button>
     </div>
   </div>
@@ -26154,10 +26156,272 @@ function pageVistoriasERO() {
   `;
 }
 
+/* ===============================
+   ROTEIRO DE CAMPO — execução diária das vistorias programadas
+   Pega as vistorias com status "Programada" dentro de um período,
+   agrupa por dia (dataProgramada) e apresenta como um roteiro de
+   campo estilo checklist: o técnico vai marcando cada parada como
+   Realizada / Parcial / Não Realizada (com justificativa quando não
+   for totalmente realizada), preenche a LSS (autorização de acesso —
+   só se aplica a subestação) e no final gera um resumo em texto pra
+   copiar/enviar (ex. WhatsApp). Grava direto em MEA_DADOS/reg.vistoria,
+   mesma base da tela de Vistorias.
+=============================== */
+if (typeof window._rotDataIni === 'undefined') window._rotDataIni = '';
+if (typeof window._rotDataFim === 'undefined') window._rotDataFim = '';
+
+function eroEhSubestacao(nome) {
+  return /\bSED\b|\bSUBESTA[ÇC][ÃA]O\b/i.test(nome || '');
+}
+
+function rotHojeISO(offsetDias) {
+  var d = new Date(); d.setDate(d.getDate() + (offsetDias || 0));
+  return d.toISOString().slice(0, 10);
+}
+
+function rotListaPeriodo() {
+  var ini = window._rotDataIni, fim = window._rotDataFim;
+  return MEA_DADOS.filter(function(x) {
+    var v = x.vistoria || {};
+    // Entra no roteiro qualquer vistoria que tenha sido programada pra essa
+    // data — mesmo que já tenha sido marcada como realizada/parcial/não
+    // realizada durante esta própria sessão de roteiro (senão a parada
+    // "desaparece" da tela assim que o técnico marca o resultado).
+    if (v.status === 'pendente' || !v.status || !v.dataProgramada) return false;
+    if (ini && v.dataProgramada < ini) return false;
+    if (fim && v.dataProgramada > fim) return false;
+    return true;
+  }).sort(function(a, b) {
+    var da = a.vistoria.dataProgramada, db = b.vistoria.dataProgramada;
+    if (da !== db) return da < db ? -1 : 1;
+    return (a.num || 0) - (b.num || 0);
+  });
+}
+
+function rotAgruparPorDia(lista) {
+  var grupos = {};
+  lista.forEach(function(x) {
+    var dia = x.vistoria.dataProgramada;
+    (grupos[dia] = grupos[dia] || []).push(x);
+  });
+  return Object.keys(grupos).sort().map(function(dia) { return { dia: dia, itens: grupos[dia] }; });
+}
+
+function rotFiltrar() {
+  window._rotDataIni = document.getElementById('rot-f-ini').value;
+  window._rotDataFim = document.getElementById('rot-f-fim').value;
+  rotRenderizar();
+}
+
+function rotRenderizar() {
+  var wrap = document.getElementById('rot-wrap');
+  if (!wrap) return;
+  var lista = rotListaPeriodo();
+  var grupos = rotAgruparPorDia(lista);
+
+  var total = lista.length;
+  var concluidas = lista.filter(function(x) { return ['realizada','parcial','nao_realizada'].indexOf(x.vistoria.status) !== -1; }).length;
+  var pct = total ? Math.round(concluidas / total * 100) : 0;
+  document.getElementById('rot-progresso-fill').style.width = pct + '%';
+  document.getElementById('rot-progresso-label').textContent = concluidas + ' / ' + total + ' concluídas (' + pct + '%)';
+
+  if (!grupos.length) {
+    wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma vistoria programada nesse período.<br>Programe vistorias na tela anterior (status "Programada" + Data Programada) e volte aqui.</div>';
+    return;
+  }
+
+  wrap.innerHTML = grupos.map(function(g) {
+    var dataFmt = laFormatarData(g.dia);
+    var stops = g.itens.map(function(x) {
+      var v = x.vistoria;
+      var ehSE = eroEhSubestacao(x.empreendimento);
+      var lss = v.lss || { status: '', obs: '' };
+      var st = v.status; // programada | realizada | parcial | nao_realizada
+      function pill(val, label, cor) {
+        var sel = st === val;
+        return '<div onclick="rotSetStatus(\''+x.id+'\',\''+val+'\')" style="flex:1;padding:8px 4px;border:2px solid '+(sel?cor:'var(--border)')+';border-radius:8px;text-align:center;font-size:.72rem;font-weight:700;cursor:pointer;background:'+(sel?cor+'22':'#fff')+';color:'+(sel?cor:'var(--text-muted)')+'">'+label+'</div>';
+      }
+      var statusHtml =
+        '<div style="display:flex;gap:6px;margin-top:8px">' +
+        pill('realizada', '✅ Realizada', '#28a745') +
+        pill('parcial', '🔶 Parcial', '#fd7e14') +
+        pill('nao_realizada', '🚫 Não Realizada', '#dc3545') +
+        '</div>';
+      var motivoHtml = (st === 'parcial' || st === 'nao_realizada')
+        ? '<textarea placeholder="Justificativa..." rows="2" style="width:100%;margin-top:6px;font-size:.78rem;padding:6px 8px;border-radius:8px;border:1px solid var(--border)" onblur="rotSalvarMotivo(\''+x.id+'\',this.value)">'+(v.motivo||'')+'</textarea>'
+        : '';
+      var lssHtml = '';
+      if (ehSE) {
+        function lssPill(val, label, cor) {
+          var sel = lss.status === val;
+          return '<div onclick="rotSetLss(\''+x.id+'\',\''+val+'\')" style="flex:1;padding:6px 4px;border:2px solid '+(sel?cor:'var(--border)')+';border-radius:8px;text-align:center;font-size:.7rem;font-weight:700;cursor:pointer;background:'+(sel?cor+'22':'#fff')+';color:'+(sel?cor:'var(--text-muted)')+'">'+label+'</div>';
+        }
+        lssHtml =
+          '<div style="border-top:1px dashed var(--border);margin-top:10px;padding-top:8px">' +
+          '<div style="font-size:.68rem;font-weight:700;color:var(--brand-brown);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">🔑 LSS — Autorização de Acesso</div>' +
+          '<div style="display:flex;gap:6px">' +
+          lssPill('conforme', 'Conforme', '#28a745') +
+          lssPill('nao_conforme', 'Não Conforme', '#dc3545') +
+          lssPill('na', 'N/A', '#6c757d') +
+          '</div>' +
+          '<textarea placeholder="Observações da LSS..." rows="2" style="width:100%;margin-top:6px;font-size:.78rem;padding:6px 8px;border-radius:8px;border:1px solid var(--border)" onblur="rotSalvarLssObs(\''+x.id+'\',this.value)">'+(lss.obs||'')+'</textarea>' +
+          '</div>';
+      }
+      var doneStyle = (st === 'realizada') ? 'border-color:#28a745' : (st === 'nao_realizada') ? 'border-color:#dc3545' : (st === 'parcial') ? 'border-color:#fd7e14' : 'border-color:var(--border)';
+      var equipe = [v.tecnico1, v.tecnico2].filter(Boolean).join(' / ') || (v.responsavelProgramado || '—');
+      var mapsLink = x.coordenadas ? '<a href="https://www.google.com/maps?q='+encodeURIComponent(x.coordenadas)+'" target="_blank" style="font-size:.72rem;color:var(--brand-green);font-weight:600;text-decoration:none">📍 Abrir no Maps</a>' : '';
+      return '<div class="card" style="border:2px solid;'+doneStyle+';margin-bottom:10px;padding:12px 14px">' +
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">' +
+        '<div><div style="font-size:.68rem;color:var(--text-muted)">'+(x.num?('Nº '+x.num+' · '):'')+(x.regional||'')+'</div>' +
+        '<div style="font-weight:700;font-size:.85rem">'+x.empreendimento+'</div>' +
+        '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">👷 '+equipe+'</div></div>' +
+        mapsLink +
+        '</div>' +
+        statusHtml + motivoHtml + lssHtml +
+        '</div>';
+    }).join('');
+    return '<div style="margin-bottom:22px">' +
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid var(--brand-brown)">' +
+      '<div style="background:var(--brand-brown);color:#fff;border-radius:9px;padding:6px 12px;font-weight:800;font-size:.85rem">'+dataFmt+'</div>' +
+      '<div style="font-size:.78rem;color:var(--text-muted)">'+g.itens.length+' parada(s)</div>' +
+      '</div>' + stops + '</div>';
+  }).join('');
+}
+
+async function rotSetStatus(id, status) {
+  var reg = MEA_DADOS.find(function(x){return x.id===id;});
+  if (!reg) return;
+  reg.vistoria.status = (reg.vistoria.status === status) ? 'programada' : status; // clique de novo desmarca, volta pra "programada"
+  if (reg.vistoria.status !== 'programada' && !reg.vistoria.data) reg.vistoria.data = rotHojeISO(0);
+  await meaSalvar();
+  rotRenderizar();
+}
+
+async function rotSalvarMotivo(id, val) {
+  var reg = MEA_DADOS.find(function(x){return x.id===id;});
+  if (!reg) return;
+  reg.vistoria.motivo = val;
+  await meaSalvar();
+}
+
+async function rotSetLss(id, val) {
+  var reg = MEA_DADOS.find(function(x){return x.id===id;});
+  if (!reg) return;
+  reg.vistoria.lss = reg.vistoria.lss || { status: '', obs: '' };
+  reg.vistoria.lss.status = (reg.vistoria.lss.status === val) ? '' : val;
+  await meaSalvar();
+  rotRenderizar();
+}
+
+async function rotSalvarLssObs(id, val) {
+  var reg = MEA_DADOS.find(function(x){return x.id===id;});
+  if (!reg) return;
+  reg.vistoria.lss = reg.vistoria.lss || { status: '', obs: '' };
+  reg.vistoria.lss.obs = val;
+  await meaSalvar();
+}
+
+function rotGerarResumoTexto() {
+  var lista = rotListaPeriodo();
+  var grupos = rotAgruparPorDia(lista);
+  var responsaveis = Array.from(new Set(lista.map(function(x){return x.vistoria.responsavelProgramado;}).filter(Boolean)));
+  var txt = '📋 *ROTEIRO DE VISTORIAS ERO — ENERGISA RO*\n';
+  if (window._rotDataIni || window._rotDataFim) txt += '📅 ' + (window._rotDataIni ? laFormatarData(window._rotDataIni) : '...') + ' a ' + (window._rotDataFim ? laFormatarData(window._rotDataFim) : '...') + '\n';
+  if (responsaveis.length) txt += '👷 ' + responsaveis.join(', ') + '\n';
+  txt += '━━━━━━━━━━━━━━━━━\n\n';
+  grupos.forEach(function(g) {
+    txt += '📆 *' + laFormatarData(g.dia) + '*\n\n';
+    g.itens.forEach(function(x) {
+      var v = x.vistoria;
+      var icon = v.status === 'realizada' ? '✅' : v.status === 'parcial' ? '🔶' : v.status === 'nao_realizada' ? '🚫' : '⬜';
+      txt += icon + ' ' + x.empreendimento + '\n';
+      if ((v.status === 'parcial' || v.status === 'nao_realizada') && v.motivo) txt += '   Motivo: ' + v.motivo + '\n';
+      if (eroEhSubestacao(x.empreendimento)) {
+        var lss = v.lss || {};
+        var lssLabel = lss.status === 'conforme' ? '🟢 Conforme' : lss.status === 'nao_conforme' ? '🔴 Não Conforme' : lss.status === 'na' ? '⚪ N/A' : '_pendente_';
+        txt += '   LSS: ' + lssLabel + (lss.obs ? ' — ' + lss.obs : '') + '\n';
+      }
+      txt += '\n';
+    });
+  });
+  var total = lista.length;
+  var concluidas = lista.filter(function(x) { return ['realizada','parcial','nao_realizada'].indexOf(x.vistoria.status) !== -1; }).length;
+  txt += '━━━━━━━━━━━━━━━━━\n';
+  txt += '📊 *RESUMO:* ' + concluidas + '/' + total + ' concluídas (' + (total ? Math.round(concluidas/total*100) : 0) + '%)\n';
+  return txt;
+}
+
+function rotAbrirResumo() {
+  document.getElementById('rot-resumo-texto').textContent = rotGerarResumoTexto();
+  document.getElementById('rot-resumo-modal').style.display = 'flex';
+}
+
+function rotFecharResumo() {
+  document.getElementById('rot-resumo-modal').style.display = 'none';
+}
+
+function rotCopiarResumo() {
+  var txt = document.getElementById('rot-resumo-texto').textContent;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(function(){ showToast('📋 Resumo copiado!'); });
+  } else {
+    showToast('⚠️ Copie manualmente o texto abaixo.');
+  }
+}
+
+function pageRoteiroERO() {
+  if (!window._rotDataIni) { window._rotDataIni = rotHojeISO(0); window._rotDataFim = rotHojeISO(6); }
+  meaCarregar().then(function() { rotRenderizar(); });
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+    <div>
+      <button class="btn-secondary" style="margin-bottom:8px" onclick="window._meaAba='vistorias';navigate('checklist_ero')">← Voltar</button>
+      <h1>🗺️ Roteiro de Campo</h1>
+      <p>Vistorias programadas, agrupadas por dia. Marque cada parada como Realizada, Parcial ou Não Realizada e preencha a LSS quando houver subestação.</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-primary" onclick="rotAbrirResumo()">📋 Gerar Resumo</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <div class="form-group" style="margin:0"><label style="font-size:.68rem">De</label><input type="date" id="rot-f-ini" value="${window._rotDataIni}" onchange="rotFiltrar()"></div>
+    <div class="form-group" style="margin:0"><label style="font-size:.68rem">Até</label><input type="date" id="rot-f-fim" value="${window._rotDataFim}" onchange="rotFiltrar()"></div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div style="background:var(--bg-muted,#eee);border-radius:6px;height:8px;overflow:hidden">
+      <div id="rot-progresso-fill" style="height:100%;background:var(--brand-green);width:0%;transition:width .3s"></div>
+    </div>
+    <div id="rot-progresso-label" style="font-size:.72rem;color:var(--text-muted);margin-top:6px;text-align:right">0 / 0 concluídas (0%)</div>
+  </div>
+
+  <div id="rot-wrap"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+
+  <!-- MODAL: Resumo do roteiro -->
+  <div id="rot-resumo-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px">
+    <div style="background:var(--surface);border-radius:16px;width:min(560px,96vw);max-height:88vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+      <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
+        <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)">Resumo do Roteiro</div>
+        <button onclick="rotFecharResumo()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
+      </div>
+      <div style="padding:20px">
+        <pre id="rot-resumo-texto" style="white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:.78rem;background:#f4f3f0;border-radius:8px;padding:14px;max-height:50vh;overflow-y:auto"></pre>
+      </div>
+      <div style="padding:0 20px 20px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn-secondary" onclick="rotFecharResumo()">Fechar</button>
+        <button class="btn-primary" onclick="rotCopiarResumo()">📋 Copiar texto</button>
+      </div>
+    </div>
+  </div>
+  `;
+}
+
 function pageChecklistERO() {
   var aba = window._meaAba || 'dashboard';
   if (aba === 'form') return pageChecklistEROForm();
   if (aba === 'vistorias') return pageVistoriasERO();
+  if (aba === 'roteiro') return pageRoteiroERO();
   return pageMonitoramentoAmbientalERO();
 }
 
