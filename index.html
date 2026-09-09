@@ -22915,6 +22915,29 @@ function servEmpresaDoCC(cc) {
   return achado ? achado.empresa : 'Expedian';
 }
 
+// Popula o datalist de Nº Medição do formulário de Lançamento de Serviços
+// conforme o Centro de Custo escolhido (mesmo padrão de pagAtualizarMedicaoPorCC).
+async function servAtualizarMedicaoPorCC(tipo, cc) {
+  const dl = document.getElementById(`val_medicao_dl_${tipo}`);
+  const hint = document.getElementById(`val_medicao_hint_${tipo}`);
+  if (!cc) { if (dl) dl.innerHTML = ''; if (hint) hint.textContent = ''; return; }
+  if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  const ccId = _ccIdPuro(cc);
+  let medicoes = [];
+  try { medicoes = await medicoesParaCC(ccId); } catch (e) { medicoes = []; }
+  const doCC = medicoes.sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  if (doCC.length) {
+    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao || ''} (${m.Status || ''})</option>`).join('');
+    const abertas = doCC.filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status));
+    if (hint) hint.textContent = abertas.length
+      ? `Medições em aberto: ${abertas.map(m => m.NumMedicao).join(', ')}.`
+      : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+    return;
+  }
+  if (dl) dl.innerHTML = '';
+  if (hint) hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.';
+}
+
 // Mapeia o tipo de lançamento (diárias/veículos/projetos) para a
 // Categoria/Subcategoria de Despesas usada ao sincronizar um lançamento pago.
 const SERV_TIPO_PARA_CATEGORIA = {
@@ -23010,7 +23033,7 @@ function renderServicosTab(items, tipo) {
     <button id="serv-form-toggle-${tipo}" class="btn-primary" onclick="servToggleFormNovo('${tipo}')">➕ Novo Lançamento</button>
     <div id="serv-form-container-${tipo}" style="display:${(window._servicosFormAberto && window._servicosFormAberto[tipo]) ? 'block' : 'none'};margin-top:14px">
     <div class="card" style="border-top:3px solid var(--green-main)">
-    <div class="card-title" style="font-size:.9rem;margin-bottom:16px">➕ Novo Lançamento</div>
+    <div class="card-title" id="serv-form-title-${tipo}" style="font-size:.9rem;margin-bottom:16px">➕ Novo Lançamento</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
       <div class="form-group" style="grid-column:span 2">
         <label>Serviço</label>
@@ -23086,10 +23109,16 @@ function renderServicosTab(items, tipo) {
       </div>` : ''}
       <div class="form-group">
         <label>Centro de Custo</label>
-        <select id="val_cc_${tipo}" style="font-size:.82rem">
+        <select id="val_cc_${tipo}" style="font-size:.82rem" onchange="servAtualizarMedicaoPorCC('${tipo}',this.value)">
           <option value="">Selecione...</option>
           ${centrosCusto.map(c => `<option>${c}</option>`).join('')}
         </select>
+      </div>
+      <div class="form-group">
+        <label>Nº Medição <span style="font-size:.68rem;color:var(--text-muted)">(opcional)</span></label>
+        <input type="text" id="val_medicao_${tipo}" list="val_medicao_dl_${tipo}" placeholder="Selecione o contrato acima...">
+        <datalist id="val_medicao_dl_${tipo}"></datalist>
+        <small id="val_medicao_hint_${tipo}" style="color:var(--text-muted)"></small>
       </div>
       <div class="form-group" style="grid-column:span 2">
         <label>Observações</label>
@@ -23369,11 +23398,12 @@ async function carregarLancamentosServicos() {
           <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif;color:var(--green-main)">${fmtBRL(l.total)}</td>
           <td style="font-size:.75rem">${l.resp||'—'}</td>
           <td style="font-size:.75rem">${l.benef||'—'}</td>
-          <td style="font-size:.72rem;color:var(--text-muted)">${l.cc||'—'}</td>
+          <td style="font-size:.72rem;color:var(--text-muted)">${l.cc||'—'}${l.medicao?`<br><span style="font-size:.66rem">📏 Med. ${l.medicao}</span>`:''}</td>
           <td><span class="status-pill ${stCor}">* ${st}</span>${st==='Rejeitado'&&l.MotivoRejeicao?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.MotivoRejeicao}</div>`:''}${st==='Pago'&&l.BancoPagamento?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.BancoPagamento}</div>`:''}</td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
-            ${st==='Aguardando Aprovação'&&isDirServ?`<button class="btn-primary" style="padding:4px 8px;font-size:.68rem" onclick="servAprovarLancamento(${l.Id})">✅ Aprovar</button><button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="servRejeitarLancamento(${l.Id})">↩️ Rejeitar</button>`:''}
+            ${st==='Aguardando Aprovação'&&isDirServ?`<button class="btn-primary" style="padding:4px 8px;font-size:.68rem" onclick="servAbrirAprovacao(${l.Id})">✅ Aprovar</button><button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="servRejeitarLancamento(${l.Id})">↩️ Rejeitar</button>`:''}
             ${st==='A Pagar'&&isDirServ?`<button class="btn-primary" style="padding:4px 8px;font-size:.68rem" onclick="servAbrirPagamento(${l.Id})">💳 Pagar</button>`:''}
+            ${st!=='Pago'?`<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="servEditarLancamento(${l.Id})">✏️ Editar</button>`:''}
             ${st!=='Pago'?`<button onclick="removerLancamento(${l.Id})" style="font-size:.68rem;padding:4px 8px;border:1px solid var(--red);border-radius:6px;background:#fce8e8;cursor:pointer;color:var(--red)">🗑️</button>`:''}
           </td>
         </tr>`;
@@ -23393,7 +23423,7 @@ async function carregarLancamentosServicos() {
     </div>` : !filtrados.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado com os filtros aplicados.</div>' : `
     ${!pendentesServ.length ? `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento pendente — tudo pago. ✅</div>` : `
     <div style="overflow-x:auto">
-    <table class="data-table" style="min-width:1100px">
+    <table class="data-table data-table-compact" style="min-width:1100px">
       ${theadServHtml}
       <tbody>${pendentesServ.map(linhaServ).join('')}</tbody>
       <tfoot>
@@ -23409,7 +23439,7 @@ async function carregarLancamentosServicos() {
     <details style="margin-top:16px">
       <summary style="cursor:pointer;font-size:.82rem;font-weight:700;color:var(--green-main);padding:8px 4px;list-style:none;display:flex;align-items:center;gap:6px">▶ ✅ Pagos <span class="badge">${pagosServ.length} · ${fmtBRL(totalPagoServ)}</span></summary>
       <div style="overflow-x:auto;margin-top:8px">
-      <table class="data-table" style="min-width:1100px">
+      <table class="data-table data-table-compact" style="min-width:1100px">
         ${theadServHtml}
         <tbody>${pagosServ.map(linhaServ).join('')}</tbody>
       </table>
@@ -23444,6 +23474,7 @@ async function exportarLancamentosServicosExcel() {
     'Responsável': l.resp || '',
     'Beneficiário': l.benef || '',
     'Centro de Custo': l.cc || '',
+    'Nº Medição': l.medicao || '',
     'Observações': l.obs || '',
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -23511,12 +23542,17 @@ function preencherForm(tipo, id) {
 }
 
 function limparForm(tipo) {
-  ['sel_servico_','val_unit_','val_qtd_','val_data_','val_veiculo_','val_veiculo_outro_','val_resp_','val_benef_','val_cc_','val_obs_','val_total_','val_adicional_','val_subtotal_'].forEach(p => {
+  ['sel_servico_','val_unit_','val_qtd_','val_data_','val_veiculo_','val_veiculo_outro_','val_resp_','val_benef_','val_cc_','val_medicao_','val_obs_','val_total_','val_adicional_','val_subtotal_'].forEach(p => {
     const el = document.getElementById(p + tipo);
     if (el) el.value = el.tagName === 'SELECT' ? '' : el.type === 'number' && p === 'val_qtd_' ? '1' : '';
   });
   const cont = document.getElementById('veiculo_outro_container_' + tipo);
   if (cont) cont.style.display = 'none';
+  const hint = document.getElementById('val_medicao_hint_' + tipo);
+  if (hint) hint.textContent = '';
+  window._servEditandoId = null;
+  const titulo = document.getElementById('serv-form-title-' + tipo);
+  if (titulo) titulo.textContent = '➕ Novo Lançamento';
 }
 
 /* -- CRUD do Catálogo de Preços (Diárias/Veículos/Projetos), persistido em ServicosCatalogo -- */
@@ -23629,6 +23665,7 @@ async function salvarLancamento(tipo) {
   const resp    = document.getElementById('val_resp_' + tipo).value;
   const benef   = tipo === 'veiculos' ? veiculo : ((document.getElementById('val_benef_' + tipo)||{}).value||'');
   const cc      = document.getElementById('val_cc_'   + tipo).value;
+  const medicao = ((document.getElementById('val_medicao_' + tipo)||{}).value||'').trim();
   const obs     = document.getElementById('val_obs_'  + tipo).value;
   // Adicional de diária (Fora Domicílio/Urgência/Feriado-FDS/Noturno) — só um
   // por vez (não cumulativo, pedido de 08/09/2026). Subtotal = unit×qtd, sem
@@ -23646,6 +23683,29 @@ async function salvarLancamento(tipo) {
   if (tipo !== 'veiculos' && !benef) { showToast('⚠️ Informe o beneficiário.'); return; }
   if (!cc)      { showToast('⚠️ Informe o centro de custo.'); return; }
 
+  // Edição de um lançamento já existente (lápis ✏️ na tabela) — reaproveita o
+  // mesmo formulário, só pré-preenchido; ao salvar, detecta window._servEditandoId
+  // e faz dbAtualizar em vez de dbInserir, preservando Status/aprovação/pagamento
+  // já registrados (mesmo padrão de pagEditarLancamento/_salvarContaPagarInterno).
+  const editandoId = window._servEditandoId;
+
+  if (editandoId) {
+    const patch = {
+      tipo, codServico: selId, descServico: item ? item.desc : selId,
+      unit, qtd, subtotal,
+      adicional: adicionalKey || '', adicionalLabel: adicionalKey ? SERV_ADICIONAL_LABEL[adicionalKey] : '', adicionalPct,
+      total, dataISO: data,
+      data: data ? new Date(data + 'T00:00').toLocaleDateString('pt-BR') : '—',
+      veiculo, resp, benef, cc, medicao, obs,
+    };
+    const ok = await dbAtualizar('Lancamentos_Servicos', editandoId, patch);
+    showToast(ok ? '✅ Lançamento atualizado! Total: ' + fmtBRL(total) : '❌ Erro ao atualizar lançamento.');
+    window._servEditandoId = null;
+    limparForm(tipo);
+    setTimeout(() => carregarLancamentosServicos(), 600);
+    return;
+  }
+
   const lancamento = {
     tipo,
     codServico: selId,
@@ -23656,7 +23716,7 @@ async function salvarLancamento(tipo) {
     total,
     dataISO: data,
     data: data ? new Date(data + 'T00:00').toLocaleDateString('pt-BR') : '—',
-    veiculo, resp, benef, cc, obs,
+    veiculo, resp, benef, cc, medicao, obs,
     LancadoPor: window._currentUser ? window._currentUser.name : '',
     Status: 'Aguardando Aprovação',
   };
@@ -23664,6 +23724,53 @@ async function salvarLancamento(tipo) {
   const novo = await dbInserir('Lancamentos_Servicos', lancamento);
   showToast(novo ? '✅ Lançamento salvo! Total: ' + fmtBRL(lancamento.total) : '❌ Erro ao salvar lançamento.');
   limparForm(tipo);
+}
+
+// Edição de um lançamento de Serviço já registrado (lápis ✏️ na tabela de
+// Lançamentos) — abre a aba do tipo correspondente com o formulário
+// pré-preenchido; ao salvar, salvarLancamento detecta window._servEditandoId
+// e faz dbAtualizar no registro em vez de criar um novo (pedido 08/09/2026).
+async function servEditarLancamento(id) {
+  const lista = window._servFiltrados || [];
+  let l = lista.find(x => x.Id === id);
+  if (!l) { const todos = await dbLer('Lancamentos_Servicos'); l = todos.find(x => x.Id === id); }
+  if (!l) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+
+  await servCarregarCatalogo();
+  const tipo = l.tipo || 'diarias';
+  window._servEditandoId = id;
+  window._servicosTab = tipo;
+  window._servicosFormAberto = window._servicosFormAberto || {};
+  window._servicosFormAberto[tipo] = true;
+  navigate('servicos');
+
+  setTimeout(async () => {
+    const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
+    set('sel_servico_' + tipo, l.codServico);
+    set('val_unit_' + tipo, l.unit);
+    set('val_qtd_' + tipo, l.qtd);
+    set('val_data_' + tipo, l.dataISO);
+    if (tipo === 'diarias') set('val_adicional_' + tipo, l.adicional || '');
+    if (tipo === 'veiculos') {
+      const frota = _servicosFrotaVeiculos();
+      const veicEl = document.getElementById('val_veiculo_' + tipo);
+      if (veicEl) {
+        if (frota.includes(l.veiculo)) { veicEl.value = l.veiculo; servToggleVeiculoOutro(tipo); }
+        else { veicEl.value = '__outro__'; servToggleVeiculoOutro(tipo); set('val_veiculo_outro_' + tipo, l.veiculo); }
+      }
+    }
+    set('val_resp_' + tipo, l.resp);
+    if (tipo !== 'veiculos') set('val_benef_' + tipo, l.benef);
+    set('val_cc_' + tipo, l.cc);
+    await servAtualizarMedicaoPorCC(tipo, l.cc || '');
+    set('val_medicao_' + tipo, l.medicao);
+    set('val_obs_' + tipo, l.obs);
+    calcTotal(tipo);
+    const titulo = document.getElementById('serv-form-title-' + tipo);
+    if (titulo) titulo.textContent = '✏️ Editar Lançamento';
+    const formEl = document.getElementById('serv-form-container-' + tipo);
+    if (formEl) formEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 250);
 }
 
 async function removerLancamento(id) {
@@ -23686,6 +23793,71 @@ async function removerLancamento(id) {
    lista suspensa por empresa do Centro de Custo) -> Pago, sincronizando
    automaticamente com Despesas (mesmo padrão de Contas a Pagar).
 =============================== */
+
+// Modal "Conferir/Ajustar antes de Aprovar" — antes o botão ✅ Aprovar
+// aprovava direto sem chance de corrigir CC/Medição errados no lançamento
+// original. Mesmo padrão de pagAbrirVisualizar/aprovDivcc* (pedido 08/09/2026).
+async function servAbrirAprovacao(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Aprovação restrita à Diretoria.'); return; }
+  const existente = document.getElementById('serv-aprov-modal'); if (existente) existente.remove();
+  const lista = window._servFiltrados || [];
+  let l = lista.find(x => x.Id === id);
+  if (!l) { const todos = await dbLer('Lancamentos_Servicos'); l = todos.find(x => x.Id === id); }
+  if (!l) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+
+  const empresa = servEmpresaDoCC(l.cc);
+  const ccsDaEmpresa = centrosCustoData
+    .filter(c => c.status === 'ativo' && normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa))
+    .map(c => c.id + ' · ' + c.contrato);
+  const ccAtual = l.cc || '';
+  const opcoesCC = ccsDaEmpresa.includes(ccAtual) || !ccAtual ? ccsDaEmpresa : [ccAtual, ...ccsDaEmpresa];
+
+  const modal = document.createElement('div');
+  modal.id = 'serv-aprov-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-weight:800;font-size:1rem">✅ Conferir e Aprovar</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('serv-aprov-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.82rem;color:var(--text-muted);margin-bottom:14px">${l.descServico||'—'} · ${l.benef||l.veiculo||'—'} · <strong>${fmtBRL(l.total)}</strong></div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label>Centro de Custo</label>
+        <select id="servav_cc" onchange="servAtualizarMedicaoPorCC('av',this.value)">
+          <option value="">Selecione...</option>
+          ${opcoesCC.map(c => `<option ${c===ccAtual?'selected':''}>${c}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:16px">
+        <label>Nº Medição <span style="font-size:.68rem;color:var(--text-muted)">(opcional)</span></label>
+        <input type="text" id="val_medicao_av" list="val_medicao_dl_av" value="${(l.medicao||'').replace(/"/g,'&quot;')}" placeholder="Opcional">
+        <datalist id="val_medicao_dl_av"></datalist>
+        <small id="val_medicao_hint_av" style="color:var(--text-muted)"></small>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" style="flex:1" onclick="servAprovarLancamentoComAjustes(${id})">✅ Aprovar</button>
+        <button class="btn-secondary" style="flex:1" onclick="servRejeitarLancamento(${id});document.getElementById('serv-aprov-modal').remove()">↩️ Rejeitar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  if (ccAtual) servAtualizarMedicaoPorCC('av', ccAtual);
+}
+
+async function servAprovarLancamentoComAjustes(id) {
+  const cc = (document.getElementById('servav_cc')||{}).value || '';
+  const medicao = ((document.getElementById('val_medicao_av')||{}).value||'').trim();
+  const patch = {
+    Status: 'A Pagar', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
+  };
+  if (cc) patch.cc = cc;
+  patch.medicao = medicao;
+  const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), patch);
+  showToast(ok ? '✅ Lançamento aprovado! Aguardando pagamento.' : '❌ Erro ao aprovar.');
+  const m = document.getElementById('serv-aprov-modal'); if (m) m.remove();
+  setTimeout(() => carregarLancamentosServicos(), 600);
+}
+
 async function servAprovarLancamento(id) {
   if (currentProfile !== 'diretoria') { showToast('⛔ Aprovação restrita à Diretoria.'); return; }
   const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), {
@@ -23765,7 +23937,7 @@ async function servSincronizarDespesa(id, dataPag, banco) {
       Categoria: catInfo.categoria, Subcategoria: catInfo.subcategoria,
       Modalidade: 'servicos', NaturezaEconomica: (typeof rdNaturezaDeSubcategoriaDespesas === 'function' ? rdNaturezaDeSubcategoriaDespesas(catInfo.subcategoria) : ''),
       ServicoId: l.codServico || '', ServicoDesc: l.descServico || '', Beneficiario: l.benef || '', Veiculo: l.veiculo || '',
-      Fornecedor: '', CentroCusto: l.cc || '', Local: '', TipoPagamento: 'avista', FormaPagamento: '',
+      Fornecedor: '', CentroCusto: l.cc || '', NumMedicao: l.medicao || '', Local: '', TipoPagamento: 'avista', FormaPagamento: '',
       ResponsavelLancamento: l.resp || '', Empresa: empresa,
       DataPagamento: dataPag, Banco: banco, Vencimento: l.dataISO || '', Valor: l.total || 0,
       Status: 'Pago', Title: (l.descServico || 'Lançamento de Serviço') + ' · ' + (l.dataISO || dataPag),
