@@ -26213,6 +26213,13 @@ function rotFiltrar() {
   rotRenderizar();
 }
 
+function rotDataExtenso(iso) {
+  var dias = ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+  var d = new Date(iso + 'T00:00:00');
+  if (isNaN(d.getTime())) return laFormatarData(iso);
+  return dias[d.getDay()] + ', ' + laFormatarData(iso);
+}
+
 function rotRenderizar() {
   var wrap = document.getElementById('rot-wrap');
   if (!wrap) return;
@@ -26225,28 +26232,38 @@ function rotRenderizar() {
   document.getElementById('rot-progresso-fill').style.width = pct + '%';
   document.getElementById('rot-progresso-label').textContent = concluidas + ' / ' + total + ' concluídas (' + pct + '%)';
 
+  var periodoEl = document.getElementById('rot-periodo-label');
+  if (periodoEl) {
+    periodoEl.textContent = (window._rotDataIni ? laFormatarData(window._rotDataIni) : '...') + ' a ' + (window._rotDataFim ? laFormatarData(window._rotDataFim) : '...');
+  }
+  var metaEl = document.getElementById('rot-meta-tags');
+  if (metaEl) {
+    var responsaveis = Array.from(new Set(lista.map(function(x){return x.vistoria.responsavelProgramado;}).filter(Boolean)));
+    metaEl.innerHTML = responsaveis.map(function(r){ return '<span style="background:rgba(255,255,255,.15);padding:4px 11px;border-radius:20px;font-size:.72rem;font-weight:600">👷 '+r+'</span>'; }).join('') +
+      '<span style="background:var(--brand-green);color:var(--brand-brown);padding:4px 11px;border-radius:20px;font-size:.72rem;font-weight:700">'+total+' parada(s)</span>';
+  }
+
   if (!grupos.length) {
     wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma vistoria programada nesse período.<br>Programe vistorias na tela anterior (status "Programada" + Data Programada) e volte aqui.</div>';
     return;
   }
 
-  wrap.innerHTML = grupos.map(function(g) {
-    var dataFmt = laFormatarData(g.dia);
-    var stops = g.itens.map(function(x) {
+  wrap.innerHTML = grupos.map(function(g, gi) {
+    var municipios = Array.from(new Set(g.itens.map(function(i){return i.municipio;}).filter(Boolean)));
+    var tituloDia = municipios.length ? municipios.join(' → ') : (g.itens.length + ' parada(s) programada(s)');
+    var stops = g.itens.map(function(x, xi) {
       var v = x.vistoria;
       var ehSE = eroEhSubestacao(x.empreendimento);
       var lss = v.lss || { status: '', obs: '' };
       var st = v.status; // programada | realizada | parcial | nao_realizada
-      function pill(val, label, cor) {
+      var checkCor = st === 'realizada' ? '#28a745' : st === 'parcial' ? '#fd7e14' : st === 'nao_realizada' ? '#dc3545' : null;
+      var checkIcon = st === 'realizada' ? '✓' : st === 'parcial' ? '~' : st === 'nao_realizada' ? '✕' : '';
+      var checkboxHtml = '<div onclick="rotSetStatus(\''+x.id+'\',\'realizada\')" style="width:32px;height:32px;border:2px solid '+(checkCor||'var(--border)')+';border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;font-size:16px;font-weight:800;color:#fff;background:'+(checkCor||'#fff')+';margin-top:2px">'+checkIcon+'</div>';
+      function chip(val, label, cor) {
         var sel = st === val;
-        return '<div onclick="rotSetStatus(\''+x.id+'\',\''+val+'\')" style="flex:1;padding:8px 4px;border:2px solid '+(sel?cor:'var(--border)')+';border-radius:8px;text-align:center;font-size:.72rem;font-weight:700;cursor:pointer;background:'+(sel?cor+'22':'#fff')+';color:'+(sel?cor:'var(--text-muted)')+'">'+label+'</div>';
+        return '<span onclick="event.stopPropagation();rotSetStatus(\''+x.id+'\',\''+val+'\')" style="padding:3px 9px;border-radius:20px;font-size:.68rem;font-weight:700;cursor:pointer;border:1.5px solid '+(sel?cor:'var(--border)')+';background:'+(sel?cor+'22':'#fff')+';color:'+(sel?cor:'var(--text-muted)')+'">'+label+'</span>';
       }
-      var statusHtml =
-        '<div style="display:flex;gap:6px;margin-top:8px">' +
-        pill('realizada', '✅ Realizada', '#28a745') +
-        pill('parcial', '🔶 Parcial', '#fd7e14') +
-        pill('nao_realizada', '🚫 Não Realizada', '#dc3545') +
-        '</div>';
+      var chipsHtml = '<div style="display:flex;gap:6px;margin-top:6px">' + chip('parcial','🔶 Parcial','#fd7e14') + chip('nao_realizada','🚫 Não Realizada','#dc3545') + '</div>';
       var motivoHtml = (st === 'parcial' || st === 'nao_realizada')
         ? '<textarea placeholder="Justificativa..." rows="2" style="width:100%;margin-top:6px;font-size:.78rem;padding:6px 8px;border-radius:8px;border:1px solid var(--border)" onblur="rotSalvarMotivo(\''+x.id+'\',this.value)">'+(v.motivo||'')+'</textarea>'
         : '';
@@ -26254,36 +26271,50 @@ function rotRenderizar() {
       if (ehSE) {
         function lssPill(val, label, cor) {
           var sel = lss.status === val;
-          return '<div onclick="rotSetLss(\''+x.id+'\',\''+val+'\')" style="flex:1;padding:6px 4px;border:2px solid '+(sel?cor:'var(--border)')+';border-radius:8px;text-align:center;font-size:.7rem;font-weight:700;cursor:pointer;background:'+(sel?cor+'22':'#fff')+';color:'+(sel?cor:'var(--text-muted)')+'">'+label+'</div>';
+          return '<div onclick="rotSetLss(\''+x.id+'\',\''+val+'\')" style="flex:1;padding:8px 4px;border:2px solid '+(sel?cor:'var(--border)')+';border-radius:8px;text-align:center;font-size:.7rem;font-weight:700;cursor:pointer;background:'+(sel?cor+'22':'#fff')+';color:'+(sel?cor:'var(--text-muted)')+'">'+label+'</div>';
         }
         lssHtml =
-          '<div style="border-top:1px dashed var(--border);margin-top:10px;padding-top:8px">' +
-          '<div style="font-size:.68rem;font-weight:700;color:var(--brand-brown);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">🔑 LSS — Autorização de Acesso</div>' +
+          '<div style="border-top:1px solid var(--border);margin-top:10px;padding:10px 0 0;background:transparent">' +
+          '<div style="font-size:.68rem;font-weight:700;color:var(--brand-brown);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">🔑 LSS — Autorização de Acesso</div>' +
           '<div style="display:flex;gap:6px">' +
           lssPill('conforme', 'Conforme', '#28a745') +
           lssPill('nao_conforme', 'Não Conforme', '#dc3545') +
           lssPill('na', 'N/A', '#6c757d') +
           '</div>' +
-          '<textarea placeholder="Observações da LSS..." rows="2" style="width:100%;margin-top:6px;font-size:.78rem;padding:6px 8px;border-radius:8px;border:1px solid var(--border)" onblur="rotSalvarLssObs(\''+x.id+'\',this.value)">'+(lss.obs||'')+'</textarea>' +
+          '<textarea placeholder="Observações da LSS..." rows="2" style="width:100%;margin-top:8px;font-size:.78rem;padding:6px 8px;border-radius:8px;border:1px solid var(--border)" onblur="rotSalvarLssObs(\''+x.id+'\',this.value)">'+(lss.obs||'')+'</textarea>' +
           '</div>';
       }
-      var doneStyle = (st === 'realizada') ? 'border-color:#28a745' : (st === 'nao_realizada') ? 'border-color:#dc3545' : (st === 'parcial') ? 'border-color:#fd7e14' : 'border-color:var(--border)';
-      var equipe = [v.tecnico1, v.tecnico2].filter(Boolean).join(' / ') || (v.responsavelProgramado || '—');
-      var mapsLink = x.coordenadas ? '<a href="https://www.google.com/maps?q='+encodeURIComponent(x.coordenadas)+'" target="_blank" style="font-size:.72rem;color:var(--brand-green);font-weight:600;text-decoration:none">📍 Abrir no Maps</a>' : '';
-      return '<div class="card" style="border:2px solid;'+doneStyle+';margin-bottom:10px;padding:12px 14px">' +
-        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">' +
-        '<div><div style="font-size:.68rem;color:var(--text-muted)">'+(x.num?('Nº '+x.num+' · '):'')+(x.regional||'')+'</div>' +
-        '<div style="font-weight:700;font-size:.85rem">'+x.empreendimento+'</div>' +
-        '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">👷 '+equipe+'</div></div>' +
-        mapsLink +
+      var equipe = [v.tecnico1, v.tecnico2].filter(Boolean).join(' / ') || (v.responsavelProgramado ? ('Prog.: ' + v.responsavelProgramado) : '—');
+      var mapsLink = x.coordenadas ? '<a href="https://www.google.com/maps?q='+encodeURIComponent(x.coordenadas)+'" target="_blank" style="font-size:.7rem;color:var(--brand-green);font-weight:600;text-decoration:none;white-space:nowrap">📍 Maps</a>' : '';
+      var cardBorda = checkCor || 'var(--border)';
+      var stopHtml =
+        '<div style="background:var(--surface);border:1px solid '+cardBorda+';border-radius:10px;margin-bottom:8px;overflow:hidden'+(st==='realizada'?';opacity:.75':'')+'">' +
+        '<div style="display:flex;align-items:flex-start;padding:12px 14px;gap:12px">' +
+        checkboxHtml +
+        '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:.68rem;color:var(--text-muted)">'+(x.num?('Nº '+x.num+' · '):'')+(x.regional||'')+'</div>' +
+        '<div style="font-weight:700;font-size:.85rem;line-height:1.3">'+x.empreendimento+'</div>' +
+        '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">👷 '+equipe+'</div>' +
+        chipsHtml + motivoHtml + lssHtml +
         '</div>' +
-        statusHtml + motivoHtml + lssHtml +
+        (mapsLink ? '<div style="flex-shrink:0">'+mapsLink+'</div>' : '') +
+        '</div>' +
         '</div>';
+      // Conector entre paradas, quando muda o município (informação real, sem inventar rota)
+      var conector = '';
+      var prox = g.itens[xi + 1];
+      if (prox && x.municipio && prox.municipio && prox.municipio !== x.municipio) {
+        conector = '<div style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 16px;font-size:.68rem;color:var(--text-muted)"><span style="width:2px;height:14px;background:var(--border);border-radius:1px;display:inline-block"></span> segue para '+prox.municipio+'</div>';
+      }
+      return stopHtml + conector;
     }).join('');
+    var diaNum = String(gi + 1).padStart(2, '0');
     return '<div style="margin-bottom:22px">' +
-      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid var(--brand-brown)">' +
-      '<div style="background:var(--brand-brown);color:#fff;border-radius:9px;padding:6px 12px;font-weight:800;font-size:.85rem">'+dataFmt+'</div>' +
-      '<div style="font-size:.78rem;color:var(--text-muted)">'+g.itens.length+' parada(s)</div>' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid var(--brand-brown)">' +
+      '<div style="background:var(--brand-brown);color:#fff;width:42px;height:42px;border-radius:9px;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0">' +
+      '<span style="font-size:9px;opacity:.6">DIA</span><span style="font-size:19px;font-weight:800;line-height:1">'+diaNum+'</span></div>' +
+      '<div><div style="font-size:.85rem;font-weight:700;line-height:1.3">'+tituloDia+'</div>' +
+      '<div style="font-size:.72rem;color:var(--text-muted)">'+rotDataExtenso(g.dia)+'</div></div>' +
       '</div>' + stops + '</div>';
   }).join('');
 }
@@ -26373,44 +26404,44 @@ function pageRoteiroERO() {
   if (!window._rotDataIni) { window._rotDataIni = rotHojeISO(0); window._rotDataFim = rotHojeISO(6); }
   meaCarregar().then(function() { rotRenderizar(); });
   return `
-  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
-    <div>
-      <button class="btn-secondary" style="margin-bottom:8px" onclick="window._meaAba='vistorias';navigate('checklist_ero')">← Voltar</button>
-      <h1>🗺️ Roteiro de Campo</h1>
-      <p>Vistorias programadas, agrupadas por dia. Marque cada parada como Realizada, Parcial ou Não Realizada e preencha a LSS quando houver subestação.</p>
+  <div style="background:var(--brand-brown);color:#fff;border-radius:16px;padding:20px 20px 18px;margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:.68rem;font-weight:700;letter-spacing:.12em;opacity:.55;text-transform:uppercase">Monitoramento Ambiental ERO</div>
+        <div style="font-size:1.1rem;font-weight:800;margin:6px 0 2px;font-family:Mont,sans-serif">🗺️ Roteiro de Campo</div>
+        <div style="font-size:.78rem;opacity:.7" id="rot-periodo-label">...</div>
+      </div>
+      <button onclick="window._meaAba='vistorias';navigate('checklist_ero')" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.78rem;font-weight:600;cursor:pointer">← Voltar</button>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn-primary" onclick="rotAbrirResumo()">📋 Gerar Resumo</button>
+    <div id="rot-meta-tags" style="display:flex;gap:5px;flex-wrap:wrap;margin-top:14px"></div>
+    <div style="margin-top:14px;background:rgba(255,255,255,.15);border-radius:4px;height:6px;overflow:hidden">
+      <div id="rot-progresso-fill" style="height:100%;background:var(--brand-green);width:0%;transition:width .3s"></div>
     </div>
+    <div id="rot-progresso-label" style="font-size:.7rem;opacity:.65;margin-top:5px;text-align:right">0 / 0 concluídas (0%)</div>
   </div>
 
-  <div class="card" style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+  <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <div class="form-group" style="margin:0"><label style="font-size:.68rem">De</label><input type="date" id="rot-f-ini" value="${window._rotDataIni}" onchange="rotFiltrar()"></div>
     <div class="form-group" style="margin:0"><label style="font-size:.68rem">Até</label><input type="date" id="rot-f-fim" value="${window._rotDataFim}" onchange="rotFiltrar()"></div>
   </div>
 
-  <div class="card" style="margin-bottom:16px">
-    <div style="background:var(--bg-muted,#eee);border-radius:6px;height:8px;overflow:hidden">
-      <div id="rot-progresso-fill" style="height:100%;background:var(--brand-green);width:0%;transition:width .3s"></div>
-    </div>
-    <div id="rot-progresso-label" style="font-size:.72rem;color:var(--text-muted);margin-top:6px;text-align:right">0 / 0 concluídas (0%)</div>
-  </div>
+  <div id="rot-wrap" style="padding-bottom:70px"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
 
-  <div id="rot-wrap"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+  <button onclick="rotAbrirResumo()" style="position:fixed;bottom:20px;right:20px;background:var(--brand-green);color:var(--brand-brown);border:none;border-radius:14px;padding:14px 20px;font-size:.85rem;font-weight:800;font-family:inherit;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.25);z-index:500">📋 Enviar Resumo</button>
 
-  <!-- MODAL: Resumo do roteiro -->
-  <div id="rot-resumo-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px">
-    <div style="background:var(--surface);border-radius:16px;width:min(560px,96vw);max-height:88vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
-      <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
+  <!-- MODAL: Resumo do roteiro (bottom sheet, estilo WhatsApp) -->
+  <div id="rot-resumo-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:flex-end;justify-content:center">
+    <div style="background:var(--surface);border-radius:16px 16px 0 0;width:100%;max-width:680px;max-height:85vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:18px 18px 14px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
         <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)">Resumo do Roteiro</div>
         <button onclick="rotFecharResumo()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
       </div>
-      <div style="padding:20px">
+      <div style="padding:16px 18px;overflow-y:auto;flex:1">
         <pre id="rot-resumo-texto" style="white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:.78rem;background:#f4f3f0;border-radius:8px;padding:14px;max-height:50vh;overflow-y:auto"></pre>
       </div>
-      <div style="padding:0 20px 20px;display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn-secondary" onclick="rotFecharResumo()">Fechar</button>
-        <button class="btn-primary" onclick="rotCopiarResumo()">📋 Copiar texto</button>
+      <div style="padding:14px 18px 20px;display:flex;gap:8px">
+        <button class="btn-secondary" style="flex:1" onclick="rotFecharResumo()">Fechar</button>
+        <button class="btn-primary" style="flex:1" onclick="rotCopiarResumo()">📋 Copiar texto</button>
       </div>
     </div>
   </div>
