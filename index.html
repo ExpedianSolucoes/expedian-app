@@ -26108,6 +26108,148 @@ async function vistSalvarModal() {
   showToast('✅ Vistoria salva!');
 }
 
+/* ===============================================================
+   PÁGINA — VEÍCULOS A DIESEL — TESTE DE OPACIDADE
+   =============================================================== */
+function opacRenderizarLista() {
+  var busca = (window._opacBusca || '').trim().toLowerCase();
+  var lista = OPAC_DADOS.filter(function(v) {
+    if (!busca) return true;
+    return (v.placa || '').toLowerCase().indexOf(busca) !== -1 ||
+           (v.tipo || '').toLowerCase().indexOf(busca) !== -1 ||
+           (v.frota || '').toLowerCase().indexOf(busca) !== -1;
+  }).sort(function(a, b) { return (a.placa || '').localeCompare(b.placa || ''); });
+  var wrap = document.getElementById('opac-wrap');
+  if (!wrap) return;
+  if (!lista.length) { wrap.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">Nenhum veículo encontrado.</div>'; return; }
+  wrap.innerHTML = lista.map(function(v) {
+    var corSt = v.status === 'realizado' ? '#28a745' : '#dc3545';
+    var lblSt = v.status === 'realizado' ? '✅ Realizado' : '❌ Pendente';
+    var infoData = v.status === 'realizado'
+      ? ('<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">🗓️ ' + (v.data ? laFormatarData(v.data) : '—') + (v.resultado ? (' · ' + v.resultado) : '') + '</div>')
+      : '';
+    return '<div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">' +
+      '<div>' +
+        '<div style="font-weight:800;font-size:.92rem">🚚 ' + v.placa + '</div>' +
+        '<div style="font-size:.76rem;color:var(--text-muted);margin-top:2px">' + (v.tipo || '—') + (v.frota ? (' · Frota ' + v.frota) : '') + (v.dpto ? (' · ' + v.dpto) : '') + '</div>' +
+        '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">' + [v.regional, v.localidade].filter(Boolean).join(' — ') + '</div>' +
+        infoData +
+      '</div>' +
+      '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">' +
+        '<span style="font-size:.72rem;font-weight:700;color:' + corSt + '">' + lblSt + '</span>' +
+        '<button onclick="opacAbrirModal(\'' + v.id + '\')" style="background:none;border:1px solid var(--border);border-radius:8px;padding:4px 10px;font-size:.7rem;font-weight:700;color:var(--text-muted);cursor:pointer">' + (v.status === 'realizado' ? '✏️ Editar' : '📝 Registrar Teste') + '</button>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function opacRenderizarKPIs() {
+  var total = OPAC_DADOS.length;
+  var realizados = OPAC_DADOS.filter(function(v) { return v.status === 'realizado'; }).length;
+  var pendentes = total - realizados;
+  var set = function(id, val) { var e = document.getElementById(id); if (e) e.textContent = val; };
+  set('opac-kpi-total', total);
+  set('opac-kpi-realizados', realizados);
+  set('opac-kpi-pendentes', pendentes);
+}
+
+function opacFiltrar(val) {
+  window._opacBusca = val;
+  opacRenderizarLista();
+}
+
+function opacAbrirModal(id) {
+  var reg = OPAC_DADOS.find(function(x){return x.id===id;});
+  if (!reg) return;
+  document.getElementById('opac-id').value = reg.id;
+  document.getElementById('opac-modal-titulo').textContent = '🚚 ' + reg.placa + (reg.tipo ? (' — ' + reg.tipo) : '');
+  var set = function(elId, val) { var e = document.getElementById(elId); if (e) e.value = val || ''; };
+  set('opac-data', reg.data || rotHojeISO(0));
+  set('opac-resultado', reg.resultado || 'Conforme');
+  set('opac-tecnico', reg.tecnico);
+  set('opac-observacao', reg.observacao);
+  document.getElementById('opac-modal').style.display = 'flex';
+}
+
+function opacFecharModal() {
+  document.getElementById('opac-modal').style.display = 'none';
+}
+
+async function opacSalvarModal() {
+  var id = document.getElementById('opac-id').value;
+  var reg = OPAC_DADOS.find(function(x){return x.id===id;});
+  if (!reg) return;
+  var g = function(elId) { var e = document.getElementById(elId); return e ? e.value.trim() : ''; };
+  reg.data = g('opac-data');
+  reg.resultado = g('opac-resultado');
+  reg.tecnico = g('opac-tecnico');
+  reg.observacao = g('opac-observacao');
+  reg.status = 'realizado';
+  await opacSalvar();
+  // Sincroniza de volta o(s) Serviço(s) Adicional(is) do Roteiro vinculados a este veículo.
+  MEA_ADICIONAIS.filter(function(a) { return a.veiculoId === reg.id; }).forEach(function(a) {
+    a.status = 'realizada';
+    a.data = reg.data;
+  });
+  await adcSalvar();
+  opacFecharModal();
+  opacRenderizarLista();
+  opacRenderizarKPIs();
+  showToast('✅ Teste de opacidade registrado!');
+}
+
+function pageOpacidadeVeiculos() {
+  opacCarregar().then(function() { opacRenderizarLista(); opacRenderizarKPIs(); });
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+    <div>
+      <button class="btn-secondary" style="margin-bottom:8px" onclick="window._meaAba='vistorias';navigate('checklist_ero')">← Voltar</button>
+      <h1>🚚 Veículos a Diesel — Teste de Opacidade</h1>
+      <p>Controle de teste de opacidade da frota. Busque pela placa e registre o resultado quando o teste for realizado.</p>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+    <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px;text-align:center">
+      <div style="font-size:1.4rem;font-weight:800" id="opac-kpi-total">0</div>
+      <div style="font-size:.7rem;color:var(--text-muted);font-weight:700">TOTAL DE VEÍCULOS</div>
+    </div>
+    <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px;text-align:center">
+      <div style="font-size:1.4rem;font-weight:800;color:#28a745" id="opac-kpi-realizados">0</div>
+      <div style="font-size:.7rem;color:var(--text-muted);font-weight:700">TESTES REALIZADOS</div>
+    </div>
+    <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px;text-align:center">
+      <div style="font-size:1.4rem;font-weight:800;color:#dc3545" id="opac-kpi-pendentes">0</div>
+      <div style="font-size:.7rem;color:var(--text-muted);font-weight:700">PENDENTES</div>
+    </div>
+  </div>
+
+  <input placeholder="🔍 Buscar por placa, tipo ou frota..." style="width:100%;font-size:.85rem;padding:10px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:14px" oninput="opacFiltrar(this.value)">
+
+  <div id="opac-wrap" style="padding-bottom:60px"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+
+  <div id="opac-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:5000;align-items:center;justify-content:center;padding:16px">
+    <div style="background:#fff;border-radius:14px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto">
+      <input type="hidden" id="opac-id">
+      <h3 id="opac-modal-titulo" style="margin:0 0 12px;font-size:1rem">Registrar Teste</h3>
+      <div class="form-group"><label>Data do Teste</label><input type="date" id="opac-data"></div>
+      <div class="form-group"><label>Resultado</label>
+        <select id="opac-resultado">
+          <option value="Conforme">Conforme</option>
+          <option value="Não Conforme">Não Conforme</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Técnico Responsável</label><input type="text" id="opac-tecnico" placeholder="Nome do técnico"></div>
+      <div class="form-group"><label>Observação</label><textarea id="opac-observacao" rows="2"></textarea></div>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn-secondary" onclick="opacFecharModal()" style="flex:1">Cancelar</button>
+        <button class="btn-primary" onclick="opacSalvarModal()" style="flex:1">Salvar</button>
+      </div>
+    </div>
+  </div>
+  `;
+}
+
 function pageVistoriasERO() {
   meaCarregar().then(function() { vistRenderizarLista(); vistRenderizarKPIs(); vistPreencherDatalist(); });
   return `
@@ -26119,6 +26261,7 @@ function pageVistoriasERO() {
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-secondary" onclick="window._meaAba='roteiro';navigate('checklist_ero')">🗺️ Roteiro de Campo</button>
+      <button class="btn-secondary" onclick="window._meaAba='opacidade';navigate('checklist_ero')">🚚 Teste de Opacidade</button>
       <button class="btn-primary" onclick="vistAbrirModal(null)">+ Nova Vistoria</button>
     </div>
   </div>
@@ -26288,6 +26431,31 @@ function adcRegistroVazio() {
     dataProgramada: '', depoisDe: '', tecnico1: '', tecnico2: '',
     status: 'programada', data: '', motivo: '',
     pernoite: '', lssNumero: '', observacao: '', ordemRoteiro: null, fotosEnviadas: 0,
+    veiculoId: null,
+  };
+}
+
+/* ===============================================================
+   VEÍCULOS A DIESEL — TESTE DE OPACIDADE
+   =============================================================== */
+var OPAC_DADOS = [];
+if (typeof window._opacBusca === 'undefined') window._opacBusca = '';
+
+function opacUid() { return 'opac-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+
+async function opacCarregar() {
+  const remoto = await dbLer('VeiculosOpacidade');
+  OPAC_DADOS = Array.isArray(remoto) ? remoto : [];
+}
+
+async function opacSalvar() {
+  await dbSalvar('VeiculosOpacidade', OPAC_DADOS);
+}
+
+function opacRegistroVazio() {
+  return {
+    id: opacUid(), placa: '', tipo: '', frota: '', dpto: '', regional: '', localidade: '',
+    status: 'pendente', data: '', limite: '', resultado: '', tecnico: '', observacao: '',
   };
 }
 
@@ -26384,6 +26552,22 @@ async function adcSetStatus(id, status) {
   reg.status = (reg.status === status) ? 'programada' : status;
   if (reg.status !== 'programada' && !reg.data) reg.data = rotHojeISO(0);
   await adcSalvar();
+  if (reg.veiculoId) {
+    var veic = OPAC_DADOS.find(function(v){ return v.id === reg.veiculoId; });
+    if (veic) {
+      if (reg.status === 'realizada') {
+        veic.status = 'realizado';
+        veic.data = reg.data || rotHojeISO(0);
+        if (!veic.resultado) veic.resultado = 'Conforme';
+      } else if (reg.status === 'programada') {
+        veic.status = 'pendente';
+      } else {
+        veic.status = 'pendente';
+        veic.data = reg.data || veic.data;
+      }
+      await opacSalvar();
+    }
+  }
   rotRenderizar();
 }
 
@@ -26472,6 +26656,37 @@ async function rotAdicionarEmpreendimento(dia) {
   showToast('✅ '+reg.empreendimento+' adicionado ao roteiro do dia.');
 }
 
+function rotPreencherDatalistVeiculos() {
+  var dl = document.getElementById('rot-veiculo-opac-dl');
+  if (!dl) return;
+  dl.innerHTML = OPAC_DADOS.map(function(v){
+    var rotulo = v.placa + (v.tipo ? (' — ' + v.tipo) : '');
+    return '<option value="'+String(rotulo).replace(/"/g,'&quot;')+'">';
+  }).join('');
+}
+
+async function rotAdicionarVeiculoOpacidade(dia) {
+  var el = document.getElementById('rot-add-veic-' + dia);
+  if (!el) return;
+  var texto = el.value.trim();
+  if (!texto) return;
+  var placa = texto.split(' — ')[0].trim();
+  var veic = OPAC_DADOS.find(function(v){ return v.placa.toLowerCase() === placa.toLowerCase(); });
+  if (!veic) { showToast('⚠️ Veículo não encontrado. Selecione uma placa da lista.'); return; }
+  var jaExiste = MEA_ADICIONAIS.find(function(a){ return a.veiculoId === veic.id && a.dataProgramada === dia; });
+  if (jaExiste) { showToast('⚠️ Este veículo já está no roteiro deste dia.'); return; }
+  var reg = adcRegistroVazio();
+  reg.titulo = 'Teste de Opacidade — ' + veic.placa + (veic.tipo ? (' (' + veic.tipo + ')') : '');
+  reg.descricao = 'Teste de opacidade do veículo a diesel.';
+  reg.dataProgramada = dia;
+  reg.veiculoId = veic.id;
+  MEA_ADICIONAIS.push(reg);
+  await adcSalvar();
+  el.value = '';
+  rotRenderizar();
+  showToast('✅ Teste de opacidade de '+veic.placa+' adicionado ao roteiro do dia.');
+}
+
 function rotRenderStopHtml(x, dia, seqIdx) {
   var v = x.vistoria;
   var st = v.status; // programada | realizada | parcial | nao_realizada
@@ -26515,7 +26730,7 @@ function rotRenderStopHtml(x, dia, seqIdx) {
     '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px">' +
     (mapsLink ? mapsLink : '') +
     '<label style="font-size:.68rem;color:var(--brand-green);font-weight:700;cursor:pointer;white-space:nowrap">📷 Fotos'+(v.fotosEnviadas?(' ('+v.fotosEnviadas+')'):'')+
-      '<input type="file" accept="image/*" multiple capture="environment" style="display:none" onchange="rotUploadFotosStop(\''+x.id+'\', event)"></label>' +
+      '<input type="file" accept="image/*" multiple style="display:none" onchange="rotUploadFotosStop(\''+x.id+'\', event)"></label>' +
     '<button onclick="rotAbrirObsModal(\''+x.id+'\')" style="background:none;border:none;cursor:pointer;font-size:.85rem;padding:0">✏️</button>' +
     '</div>' +
     '</div>' +
@@ -26564,7 +26779,7 @@ function rotRenderAdcHtml(a, dia, seqIdx) {
     '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px">' +
     (mapsLink ? mapsLink : '') +
     '<label style="font-size:.68rem;color:var(--brand-green);font-weight:700;cursor:pointer;white-space:nowrap">📷 Fotos'+(a.fotosEnviadas?(' ('+a.fotosEnviadas+')'):'')+
-      '<input type="file" accept="image/*" multiple capture="environment" style="display:none" onchange="rotUploadFotosAdc(\''+a.id+'\', event)"></label>' +
+      '<input type="file" accept="image/*" multiple style="display:none" onchange="rotUploadFotosAdc(\''+a.id+'\', event)"></label>' +
     '</div>' +
     '</div>' +
     chipsHtml + motivoHtml +
@@ -26650,6 +26865,10 @@ function rotRenderizar() {
       '<div style="display:flex;gap:6px;margin-bottom:6px">' +
       '<input id="rot-add-'+g.dia+'" list="rot-empreendimento-dl" placeholder="🔍 Adicionar empreendimento cadastrado a este dia..." style="flex:1;font-size:.72rem;padding:7px 10px;border:1px solid var(--border);border-radius:8px" onkeydown="if(event.key===\'Enter\'){rotAdicionarEmpreendimento(\''+g.dia+'\')}">' +
       '<button onclick="rotAdicionarEmpreendimento(\''+g.dia+'\')" style="background:var(--brand-green);color:var(--brand-brown);border:none;border-radius:8px;padding:7px 14px;font-size:.72rem;font-weight:800;cursor:pointer;white-space:nowrap">+ Add</button>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;margin-bottom:6px">' +
+      '<input id="rot-add-veic-'+g.dia+'" list="rot-veiculo-opac-dl" placeholder="🚚 Adicionar teste de opacidade (placa) a este dia..." style="flex:1;font-size:.72rem;padding:7px 10px;border:1px solid var(--border);border-radius:8px" onkeydown="if(event.key===\'Enter\'){rotAdicionarVeiculoOpacidade(\''+g.dia+'\')}">' +
+      '<button onclick="rotAdicionarVeiculoOpacidade(\''+g.dia+'\')" style="background:var(--brand-green);color:var(--brand-brown);border:none;border-radius:8px;padding:7px 14px;font-size:.72rem;font-weight:800;cursor:pointer;white-space:nowrap">+ Add</button>' +
       '</div>' +
       (seq.length > 1 ? '<div style="font-size:.65rem;color:var(--text-muted);margin-bottom:8px">⠿ Arraste os cards para reordenar o dia.</div>' : '') +
       stops + '</div>';
@@ -26764,13 +26983,15 @@ async function rotUploadFotoParaOneDrive(dataUrl, subpasta, nomeArquivo) {
   }
 }
 
-async function rotUploadFotosStop(id, event) {
-  var reg = MEA_DADOS.find(function(x){return x.id===id;});
-  var files = Array.from((event && event.target && event.target.files) || []);
-  if (!reg || !files.length) return;
-  var dataRef = reg.vistoria.data || reg.vistoria.dataProgramada || rotHojeISO(0);
-  var subpasta = OD_FOLDERS.roteiroFotos + '/' + rotNomePastaFoto(reg.empreendimento) + ' - ' + dataRef;
-  showToast('🔄 Enviando ' + files.length + ' foto(s) ao OneDrive...');
+var ROT_MAX_FOTOS_LOTE = 100;
+
+/* -- Loop compartilhado de envio (usado pela parada de vistoria e pelo
+   Serviço Adicional): redimensiona e sobe cada foto pro OneDrive, indo
+   atualizando o toast em blocos de 5 pra dar noção de progresso num lote
+   grande (até 100 fotos por vez, tanto tiradas na hora quanto escolhidas
+   da galeria — os inputs não têm capture="environment", então o próprio
+   navegador oferece a opção de escolher da galeria e selecionar várias). -- */
+async function rotEnviarLoteFotos(files, subpasta) {
   var okCount = 0;
   for (var i = 0; i < files.length; i++) {
     try {
@@ -26778,7 +26999,25 @@ async function rotUploadFotosStop(id, event) {
       var nomeArq = 'Foto_' + Date.now() + '_' + (i + 1) + '.jpg';
       if (await rotUploadFotoParaOneDrive(res.dataUrl, subpasta, nomeArq)) okCount++;
     } catch (e) { console.warn(e); }
+    if ((i + 1) % 5 === 0 || i === files.length - 1) {
+      showToast('🔄 Enviando fotos... ' + (i + 1) + ' de ' + files.length);
+    }
   }
+  return okCount;
+}
+
+async function rotUploadFotosStop(id, event) {
+  var reg = MEA_DADOS.find(function(x){return x.id===id;});
+  var files = Array.from((event && event.target && event.target.files) || []);
+  if (!reg || !files.length) return;
+  if (files.length > ROT_MAX_FOTOS_LOTE) {
+    showToast('⚠️ Máximo de ' + ROT_MAX_FOTOS_LOTE + ' fotos por envio — enviando as primeiras ' + ROT_MAX_FOTOS_LOTE + '.');
+    files = files.slice(0, ROT_MAX_FOTOS_LOTE);
+  }
+  var dataRef = reg.vistoria.data || reg.vistoria.dataProgramada || rotHojeISO(0);
+  var subpasta = OD_FOLDERS.roteiroFotos + '/' + rotNomePastaFoto(reg.empreendimento) + ' - ' + dataRef;
+  showToast('🔄 Enviando ' + files.length + ' foto(s) ao OneDrive...');
+  var okCount = await rotEnviarLoteFotos(files, subpasta);
   reg.vistoria.fotosEnviadas = (reg.vistoria.fotosEnviadas || 0) + okCount;
   await meaSalvar();
   event.target.value = '';
@@ -26790,17 +27029,14 @@ async function rotUploadFotosAdc(id, event) {
   var reg = MEA_ADICIONAIS.find(function(x){return x.id===id;});
   var files = Array.from((event && event.target && event.target.files) || []);
   if (!reg || !files.length) return;
+  if (files.length > ROT_MAX_FOTOS_LOTE) {
+    showToast('⚠️ Máximo de ' + ROT_MAX_FOTOS_LOTE + ' fotos por envio — enviando as primeiras ' + ROT_MAX_FOTOS_LOTE + '.');
+    files = files.slice(0, ROT_MAX_FOTOS_LOTE);
+  }
   var dataRef = reg.data || reg.dataProgramada || rotHojeISO(0);
   var subpasta = OD_FOLDERS.roteiroFotos + '/' + rotNomePastaFoto(reg.titulo) + ' - ' + dataRef;
   showToast('🔄 Enviando ' + files.length + ' foto(s) ao OneDrive...');
-  var okCount = 0;
-  for (var i = 0; i < files.length; i++) {
-    try {
-      var res = await _eroRedimensionarFoto(files[i]);
-      var nomeArq = 'Foto_' + Date.now() + '_' + (i + 1) + '.jpg';
-      if (await rotUploadFotoParaOneDrive(res.dataUrl, subpasta, nomeArq)) okCount++;
-    } catch (e) { console.warn(e); }
-  }
+  var okCount = await rotEnviarLoteFotos(files, subpasta);
   reg.fotosEnviadas = (reg.fotosEnviadas || 0) + okCount;
   await adcSalvar();
   event.target.value = '';
@@ -26986,7 +27222,7 @@ async function rotExportarPDF(diaFiltro) {
 
 function pageRoteiroERO() {
   if (!window._rotDataIni) { window._rotDataIni = rotHojeISO(0); window._rotDataFim = rotHojeISO(6); }
-  Promise.all([meaCarregar(), adcCarregar()]).then(function() { rotRenderizar(); rotPreencherDatalistEmpreendimentos(); });
+  Promise.all([meaCarregar(), adcCarregar(), opacCarregar()]).then(function() { rotRenderizar(); rotPreencherDatalistEmpreendimentos(); rotPreencherDatalistVeiculos(); });
   return `
   <div style="background:var(--brand-brown);color:#fff;border-radius:16px;padding:20px 20px 18px;margin-bottom:16px">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
@@ -27014,6 +27250,7 @@ function pageRoteiroERO() {
   </div>
 
   <datalist id="rot-empreendimento-dl"></datalist>
+  <datalist id="rot-veiculo-opac-dl"></datalist>
 
   <div id="rot-wrap" style="padding-bottom:70px"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
 
@@ -27113,6 +27350,7 @@ function pageChecklistERO() {
   if (aba === 'form') return pageChecklistEROForm();
   if (aba === 'vistorias') return pageVistoriasERO();
   if (aba === 'roteiro') return pageRoteiroERO();
+  if (aba === 'opacidade') return pageOpacidadeVeiculos();
   return pageMonitoramentoAmbientalERO();
 }
 
