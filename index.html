@@ -7029,7 +7029,8 @@ async function adtVisualizar(id) {
       </div>
       <div style="margin-bottom:10px"><span class="status-pill ${statusCor(r.Status)}">${r.Status || '—'}</span></div>
       ${linha('Solicitante', r.Solicitante || '—')}
-      ${linha('Período', r.Periodo || '—')}
+      ${linha('Data de Solicitação', r.Created ? new Date(r.Created).toLocaleDateString('pt-BR') : '—')}
+      ${linha('Período (ocorrência)', r.Periodo || '—')}
       ${linha('Contrato(s)', (r.Contratos || []).map(c => c.label).join('<br>') || '—')}
       ${linha('Colaborador(es)', (r.Colaboradores || []).map(c => c.nome + ' — R$ ' + Number(c.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })).join('<br>') || '—')}
       ${linha('Valor Total', 'R$ ' + (r.ValorTotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))}
@@ -7039,6 +7040,7 @@ async function adtVisualizar(id) {
       ${r.MotivoReprovacao ? linha('Motivo da reprovação', r.MotivoReprovacao) : ''}
       <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
         ${r.Status === 'Aguardando Aprovação' && currentProfile === 'diretoria' ? `<button class="btn-primary" onclick="document.getElementById('adt-view-modal').remove();aprovarAdiantamento(${r.Id})">✅ Aprovar</button><button class="btn-secondary" onclick="document.getElementById('adt-view-modal').remove();reprovarAdiantamento(${r.Id})">↩️ Reprovar</button>` : ''}
+        ${r.Status === 'Reprovado' && (typeof solicEhGestorGeral === 'function' && solicEhGestorGeral()) ? `<button class="btn-primary" onclick="document.getElementById('adt-view-modal').remove();aprovarAdiantamento(${r.Id})">✅ Aprovar</button><button class="btn-secondary" onclick="document.getElementById('adt-view-modal').remove();solicRestaurarSolicitacao(${r.Id},'adiantamento')">↩️ Restaurar</button>` : ''}
         <button class="btn-secondary" onclick="document.getElementById('adt-view-modal').remove()">Fechar</button>
       </div>
     </div>`;
@@ -13071,7 +13073,7 @@ function pageAprovacoes() {
     <div class="kpi-card amber" style="cursor:pointer" onclick="navigate('pagar')" title="Ir para Contas a Pagar"><div class="kpi-label">C. a Pagar Pendentes</div><div class="kpi-value" id="aprov-kpi-pagar">—</div><div class="kpi-icon">💸</div></div>
     <div class="kpi-card amber" style="cursor:pointer" onclick="aprovIrPara('aprov-card-adiantamento')" title="Ir para Adiantamentos"><div class="kpi-label">Adiantamentos Pendentes</div><div class="kpi-value" id="aprov-kpi-adiantamento">—</div><div class="kpi-icon">💵</div></div>
     <div class="kpi-card amber" style="cursor:pointer" onclick="aprovIrPara('aprov-card-solic')" title="Ir para Outras Solicitações"><div class="kpi-label">Solicitações Pendentes</div><div class="kpi-value" id="aprov-kpi-solic">—</div><div class="kpi-icon">📝</div></div>
-    <div class="kpi-card red" style="cursor:pointer" onclick="window._solicFiltroStatus='Reprovada';navigate('solicitacoes')" title="Ir para o histórico de Solicitações"><div class="kpi-label">Solicitações Indeferidas</div><div class="kpi-value" id="aprov-kpi-solic-indef">—</div><div class="kpi-icon">🚫</div></div>
+    <div class="kpi-card red" style="cursor:pointer" onclick="window._solicFiltroBucket='reprovadas';navigate('solicitacoes')" title="Ir para o histórico de Solicitações"><div class="kpi-label">Solicitações Indeferidas</div><div class="kpi-value" id="aprov-kpi-solic-indef">—</div><div class="kpi-icon">🚫</div></div>
   </div>
   <div class="card" style="margin-bottom:16px" id="aprov-card-apr">
     <div class="card-title">APRs Aguardando Aprovação</div>
@@ -13274,6 +13276,11 @@ async function solicVisualizar(id) {
   const podeAgir = statusAcionavel && ((aguardandoGG && ehGestorGeral) || (aguardandoFin && ehFinanceiro) || (!aguardandoGG && !aguardandoFin));
   const rotuloBotao = aguardandoGG ? '✅ Aprovar (Final)' : aguardandoFin ? '✅ Aprovar (Financeiro)' : (r.Tipo === 'compras' ? '✅ Enviar ao Financeiro' : '✅ Aprovar');
   const podeExcluir = solicPodeExcluir(r);
+  // Uma solicitação Reprovada não é mais um beco sem saída: o Gestor Geral
+  // pode reanalisar e Aprovar direto ou Restaurar (volta pra fila de análise)
+  // — pedido em 09/09/2026.
+  const foiReprovada = r.Status === 'Reprovada' || r.Status === 'Reprovado';
+  const podeRestaurar = foiReprovada && ehGestorGeral;
 
   const modal = document.createElement('div');
   modal.id = 'solic-view-modal';
@@ -13286,7 +13293,8 @@ async function solicVisualizar(id) {
       </div>
       ${linha('Solicitante', r.Solicitante)}
       ${linha('Direcionado ao Gestor', r.GestorDestino)}
-      ${linha('Data', r.DataNecessaria ? new Date(r.DataNecessaria + 'T12:00').toLocaleDateString('pt-BR') : '')}
+      ${linha('Data de Solicitação', r.Created ? new Date(r.Created).toLocaleDateString('pt-BR') : '')}
+      ${linha('Data de Ocorrência do Evento', r.DataNecessaria ? new Date(r.DataNecessaria + 'T12:00').toLocaleDateString('pt-BR') : '')}
       ${linha('Projeto/Obra', r.Projeto)}
       ${linha('Urgência', r.Urgencia)}
       ${linha('Descrição', r.Descricao)}
@@ -13297,9 +13305,11 @@ async function solicVisualizar(id) {
       ${r.AnexoUrl ? `<div style="margin-top:10px"><a href="${r.AnexoUrl}" target="_blank" class="btn-secondary" style="display:inline-block;padding:6px 12px;font-size:.78rem;text-decoration:none">📎 Ver anexo${r.AnexoNome ? ' — ' + r.AnexoNome : ''}</a></div>` : ''}
       ${linha('Status', r.Status)}
       ${r.MotivoReprovacao ? linha('Motivo da Reprovação/Devolução', r.MotivoReprovacao) : ''}
-      ${(podeAgir || podeExcluir) ? `<div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap">
+      ${(podeAgir || podeExcluir || podeRestaurar) ? `<div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap">
         ${podeAgir ? `<button class="btn-primary" style="flex:1;min-width:160px" onclick="document.getElementById('solic-view-modal').remove();aprovarSolicitacaoGeral(${r.Id})">${rotuloBotao}</button>
         <button class="btn-secondary" style="flex:1;min-width:160px" onclick="document.getElementById('solic-view-modal').remove();reprovarSolicitacaoGeral(${r.Id})">↩️ Indeferir / Devolver</button>` : ''}
+        ${podeRestaurar ? `<button class="btn-primary" style="flex:1;min-width:160px" onclick="document.getElementById('solic-view-modal').remove();aprovarSolicitacaoGeral(${r.Id})">✅ Aprovar</button>
+        <button class="btn-secondary" style="flex:1;min-width:160px" onclick="document.getElementById('solic-view-modal').remove();solicRestaurarSolicitacao(${r.Id},'geral')">↩️ Restaurar (voltar à análise)</button>` : ''}
         ${podeExcluir ? `<button class="btn-secondary" style="color:var(--red)" onclick="document.getElementById('solic-view-modal').remove();solicExcluirHistorico(${r.Id},'geral')">🗑️ Excluir</button>` : ''}
       </div>` : ''}
     </div>`;
@@ -13343,10 +13353,27 @@ async function aprovarSolicitacaoGeral(id) {
   setTimeout(() => { carregarAprovacoes(); if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); }, 600);
 }
 async function reprovarSolicitacaoGeral(id) {
-  const motivo = prompt('Motivo da reprovação (opcional):', '') || '';
+  const motivo = prompt('Motivo da reprovação (o colaborador verá isso e pode corrigir e reenviar):', '') || '';
   const ok = await dbAtualizar('SolicitacoesGerais', parseInt(id), { Status: 'Reprovada', MotivoReprovacao: motivo, ReprovadoPor: window._currentUser ? window._currentUser.name : '' });
-  showToast(ok ? '↩️ Solicitação reprovada.' : '❌ Erro');
+  showToast(ok ? '↩️ Indeferida — colaborador pode corrigir e reenviar.' : '❌ Erro');
   setTimeout(() => { carregarAprovacoes(); if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); }, 600);
+}
+
+/* -- Reabre uma solicitação Reprovada/Reprovado direto pra fila de análise,
+   sem precisar que o colaborador edite nada — útil quando o Gestor Geral
+   reanalisa e percebe que na verdade estava tudo certo (pedido em 09/09/2026:
+   "caso eu reanalise o pedido e esteja de acordo, posso restaurar"). Some das
+   telas de aprovação normal reaparece porque o Status some da lista de
+   "Reprovada". -- */
+async function solicRestaurarSolicitacao(id, origem) {
+  if (!solicEhGestorGeral()) { showToast('⛔ Restaurar é restrito ao Gestor Geral.'); return; }
+  const tabela = origem === 'adiantamento' ? 'Adiantamentos' : 'SolicitacoesGerais';
+  const statusInicial = origem === 'adiantamento' ? 'Aguardando Aprovação' : 'Pendente';
+  const ok = await dbAtualizar(tabela, parseInt(id), { Status: statusInicial, MotivoReprovacao: '', ReprovadoPor: '' });
+  showToast(ok ? '↩️ Restaurada — voltou para análise.' : '❌ Erro ao restaurar.');
+  if (window._solicHistorico !== null) await solicCarregarHistorico(true);
+  if (typeof carregarAprovacoes === 'function') carregarAprovacoes();
+  if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes();
 }
 
 async function aprovarPrestacao(id) {
@@ -21273,14 +21300,16 @@ function solicNovoForm() {
   window._solicAnexoArquivo = null;
   window._solicEditId = null;
   window._solicEditOrigem = null;
+  window._solicEditStatusOriginal = null;
 }
 if (!window._solicData) solicNovoForm();
 if (window._solicHistorico === undefined) window._solicHistorico = null;
-// Filtro de status opcional (ex: vindo do card "Solicitações Indeferidas" na
-// Central de Aprovações — sem isso, uma solicitação indeferida há tempo fica
-// escondida atrás das 60 mais recentes de "Todas as Solicitações" e o Gestor
-// Geral não consegue achar qual foi indeferida).
-if (typeof window._solicFiltroStatus === 'undefined') window._solicFiltroStatus = '';
+// Filtro por "balde" de status (pendentes/aprovadas/reprovadas) opcional — ex:
+// vindo do card "Solicitações Indeferidas" na Central de Aprovações ou dos
+// próprios cards de KPI da tela de Solicitações. Sem isso, uma solicitação
+// indeferida há tempo fica escondida atrás das 60 mais recentes de "Todas as
+// Solicitações" e o Gestor Geral não consegue achar qual foi indeferida.
+if (typeof window._solicFiltroBucket === 'undefined') window._solicFiltroBucket = '';
 
 /* -- Permissões de edição/exclusão: cada um mexe no que é seu (Excluir/Editar/
    Visualizar aparecem para todos); o Gestor Geral pode tudo, sempre. Depois que
@@ -21357,36 +21386,46 @@ async function solicCarregarHistorico(forcar) {
   navigate('solicitacoes');
 }
 
+const SOLIC_BUCKET_LABEL = { pendentes: 'Pendentes', aprovadas: 'Aprovadas', reprovadas: 'Reprovadas' };
 function solicHtmlHistorico() {
-  const filtroStatus = window._solicFiltroStatus || '';
-  const base = filtroStatus
-    ? (window._solicHistorico || []).filter(r => (r.Status || '') === filtroStatus)
+  const filtroBucket = window._solicFiltroBucket || '';
+  const base = filtroBucket
+    ? (window._solicHistorico || []).filter(r => solicStatusBucket(r.Status) === filtroBucket)
     : (window._solicHistorico || []);
   const lista = base.slice(0, 60);
   const verTudo = solicEhGestorGeral();
-  const bannerFiltro = filtroStatus
+  const bannerFiltro = filtroBucket
     ? `<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface2);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:.78rem">
-        <span>Filtrando por status: <strong>${filtroStatus}</strong> (${base.length})</span>
-        <button class="btn-secondary" style="padding:2px 10px;font-size:.7rem" onclick="window._solicFiltroStatus='';navigate('solicitacoes')">✕ Limpar filtro</button>
+        <span>Filtrando por: <strong>${SOLIC_BUCKET_LABEL[filtroBucket] || filtroBucket}</strong> (${base.length})</span>
+        <button class="btn-secondary" style="padding:2px 10px;font-size:.7rem" onclick="window._solicFiltroBucket='';navigate('solicitacoes')">✕ Limpar filtro</button>
       </div>`
     : '';
-  if (!lista.length) return bannerFiltro + '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">' + (filtroStatus ? ('Nenhuma solicitação com status "' + filtroStatus + '".') : (verTudo ? 'Nenhuma solicitação enviada ainda.' : 'Você ainda não enviou nenhuma solicitação.')) + '</div>';
+  if (!lista.length) return bannerFiltro + '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">' + (filtroBucket ? ('Nenhuma solicitação em "' + (SOLIC_BUCKET_LABEL[filtroBucket] || filtroBucket) + '".') : (verTudo ? 'Nenhuma solicitação enviada ainda.' : 'Você ainda não enviou nenhuma solicitação.')) + '</div>';
   const statusCor = s => (s === 'Aprovada' || s === 'Aprovado — Aguardando Pagamento' || s === 'Pago') ? 'green' : (s === 'Reprovada' || s === 'Reprovado') ? 'red' : 'amber';
+  const fmtData = iso => iso ? new Date(iso + 'T12:00').toLocaleDateString('pt-BR') : '';
   const linha = r => {
     const tipoInfo = SOLIC_TIPOS.find(t => t.id === (r.Tipo || 'adiantamento')) || { icon: '📝' };
     const label = r._origem === 'adiantamento' ? 'Adiantamento' : (r.TipoLabel || r.Tipo || 'Solicitação');
-    const dataFmt = r.Created ? new Date(r.Created).toLocaleDateString('pt-BR') : '—';
+    const solicitadoEm = r.Created ? new Date(r.Created).toLocaleDateString('pt-BR') : '—';
     const status = r.Status || (r._origem === 'adiantamento' ? 'Aguardando Aprovação' : 'Pendente');
+    const foiReprovada = status === 'Reprovada' || status === 'Reprovado';
     const detalhe = r._origem === 'adiantamento' ? ('R$ ' + (r.ValorTotal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })) : (r.Descricao || '').toString().substring(0, 60);
+    // Data de ocorrência do evento: pros tipos gerais/ajuste de ponto é a
+    // DataNecessaria; pro adiantamento é o período (mês) de referência —
+    // pedido em 09/09/2026 pra toda solicitação mostrar as duas datas
+    // (quando foi pedida x quando o evento acontece/aconteceu).
+    const ocorrencia = r._origem === 'adiantamento' ? (r.Periodo || '') : fmtData(r.DataNecessaria);
     const podeEditar = solicPodeEditar(r);
     const podeExcluir = solicPodeExcluir(r);
+    const podeRestaurar = foiReprovada && verTudo;
     return `
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">${tipoInfo.icon || '📝'}</div>
       <div style="flex:1;min-width:0">
         <div class="name">${label}${r.SubTipo ? ' — ' + r.SubTipo : ''}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
-        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${verTudo ? '<strong>' + (r.Solicitante || '—') + '</strong> · ' : ''}${dataFmt}${detalhe ? ' · ' + detalhe : ''}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${verTudo ? '<strong>' + (r.Solicitante || '—') + '</strong> · ' : ''}${detalhe ? detalhe + ' · ' : ''}📤 Solicitado em ${solicitadoEm}${ocorrencia ? (' · 🗓️ Ocorrência: ' + ocorrencia) : ''}</div>
         ${r.GestorDestino ? `<div style="font-size:.7rem;color:var(--text-muted);margin-top:2px">👤 Direcionado a: ${r.GestorDestino}</div>` : ''}
+        ${foiReprovada && r.MotivoReprovacao ? `<div style="font-size:.7rem;color:var(--red);margin-top:2px">🚫 ${r.MotivoReprovacao}</div>` : ''}
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         <span class="status-pill ${statusCor(status)}" style="font-size:.65rem">${status}</span>
@@ -21395,6 +21434,10 @@ function solicHtmlHistorico() {
           ${podeEditar ? `<button class="btn-secondary" style="padding:2px 8px;font-size:.62rem" onclick="solicEditarHistorico(${r.Id},'${r._origem}')">✏️</button>` : ''}
           ${podeExcluir ? `<button class="btn-secondary" style="padding:2px 8px;font-size:.62rem;color:var(--red)" onclick="solicExcluirHistorico(${r.Id},'${r._origem}')">🗑️</button>` : ''}
         </div>
+        ${podeRestaurar ? `<div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn-primary" style="padding:2px 8px;font-size:.62rem" onclick="${r._origem === 'adiantamento' ? 'aprovarAdiantamento' : 'aprovarSolicitacaoGeral'}(${r.Id})">✅ Aprovar</button>
+          <button class="btn-secondary" style="padding:2px 8px;font-size:.62rem" onclick="solicRestaurarSolicitacao(${r.Id},'${r._origem}')">↩️ Restaurar</button>
+        </div>` : ''}
       </div>
     </div>`;
   };
@@ -21461,7 +21504,17 @@ async function solicEditarHistorico(id, origem) {
   window._solicAnexoArquivo = null;
   window._solicEditId = id;
   window._solicEditOrigem = origem;
+  window._solicEditStatusOriginal = r.Status || '';
   navigate('solicitacoes');
+}
+
+/* -- Depois de Reprovada/Reprovado, editar e reenviar precisa voltar pra fila
+   de análise — senão o colaborador corrige o pedido mas ele fica "morto" com
+   status Reprovada pra sempre, e ninguém vê de novo (bug relatado em
+   09/09/2026: "quando eu indefiro devia voltar pro colaborador corrigir"). -- */
+function solicEraReprovada() {
+  const st = window._solicEditStatusOriginal || '';
+  return st === 'Reprovada' || st === 'Reprovado';
 }
 
 /* -- Resumo (dashboard) de Solicitações: agrega SolicitacoesGerais +
@@ -21472,25 +21525,36 @@ async function solicEditarHistorico(id, origem) {
 function solicStatusEhFinal(status) {
   return ['Aprovada', 'Aprovado — Aguardando Pagamento', 'Pago', 'Reprovada', 'Reprovado'].includes(status);
 }
+// "Balde" de status usado tanto no resumo de KPIs quanto no filtro clicável
+// dos cards e do card "Solicitações Indeferidas" da Central de Aprovações —
+// qualquer status que não seja aprovação/reprovação final conta como
+// "pendentes" (cobre Pendente, Aguardando Aprovação, Aguardando Gestor Geral
+// e Aguardando Financeiro de uma vez).
+function solicStatusBucket(status) {
+  const s = status || '';
+  if (s === 'Reprovada' || s === 'Reprovado') return 'reprovadas';
+  if (s === 'Aprovada' || s === 'Aprovado — Aguardando Pagamento' || s === 'Pago') return 'aprovadas';
+  return 'pendentes';
+}
 function solicResumoKpi() {
   const lista = window._solicHistorico || [];
   const res = { total: lista.length, pendentes: 0, aprovadas: 0, reprovadas: 0 };
-  lista.forEach(r => {
-    const s = r.Status || '';
-    if (s === 'Reprovada' || s === 'Reprovado') res.reprovadas++;
-    else if (s === 'Aprovada' || s === 'Aprovado — Aguardando Pagamento' || s === 'Pago') res.aprovadas++;
-    else res.pendentes++;
-  });
+  lista.forEach(r => { res[solicStatusBucket(r.Status)]++; });
   return res;
 }
 function solicHtmlKpis() {
   const k = solicResumoKpi();
+  const ativo = window._solicFiltroBucket || '';
+  const card = (bucket, cor, label, val, icon) => {
+    const sel = ativo === bucket;
+    return `<div class="kpi-card ${cor}" style="cursor:pointer;${sel ? 'outline:2px solid currentColor;' : ''}" onclick="window._solicFiltroBucket='${bucket}';navigate('solicitacoes')" title="Filtrar por ${label}"><div class="kpi-label">${label}</div><div class="kpi-value">${val}</div><div class="kpi-icon">${icon}</div></div>`;
+  };
   return `
   <div class="kpi-grid" style="margin-bottom:20px">
-    <div class="kpi-card blue"><div class="kpi-label">Total</div><div class="kpi-value">${k.total}</div><div class="kpi-icon">📝</div></div>
-    <div class="kpi-card amber"><div class="kpi-label">Pendentes</div><div class="kpi-value">${k.pendentes}</div><div class="kpi-icon">⏳</div></div>
-    <div class="kpi-card green"><div class="kpi-label">Aprovadas</div><div class="kpi-value">${k.aprovadas}</div><div class="kpi-icon">✅</div></div>
-    <div class="kpi-card red"><div class="kpi-label">Reprovadas</div><div class="kpi-value">${k.reprovadas}</div><div class="kpi-icon">🚫</div></div>
+    ${card('', 'blue', 'Total', k.total, '📝')}
+    ${card('pendentes', 'amber', 'Pendentes', k.pendentes, '⏳')}
+    ${card('aprovadas', 'green', 'Aprovadas', k.aprovadas, '✅')}
+    ${card('reprovadas', 'red', 'Reprovadas', k.reprovadas, '🚫')}
   </div>`;
 }
 
@@ -21689,8 +21753,9 @@ async function solicEnviar() {
       Justificativa: d.justificativaAdiantamento || '',
     };
     if (!editando) campos.Status = 'Aguardando Aprovação';
+    else if (solicEraReprovada()) { campos.Status = 'Aguardando Aprovação'; campos.MotivoReprovacao = ''; campos.ReprovadoPor = ''; }
     const ok = await solicGravar('Adiantamentos', campos);
-    showToast(ok ? (editando ? '✅ Solicitação atualizada!' : '✅ Solicitação de adiantamento enviada!') : '❌ Erro ao salvar.');
+    showToast(ok ? (editando ? (solicEraReprovada() ? '✅ Solicitação corrigida e reenviada para análise!' : '✅ Solicitação atualizada!') : '✅ Solicitação de adiantamento enviada!') : '❌ Erro ao salvar.');
     showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
     if (ok) { solicNovoForm(); window._solicFormAberto = false; if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); await solicCarregarHistorico(true); if (typeof carregarAprovacoes === 'function') carregarAprovacoes(); }
     return;
@@ -21726,8 +21791,9 @@ async function solicEnviar() {
     };
     if (anexoUrl) { campos.AnexoUrl = anexoUrl; campos.AnexoNome = anexoNome; }
     if (!editando) { campos.Status = 'Pendente'; campos.AnexoUrl = anexoUrl; campos.AnexoNome = anexoNome; }
+    else if (solicEraReprovada()) { campos.Status = 'Pendente'; campos.MotivoReprovacao = ''; campos.ReprovadoPor = ''; }
     const ok = await solicGravar('SolicitacoesGerais', campos);
-    showToast(ok ? (editando ? '✅ Solicitação atualizada!' : '✅ Solicitação enviada!') : '❌ Erro ao salvar.');
+    showToast(ok ? (editando ? (solicEraReprovada() ? '✅ Solicitação corrigida e reenviada para análise!' : '✅ Solicitação atualizada!') : '✅ Solicitação enviada!') : '❌ Erro ao salvar.');
     showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
     if (ok) { solicNovoForm(); window._solicFormAberto = false; await solicCarregarHistorico(true); if (typeof carregarAprovacoes === 'function') carregarAprovacoes(); }
     return;
@@ -21744,8 +21810,9 @@ async function solicEnviar() {
     Solicitante: nome, SolicitanteEmail: email, GestorDestino: d.gestorDestino,
   };
   if (!editando) campos.Status = 'Pendente';
+  else if (solicEraReprovada()) { campos.Status = 'Pendente'; campos.MotivoReprovacao = ''; campos.ReprovadoPor = ''; }
   const ok = await solicGravar('SolicitacoesGerais', campos);
-  showToast(ok ? (editando ? '✅ Solicitação atualizada!' : '✅ Solicitação enviada!') : '❌ Erro ao salvar.');
+  showToast(ok ? (editando ? (solicEraReprovada() ? '✅ Solicitação corrigida e reenviada para análise!' : '✅ Solicitação atualizada!') : '✅ Solicitação enviada!') : '❌ Erro ao salvar.');
   showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
   if (ok) { solicNovoForm(); window._solicFormAberto = false; await solicCarregarHistorico(true); if (typeof carregarAprovacoes === 'function') carregarAprovacoes(); }
 }
