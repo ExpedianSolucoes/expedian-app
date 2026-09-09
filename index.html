@@ -13304,7 +13304,10 @@ async function solicVisualizar(id) {
       ${linha('2ª Saída', r.HorarioSaida2Correto)}
       ${r.AnexoUrl ? `<div style="margin-top:10px"><a href="${r.AnexoUrl}" target="_blank" class="btn-secondary" style="display:inline-block;padding:6px 12px;font-size:.78rem;text-decoration:none">📎 Ver anexo${r.AnexoNome ? ' — ' + r.AnexoNome : ''}</a></div>` : ''}
       ${linha('Status', r.Status)}
+      ${linha('Aprovado por', r.AprovadoPor)}
+      ${linha('Data de Aprovação', r.DataAprovacao ? new Date(r.DataAprovacao + 'T12:00').toLocaleDateString('pt-BR') : '')}
       ${r.MotivoReprovacao ? linha('Motivo da Reprovação/Devolução', r.MotivoReprovacao) : ''}
+      ${r.ReprovadoPor ? linha('Indeferido por', r.ReprovadoPor) : ''}
       ${(podeAgir || podeExcluir || podeRestaurar) ? `<div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap">
         ${podeAgir ? `<button class="btn-primary" style="flex:1;min-width:160px" onclick="document.getElementById('solic-view-modal').remove();aprovarSolicitacaoGeral(${r.Id})">${rotuloBotao}</button>
         <button class="btn-secondary" style="flex:1;min-width:160px" onclick="document.getElementById('solic-view-modal').remove();reprovarSolicitacaoGeral(${r.Id})">↩️ Indeferir / Devolver</button>` : ''}
@@ -21374,8 +21377,15 @@ async function solicCarregarHistorico(forcar) {
     const nome = window._currentUser ? window._currentUser.name : '';
     const verTudo = solicEhGestorGeral();
     const [gerais, adiant] = await Promise.all([dbLer('SolicitacoesGerais'), dbLer('Adiantamentos')]);
-    const filtroGerais = verTudo ? (gerais || []) : (gerais || []).filter(r => r.Solicitante === nome);
-    const filtroAdiant = verTudo ? (adiant || []) : (adiant || []).filter(r => r.Solicitante === nome);
+    // Além das próprias solicitações enviadas, quem aprova (Diretoria/Coordenação)
+    // também precisa ver aqui o que ELE aprovou ou reprovou pra terceiros — senão
+    // a aprovação "desaparece" pra quem aprovou assim que sai da Central de
+    // Aprovações (pendências), e não fica nenhum histórico visível pra esse
+    // gestor (reclamação em 09/09/2026: "eu aprovei uma solicitação e ela foi
+    // pra onde? não fico com histórico da aprovação que fiz?").
+    const minhaOuAprovadaPorMim = r => r.Solicitante === nome || r.AprovadoPor === nome || r.ReprovadoPor === nome;
+    const filtroGerais = verTudo ? (gerais || []) : (gerais || []).filter(minhaOuAprovadaPorMim);
+    const filtroAdiant = verTudo ? (adiant || []) : (adiant || []).filter(minhaOuAprovadaPorMim);
     const minhasGerais = filtroGerais.map(r => ({ ...r, _origem: 'geral' }));
     const meusAdiant = filtroAdiant.map(r => ({ ...r, _origem: 'adiantamento' }));
     window._solicHistorico = minhasGerais.concat(meusAdiant).sort((a, b) => (b.Id || 0) - (a.Id || 0));
@@ -21394,6 +21404,7 @@ function solicHtmlHistorico() {
     : (window._solicHistorico || []);
   const lista = base.slice(0, 60);
   const verTudo = solicEhGestorGeral();
+  const nome = window._currentUser ? window._currentUser.name : '';
   const bannerFiltro = filtroBucket
     ? `<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface2);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:.78rem">
         <span>Filtrando por: <strong>${SOLIC_BUCKET_LABEL[filtroBucket] || filtroBucket}</strong> (${base.length})</span>
@@ -21418,14 +21429,21 @@ function solicHtmlHistorico() {
     const podeEditar = solicPodeEditar(r);
     const podeExcluir = solicPodeExcluir(r);
     const podeRestaurar = foiReprovada && verTudo;
+    // Mostra o nome de quem solicitou sempre que não for o próprio usuário
+    // logado (não só quando é Gestor Geral) — agora que o histórico também traz
+    // solicitações de terceiros que ESTE usuário aprovou/reprovou, sem o nome
+    // ficaria parecendo que a solicitação foi dele mesmo.
+    const mostrarSolicitante = verTudo || r.Solicitante !== nome;
+    const foiAprovada = status === 'Aprovada' || status === 'Aprovado — Aguardando Pagamento' || status === 'Pago';
     return `
     <div class="alert-item" style="gap:14px;align-items:flex-start">
       <div style="font-size:1.2rem">${tipoInfo.icon || '📝'}</div>
       <div style="flex:1;min-width:0">
         <div class="name">${label}${r.SubTipo ? ' — ' + r.SubTipo : ''}${r.TipoOutro ? ' — ' + r.TipoOutro : ''}</div>
-        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${verTudo ? '<strong>' + (r.Solicitante || '—') + '</strong> · ' : ''}${detalhe ? detalhe + ' · ' : ''}📤 Solicitado em ${solicitadoEm}${ocorrencia ? (' · 🗓️ Ocorrência: ' + ocorrencia) : ''}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${mostrarSolicitante ? '<strong>' + (r.Solicitante || '—') + '</strong> · ' : ''}${detalhe ? detalhe + ' · ' : ''}📤 Solicitado em ${solicitadoEm}${ocorrencia ? (' · 🗓️ Ocorrência: ' + ocorrencia) : ''}</div>
         ${r.GestorDestino ? `<div style="font-size:.7rem;color:var(--text-muted);margin-top:2px">👤 Direcionado a: ${r.GestorDestino}</div>` : ''}
-        ${foiReprovada && r.MotivoReprovacao ? `<div style="font-size:.7rem;color:var(--red);margin-top:2px">🚫 ${r.MotivoReprovacao}</div>` : ''}
+        ${foiAprovada && r.AprovadoPor ? `<div style="font-size:.7rem;color:var(--green);margin-top:2px">✅ Aprovado por ${r.AprovadoPor}${r.DataAprovacao ? (' em ' + new Date(r.DataAprovacao + 'T12:00').toLocaleDateString('pt-BR')) : ''}</div>` : ''}
+        ${foiReprovada && r.MotivoReprovacao ? `<div style="font-size:.7rem;color:var(--red);margin-top:2px">🚫 ${r.MotivoReprovacao}${r.ReprovadoPor ? (' — indeferido por ' + r.ReprovadoPor) : ''}</div>` : ''}
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
         <span class="status-pill ${statusCor(status)}" style="font-size:.65rem">${status}</span>
