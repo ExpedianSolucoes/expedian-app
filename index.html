@@ -21396,15 +21396,22 @@ async function solicCarregarHistorico(forcar) {
   navigate('solicitacoes');
 }
 
-const SOLIC_BUCKET_LABEL = { pendentes: 'Pendentes', aprovadas: 'Aprovadas', reprovadas: 'Reprovadas' };
+const SOLIC_BUCKET_LABEL = { pendentes: 'Pendentes', aprovadas: 'Aprovadas', reprovadas: 'Reprovadas', minhas_aprovacoes: 'Decididas por Mim' };
 function solicHtmlHistorico() {
   const filtroBucket = window._solicFiltroBucket || '';
-  const base = filtroBucket
-    ? (window._solicHistorico || []).filter(r => solicStatusBucket(r.Status) === filtroBucket)
-    : (window._solicHistorico || []);
+  const nomeFiltro = window._currentUser ? window._currentUser.name : '';
+  // "minhas_aprovacoes" é uma dimensão diferente do balde de status (que
+  // classifica pelo Status do registro) — aqui filtramos por QUEM decidiu
+  // (AprovadoPor/ReprovadoPor === usuário logado), útil sobretudo pro Gestor
+  // Geral, que já vê tudo misturado e não tinha como isolar só as decisões dele.
+  const base = filtroBucket === 'minhas_aprovacoes'
+    ? (window._solicHistorico || []).filter(r => nomeFiltro && (r.AprovadoPor === nomeFiltro || r.ReprovadoPor === nomeFiltro))
+    : filtroBucket
+      ? (window._solicHistorico || []).filter(r => solicStatusBucket(r.Status) === filtroBucket)
+      : (window._solicHistorico || []);
   const lista = base.slice(0, 60);
   const verTudo = solicEhGestorGeral();
-  const nome = window._currentUser ? window._currentUser.name : '';
+  const nome = nomeFiltro;
   const bannerFiltro = filtroBucket
     ? `<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface2);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:.78rem">
         <span>Filtrando por: <strong>${SOLIC_BUCKET_LABEL[filtroBucket] || filtroBucket}</strong> (${base.length})</span>
@@ -21556,8 +21563,18 @@ function solicStatusBucket(status) {
 }
 function solicResumoKpi() {
   const lista = window._solicHistorico || [];
-  const res = { total: lista.length, pendentes: 0, aprovadas: 0, reprovadas: 0 };
-  lista.forEach(r => { res[solicStatusBucket(r.Status)]++; });
+  const nome = window._currentUser ? window._currentUser.name : '';
+  const res = { total: lista.length, pendentes: 0, aprovadas: 0, reprovadas: 0, minhasAprovacoes: 0 };
+  lista.forEach(r => {
+    res[solicStatusBucket(r.Status)]++;
+    // Contador à parte — "o que EU aprovei/reprovei", independente de quem
+    // solicitou. É uma dimensão diferente do balde de status: por exemplo o
+    // Gestor Geral já vê TODAS as solicitações de todo mundo (verTudo), então
+    // o card "Aprovadas" misturado não deixa claro o que foi decisão dele.
+    // Pedido em 09/09/2026: "ainda não entendi onde vejo as aprovações que
+    // realizei como Gestor Geral".
+    if (nome && (r.AprovadoPor === nome || r.ReprovadoPor === nome)) res.minhasAprovacoes++;
+  });
   return res;
 }
 function solicHtmlKpis() {
@@ -21573,6 +21590,7 @@ function solicHtmlKpis() {
     ${card('pendentes', 'amber', 'Pendentes', k.pendentes, '⏳')}
     ${card('aprovadas', 'green', 'Aprovadas', k.aprovadas, '✅')}
     ${card('reprovadas', 'red', 'Reprovadas', k.reprovadas, '🚫')}
+    ${card('minhas_aprovacoes', 'blue', 'Decididas por Mim', k.minhasAprovacoes, '🖋️')}
   </div>`;
 }
 
@@ -26258,16 +26276,32 @@ function opacFiltrar(val) {
   opacRenderizarLista();
 }
 
-function opacAbrirModal(id) {
+/* -- Abre o modal de registro do teste. Quando chamado com `dia` (a partir do
+   botão "+ Add" de puxar veículo pro Roteiro de um dia específico), o modal
+   pede confirmação de Regional/Localidade/Frota/Departamento/Motorista antes
+   de marcar como realizado, e ao salvar também cria/atualiza o item do
+   Roteiro daquele dia vinculado a este veículo — pedido em 09/09/2026:
+   "ao puxar ele pra vistoria tem que abrir os campos de confirmação". -- */
+function opacAbrirModal(id, dia) {
   var reg = OPAC_DADOS.find(function(x){return x.id===id;});
   if (!reg) return;
   document.getElementById('opac-id').value = reg.id;
-  document.getElementById('opac-modal-titulo').textContent = '🚚 ' + reg.placa + (reg.tipo ? (' — ' + reg.tipo) : '');
+  document.getElementById('opac-dia').value = dia || '';
+  document.getElementById('opac-modal-titulo').textContent = '🚚 ' + reg.placa + (reg.tipo ? (' — ' + reg.tipo) : '') + (dia ? ' — Roteiro ' + laFormatarData(dia) : '');
   var set = function(elId, val) { var e = document.getElementById(elId); if (e) e.value = val || ''; };
-  set('opac-data', reg.data || rotHojeISO(0));
+  set('opac-data', reg.data || dia || rotHojeISO(0));
   set('opac-resultado', reg.resultado || 'Conforme');
   set('opac-tecnico', reg.tecnico);
   set('opac-observacao', reg.observacao);
+  set('opac-regional', reg.regional);
+  set('opac-frota', reg.frota);
+  set('opac-dpto', reg.dpto);
+  set('opac-motorista', reg.motorista);
+  set('opac_municipio_input', reg.localidade);
+  set('opac_municipio', reg.localidade);
+  window._opacLaudoArquivo = null;
+  var infoLaudo = document.getElementById('opac-laudo-atual');
+  if (infoLaudo) infoLaudo.innerHTML = reg.laudoUrl ? ('<a href="' + reg.laudoUrl + '" target="_blank">📎 ' + (reg.laudoNome || 'Ver laudo anexado') + '</a>') : '<span style="color:var(--text-muted)">Nenhum laudo anexado ainda.</span>';
   document.getElementById('opac-modal').style.display = 'flex';
 }
 
@@ -26275,31 +26309,124 @@ function opacFecharModal() {
   document.getElementById('opac-modal').style.display = 'none';
 }
 
+function opacLaudoChange(event) {
+  var file = event.target.files && event.target.files[0];
+  window._opacLaudoArquivo = file || null;
+  if (file) showToast('📎 ' + file.name + ' selecionado.');
+}
+
 async function opacSalvarModal() {
   var id = document.getElementById('opac-id').value;
   var reg = OPAC_DADOS.find(function(x){return x.id===id;});
   if (!reg) return;
+  var dia = document.getElementById('opac-dia').value || '';
   var g = function(elId) { var e = document.getElementById(elId); return e ? e.value.trim() : ''; };
   reg.data = g('opac-data');
   reg.resultado = g('opac-resultado');
   reg.tecnico = g('opac-tecnico');
   reg.observacao = g('opac-observacao');
+  reg.regional = g('opac-regional');
+  reg.localidade = g('opac_municipio') || g('opac_municipio_input');
+  reg.frota = g('opac-frota');
+  reg.dpto = g('opac-dpto');
+  reg.motorista = g('opac-motorista');
   reg.status = 'realizado';
+  if (window._opacLaudoArquivo) {
+    showSyncStatus('Enviando laudo...');
+    var resultado = await uploadComprovanteComNomeOriginal(window._opacLaudoArquivo, OD_FOLDERS.opacidadeLaudos, reg.placa + ' - ' + (reg.data || rotHojeISO(0)) + ' - ' + window._opacLaudoArquivo.name);
+    if (resultado) { reg.laudoUrl = resultado.url; reg.laudoNome = resultado.nome || window._opacLaudoArquivo.name; }
+    window._opacLaudoArquivo = null;
+  }
   await opacSalvar();
-  // Sincroniza de volta o(s) Serviço(s) Adicional(is) do Roteiro vinculados a este veículo.
-  MEA_ADICIONAIS.filter(function(a) { return a.veiculoId === reg.id; }).forEach(function(a) {
-    a.status = 'realizada';
-    a.data = reg.data;
-  });
+  // Se veio do Roteiro (puxando o veículo pra um dia específico), cria/atualiza
+  // o item do Serviço Adicional daquele dia já como realizado — senão sincroniza
+  // de volta qualquer item já vinculado a este veículo (fluxo antigo, direto da aba).
+  if (dia) {
+    var jaExiste = MEA_ADICIONAIS.find(function(a){ return a.veiculoId === reg.id && a.dataProgramada === dia; });
+    var item = jaExiste || adcRegistroVazio();
+    item.titulo = 'Teste de Opacidade — ' + reg.placa + (reg.tipo ? (' (' + reg.tipo + ')') : '');
+    item.descricao = 'Teste de opacidade do veículo a diesel.';
+    item.dataProgramada = dia;
+    item.veiculoId = reg.id;
+    item.status = 'realizada';
+    item.data = reg.data;
+    if (!jaExiste) MEA_ADICIONAIS.push(item);
+  } else {
+    MEA_ADICIONAIS.filter(function(a) { return a.veiculoId === reg.id; }).forEach(function(a) {
+      a.status = 'realizada';
+      a.data = reg.data;
+    });
+  }
   await adcSalvar();
   opacFecharModal();
   opacRenderizarLista();
   opacRenderizarKPIs();
+  if (typeof rotRenderizar === 'function') rotRenderizar();
   showToast('✅ Teste de opacidade registrado!');
+}
+
+/* -- Modal de registro do teste de opacidade — compartilhado entre a aba
+   "Veículos a Diesel" e o Roteiro de Campo (puxar veículo pra vistoria do
+   dia), pra não duplicar o HTML nas duas páginas. -- */
+function opacModalHtml() {
+  return `
+  <div id="opac-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:5000;align-items:center;justify-content:center;padding:16px">
+    <div style="background:#fff;border-radius:14px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto">
+      <input type="hidden" id="opac-id">
+      <input type="hidden" id="opac-dia">
+      <h3 id="opac-modal-titulo" style="margin:0 0 12px;font-size:1rem">Registrar Teste</h3>
+      <div style="font-size:.72rem;font-weight:700;color:var(--brand-green,#28a745);margin:4px 0 10px;text-transform:uppercase;letter-spacing:.04em">Confirmação do veículo/teste</div>
+      <div class="form-row" style="display:flex;gap:10px">
+        <div class="form-group" style="flex:1"><label>Regional</label>
+          <select id="opac-regional">
+            <option value="">Selecione...</option>
+            <option value="Norte">Norte</option>
+            <option value="Centro">Centro</option>
+            <option value="SIL">SIL</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:1;position:relative"><label>Localidade (Município)</label>
+          <input type="text" id="opac_municipio_input" placeholder="Digite para buscar..." autocomplete="off"
+            oninput="municipioFiltrar(this.value,'opac')" onfocus="municipioFiltrar(this.value,'opac')"
+            onblur="setTimeout(()=>municipioFecharDropdown('opac'),150)">
+          <input type="hidden" id="opac_municipio">
+          <div id="opac_municipio_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+        </div>
+      </div>
+      <div class="form-row" style="display:flex;gap:10px">
+        <div class="form-group" style="flex:1"><label>Frota</label><input type="text" id="opac-frota" placeholder="Nº da frota"></div>
+        <div class="form-group" style="flex:1"><label>Departamento</label><input type="text" id="opac-dpto" placeholder="Departamento"></div>
+      </div>
+      <div class="form-group"><label>Motorista</label>
+        <input type="text" id="opac-motorista" list="opac-motorista-dl" placeholder="Nome do motorista">
+        <datalist id="opac-motorista-dl">${ERO_TECNICOS.map(function(n){ return '<option value="'+n+'">'; }).join('')}</datalist>
+      </div>
+      <div style="font-size:.72rem;font-weight:700;color:var(--brand-green,#28a745);margin:14px 0 10px;text-transform:uppercase;letter-spacing:.04em">Resultado do teste</div>
+      <div class="form-group"><label>Data do Teste</label><input type="date" id="opac-data"></div>
+      <div class="form-group"><label>Resultado</label>
+        <select id="opac-resultado">
+          <option value="Conforme">Conforme</option>
+          <option value="Não Conforme">Não Conforme</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Técnico Responsável</label><input type="text" id="opac-tecnico" placeholder="Nome do técnico"></div>
+      <div class="form-group"><label>Observação</label><textarea id="opac-observacao" rows="2"></textarea></div>
+      <div class="form-group">
+        <label>📎 Laudo do Teste (PDF)</label>
+        <div id="opac-laudo-atual" style="font-size:.76rem;margin-bottom:6px"></div>
+        <input type="file" accept="application/pdf,image/*" onchange="opacLaudoChange(event)">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn-secondary" onclick="opacFecharModal()" style="flex:1">Cancelar</button>
+        <button class="btn-primary" onclick="opacSalvarModal()" style="flex:1">Salvar</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function pageOpacidadeVeiculos() {
   opacCarregar().then(function() { opacRenderizarLista(); opacRenderizarKPIs(); });
+  carregarMunicipiosLista();
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
     <div>
@@ -26307,6 +26434,7 @@ function pageOpacidadeVeiculos() {
       <h1>🚚 Veículos a Diesel — Teste de Opacidade</h1>
       <p>Controle de teste de opacidade da frota. Busque pela placa e registre o resultado quando o teste for realizado.</p>
     </div>
+    ${(currentProfile === 'diretoria' || currentProfile === 'coordenador') ? `<button class="btn-secondary" onclick="opacReiniciarSemestre()">🔄 Reiniciar Semestre</button>` : ''}
   </div>
 
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
@@ -26328,25 +26456,7 @@ function pageOpacidadeVeiculos() {
 
   <div id="opac-wrap" style="padding-bottom:60px"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
 
-  <div id="opac-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:5000;align-items:center;justify-content:center;padding:16px">
-    <div style="background:#fff;border-radius:14px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto">
-      <input type="hidden" id="opac-id">
-      <h3 id="opac-modal-titulo" style="margin:0 0 12px;font-size:1rem">Registrar Teste</h3>
-      <div class="form-group"><label>Data do Teste</label><input type="date" id="opac-data"></div>
-      <div class="form-group"><label>Resultado</label>
-        <select id="opac-resultado">
-          <option value="Conforme">Conforme</option>
-          <option value="Não Conforme">Não Conforme</option>
-        </select>
-      </div>
-      <div class="form-group"><label>Técnico Responsável</label><input type="text" id="opac-tecnico" placeholder="Nome do técnico"></div>
-      <div class="form-group"><label>Observação</label><textarea id="opac-observacao" rows="2"></textarea></div>
-      <div style="display:flex;gap:8px;margin-top:14px">
-        <button class="btn-secondary" onclick="opacFecharModal()" style="flex:1">Cancelar</button>
-        <button class="btn-primary" onclick="opacSalvarModal()" style="flex:1">Salvar</button>
-      </div>
-    </div>
-  </div>
+  ${opacModalHtml()}
   `;
 }
 
@@ -26556,7 +26666,35 @@ function opacRegistroVazio() {
   return {
     id: opacUid(), placa: '', tipo: '', frota: '', dpto: '', regional: '', localidade: '',
     status: 'pendente', data: '', limite: '', resultado: '', tecnico: '', observacao: '',
+    motorista: '', laudoUrl: '', laudoNome: '', historico: [],
   };
+}
+
+/* -- "Reiniciar Semestre": zera o status de TODOS os veículos de volta pra
+   "Não Realizado" de uma vez, guardando o resultado do ciclo anterior em
+   `historico` antes de limpar (não perde o laudo/resultado antigo, só some da
+   tela principal) — pedido em 09/09/2026 pro início dos testes do semestre. -- */
+async function opacReiniciarSemestre() {
+  if (!OPAC_DADOS.length) { showToast('⚠️ Nenhum veículo cadastrado.'); return; }
+  if (!confirm('Reiniciar o semestre de testes de opacidade?\n\nTodos os ' + OPAC_DADOS.length + ' veículo(s) voltam para "❌ Pendente". O resultado do ciclo anterior de cada um fica guardado no histórico do veículo.\n\nConfirma?')) return;
+  const agora = new Date().toISOString();
+  OPAC_DADOS.forEach(function(v) {
+    if (v.status === 'realizado') {
+      v.historico = v.historico || [];
+      v.historico.push({
+        data: v.data, resultado: v.resultado, tecnico: v.tecnico, observacao: v.observacao,
+        motorista: v.motorista, regional: v.regional, localidade: v.localidade,
+        laudoUrl: v.laudoUrl, laudoNome: v.laudoNome, encerradoEm: agora,
+      });
+    }
+    v.status = 'pendente';
+    v.data = ''; v.resultado = ''; v.tecnico = ''; v.observacao = '';
+    v.motorista = ''; v.laudoUrl = ''; v.laudoNome = '';
+  });
+  await opacSalvar();
+  opacRenderizarLista();
+  opacRenderizarKPIs();
+  showToast('🔄 Semestre reiniciado — ' + OPAC_DADOS.length + ' veículo(s) voltaram para "Não Realizado".');
 }
 
 function adcToggleCampos() {
@@ -26765,6 +26903,11 @@ function rotPreencherDatalistVeiculos() {
   }).join('');
 }
 
+/* -- Em vez de criar o item do roteiro em branco, abre o modal de
+   confirmação (Regional/Localidade/Frota/Departamento/Motorista + resultado
+   + laudo) — o item do roteiro só é criado/atualizado quando o modal é
+   salvo (ver opacSalvarModal). Pedido em 09/09/2026: "ao puxar ele pra
+   vistoria tem que abrir os campos de confirmação". -- */
 async function rotAdicionarVeiculoOpacidade(dia) {
   var el = document.getElementById('rot-add-veic-' + dia);
   if (!el) return;
@@ -26775,16 +26918,8 @@ async function rotAdicionarVeiculoOpacidade(dia) {
   if (!veic) { showToast('⚠️ Veículo não encontrado. Selecione uma placa da lista.'); return; }
   var jaExiste = MEA_ADICIONAIS.find(function(a){ return a.veiculoId === veic.id && a.dataProgramada === dia; });
   if (jaExiste) { showToast('⚠️ Este veículo já está no roteiro deste dia.'); return; }
-  var reg = adcRegistroVazio();
-  reg.titulo = 'Teste de Opacidade — ' + veic.placa + (veic.tipo ? (' (' + veic.tipo + ')') : '');
-  reg.descricao = 'Teste de opacidade do veículo a diesel.';
-  reg.dataProgramada = dia;
-  reg.veiculoId = veic.id;
-  MEA_ADICIONAIS.push(reg);
-  await adcSalvar();
   el.value = '';
-  rotRenderizar();
-  showToast('✅ Teste de opacidade de '+veic.placa+' adicionado ao roteiro do dia.');
+  opacAbrirModal(veic.id, dia);
 }
 
 function rotRenderStopHtml(x, dia, seqIdx) {
@@ -26853,6 +26988,19 @@ function rotRenderAdcHtml(a, dia, seqIdx) {
   var equipe = [a.tecnico1, a.tecnico2].filter(Boolean).join(' / ');
   var mapsQuery = a.coordenadas || a.localizacao;
   var mapsLink = mapsQuery ? '<a href="https://www.google.com/maps?q='+encodeURIComponent(mapsQuery)+'" target="_blank" style="font-size:.7rem;color:var(--brand-green);font-weight:600;text-decoration:none;white-space:nowrap">📍 Abrir no Maps</a>' : '';
+  // Item de Teste de Opacidade "puxado" pro roteiro tem um card levemente
+  // diferente (rótulo + botão de editar reabrindo o modal de opacidade com
+  // Regional/Localidade/Frota/Departamento/Motorista/Laudo, em vez do modal
+  // genérico de Serviço Adicional).
+  var veic = a.veiculoId ? OPAC_DADOS.find(function(v){ return v.id === a.veiculoId; }) : null;
+  var rotuloTipo = veic ? '⠿ 🚚 TESTE DE OPACIDADE' : '⠿ ⚠️ SERVIÇO ADICIONAL';
+  var onclickEditar = veic ? ('opacAbrirModal(\''+veic.id+'\',\''+dia+'\')') : ('adcAbrirModal(\''+a.id+'\')');
+  var infoVeicHtml = veic ? (
+    ([veic.regional, veic.localidade].filter(Boolean).join(' — ') ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">📍 '+[veic.regional, veic.localidade].filter(Boolean).join(' — ')+'</div>' : '') +
+    ([veic.frota, veic.dpto].filter(Boolean).join(' · ') ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">🚚 '+[veic.frota, veic.dpto].filter(Boolean).join(' · ')+'</div>' : '') +
+    (veic.motorista ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">👤 Motorista: '+veic.motorista+'</div>' : '') +
+    (veic.laudoUrl ? '<div style="font-size:.72rem;margin-top:2px"><a href="'+veic.laudoUrl+'" target="_blank" style="color:var(--brand-green);font-weight:600;text-decoration:none">📎 Ver laudo</a></div>' : '')
+  ) : '';
   var extraHtml = (a.pernoite ? '<div style="font-size:.72rem;color:#8a5a00;margin-top:2px">🛏️ Pernoite: '+a.pernoite+'</div>' : '') +
     (a.lssNumero ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">🔑 LSS nº '+a.lssNumero+'</div>' : '') +
     (a.observacao ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">📝 '+a.observacao+'</div>' : '');
@@ -26864,8 +27012,8 @@ function rotRenderAdcHtml(a, dia, seqIdx) {
     ' ondrop="event.preventDefault();this.style.outline=\'\';rotReordenar(\''+dia+'\',event.dataTransfer.getData(\'text/plain\'),\''+seqIdx+'\')"' +
     ' style="background:#fffcf5;border:2px solid '+(st==='programada'?'#fd7e14':corSt)+';border-radius:10px;margin-bottom:8px;overflow:hidden;cursor:grab'+(st==='realizada'?';opacity:.8':'')+'">' +
     '<div style="background:#fdf3dc;padding:6px 14px;font-size:.68rem;font-weight:700;color:#c9822a;display:flex;justify-content:space-between;align-items:center">' +
-    '<span>⠿ ⚠️ SERVIÇO ADICIONAL</span>' +
-    '<span><button onclick="adcAbrirModal(\''+a.id+'\')" style="background:none;border:none;cursor:pointer;font-size:.85rem">✏️</button></span>' +
+    '<span>'+rotuloTipo+'</span>' +
+    '<span><button onclick="'+onclickEditar+'" style="background:none;border:none;cursor:pointer;font-size:.85rem">✏️</button></span>' +
     '</div>' +
     '<div style="padding:12px 14px">' +
     '<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">' +
@@ -26874,6 +27022,7 @@ function rotRenderAdcHtml(a, dia, seqIdx) {
     (a.descricao ? '<div style="font-size:.76rem;color:var(--text-muted);margin-top:2px">'+a.descricao+'</div>' : '') +
     (equipe ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">👷 '+equipe+'</div>' : '') +
     (a.localizacao ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">📍 '+a.localizacao+'</div>' : '') +
+    infoVeicHtml +
     extraHtml +
     '</div>' +
     '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px">' +
@@ -27323,6 +27472,7 @@ async function rotExportarPDF(diaFiltro) {
 function pageRoteiroERO() {
   if (!window._rotDataIni) { window._rotDataIni = rotHojeISO(0); window._rotDataFim = rotHojeISO(6); }
   Promise.all([meaCarregar(), adcCarregar(), opacCarregar()]).then(function() { rotRenderizar(); rotPreencherDatalistEmpreendimentos(); rotPreencherDatalistVeiculos(); });
+  carregarMunicipiosLista();
   return `
   <div style="background:var(--brand-brown);color:#fff;border-radius:16px;padding:20px 20px 18px;margin-bottom:16px">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
@@ -27442,6 +27592,8 @@ function pageRoteiroERO() {
       </div>
     </div>
   </div>
+
+  ${opacModalHtml()}
   `;
 }
 
@@ -45176,6 +45328,7 @@ const OD_FOLDERS = {
   roteiroFotos: 'Energisa/Roteiro/Fotos',
   flashReportsFaunaFotos: 'Fauna/FlashReports/Fotos',
   licenciamentoProcessos: 'Licenciamento/Processos',
+  opacidadeLaudos: 'Checklists/Opacidade/Laudos',
 };
 
 /* Monta "pastaBase/AAAA-MM" (subpasta do mês corrente) — usado por todos os
