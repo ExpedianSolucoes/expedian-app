@@ -23033,6 +23033,18 @@ function _servicosPodeLancar() {
   return currentProfile === 'diretoria' || currentProfile === 'coordenador';
 }
 
+// Acha o Centro de Custo da Frota que corresponde ao veículo escolhido no
+// lançamento (ex: veiculo="Caminhão Baú - BDB3G34" → CC-018 "Frota - Caminhão
+// Baú - BDB3G34") — usado pra sugerir automaticamente o CC de destino na
+// Transferência entre Contas de locação de veículo próprio (pedido 10/09/2026).
+function servFrotaCCPorVeiculo(veiculo) {
+  if (!veiculo) return null;
+  const alvo = String(veiculo).trim().toLowerCase();
+  return (centrosCustoData || []).find(c =>
+    /^Frota\s*-/.test(c.contrato) && c.contrato.replace(/^Frota\s*-\s*/, '').trim().toLowerCase() === alvo
+  ) || null;
+}
+
 // Descobre a empresa do lançamento a partir do Centro de Custo escolhido
 // (formato "CC-XXX · Nome do contrato") — usada para saber qual lista de
 // bancos mostrar ao registrar o pagamento e qual Empresa gravar na Despesa
@@ -24343,6 +24355,8 @@ async function servAbrirPagamento(id) {
   // Transferência entre Contas em vez de Pagamento normal — pedido 10/09/2026.
   window._servPagTipo = 'normal';
   const ehVeiculo = l.tipo === 'veiculos';
+  const frotaCCs = ehVeiculo ? (centrosCustoData || []).filter(c => /^Frota\s*-/.test(c.contrato)) : [];
+  const frotaMatch = ehVeiculo ? servFrotaCCPorVeiculo(l.veiculo) : null;
 
   const modal = document.createElement('div');
   modal.id = 'serv-pag-modal';
@@ -24371,13 +24385,26 @@ async function servAbrirPagamento(id) {
         </select>
       </div>
       <div id="servp_campos_transf" style="display:none;margin-bottom:16px">
-        <div class="form-row" style="display:flex;gap:10px">
-          <div class="form-group" style="flex:1"><label>Conta de Origem (sai)</label>
-            <select id="servp_trf_origem">${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}</select>
+        <div class="form-row" style="display:flex;gap:10px;margin-bottom:12px">
+          <div class="form-group" style="flex:1">
+            <label>Centro de Custo de Origem (sai)</label>
+            <input type="text" value="${(l.cc||'—').replace(/"/g,'&quot;')}" disabled style="opacity:.75;background:var(--surface2)">
+            <small style="color:var(--text-muted)">Já definido no lançamento.</small>
           </div>
-          <div class="form-group" style="flex:1"><label>Conta de Destino (entra)</label>
-            <select id="servp_trf_destino">${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}</select>
+          <div class="form-group" style="flex:1">
+            <label>Centro de Custo de Destino (entra)</label>
+            <select id="servp_trf_ccdestino">
+              <option value="">Selecione...</option>
+              ${frotaCCs.map(c => { const label = c.id + ' · ' + c.contrato; return `<option value="${label.replace(/"/g,'&quot;')}" ${frotaMatch && frotaMatch.id===c.id?'selected':''}>${label}</option>`; }).join('')}
+            </select>
+            <small style="color:var(--text-muted)">${frotaMatch ? '✓ Sugerido pelo veículo do lançamento.' : 'Nenhum CC de frota casou com o veículo — selecione manualmente.'}</small>
           </div>
+        </div>
+        <div class="form-group"><label>Conta/Banco (contábil — mesma conta nos dois lados, não é uma movimentação bancária real)</label>
+          <select id="servp_trf_banco">
+            <option value="">Selecione...</option>
+            ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
+          </select>
         </div>
       </div>
       <button class="btn-primary" style="width:100%" onclick="servConfirmarPagamento(${id})">💾 Confirmar</button>
@@ -24402,13 +24429,13 @@ async function servConfirmarPagamento(id) {
   if (!dataPag) { showToast('⚠️ Informe a data do pagamento.'); return; }
 
   if (window._servPagTipo === 'transferencia') {
-    const contaOrigem = (document.getElementById('servp_trf_origem')||{}).value;
-    const contaDestino = (document.getElementById('servp_trf_destino')||{}).value;
-    if (!contaOrigem || !contaDestino) { showToast('⚠️ Selecione as duas contas.'); return; }
-    if (contaOrigem === contaDestino) { showToast('⚠️ A conta de origem e a de destino precisam ser diferentes.'); return; }
-    const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: contaOrigem, FormaPagamentoServico: 'Transferência entre Contas' });
-    if (ok) await servSincronizarTransferencia(id, dataPag, contaOrigem, contaDestino);
-    showToast(ok ? '✅ Transferência entre contas registrada!' : '❌ Erro ao registrar.');
+    const ccDestino = (document.getElementById('servp_trf_ccdestino')||{}).value;
+    const banco = (document.getElementById('servp_trf_banco')||{}).value;
+    if (!ccDestino) { showToast('⚠️ Selecione o Centro de Custo de destino (frota).'); return; }
+    if (!banco) { showToast('⚠️ Selecione a conta/banco.'); return; }
+    const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco, FormaPagamentoServico: 'Transferência entre Contas', CentroCustoDestino: ccDestino });
+    if (ok) await servSincronizarTransferencia(id, dataPag, banco, ccDestino);
+    showToast(ok ? '✅ Transferência entre Centros de Custo registrada!' : '❌ Erro ao registrar.');
     const m = document.getElementById('serv-pag-modal'); if (m) m.remove();
     setTimeout(() => carregarLancamentosServicos(), 600);
     return;
@@ -24425,10 +24452,13 @@ async function servConfirmarPagamento(id) {
 
 // Locação de veículo próprio marcada como "Transferência entre Contas": em
 // vez de gerar só uma Despesa (como um pagamento normal a fornecedor), gera o
-// par Despesa (saída, conta de origem) + Receita (entrada, conta de destino)
-// com a mesma categoria "Transferências entre contas" usada no módulo de
-// Transferências — mesmo padrão de transferenciaSalvar() — pedido 10/09/2026.
-async function servSincronizarTransferencia(id, dataPag, contaOrigem, contaDestino) {
+// par Despesa (saída, no CC de origem — o CC já escolhido no lançamento) +
+// Receita (entrada, no CC de destino — o CC da frota do veículo usado), mesma
+// categoria "Transferências entre contas" usada no módulo de Transferências.
+// É uma realocação de orçamento entre Centros de Custo, não uma movimentação
+// bancária real — por isso os dois lados usam a mesma conta/banco (informado
+// só pra fins contábeis/conciliação) — pedido 10/09/2026.
+async function servSincronizarTransferencia(id, dataPag, banco, ccDestino) {
   try {
     const todos = await dbLer('Lancamentos_Servicos');
     const l = todos.find(x => x.Id === id);
@@ -24438,29 +24468,29 @@ async function servSincronizarTransferencia(id, dataPag, contaOrigem, contaDesti
     const transferenciaId = 'TRF-SERV-' + Date.now();
     const descricaoBase = 'Locação interna de veículo: ' + (l.descServico || '') + (l.veiculo ? ' — ' + l.veiculo : '');
     const despesa = await dbInserir('Despesas', {
-      Title: 'Transferência (locação interna) para ' + contaDestino + ' · ' + dataPag,
+      Title: 'Transferência (locação interna) para ' + ccDestino + ' · ' + dataPag,
       DataLancamento: l.dataISO || dataPag, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
       Modalidade: 'fornecedor', NaturezaEconomica: 'Não Operacional',
       ServicoId: l.codServico || '', ServicoDesc: l.descServico || '', Fornecedor: 'Transferência Interna', Beneficiario: l.benef || '', Veiculo: l.veiculo || '',
       CentroCusto: l.cc || '', Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
-      ResponsavelLancamento: l.resp || responsavel, Empresa: empresa, DataPagamento: dataPag, Banco: contaOrigem,
+      ResponsavelLancamento: l.resp || responsavel, Empresa: empresa, DataPagamento: dataPag, Banco: banco,
       NumMedicao: l.medicao || '', Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
       Vencimento: l.dataISO || '', Valor: l.total || 0, ValorTotal: l.total || 0, Status: 'Pago',
       NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: [],
       LancadoPor: responsavel, Descricao: descricaoBase,
-      TransferenciaId: transferenciaId, TransferenciaContraparte: contaDestino,
+      TransferenciaId: transferenciaId, TransferenciaContraparte: ccDestino,
       LancamentoServicoId: l.Id, OrigemLancamentoServico: true,
     });
     const receita = await dbInserir('Receitas', {
-      Title: 'Transferência (locação interna) de ' + contaOrigem + ' · ' + dataPag,
+      Title: 'Transferência (locação interna) de ' + (l.cc || '—') + ' · ' + dataPag,
       DataEmissao: l.dataISO || dataPag, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
       NaturezaEconomica: 'Não Operacional', Cliente: 'Transferência Interna', Descricao: descricaoBase,
-      CentroCusto: l.cc || '', Valor: l.total || 0, DataPrevista: dataPag, FormaRecebimento: 'Transferência',
-      ResponsavelLancamento: l.resp || responsavel, DataRecebimento: dataPag, Banco: contaDestino,
+      CentroCusto: ccDestino || '', Valor: l.total || 0, DataPrevista: dataPag, FormaRecebimento: 'Transferência',
+      ResponsavelLancamento: l.resp || responsavel, DataRecebimento: dataPag, Banco: banco,
       Status: 'Recebido', NumMedicao: l.medicao || '', NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
       OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
       ValorLiquido: l.total || 0, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
-      LancadoPor: responsavel, TransferenciaId: transferenciaId, TransferenciaContraparte: contaOrigem,
+      LancadoPor: responsavel, TransferenciaId: transferenciaId, TransferenciaContraparte: l.cc || '',
     });
     if (despesa && despesa.Id) await dbAtualizar('Lancamentos_Servicos', id, { DespesaId: despesa.Id, ReceitaTransferenciaId: (receita && receita.Id) || null });
   } catch (e) { console.warn('[Serviços] Falha ao sincronizar transferência', e); }
