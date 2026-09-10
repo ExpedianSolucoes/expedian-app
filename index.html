@@ -25626,6 +25626,53 @@ if (typeof window._eroHistorico === 'undefined') window._eroHistorico = null; //
 if (typeof window._eroDashFiltroMes === 'undefined') window._eroDashFiltroMes = '';
 if (typeof window._eroDashFiltroAno === 'undefined') window._eroDashFiltroAno = '';
 if (typeof window._eroDashFiltroSemestre === 'undefined') window._eroDashFiltroSemestre = '';
+// Histórico de Empreendimentos Inspecionados vem fechado (lista suspensa) —
+// pedido 10/09/2026, pra não ocupar a tela toda; clique no título abre/fecha.
+if (typeof window._eroHistoricoAberto === 'undefined') window._eroHistoricoAberto = false;
+// Seletor "Novo Checklist" a partir de vistorias já concluídas (idem).
+if (typeof window._eroPickerAberto === 'undefined') window._eroPickerAberto = false;
+function eroToggleHistorico() { window._eroHistoricoAberto = !window._eroHistoricoAberto; navigate('checklist_ero'); }
+
+/* -- Empreendimentos com vistoria de campo já concluída (MEA_DADOS,
+   vistoria.status==='realizada') que ainda não têm um checklist de inspeção
+   correspondente lançado (ChecklistERO/_eroHistorico) — pedido 10/09/2026:
+   sincronizar o "Novo Checklist" com as vistorias concluídas, e sumir da
+   lista assim que o checklist daquela vistoria for salvo. Considera "já tem
+   checklist" quando existe um registro de histórico com o MESMO nome de
+   empreendimento e data >= data da vistoria (assim, se uma vistoria nova for
+   refeita depois, o empreendimento volta a aparecer como pendente). -- */
+function eroPendentesChecklist() {
+  const hist = Array.isArray(window._eroHistorico) ? window._eroHistorico : [];
+  return (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(e) {
+    const v = e.vistoria || {};
+    if (v.status !== 'realizada') return false;
+    const nome = (e.empreendimento || '').trim().toLowerCase();
+    if (!nome) return false;
+    const dataVist = v.data || v.dataProgramada || '';
+    const jaTemChecklist = hist.some(function(h) {
+      return (h.empreendimento || '').trim().toLowerCase() === nome && (!dataVist || (h.data || '') >= dataVist);
+    });
+    return !jaTemChecklist;
+  });
+}
+function eroAbrirNovoChecklist() { window._eroPickerAberto = true; navigate('checklist_ero'); }
+function eroFecharPicker() { window._eroPickerAberto = false; navigate('checklist_ero'); }
+function eroIniciarChecklistDe(id) {
+  const e = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).find(function(x) { return x.id === id; });
+  if (!e) return;
+  const v = e.vistoria || {};
+  window._eroData = {
+    empreendimento: e.empreendimento || '',
+    tecnico1: v.tecnico1 || '',
+    tecnico2: v.tecnico2 || '',
+    data: v.data || '',
+    elaboracao: 'Energisa Rondônia',
+  };
+  window._eroRegistroAtualId = null;
+  window._eroPickerAberto = false;
+  navigate('checklist_ero');
+  showToast('📋 Checklist iniciado para ' + (e.empreendimento || '') + ' — dados da vistoria já preenchidos.');
+}
 
 const ERO_MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
@@ -25799,9 +25846,11 @@ function renderEROMiniDashboard() {
 
     ${eroHtmlResumoPorSemestre(historico)}
 
-    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
-      Histórico de Empreendimentos Inspecionados
+    <div onclick="eroToggleHistorico()" style="cursor:pointer;display:flex;align-items:center;gap:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px;user-select:none">
+      <span style="display:inline-block;transition:transform .15s;transform:rotate(${window._eroHistoricoAberto?90:0}deg)">▸</span>
+      Histórico de Empreendimentos Inspecionados ${window._eroHistorico !== null ? `(${filtrados.length})` : ''}
     </div>
+    ${window._eroHistoricoAberto ? `
     <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
       ${window._eroHistorico === null
         ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Carregando histórico...</div>`
@@ -25826,6 +25875,7 @@ function renderEROMiniDashboard() {
             </div>`).join('')
       }
     </div>
+    ` : ''}
   </div>
   `;
 }
@@ -27953,12 +28003,51 @@ function pageChecklistEROForm() {
   const gap = (totalAlcancado - totalPossivel).toFixed(1);
   const scoreColor = pct >= 80 ? 'var(--green-main)' : pct >= 60 ? 'var(--amber)' : 'var(--red)';
 
+  const pendentes = eroPendentesChecklist();
+
   return `
   <div class="page-header">
-    <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="window._meaAba='dashboard';navigate('checklist_ero')">← Voltar ao Monitoramento Ambiental</button>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+      <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="window._meaAba='dashboard';navigate('checklist_ero')">← Voltar ao Monitoramento Ambiental</button>
+      <button class="btn-primary" style="margin-bottom:10px;font-size:.8rem;padding:6px 14px;position:relative" onclick="eroAbrirNovoChecklist()">
+        🆕 Novo Checklist
+        ${pendentes.length > 0 ? `<span style="position:absolute;top:-8px;right:-8px;background:var(--red);color:#fff;border-radius:10px;font-size:.65rem;font-weight:700;padding:1px 6px;line-height:1.4">${pendentes.length}</span>` : ''}
+      </button>
+    </div>
     <h1>Checklist de Inspeção Ambiental</h1>
     <p>ERO – Energisa Rondônia · Revisão 5 · Código: 8.1-09 · Área: Supervisão de Meio Ambiente</p>
   </div>
+
+  ${window._eroPickerAberto ? `
+  <div style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:5000;display:flex;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this) eroFecharPicker()">
+    <div class="card" style="max-width:560px;width:100%;max-height:80vh;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="card-title" style="margin-bottom:0">🆕 Novo Checklist — Vistorias com Inspeção Concluída</div>
+        <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="eroFecharPicker()">✕ Fechar</button>
+      </div>
+      <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:10px">
+        Selecione um empreendimento com vistoria de campo já realizada para iniciar o checklist com os dados pré-preenchidos. Assim que o checklist for salvo, ele sai desta lista.
+      </div>
+      <div style="overflow-y:auto;flex:1;border:1px solid var(--border);border-radius:10px">
+        ${pendentes.length === 0
+          ? `<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:.82rem">Nenhuma vistoria concluída aguardando checklist no momento.</div>`
+          : pendentes.map((e, idx) => `
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;${idx%2===0?'background:var(--surface)':'background:var(--surface2)'};${idx<pendentes.length-1?'border-bottom:1px solid var(--border)':''}" onclick="eroIniciarChecklistDe(${e.id})">
+              <div style="flex:1;min-width:140px">
+                <div style="font-size:.82rem;font-weight:700">${e.empreendimento || 'Sem nome'}</div>
+                <div style="font-size:.68rem;color:var(--text-muted)">${e.regional || e.municipio || ''}</div>
+              </div>
+              <div style="font-size:.75rem;color:var(--text-muted);min-width:80px;text-align:right">
+                ${(e.vistoria && e.vistoria.data) ? new Date(e.vistoria.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}
+              </div>
+              <button class="btn-primary" style="padding:4px 10px;font-size:.7rem;flex-shrink:0" onclick="event.stopPropagation();eroIniciarChecklistDe(${e.id})">Usar</button>
+            </div>`).join('')
+        }
+      </div>
+      <div style="margin-top:10px;font-size:.7rem;color:var(--text-muted)">Não achou o empreendimento? Feche esta janela e preencha o campo "Nome do Empreendimento" manualmente abaixo.</div>
+    </div>
+  </div>
+  ` : ''}
 
   ${renderEROMiniDashboard()}
 
