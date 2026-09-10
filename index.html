@@ -24336,39 +24336,134 @@ async function servAbrirPagamento(id) {
 
   const empresa = servEmpresaDoCC(l.cc);
   const bancos = bancosDaEmpresa(empresa);
+  // Locação de veículo PRÓPRIO da frota (ex: "Caminhão Tanque - RKS3C14") não é
+  // pagamento a um fornecedor externo — é uma movimentação interna entre contas
+  // da empresa (o CC "paga" pelo uso do veículo, o valor vai pra conta da
+  // frota). Por isso, só pra tipo "veiculos", dá a opção de registrar como
+  // Transferência entre Contas em vez de Pagamento normal — pedido 10/09/2026.
+  window._servPagTipo = 'normal';
+  const ehVeiculo = l.tipo === 'veiculos';
 
   const modal = document.createElement('div');
   modal.id = 'serv-pag-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
   modal.innerHTML = `
-    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:420px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:440px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.4)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
         <div style="font-weight:800;font-size:1rem">💳 Registrar Pagamento</div>
         <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('serv-pag-modal').remove()">✕</div>
       </div>
       <div style="font-size:.82rem;color:var(--text-muted);margin-bottom:14px">${l.descServico||'—'} · ${l.benef||'—'} · <strong>${fmtBRL(l.total)}</strong></div>
+      ${ehVeiculo ? `
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Tipo de Pagamento</label>
+        <div style="display:flex;gap:8px">
+          <button type="button" id="servp_btn_normal" class="btn-primary" style="flex:1;padding:8px;font-size:.78rem" onclick="servPagTipoSelecionar('normal')">💳 Pagamento Normal</button>
+          <button type="button" id="servp_btn_transf" class="btn-secondary" style="flex:1;padding:8px;font-size:.78rem" onclick="servPagTipoSelecionar('transferencia')">🔁 Transferência entre Contas</button>
+        </div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:5px">Veículo próprio da frota? Use "Transferência entre Contas" — não é pagamento a fornecedor externo, é movimentação interna entre as contas da empresa.</div>
+      </div>` : ''}
       <div class="form-group" style="margin-bottom:10px"><label>Data do Pagamento</label><input type="date" id="servp_data" value="${new Date().toISOString().split('T')[0]}"></div>
-      <div class="form-group" style="margin-bottom:16px"><label>Banco</label>
+      <div id="servp_campos_normal" class="form-group" style="margin-bottom:16px"><label>Banco</label>
         <select id="servp_banco">
           <option value="">Selecione...</option>
           ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
         </select>
       </div>
-      <button class="btn-primary" style="width:100%" onclick="servConfirmarPagamento(${id})">💾 Confirmar Pagamento</button>
+      <div id="servp_campos_transf" style="display:none;margin-bottom:16px">
+        <div class="form-row" style="display:flex;gap:10px">
+          <div class="form-group" style="flex:1"><label>Conta de Origem (sai)</label>
+            <select id="servp_trf_origem">${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}</select>
+          </div>
+          <div class="form-group" style="flex:1"><label>Conta de Destino (entra)</label>
+            <select id="servp_trf_destino">${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}</select>
+          </div>
+        </div>
+      </div>
+      <button class="btn-primary" style="width:100%" onclick="servConfirmarPagamento(${id})">💾 Confirmar</button>
     </div>`;
   document.body.appendChild(modal);
 }
 
+function servPagTipoSelecionar(tipo) {
+  window._servPagTipo = tipo;
+  const btnNormal = document.getElementById('servp_btn_normal');
+  const btnTransf = document.getElementById('servp_btn_transf');
+  const campNormal = document.getElementById('servp_campos_normal');
+  const campTransf = document.getElementById('servp_campos_transf');
+  if (btnNormal) btnNormal.className = tipo === 'normal' ? 'btn-primary' : 'btn-secondary';
+  if (btnTransf) btnTransf.className = tipo === 'transferencia' ? 'btn-primary' : 'btn-secondary';
+  if (campNormal) campNormal.style.display = tipo === 'normal' ? '' : 'none';
+  if (campTransf) campTransf.style.display = tipo === 'transferencia' ? 'block' : 'none';
+}
+
 async function servConfirmarPagamento(id) {
   const dataPag = (document.getElementById('servp_data')||{}).value;
-  const banco = (document.getElementById('servp_banco')||{}).value;
   if (!dataPag) { showToast('⚠️ Informe a data do pagamento.'); return; }
+
+  if (window._servPagTipo === 'transferencia') {
+    const contaOrigem = (document.getElementById('servp_trf_origem')||{}).value;
+    const contaDestino = (document.getElementById('servp_trf_destino')||{}).value;
+    if (!contaOrigem || !contaDestino) { showToast('⚠️ Selecione as duas contas.'); return; }
+    if (contaOrigem === contaDestino) { showToast('⚠️ A conta de origem e a de destino precisam ser diferentes.'); return; }
+    const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: contaOrigem, FormaPagamentoServico: 'Transferência entre Contas' });
+    if (ok) await servSincronizarTransferencia(id, dataPag, contaOrigem, contaDestino);
+    showToast(ok ? '✅ Transferência entre contas registrada!' : '❌ Erro ao registrar.');
+    const m = document.getElementById('serv-pag-modal'); if (m) m.remove();
+    setTimeout(() => carregarLancamentosServicos(), 600);
+    return;
+  }
+
+  const banco = (document.getElementById('servp_banco')||{}).value;
   if (!banco) { showToast('⚠️ Selecione o banco.'); return; }
   const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco });
   if (ok) await servSincronizarDespesa(id, dataPag, banco);
   showToast(ok ? '✅ Pagamento registrado!' : '❌ Erro ao registrar pagamento.');
   const m = document.getElementById('serv-pag-modal'); if (m) m.remove();
   setTimeout(() => carregarLancamentosServicos(), 600);
+}
+
+// Locação de veículo próprio marcada como "Transferência entre Contas": em
+// vez de gerar só uma Despesa (como um pagamento normal a fornecedor), gera o
+// par Despesa (saída, conta de origem) + Receita (entrada, conta de destino)
+// com a mesma categoria "Transferências entre contas" usada no módulo de
+// Transferências — mesmo padrão de transferenciaSalvar() — pedido 10/09/2026.
+async function servSincronizarTransferencia(id, dataPag, contaOrigem, contaDestino) {
+  try {
+    const todos = await dbLer('Lancamentos_Servicos');
+    const l = todos.find(x => x.Id === id);
+    if (!l || l.DespesaId) return; // já sincronizado antes — não duplica
+    const empresa = normalizarEmpresa(servEmpresaDoCC(l.cc));
+    const responsavel = window._currentUser ? window._currentUser.name : '';
+    const transferenciaId = 'TRF-SERV-' + Date.now();
+    const descricaoBase = 'Locação interna de veículo: ' + (l.descServico || '') + (l.veiculo ? ' — ' + l.veiculo : '');
+    const despesa = await dbInserir('Despesas', {
+      Title: 'Transferência (locação interna) para ' + contaDestino + ' · ' + dataPag,
+      DataLancamento: l.dataISO || dataPag, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
+      Modalidade: 'fornecedor', NaturezaEconomica: 'Não Operacional',
+      ServicoId: l.codServico || '', ServicoDesc: l.descServico || '', Fornecedor: 'Transferência Interna', Beneficiario: l.benef || '', Veiculo: l.veiculo || '',
+      CentroCusto: l.cc || '', Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
+      ResponsavelLancamento: l.resp || responsavel, Empresa: empresa, DataPagamento: dataPag, Banco: contaOrigem,
+      NumMedicao: l.medicao || '', Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
+      Vencimento: l.dataISO || '', Valor: l.total || 0, ValorTotal: l.total || 0, Status: 'Pago',
+      NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: [],
+      LancadoPor: responsavel, Descricao: descricaoBase,
+      TransferenciaId: transferenciaId, TransferenciaContraparte: contaDestino,
+      LancamentoServicoId: l.Id, OrigemLancamentoServico: true,
+    });
+    const receita = await dbInserir('Receitas', {
+      Title: 'Transferência (locação interna) de ' + contaOrigem + ' · ' + dataPag,
+      DataEmissao: l.dataISO || dataPag, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
+      NaturezaEconomica: 'Não Operacional', Cliente: 'Transferência Interna', Descricao: descricaoBase,
+      CentroCusto: l.cc || '', Valor: l.total || 0, DataPrevista: dataPag, FormaRecebimento: 'Transferência',
+      ResponsavelLancamento: l.resp || responsavel, DataRecebimento: dataPag, Banco: contaDestino,
+      Status: 'Recebido', NumMedicao: l.medicao || '', NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
+      OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
+      ValorLiquido: l.total || 0, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
+      LancadoPor: responsavel, TransferenciaId: transferenciaId, TransferenciaContraparte: contaOrigem,
+    });
+    if (despesa && despesa.Id) await dbAtualizar('Lancamentos_Servicos', id, { DespesaId: despesa.Id, ReceitaTransferenciaId: (receita && receita.Id) || null });
+  } catch (e) { console.warn('[Serviços] Falha ao sincronizar transferência', e); }
 }
 
 // Ao marcar um lançamento de serviço como Pago, gera automaticamente o
