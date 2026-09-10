@@ -23741,6 +23741,57 @@ function servLimparFiltros() {
 // retroativa de algo que já era considerado válido.
 function servStatusDe(l) { return l.Status || 'A Pagar'; }
 
+/* -- Dois gráficos de pizza (valor e quantidade) comparando Diárias/Veículos/
+   Projetos no Dashboard de Lançamentos de Serviços, respeitando o filtro de
+   mês selecionado (pedido 10/09/2026). -- */
+async function servRenderGraficosPizza(valores, quantidades) {
+  const cValor = document.getElementById('serv-pizza-valor');
+  const cQtd = document.getElementById('serv-pizza-qtd');
+  if (!cValor && !cQtd) return;
+  try {
+    if (typeof Chart === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const labels = ['Diárias', 'Veículos', 'Projetos'];
+    const cores = ['#e0a800', '#4472C4', '#28a745'];
+    const cValorAtual = document.getElementById('serv-pizza-valor');
+    if (cValorAtual) {
+      if (window._servPizzaValor) { window._servPizzaValor.destroy(); window._servPizzaValor = null; }
+      window._servPizzaValor = new Chart(cValorAtual.getContext('2d'), {
+        type: 'pie',
+        data: { labels, datasets: [{ data: valores, backgroundColor: cores }] },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { boxWidth: 8, font: { size: 9 }, padding: 6 } },
+            tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + fmtBRL(ctx.parsed) } },
+          },
+        },
+      });
+    }
+    const cQtdAtual = document.getElementById('serv-pizza-qtd');
+    if (cQtdAtual) {
+      if (window._servPizzaQtd) { window._servPizzaQtd.destroy(); window._servPizzaQtd = null; }
+      window._servPizzaQtd = new Chart(cQtdAtual.getContext('2d'), {
+        type: 'pie',
+        data: { labels, datasets: [{ data: quantidades, backgroundColor: cores }] },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { boxWidth: 8, font: { size: 9 }, padding: 6 } },
+            tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + ctx.parsed + ' lançamento(s)' } },
+          },
+        },
+      });
+    }
+  } catch (e) { /* Chart.js indisponível (offline) — gráficos só não aparecem, resto da página segue normal */ }
+}
+
 async function carregarLancamentosServicos() {
   const el = document.getElementById('servicos-lancamentos-container');
   if (!el) return;
@@ -23750,17 +23801,23 @@ async function carregarLancamentosServicos() {
   lancamentos = items;
 
   const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
-  const total = items.reduce((s,l) => s + (Number(l.total)||0), 0);
-  const porTipo = t => items.filter(l=>l.tipo===t).reduce((s,l)=>s+(Number(l.total)||0),0);
+
+  // Filtros lidos do DOM (se já renderizado antes) para preservar seleção —
+  // lido ANTES do cálculo do dashboard pra que selecionar o mês mude também
+  // os cards/gráficos do topo, não só a tabela de baixo (pedido 10/09/2026).
+  SERV_FILTRO_MES = (document.getElementById('serv_filtro_mes')||{}).value || SERV_FILTRO_MES;
   const mesAtual = new Date().toISOString().slice(0,7);
-  const porStatus = st => items.filter(l => servStatusDe(l) === st);
+  const mesKpi = SERV_FILTRO_MES || mesAtual;
+  const itemsKpi = SERV_FILTRO_MES ? items.filter(l => (l.dataISO||'').slice(0,7) === SERV_FILTRO_MES) : items;
+  const total = itemsKpi.reduce((s,l) => s + (Number(l.total)||0), 0);
+  const porTipo = t => itemsKpi.filter(l=>l.tipo===t).reduce((s,l)=>s+(Number(l.total)||0),0);
+  const qtdPorTipo = t => itemsKpi.filter(l=>l.tipo===t).length;
+  const porStatus = st => itemsKpi.filter(l => servStatusDe(l) === st);
   const aguardando = porStatus('Aguardando Aprovação');
   const aPagar = porStatus('A Pagar');
   const pagos = porStatus('Pago');
-  const pagosMes = pagos.filter(l => (l.DataPagamento||'').slice(0,7) === mesAtual);
+  const pagosMes = pagos.filter(l => (l.DataPagamento||'').slice(0,7) === mesKpi);
 
-  // Filtros lidos do DOM (se já renderizado antes) para preservar seleção
-  SERV_FILTRO_MES = (document.getElementById('serv_filtro_mes')||{}).value || SERV_FILTRO_MES;
   SERV_FILTRO_TIPO = (document.getElementById('serv_filtro_tipo')||{}).value || SERV_FILTRO_TIPO;
   SERV_FILTRO_RESP = ((document.getElementById('serv_filtro_resp')||{}).value || SERV_FILTRO_RESP);
   SERV_FILTRO_BENEF = ((document.getElementById('serv_filtro_benef')||{}).value || SERV_FILTRO_BENEF);
@@ -23792,6 +23849,19 @@ async function carregarLancamentosServicos() {
     <div class="kpi-card amber"><div class="kpi-label">Diárias (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(porTipo('diarias'))}</div><div class="kpi-icon">👷</div></div>
     <div class="kpi-card"><div class="kpi-label">Veículos (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(porTipo('veiculos'))}</div><div class="kpi-icon">🚗</div></div>
     <div class="kpi-card"><div class="kpi-label">Projetos (R$)</div><div class="kpi-value" style="font-size:1.3rem">${fmtBRL(porTipo('projetos'))}</div><div class="kpi-icon">📋</div></div>
+  </div>
+  <!-- Dois gráficos de pizza comparando Diárias/Veículos/Projetos (valor e
+       quantidade), reagindo ao mês selecionado no filtro logo abaixo —
+       pedido 10/09/2026. -->
+  <div class="card" style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:20px">
+    <div style="flex:1;min-width:220px">
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-align:center">💰 Valor por Tipo ${SERV_FILTRO_MES?'('+SERV_FILTRO_MES.split('-').reverse().join('/')+')':'(todo o período)'}</div>
+      <div style="position:relative;height:200px"><canvas id="serv-pizza-valor"></canvas></div>
+    </div>
+    <div style="flex:1;min-width:220px">
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-align:center">📑 Quantidade por Tipo ${SERV_FILTRO_MES?'('+SERV_FILTRO_MES.split('-').reverse().join('/')+')':'(todo o período)'}</div>
+      <div style="position:relative;height:200px"><canvas id="serv-pizza-qtd"></canvas></div>
+    </div>
   </div>
   <div class="kpi-grid" style="margin-bottom:20px">
     <div class="kpi-card amber" onclick="SERV_FILTRO_STATUS=(SERV_FILTRO_STATUS==='Aguardando Aprovação'?'':'Aguardando Aprovação');carregarLancamentosServicos()" style="cursor:pointer" title="Filtrar: aguardando aprovação"><div class="kpi-label">Aguardando Aprovação</div><div class="kpi-value">${aguardando.length}</div><div class="kpi-icon">⏳</div></div>
@@ -23950,6 +24020,10 @@ async function carregarLancamentosServicos() {
     </details>` : ''}
     `}
   </div>`;
+  setTimeout(() => servRenderGraficosPizza(
+    [porTipo('diarias'), porTipo('veiculos'), porTipo('projetos')],
+    [qtdPorTipo('diarias'), qtdPorTipo('veiculos'), qtdPorTipo('projetos')]
+  ), 0);
 }
 
 async function exportarLancamentosServicosExcel() {
