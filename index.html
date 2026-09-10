@@ -1290,6 +1290,16 @@ function navigate(pageId) {
   // te jogava de volta pro hub de Projetos por causa desse reset indevido.
   const entrandoDeOutraPagina = currentPage !== pageId;
   currentPage = pageId;
+  // Sincroniza os Centros de Custo cadastrados no card "Centro de Custos"
+  // (tabela CentrosCusto) para TODOS os lançamentos financeiros — antes só
+  // rodava ao abrir a própria página de Centro de Custos ou o Dashboard
+  // Financeiro, então um CC novo cadastrado lá não aparecia ainda em
+  // Despesas/Receitas/Contas a Pagar/Serviços na mesma sessão até visitar
+  // uma dessas duas telas. Roda uma vez por sessão, em qualquer navegação
+  // (pedido 10/09/2026: "SAE - Inventário e Fauna" sumido no Lançamento de
+  // Serviços — não era filtro, era falta de sincronização). Não bloqueia a
+  // navegação: os CCs entram em memória assim que a leitura terminar.
+  if (typeof custosCarregarExtras === 'function' && !_custosExtrasCarregados) custosCarregarExtras();
   if (pageId === 'projetos' && entrandoDeOutraPagina) { PROJETOS_PROJETO_ATIVO = null; }
   abrirGrupoPai(currentProfile, pageId);
   renderNav(currentProfile);
@@ -23388,16 +23398,12 @@ function pageServicos() {
   </div>
   <!-- Seletor de tipo (pedido 10/09/2026: um botão único de "Novo Lançamento"
        em vez de um separado em cada aba de catálogo; agora fixo no topo da
-       página — pedido 10/09/2026 — em vez de só dentro da aba Lançamentos). -->
+       página). Em 2 etapas — primeiro Empresa (Expedian/TL3/EXP Brasil),
+       depois Categoria (Diárias/Veículos/Projetos) — pedido 10/09/2026, pra
+       já filtrar o Centro de Custo certo dentro do formulário. -->
   <div id="serv-seletor-tipo-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:5000;align-items:center;justify-content:center;padding:16px">
     <div style="background:var(--surface);border-radius:14px;padding:22px;max-width:360px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,.25)">
-      <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;margin-bottom:4px">➕ Novo Lançamento</div>
-      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:16px">Qual o tipo de lançamento?</div>
-      <div style="display:flex;flex-direction:column;gap:8px">
-        <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servEscolherTipoENovo('diarias')">👷 Diárias de Serviço</button>
-        <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servEscolherTipoENovo('veiculos')">🚗 Locação de Veículos</button>
-        <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servEscolherTipoENovo('projetos')">📋 Projetos e Relatórios</button>
-      </div>
+      <div id="serv-seletor-tipo-body"></div>
       <button class="btn-secondary" style="width:100%;margin-top:14px" onclick="servFecharSeletorTipo()">Cancelar</button>
     </div>
   </div>
@@ -23436,8 +23442,13 @@ function renderServicosTab(items, tipo) {
   const responsaveis = _servicosResponsaveisDiretoria();
   const beneficiarios = _servicosTodosColaboradores();
   const frota = _servicosFrotaVeiculos();
+  // Filtra pelo Centro de Custo só da empresa escolhida na etapa 1 do
+  // "Novo Lançamento" (Expedian/TL3/EXP Brasil) — pedido 10/09/2026. Sem
+  // empresa escolhida (ex.: form aberto direto por edição), mostra todos.
+  const empresaSelServ = window._servEmpresaSelecionada || '';
   const centrosCusto = centrosCustoData
     .filter(c => c.status === 'ativo')
+    .filter(c => !empresaSelServ || normalizarEmpresa(c.empresa) === normalizarEmpresa(empresaSelServ))
     .map(c => c.id + ' · ' + c.contrato);
   const podeLancar = _servicosPodeLancar();
 
@@ -24265,12 +24276,46 @@ function servToggleFormNovo(tipo, forcar) {
    escolher o tipo, navega pra aba certa já com o formulário aberto. -- */
 function servAbrirSeletorTipo() {
   if (!_servicosPodeLancar()) { showToast('⛔ Lançamentos restritos à Diretoria e Coordenação.'); return; }
+  window._servSeletorEmpresa = null;
   const m = document.getElementById('serv-seletor-tipo-modal');
   if (m) m.style.display = 'flex';
+  servRenderSeletorTipo();
 }
 function servFecharSeletorTipo() {
   const m = document.getElementById('serv-seletor-tipo-modal');
   if (m) m.style.display = 'none';
+}
+// Seletor de "Novo Lançamento" em 2 etapas — primeiro a empresa (Expedian,
+// TL3 ou EXP Brasil), só depois a categoria (Diárias/Veículos/Projetos) —
+// pedido 10/09/2026. A empresa escolhida fica guardada pra filtrar o Centro
+// de Custo certo dentro do formulário (ver renderServicosTab).
+function servRenderSeletorTipo() {
+  const body = document.getElementById('serv-seletor-tipo-body');
+  if (!body) return;
+  if (!window._servSeletorEmpresa) {
+    body.innerHTML = `
+      <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;margin-bottom:4px">➕ Novo Lançamento</div>
+      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:16px">Qual empresa?</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servSelecionarEmpresaSeletor('Expedian')">🏢 Expedian</button>
+        <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servSelecionarEmpresaSeletor('TL3')">🏢 TL3</button>
+        <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servSelecionarEmpresaSeletor('EXP Brasil')">🏢 EXP Brasil</button>
+      </div>`;
+  } else {
+    body.innerHTML = `
+      <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;margin-bottom:4px">➕ Novo Lançamento</div>
+      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:16px">${window._servSeletorEmpresa} — qual o tipo de lançamento?</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servEscolherTipoENovo('diarias')">👷 Diárias de Serviço</button>
+        <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servEscolherTipoENovo('veiculos')">🚗 Locação de Veículos</button>
+        <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servEscolherTipoENovo('projetos')">📋 Projetos e Relatórios</button>
+      </div>
+      <button class="btn-secondary" style="width:100%;margin-top:8px;font-size:.75rem" onclick="window._servSeletorEmpresa=null;servRenderSeletorTipo()">← Trocar empresa</button>`;
+  }
+}
+function servSelecionarEmpresaSeletor(empresa) {
+  window._servSeletorEmpresa = empresa;
+  servRenderSeletorTipo();
 }
 // Dashboard por Colaborador/Beneficiário vem fechado (lista suspensa) —
 // pedido 10/09/2026, pra não ocupar a tela toda; clique no título abre/fecha.
@@ -24280,6 +24325,9 @@ function servEscolherTipoENovo(tipo) {
   window._servicosTab = tipo;
   window._servicosFormAberto = window._servicosFormAberto || {};
   window._servicosFormAberto[tipo] = true;
+  // Empresa escolhida na etapa anterior — usada em renderServicosTab pra
+  // filtrar o Centro de Custo só dessa empresa (pedido 10/09/2026).
+  window._servEmpresaSelecionada = window._servSeletorEmpresa || window._servEmpresaSelecionada || '';
   navigate('servicos');
   // Se o catálogo já estava carregado, o form já existe no DOM agora (render
   // síncrono) — rola até ele. Se não, servCarregarCatalogoEExibir cuida disso
