@@ -23365,7 +23365,15 @@ function pageServicos() {
   // Garante que a lista de beneficiários (Gestão Documental) esteja carregada
   // antes de abrir os formulários — sem isso, cai só no seed até alguém abrir
   // a Gestão Documental antes (pedido 10/09/2026: beneficiário = colaboradores da GD).
-  if (!window._gdDados && typeof gdCarregarDados === 'function') gdCarregarDados();
+  // NUNCA chamar gdCarregarDados() aqui — ela navega incondicionalmente para a
+  // aba 'docs' e destruiria esta página (bug corrigido em 10/09/2026: ao abrir
+  // Catálogo de Serviços o app pulava sozinho pra Gestão Documental). Usa o
+  // mesmo carregamento direto e silencioso de carregarColaboradoresListaRd().
+  if (!window._gdDados) {
+    dbLer('GestaoDocumental').then(dados => {
+      window._gdDados = (Array.isArray(dados) && dados.length) ? dados[0] : { colaboradores: [], docsEmpresa: [], docsColab: {}, treinamentos: [] };
+    }).catch(() => {});
+  }
   if (tab === 'lancamentos') setTimeout(() => carregarLancamentosServicos(), 200);
   else if (!_servicosCatalogoCarregado) setTimeout(() => servCarregarCatalogoEExibir(tab), 150);
 
@@ -23741,10 +23749,21 @@ function servLimparFiltros() {
 // retroativa de algo que já era considerado válido.
 function servStatusDe(l) { return l.Status || 'A Pagar'; }
 
-/* -- Dois gráficos de pizza (valor e quantidade) comparando Diárias/Veículos/
-   Projetos no Dashboard de Lançamentos de Serviços, respeitando o filtro de
-   mês selecionado (pedido 10/09/2026). -- */
-async function servRenderGraficosPizza(valores, quantidades) {
+// Quais tipos entram na comparação dos gráficos de pizza do Dashboard de
+// Lançamentos — os 3 vêm marcados por padrão, mas o usuário pode desmarcar
+// pra comparar só, por exemplo, Diárias x Projetos (pedido 10/09/2026).
+if (typeof window._servPizzaTiposAtivos === 'undefined') {
+  window._servPizzaTiposAtivos = { diarias: true, veiculos: true, projetos: true };
+}
+function servTogglePizzaTipo(tipo) {
+  window._servPizzaTiposAtivos[tipo] = !window._servPizzaTiposAtivos[tipo];
+  carregarLancamentosServicos();
+}
+
+/* -- Dois gráficos de pizza (valor e quantidade), em escala reduzida (do
+   tamanho dos cards do dashboard), comparando os tipos marcados no seletor
+   acima — respeitando também o filtro de mês selecionado (pedido 10/09/2026). -- */
+async function servRenderGraficosPizza(valoresPorTipo, quantidadesPorTipo) {
   const cValor = document.getElementById('serv-pizza-valor');
   const cQtd = document.getElementById('serv-pizza-qtd');
   if (!cValor && !cQtd) return;
@@ -23757,21 +23776,26 @@ async function servRenderGraficosPizza(valores, quantidades) {
         document.head.appendChild(s);
       });
     }
-    const labels = ['Diárias', 'Veículos', 'Projetos'];
-    const cores = ['#e0a800', '#4472C4', '#28a745'];
+    const todosLabels = { diarias: '👷 Diárias', veiculos: '🚗 Veículos', projetos: '📋 Projetos' };
+    const todasCores = { diarias: '#e0a800', veiculos: '#4472C4', projetos: '#28a745' };
+    const ativos = ['diarias', 'veiculos', 'projetos'].filter(t => window._servPizzaTiposAtivos[t]);
+    const labels = ativos.map(t => todosLabels[t]);
+    const cores = ativos.map(t => todasCores[t]);
+    const valores = ativos.map(t => valoresPorTipo[t] || 0);
+    const quantidades = ativos.map(t => quantidadesPorTipo[t] || 0);
+    const optsComuns = {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 6, font: { size: 8 }, padding: 4 } },
+      },
+    };
     const cValorAtual = document.getElementById('serv-pizza-valor');
     if (cValorAtual) {
       if (window._servPizzaValor) { window._servPizzaValor.destroy(); window._servPizzaValor = null; }
       window._servPizzaValor = new Chart(cValorAtual.getContext('2d'), {
         type: 'pie',
         data: { labels, datasets: [{ data: valores, backgroundColor: cores }] },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: {
-            legend: { position: 'bottom', labels: { boxWidth: 8, font: { size: 9 }, padding: 6 } },
-            tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + fmtBRL(ctx.parsed) } },
-          },
-        },
+        options: { ...optsComuns, plugins: { ...optsComuns.plugins, tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + fmtBRL(ctx.parsed) } } } },
       });
     }
     const cQtdAtual = document.getElementById('serv-pizza-qtd');
@@ -23780,13 +23804,7 @@ async function servRenderGraficosPizza(valores, quantidades) {
       window._servPizzaQtd = new Chart(cQtdAtual.getContext('2d'), {
         type: 'pie',
         data: { labels, datasets: [{ data: quantidades, backgroundColor: cores }] },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: {
-            legend: { position: 'bottom', labels: { boxWidth: 8, font: { size: 9 }, padding: 6 } },
-            tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + ctx.parsed + ' lançamento(s)' } },
-          },
-        },
+        options: { ...optsComuns, plugins: { ...optsComuns.plugins, tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + ctx.parsed + ' lanç.' } } } },
       });
     }
   } catch (e) { /* Chart.js indisponível (offline) — gráficos só não aparecem, resto da página segue normal */ }
@@ -23853,14 +23871,24 @@ async function carregarLancamentosServicos() {
   <!-- Dois gráficos de pizza comparando Diárias/Veículos/Projetos (valor e
        quantidade), reagindo ao mês selecionado no filtro logo abaixo —
        pedido 10/09/2026. -->
-  <div class="card" style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:20px">
-    <div style="flex:1;min-width:220px">
-      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-align:center">💰 Valor por Tipo ${SERV_FILTRO_MES?'('+SERV_FILTRO_MES.split('-').reverse().join('/')+')':'(todo o período)'}</div>
-      <div style="position:relative;height:200px"><canvas id="serv-pizza-valor"></canvas></div>
+  <div class="card" style="margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)">
+      <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Comparar:</span>
+      ${['diarias','veiculos','projetos'].map(t => `
+      <label style="display:flex;align-items:center;gap:5px;font-size:.8rem;cursor:pointer;user-select:none">
+        <input type="checkbox" ${window._servPizzaTiposAtivos[t]?'checked':''} onchange="servTogglePizzaTipo('${t}')" style="width:auto;cursor:pointer">
+        ${t==='diarias'?'👷 Diárias':t==='veiculos'?'🚗 Veículos':'📋 Projetos'}
+      </label>`).join('')}
     </div>
-    <div style="flex:1;min-width:220px">
-      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-align:center">📑 Quantidade por Tipo ${SERV_FILTRO_MES?'('+SERV_FILTRO_MES.split('-').reverse().join('/')+')':'(todo o período)'}</div>
-      <div style="position:relative;height:200px"><canvas id="serv-pizza-qtd"></canvas></div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap">
+      <div style="flex:1;min-width:150px;max-width:220px">
+        <div style="font-size:.68rem;font-weight:700;color:var(--text-muted);margin-bottom:4px;text-align:center">💰 Valor ${SERV_FILTRO_MES?'('+SERV_FILTRO_MES.split('-').reverse().join('/')+')':'(período)'}</div>
+        <div style="position:relative;height:100px"><canvas id="serv-pizza-valor"></canvas></div>
+      </div>
+      <div style="flex:1;min-width:150px;max-width:220px">
+        <div style="font-size:.68rem;font-weight:700;color:var(--text-muted);margin-bottom:4px;text-align:center">📑 Quantidade ${SERV_FILTRO_MES?'('+SERV_FILTRO_MES.split('-').reverse().join('/')+')':'(período)'}</div>
+        <div style="position:relative;height:100px"><canvas id="serv-pizza-qtd"></canvas></div>
+      </div>
     </div>
   </div>
   <div class="kpi-grid" style="margin-bottom:20px">
@@ -24021,8 +24049,8 @@ async function carregarLancamentosServicos() {
     `}
   </div>`;
   setTimeout(() => servRenderGraficosPizza(
-    [porTipo('diarias'), porTipo('veiculos'), porTipo('projetos')],
-    [qtdPorTipo('diarias'), qtdPorTipo('veiculos'), qtdPorTipo('projetos')]
+    { diarias: porTipo('diarias'), veiculos: porTipo('veiculos'), projetos: porTipo('projetos') },
+    { diarias: qtdPorTipo('diarias'), veiculos: qtdPorTipo('veiculos'), projetos: qtdPorTipo('projetos') }
   ), 0);
 }
 
