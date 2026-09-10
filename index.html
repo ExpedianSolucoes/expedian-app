@@ -1290,6 +1290,18 @@ function navigate(pageId) {
   // te jogava de volta pro hub de Projetos por causa desse reset indevido.
   const entrandoDeOutraPagina = currentPage !== pageId;
   currentPage = pageId;
+  // Nova Despesa/Nova Receita só devem abrir ao clicar em "Novo Lançamento" —
+  // antes o formulário ficava aberto (de um lançamento anterior na mesma
+  // sessão) e reaparecia sozinho toda vez que se voltava pra Despesas/Receitas,
+  // mesmo sem clicar em nada (pedido 10/09/2026). Só reseta ao entrar vindo de
+  // OUTRA página — se já está em receitas_despesas e é só uma re-renderização
+  // interna (trocar sub-aba, salvar, etc.), ou se tem um lançamento pendente
+  // esperando pra abrir (CAPEX/Despesa vindo do seletor "Novo Lançamento"),
+  // não mexe.
+  if (pageId === 'receitas_despesas' && entrandoDeOutraPagina && !window._lancamentoPendente) {
+    window._rdFormAberto = false;
+    window._rcFormAberto = false;
+  }
   // Sincroniza os Centros de Custo cadastrados no card "Centro de Custos"
   // (tabela CentrosCusto) para TODOS os lançamentos financeiros — antes só
   // rodava ao abrir a própria página de Centro de Custos ou o Dashboard
@@ -10793,6 +10805,15 @@ function renderDespesasTab() {
     </div>
     <div id="rd-resumo-mensal" style="flex:1;min-width:320px"></div>
   </div>
+  <!-- Comparação Fornecedor x Serviços x Carros x Projetos — pedido 10/09/2026,
+       ao lado do gráfico Pago x A Pagar x Vencido. Fornecedor = Modalidade
+       'fornecedor'/'colaborador'; Serviços/Carros/Projetos = despesas geradas
+       pelo Lançamento de Serviços, distinguidas pela Subcategoria (única por
+       tipo — ver SERV_TIPO_PARA_CATEGORIA). -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title" style="margin-bottom:6px;font-size:.8rem">📊 Fornecedor x Serviços x Carros x Projetos</div>
+    <div style="position:relative;height:160px"><canvas id="rd-grafico-tipos"></canvas></div>
+  </div>
 
   <!-- BARRA DE FILTROS -->
   <div id="rd-filtros" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
@@ -11884,10 +11905,11 @@ async function salvarDespesa() {
   rdToggleModalidade();
   rdTogglePagamento();
   window._rdParcelas = null;
-  // Edição bem-sucedida fecha o formulário (mesmo padrão de Contas a Pagar) —
-  // lançamento novo continua com o formulário aberto pra permitir lançar em
-  // sequência sem reabrir toda vez.
-  if (ok && editandoId) rdToggleFormNovaDespesa(false);
+  // Qualquer lançamento salvo com sucesso (novo ou edição) fecha o formulário
+  // — antes só fechava na edição, e o de "novo" ficava aberto indefinidamente,
+  // reaparecendo sozinho toda vez que se voltava pra Despesas (pedido
+  // 10/09/2026: só deve abrir ao clicar em "Novo Lançamento").
+  if (ok) rdToggleFormNovaDespesa(false);
   setTimeout(() => carregarDespesas(), 900);
 }
 
@@ -11937,6 +11959,25 @@ async function carregarDespesas() {
     setKpi('rd-kpi-pendente', fmtR(somaAVencer));
     setKpi('rd-kpi-pago', fmtR(somaPago));
     setKpi('rd-kpi-atraso', fmtR(somaVencido));
+
+    // Comparação Fornecedor x Serviços x Carros x Projetos (pedido 10/09/2026).
+    // Serviços/Carros/Projetos são despesas geradas pelo Lançamento de
+    // Serviços (Modalidade 'servicos') — distinguidas pela Subcategoria, que
+    // é única por tipo (ver SERV_TIPO_PARA_CATEGORIA: 'Mão de obra' = Diárias,
+    // 'Locação de veículos' = Carros, 'Serviços Técnicos Especializados' =
+    // Projetos). Tudo que não é 'servicos' (Fornecedor ou Colaborador) entra
+    // como Fornecedor.
+    const totaisTipos = { fornecedor: 0, servicos: 0, carros: 0, projetos: 0 };
+    items.forEach(i => {
+      let bucket = 'fornecedor';
+      if (i.Modalidade === 'servicos') {
+        if (i.Subcategoria === 'Locação de veículos') bucket = 'carros';
+        else if (i.Subcategoria === 'Serviços Técnicos Especializados') bucket = 'projetos';
+        else bucket = 'servicos';
+      }
+      totaisTipos[bucket] += Number(i.Valor) || 0;
+    });
+    rdRenderGraficoTipos(totaisTipos);
 
     const setActiveKpi = (cardId, ativo, cor) => {
       const e = document.getElementById(cardId); if (!e) return;
@@ -12350,6 +12391,48 @@ async function rdRenderGraficoMensal(porMes, ano, nomesMes) {
         plugins: { legend: { position: 'top', labels: { boxWidth: 8, font: { size: 9 }, padding: 6 } } },
         scales: {
           x: { ticks: { font: { size: 8 } } },
+          y: { ticks: { font: { size: 8 }, callback: (v) => (v/1000).toLocaleString('pt-BR',{maximumFractionDigits:0})+'k' } }
+        }
+      }
+    });
+  } catch (e) { /* Chart.js indisponível (offline) — gráfico só não aparece, resto da página segue normal */ }
+}
+
+/* -- Gráfico de barras comparando Fornecedor x Serviços x Carros x Projetos,
+   ao lado do gráfico Pago x A Pagar x Vencido — pedido 10/09/2026. -- */
+async function rdRenderGraficoTipos(totais) {
+  const canvas = document.getElementById('rd-grafico-tipos');
+  if (!canvas) return;
+  try {
+    if (typeof Chart === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const canvasAtual = document.getElementById('rd-grafico-tipos');
+    if (!canvasAtual) return;
+    if (window._rdGraficoTipos) { window._rdGraficoTipos.destroy(); window._rdGraficoTipos = null; }
+    window._rdGraficoTipos = new Chart(canvasAtual.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: ['🏭 Fornecedor', '👷 Serviços', '🚗 Carros', '📋 Projetos'],
+        datasets: [{
+          data: [totais.fornecedor, totais.servicos, totais.carros, totais.projetos],
+          backgroundColor: ['#4472C4', '#e0a800', '#6f42c1', '#28a745'],
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (ctx) => fmtBRL(ctx.parsed.y || ctx.parsed.x || 0) } },
+        },
+        scales: {
+          x: { ticks: { font: { size: 9 } } },
           y: { ticks: { font: { size: 8 }, callback: (v) => (v/1000).toLocaleString('pt-BR',{maximumFractionDigits:0})+'k' } }
         }
       }
