@@ -5420,6 +5420,10 @@ function pagePagar() {
         <div id="pag_divisaocc_bloqueado" style="display:none;font-size:.72rem;color:var(--text-muted);margin-top:4px">Divisão de Centro de Custo não está disponível para lançamentos parcelados — lance como à vista.</div>
         <div id="pag_divisaocc_editor" style="display:none;margin-top:10px;background:var(--surface2);border-radius:10px;padding:12px">
           <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Quanto vai pra cada Centro de Custo:</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <label style="font-size:.75rem;color:var(--text-muted);white-space:nowrap">Dividir em quantos Centros de Custo?</label>
+            <select id="pag_divcc_qtd" onchange="pagDivccSugerirValor()" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">${rateioQtdOpcoesHtml('')}</select>
+          </div>
           <div id="pag_divisaocc_lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
           <!-- Mesmo padrão typeahead + medição do modal "Divisão por Contrato" (rdcc*,
                usado em Despesas já lançadas) — digitável (filtra enquanto digita, em
@@ -5545,7 +5549,7 @@ function pagePagar() {
       </div>
       <div class="form-group">
         <label id="pag_valor_label">Valor (R$)</label>
-        <input type="number" id="pag_valor" placeholder="0,00" step="0.01" oninput="pagGerarParcelas();pagRenderizarDivisaoCC()">
+        <input type="number" id="pag_valor" placeholder="0,00" step="0.01" oninput="pagGerarParcelas();pagRenderizarDivisaoCC();pagDivccSugerirValor()">
       </div>
     </div>
 
@@ -5773,6 +5777,18 @@ function pagToggleDivisaoCC() {
   }
 }
 
+// Preenche o campo Valor de staging com a sugestão de rateio (o que resta do
+// valor total dividido pelo que ainda falta escolher) — atualizado toda vez
+// que o "dividir em quantos" muda e depois de cada "+ Adicionar" (pedido
+// 10/09/2026).
+function pagDivccSugerirValor() {
+  const qtd = (document.getElementById('pag_divcc_qtd')||{}).value;
+  if (!qtd) return;
+  const total = parseFloat((document.getElementById('pag_valor')||{}).value) || 0;
+  const sugestao = rateioValorSugerido(total, window._pagDivisaoCC || [], qtd);
+  const valorEl = document.getElementById('pag_divcc_valor');
+  if (valorEl && sugestao !== null) valorEl.value = rdNumeroParaMoeda(sugestao);
+}
 function pagAdicionarDivisaoCC() {
   const cc = (document.getElementById('pag_divcc_cc')||{}).value;
   const medicao = (document.getElementById('pag_divcc_medicao')||{}).value.trim();
@@ -5787,6 +5803,7 @@ function pagAdicionarDivisaoCC() {
   const valorEl = document.getElementById('pag_divcc_valor'); if (valorEl) valorEl.value = '';
   const hint = document.getElementById('pag_divcc_medicao_hint'); if (hint) hint.textContent = '';
   pagRenderizarDivisaoCC();
+  pagDivccSugerirValor();
 }
 
 function pagRemoverDivisaoCC(i) {
@@ -5971,6 +5988,15 @@ async function aprovDivccAtualizarMedicaoPorCC(pfx, cc) {
   if (dl) dl.innerHTML = '';
   if (hint) hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.';
 }
+function aprovDivccSugerirValor(pfx) {
+  const qtd = (document.getElementById(pfx + '_divcc_qtd') || {}).value;
+  if (!qtd) return;
+  const total = window['_aprovValorTotal_' + pfx] || 0;
+  const itens = window['_aprovDivisaoCC_' + pfx] || [];
+  const sugestao = rateioValorSugerido(total, itens, qtd);
+  const valorEl = document.getElementById(pfx + '_divcc_valor');
+  if (valorEl && sugestao !== null) valorEl.value = rdNumeroParaMoeda(sugestao);
+}
 function aprovDivccAdicionar(pfx) {
   const cc = (document.getElementById(pfx + '_divcc_cc') || {}).value;
   const medicao = (document.getElementById(pfx + '_divcc_medicao') || {}).value.trim();
@@ -5987,6 +6013,7 @@ function aprovDivccAdicionar(pfx) {
   const valorEl = document.getElementById(pfx + '_divcc_valor'); if (valorEl) valorEl.value = '';
   const hint = document.getElementById(pfx + '_divcc_medicao_hint'); if (hint) hint.textContent = '';
   aprovDivccRenderizar(pfx);
+  aprovDivccSugerirValor(pfx);
 }
 function aprovDivccRemover(pfx, i) {
   const key = '_aprovDivisaoCC_' + pfx;
@@ -6033,6 +6060,10 @@ function aprovDivccBlocoHtml(pfx) {
         🧩 Ratear entre mais de um Centro de Custo/Medição
       </label>
       <div id="${pfx}_divisaocc_editor" style="display:none;margin-top:10px;background:var(--surface2);border-radius:10px;padding:12px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <label style="font-size:.75rem;color:var(--text-muted);white-space:nowrap">Dividir em quantos Centros de Custo?</label>
+          <select id="${pfx}_divcc_qtd" onchange="aprovDivccSugerirValor('${pfx}')" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">${rateioQtdOpcoesHtml('')}</select>
+        </div>
         <div id="${pfx}_divisaocc_lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
         <div style="position:relative;margin-bottom:6px">
           <input type="text" id="${pfx}_divcc_cc_input" placeholder="Centro de Custo — digite para buscar..." autocomplete="off"
@@ -6622,6 +6653,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   window._pagDivisaoCC=[];
   const pagDivccListaReset=document.getElementById('pag_divisaocc_lista');if(pagDivccListaReset)pagDivccListaReset.innerHTML='';
   const pagDivccTotalReset=document.getElementById('pag_divisaocc_total');if(pagDivccTotalReset)pagDivccTotalReset.textContent='';
+  const pagDivccQtdReset=document.getElementById('pag_divcc_qtd');if(pagDivccQtdReset)pagDivccQtdReset.value='';
   pagToggleDivisaoCC();
   ['pag_fornecedor_input','pag_fornecedor_sel'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   ['pag_categoria','pag_categoria_input','pag_subcategoria','pag_subcategoria_input'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
@@ -7841,6 +7873,29 @@ function rdMoedaParaNumero(valorStr) {
 function rdNumeroParaMoeda(num) {
   const n = Number(num) || 0;
   return 'R$ ' + n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/* -- Sugestão automática de valor ao ratear/dividir um lançamento entre N
+   Centros de Custo/beneficiários — pedido 10/09/2026: ao escolher "em
+   quantos" vai dividir, o campo Valor já vem preenchido com a parte igual do
+   que ainda falta (não do total bruto, pra já descontar o que já foi
+   adicionado); reaplicado a cada "+ Adicionar", assim a soma sempre bate
+   exatamente no fim, mesmo com centavos de resto (que sobra pro último item).
+   Usado em Contas a Pagar, Nova Despesa, Divisão por Contrato (despesa já
+   lançada), aprovação (Contas a Pagar/Prestação) e Divisão por Beneficiário
+   em Lançamento de Serviços — todos com a mesma lógica, só ids diferentes. -- */
+function rateioValorSugerido(total, itens, qtdSelecionada) {
+  const qtd = parseInt(qtdSelecionada) || 0;
+  if (!qtd) return null;
+  const faltam = Math.max(1, qtd - (itens || []).length);
+  const jaSomado = (itens || []).reduce((s, d) => s + (Number(d.valor) || 0), 0);
+  const resta = Math.round(((total || 0) - jaSomado) * 100) / 100;
+  return Math.max(0, Math.round((resta / faltam) * 100) / 100);
+}
+function rateioQtdOpcoesHtml(selecionado) {
+  let html = '<option value="">—</option>';
+  for (let n = 1; n <= 10; n++) html += `<option value="${n}" ${String(selecionado) === String(n) ? 'selected' : ''}>${n}</option>`;
+  return html;
 }
 
 /* ===== Receitas ===== */
@@ -10414,6 +10469,10 @@ function renderDespesasTab() {
         <div id="rd_divisaocc_bloqueado" style="display:none;font-size:.72rem;color:var(--text-muted);margin-top:4px">Divisão de Centro de Custo não está disponível para despesas parceladas — cada parcela já tem seu próprio contrato.</div>
         <div id="rd_divisaocc_editor" style="display:none;margin-top:10px;background:var(--surface2);border-radius:10px;padding:12px">
           <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Quanto vai pra cada Centro de Custo:</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <label style="font-size:.75rem;color:var(--text-muted);white-space:nowrap">Dividir em quantos Centros de Custo?</label>
+            <select id="rd_divcc_qtd" onchange="rdDivccSugerirValor()" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">${rateioQtdOpcoesHtml('')}</select>
+          </div>
           <div id="rd_divisaocc_lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
           <div style="position:relative;margin-bottom:6px">
             <input type="text" id="rd_divcc_cc_input" placeholder="Centro de Custo — digite para buscar..." autocomplete="off"
@@ -10530,7 +10589,7 @@ function renderDespesasTab() {
     <div class="form-row">
       <div class="form-group">
         <label id="rd_valor_label">Valor Total (R$)</label>
-        <input type="text" inputmode="decimal" id="rd_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rdGerarParcelas();rdRenderizarDistribuicoes();rdRenderizarDivisaoCC()">
+        <input type="text" inputmode="decimal" id="rd_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rdGerarParcelas();rdRenderizarDistribuicoes();rdRenderizarDivisaoCC();rdDivccSugerirValor()">
       </div>
       <div class="form-group">
         <label>Tipo de Pagamento</label>
@@ -11445,6 +11504,14 @@ function rdToggleDivisaoCC() {
   }
 }
 
+function rdDivccSugerirValor() {
+  const qtd = (document.getElementById('rd_divcc_qtd')||{}).value;
+  if (!qtd) return;
+  const total = rdMoedaParaNumero((document.getElementById('rd_valor')||{}).value);
+  const sugestao = rateioValorSugerido(total, window._rdDivisaoCC || [], qtd);
+  const valorEl = document.getElementById('rd_divcc_valor');
+  if (valorEl && sugestao !== null) valorEl.value = rdNumeroParaMoeda(sugestao);
+}
 function rdAdicionarDivisaoCC() {
   const cc = (document.getElementById('rd_divcc_cc')||{}).value;
   const medicao = (document.getElementById('rd_divcc_medicao')||{}).value.trim();
@@ -11458,6 +11525,7 @@ function rdAdicionarDivisaoCC() {
   const medEl = document.getElementById('rd_divcc_medicao'); if (medEl) medEl.value = '';
   const valorEl = document.getElementById('rd_divcc_valor'); if (valorEl) valorEl.value = '';
   const hint = document.getElementById('rd_divcc_medicao_hint'); if (hint) hint.textContent = '';
+  rdDivccSugerirValor();
   rdRenderizarDivisaoCC();
 }
 
@@ -11800,6 +11868,7 @@ async function salvarDespesa() {
   window._rdDivisaoCC = [];
   const divccListaReset = document.getElementById('rd_divisaocc_lista'); if (divccListaReset) divccListaReset.innerHTML = '';
   const divccTotalReset = document.getElementById('rd_divisaocc_total'); if (divccTotalReset) divccTotalReset.textContent = '';
+  const divccQtdReset = document.getElementById('rd_divcc_qtd'); if (divccQtdReset) divccQtdReset.value = '';
   rdToggleDivisaoCC();
   rdAtualizarSemana();
   rdToggleModalidade();
@@ -12004,6 +12073,10 @@ function rdVerDivisaoCC(id) {
         <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('rd-dist-modal').remove()">✕</div>
       </div>
       <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:14px">${rdDescricaoModalidade(i)} · R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <label style="font-size:.75rem;color:var(--text-muted);white-space:nowrap">Dividir em quantos contratos?</label>
+        <select id="rdcc_qtd" onchange="rdccSugerirValor()" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">${rateioQtdOpcoesHtml('')}</select>
+      </div>
       <div id="rdcc_lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
       <div style="background:var(--surface2);border-radius:10px;padding:10px;margin-bottom:10px">
         <div style="position:relative;margin-bottom:6px">
@@ -12090,6 +12163,14 @@ async function rdccAtualizarMedicaoPorCC(cc) {
   if (hint) hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.';
 }
 
+function rdccSugerirValor() {
+  const qtd = (document.getElementById('rdcc_qtd')||{}).value;
+  if (!qtd) return;
+  const total = window._rdccValorTotal || 0;
+  const sugestao = rateioValorSugerido(total, window._rdccDivisao || [], qtd);
+  const valorEl = document.getElementById('rdcc_valor');
+  if (valorEl && sugestao !== null) valorEl.value = rdNumeroParaMoeda(sugestao);
+}
 function rdccAdicionar() {
   const cc = (document.getElementById('rdcc_cc')||{}).value;
   const medicao = (document.getElementById('rdcc_medicao')||{}).value.trim();
@@ -12104,6 +12185,7 @@ function rdccAdicionar() {
   const medEl = document.getElementById('rdcc_medicao'); if (medEl) medEl.value = '';
   const valorEl = document.getElementById('rdcc_valor'); if (valorEl) valorEl.value = '';
   rdccRenderizar();
+  rdccSugerirValor();
 }
 
 function rdccRemover(i) {
@@ -23178,6 +23260,15 @@ function servToggleDivisaoBenef(tipo) {
   if (ativo) { window._servDivisaoBenef[tipo] = window._servDivisaoBenef[tipo] || []; servRenderizarDivisaoBenef(tipo); }
   else window._servDivisaoBenef[tipo] = [];
 }
+function servDivbenefSugerirValor(tipo) {
+  const qtd = (document.getElementById('serv_divbenef_qtd_' + tipo) || {}).value;
+  if (!qtd) return;
+  const total = rdMoedaParaNumero((document.getElementById('val_total_' + tipo) || {}).value);
+  const itens = (window._servDivisaoBenef && window._servDivisaoBenef[tipo]) || [];
+  const sugestao = rateioValorSugerido(total, itens, qtd);
+  const valorEl = document.getElementById('serv_divbenef_valor_' + tipo);
+  if (valorEl && sugestao !== null) valorEl.value = rdNumeroParaMoeda(sugestao);
+}
 function servAdicionarDivisaoBenef(tipo) {
   const nome = (document.getElementById('serv_divbenef_' + tipo) || {}).value;
   const valor = rdMoedaParaNumero((document.getElementById('serv_divbenef_valor_' + tipo) || {}).value);
@@ -23189,6 +23280,7 @@ function servAdicionarDivisaoBenef(tipo) {
   servComboSetValor('serv_divbenef_' + tipo, '');
   const valorEl = document.getElementById('serv_divbenef_valor_' + tipo); if (valorEl) valorEl.value = '';
   servRenderizarDivisaoBenef(tipo);
+  servDivbenefSugerirValor(tipo);
 }
 function servRemoverDivisaoBenef(tipo, i) {
   if (!window._servDivisaoBenef || !window._servDivisaoBenef[tipo]) return;
@@ -23462,6 +23554,10 @@ function renderServicosTab(items, tipo) {
           🧩 Dividir este lançamento entre mais de um beneficiário
         </label>
         <div id="serv_divisaobenef_editor_${tipo}" style="display:none;margin-top:10px;padding:12px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <label style="font-size:.75rem;color:var(--text-muted);white-space:nowrap">Dividir em quantos beneficiários?</label>
+            <select id="serv_divbenef_qtd_${tipo}" onchange="servDivbenefSugerirValor('${tipo}')" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">${rateioQtdOpcoesHtml('')}</select>
+          </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
             <div style="flex:2;min-width:160px;position:relative">
               <label style="font-size:.72rem">Beneficiário</label>
@@ -23912,6 +24008,7 @@ function calcTotal(tipo) {
   }
   const tot = subtotal * (1 + pct);
   document.getElementById('val_total_' + tipo).value = tot > 0 ? fmtBRL(tot) : '';
+  if (typeof servDivbenefSugerirValor === 'function') servDivbenefSugerirValor(tipo);
 }
 
 function preencherForm(tipo, id) {
@@ -23958,6 +24055,7 @@ function limparForm(tipo) {
   const divHid = document.getElementById('serv_divbenef_' + tipo); if (divHid) divHid.value = '';
   servComboFechar('serv_divbenef_' + tipo);
   const divValorEl = document.getElementById('serv_divbenef_valor_' + tipo); if (divValorEl) divValorEl.value = '';
+  const divQtdEl = document.getElementById('serv_divbenef_qtd_' + tipo); if (divQtdEl) divQtdEl.value = '';
   window._servEditandoId = null;
   const titulo = document.getElementById('serv-form-title-' + tipo);
   if (titulo) titulo.textContent = '➕ Novo Lançamento';
@@ -24400,11 +24498,19 @@ async function servAbrirPagamento(id) {
             <small style="color:var(--text-muted)">${frotaMatch ? '✓ Sugerido pelo veículo do lançamento.' : 'Nenhum CC de frota casou com o veículo — selecione manualmente.'}</small>
           </div>
         </div>
-        <div class="form-group"><label>Conta/Banco (contábil — mesma conta nos dois lados, não é uma movimentação bancária real)</label>
-          <select id="servp_trf_banco">
-            <option value="">Selecione...</option>
-            ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
-          </select>
+        <div class="form-row" style="display:flex;gap:10px">
+          <div class="form-group" style="flex:1"><label>Conta de Origem (sai)</label>
+            <select id="servp_trf_origem">
+              <option value="">Selecione...</option>
+              ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group" style="flex:1"><label>Conta de Destino (entra)</label>
+            <select id="servp_trf_destino">
+              <option value="">Selecione...</option>
+              ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
+            </select>
+          </div>
         </div>
       </div>
       <button class="btn-primary" style="width:100%" onclick="servConfirmarPagamento(${id})">💾 Confirmar</button>
@@ -24430,12 +24536,14 @@ async function servConfirmarPagamento(id) {
 
   if (window._servPagTipo === 'transferencia') {
     const ccDestino = (document.getElementById('servp_trf_ccdestino')||{}).value;
-    const banco = (document.getElementById('servp_trf_banco')||{}).value;
+    const contaOrigem = (document.getElementById('servp_trf_origem')||{}).value;
+    const contaDestino = (document.getElementById('servp_trf_destino')||{}).value;
     if (!ccDestino) { showToast('⚠️ Selecione o Centro de Custo de destino (frota).'); return; }
-    if (!banco) { showToast('⚠️ Selecione a conta/banco.'); return; }
-    const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco, FormaPagamentoServico: 'Transferência entre Contas', CentroCustoDestino: ccDestino });
-    if (ok) await servSincronizarTransferencia(id, dataPag, banco, ccDestino);
-    showToast(ok ? '✅ Transferência entre Centros de Custo registrada!' : '❌ Erro ao registrar.');
+    if (!contaOrigem || !contaDestino) { showToast('⚠️ Selecione as duas contas bancárias.'); return; }
+    if (contaOrigem === contaDestino) { showToast('⚠️ A conta de origem e a de destino precisam ser diferentes.'); return; }
+    const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: contaOrigem, FormaPagamentoServico: 'Transferência entre Contas', CentroCustoDestino: ccDestino });
+    if (ok) await servSincronizarTransferencia(id, dataPag, contaOrigem, contaDestino, ccDestino);
+    showToast(ok ? '✅ Transferência entre contas registrada!' : '❌ Erro ao registrar.');
     const m = document.getElementById('serv-pag-modal'); if (m) m.remove();
     setTimeout(() => carregarLancamentosServicos(), 600);
     return;
@@ -24452,13 +24560,14 @@ async function servConfirmarPagamento(id) {
 
 // Locação de veículo próprio marcada como "Transferência entre Contas": em
 // vez de gerar só uma Despesa (como um pagamento normal a fornecedor), gera o
-// par Despesa (saída, no CC de origem — o CC já escolhido no lançamento) +
-// Receita (entrada, no CC de destino — o CC da frota do veículo usado), mesma
-// categoria "Transferências entre contas" usada no módulo de Transferências.
-// É uma realocação de orçamento entre Centros de Custo, não uma movimentação
-// bancária real — por isso os dois lados usam a mesma conta/banco (informado
-// só pra fins contábeis/conciliação) — pedido 10/09/2026.
-async function servSincronizarTransferencia(id, dataPag, banco, ccDestino) {
+// par Despesa (saída, no CC de origem — o CC já escolhido no lançamento — e
+// na conta bancária de origem) + Receita (entrada, no CC de destino — a
+// frota do veículo usado — e na conta bancária de destino), mesma categoria
+// "Transferências entre contas" usada no módulo de Transferências. É tanto
+// uma realocação de orçamento entre Centros de Custo QUANTO uma movimentação
+// bancária real entre contas (confirmado pelo usuário em 10/09/2026) — por
+// isso carrega os dois pares (CC origem/destino + conta origem/destino).
+async function servSincronizarTransferencia(id, dataPag, contaOrigem, contaDestino, ccDestino) {
   try {
     const todos = await dbLer('Lancamentos_Servicos');
     const l = todos.find(x => x.Id === id);
@@ -24468,29 +24577,29 @@ async function servSincronizarTransferencia(id, dataPag, banco, ccDestino) {
     const transferenciaId = 'TRF-SERV-' + Date.now();
     const descricaoBase = 'Locação interna de veículo: ' + (l.descServico || '') + (l.veiculo ? ' — ' + l.veiculo : '');
     const despesa = await dbInserir('Despesas', {
-      Title: 'Transferência (locação interna) para ' + ccDestino + ' · ' + dataPag,
+      Title: 'Transferência (locação interna) para ' + contaDestino + ' · ' + dataPag,
       DataLancamento: l.dataISO || dataPag, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
       Modalidade: 'fornecedor', NaturezaEconomica: 'Não Operacional',
       ServicoId: l.codServico || '', ServicoDesc: l.descServico || '', Fornecedor: 'Transferência Interna', Beneficiario: l.benef || '', Veiculo: l.veiculo || '',
       CentroCusto: l.cc || '', Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
-      ResponsavelLancamento: l.resp || responsavel, Empresa: empresa, DataPagamento: dataPag, Banco: banco,
+      ResponsavelLancamento: l.resp || responsavel, Empresa: empresa, DataPagamento: dataPag, Banco: contaOrigem,
       NumMedicao: l.medicao || '', Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
       Vencimento: l.dataISO || '', Valor: l.total || 0, ValorTotal: l.total || 0, Status: 'Pago',
       NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: [],
       LancadoPor: responsavel, Descricao: descricaoBase,
-      TransferenciaId: transferenciaId, TransferenciaContraparte: ccDestino,
+      TransferenciaId: transferenciaId, TransferenciaContraparte: contaDestino,
       LancamentoServicoId: l.Id, OrigemLancamentoServico: true,
     });
     const receita = await dbInserir('Receitas', {
-      Title: 'Transferência (locação interna) de ' + (l.cc || '—') + ' · ' + dataPag,
+      Title: 'Transferência (locação interna) de ' + contaOrigem + ' · ' + dataPag,
       DataEmissao: l.dataISO || dataPag, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
       NaturezaEconomica: 'Não Operacional', Cliente: 'Transferência Interna', Descricao: descricaoBase,
       CentroCusto: ccDestino || '', Valor: l.total || 0, DataPrevista: dataPag, FormaRecebimento: 'Transferência',
-      ResponsavelLancamento: l.resp || responsavel, DataRecebimento: dataPag, Banco: banco,
+      ResponsavelLancamento: l.resp || responsavel, DataRecebimento: dataPag, Banco: contaDestino,
       Status: 'Recebido', NumMedicao: l.medicao || '', NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
       OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
       ValorLiquido: l.total || 0, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
-      LancadoPor: responsavel, TransferenciaId: transferenciaId, TransferenciaContraparte: l.cc || '',
+      LancadoPor: responsavel, TransferenciaId: transferenciaId, TransferenciaContraparte: contaOrigem,
     });
     if (despesa && despesa.Id) await dbAtualizar('Lancamentos_Servicos', id, { DespesaId: despesa.Id, ReceitaTransferenciaId: (receita && receita.Id) || null });
   } catch (e) { console.warn('[Serviços] Falha ao sincronizar transferência', e); }
