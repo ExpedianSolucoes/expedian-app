@@ -23056,6 +23056,154 @@ async function servAtualizarMedicaoPorCC(tipo, cc) {
   if (hint) hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.';
 }
 
+/* -- Centro de Custo do formulário de Lançamento de Serviços: combobox
+   digitável (digita e filtra), mesmo padrão typeahead usado em Contas a
+   Pagar (pagFiltrarCCs/pagSelecionarCC). Antes era um <select> fixo sem
+   busca — com a lista de CCs crescendo ficou difícil de achar o certo
+   (pedido 10/09/2026). -- */
+function servFiltrarCCs(tipo, texto) {
+  const dd = document.getElementById('val_cc_dropdown_' + tipo);
+  if (!dd) return;
+  const t = (texto || '').trim().toLowerCase();
+  const disponiveis = (centrosCustoData || []).filter(c => c.status === 'ativo');
+  const matches = (t ? disponiveis.filter(c => (c.id + ' ' + c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0, 40);
+  let html = matches.map(c => {
+    const label = (c.id + ' · ' + c.contrato).replace(/'/g, "\\'");
+    return '<div onclick="servSelecionarCC(\'' + tipo + '\',\'' + label + '\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>' + c.id + '</strong> <span style="color:var(--text-muted)">· ' + c.contrato + '</span>' +
+      '</div>';
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum centro de custo encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function servFecharDropdownCC(tipo) {
+  const dd = document.getElementById('val_cc_dropdown_' + tipo);
+  if (dd) dd.style.display = 'none';
+}
+/* -- Motor genérico de combobox digitável/filtrável, usado por todas as
+   demais listas suspensas do formulário de Lançamento de Serviços (Serviço,
+   Adicional, Veículo da Empresa, Responsável, Beneficiário) — pedido
+   10/09/2026. Cada campo se registra com sua lista de opções {value,label}
+   e um callback opcional de "onSelect" (pra efeitos colaterais como
+   auto-preencher o valor unitário ao escolher o Serviço). O <select> vira
+   um <input type=text id="campo_input"> + <input type=hidden id="campo">
+   (o "campo" é o mesmo id que o resto do código já usa pra ler o valor via
+   getElementById(campo).value, então salvarLancamento/limparForm/etc. não
+   precisam mudar). -- */
+function servComboRegistrar(campo, options, onSelect) {
+  window._servCombos = window._servCombos || {};
+  window._servCombos[campo] = { options: options || [], onSelect: onSelect || null, _lastMatches: [] };
+}
+function servComboFiltrar(campo, texto) {
+  const dd = document.getElementById(campo + '_dropdown');
+  const cfg = (window._servCombos || {})[campo];
+  if (!dd || !cfg) return;
+  const t = (texto || '').trim().toLowerCase();
+  const matches = (t ? cfg.options.filter(o => o.label.toLowerCase().includes(t)) : cfg.options).slice(0, 50);
+  cfg._lastMatches = matches;
+  let html = matches.map((o, i) => '<div onclick="servComboSelecionar(\'' + campo + '\',' + i + ')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+    'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' + String(o.label).replace(/</g, '&lt;') + '</div>').join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum resultado encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function servComboFechar(campo) {
+  const dd = document.getElementById(campo + '_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+function servComboSelecionar(campo, idx) {
+  const cfg = (window._servCombos || {})[campo];
+  const opt = cfg && cfg._lastMatches && cfg._lastMatches[idx];
+  if (!opt) return;
+  const inp = document.getElementById(campo + '_input'); if (inp) inp.value = opt.label;
+  const hid = document.getElementById(campo); if (hid) hid.value = opt.value;
+  servComboFechar(campo);
+  if (cfg.onSelect) cfg.onSelect(opt.value, opt);
+}
+// Preenche um combo (hidden + input visível) programaticamente, sem passar
+// pelo dropdown — usado ao editar um lançamento existente ou ao clicar
+// "Lançar" na tabela de preços (preencherForm). Busca o label certo na lista
+// de opções já registrada; se não achar (ex.: valor "solto"), usa o próprio
+// valor como texto exibido.
+function servComboSetValor(campo, valor) {
+  const hid = document.getElementById(campo); if (hid) hid.value = valor || '';
+  const inp = document.getElementById(campo + '_input');
+  const cfg = (window._servCombos || {})[campo];
+  const opt = cfg && cfg.options.find(o => o.value === valor);
+  if (inp) inp.value = opt ? opt.label : (valor || '');
+}
+function servSelecionarCC(tipo, valor) {
+  const inp = document.getElementById('val_cc_input_' + tipo); if (inp) inp.value = valor;
+  const hid = document.getElementById('val_cc_' + tipo); if (hid) hid.value = valor;
+  servFecharDropdownCC(tipo);
+  servAtualizarMedicaoPorCC(tipo, valor);
+}
+
+/* -- Divisão de um Lançamento de Serviço entre múltiplos beneficiários (ex.:
+   um projeto tocado por 2 pessoas) — pedido 10/09/2026. Continua sendo UM
+   lançamento só (1 status, 1 pagamento); só guarda como o valor se reparte
+   entre quem participou, em window._servDivisaoBenef[tipo] até salvar. -- */
+function servToggleDivisaoBenef(tipo) {
+  const chk = document.getElementById('serv_tem_divisaobenef_' + tipo);
+  const editor = document.getElementById('serv_divisaobenef_editor_' + tipo);
+  const benefGroup = document.getElementById('serv-benef-group-' + tipo);
+  const ativo = !!(chk && chk.checked);
+  if (editor) editor.style.display = ativo ? 'block' : 'none';
+  if (benefGroup) benefGroup.style.display = ativo ? 'none' : '';
+  window._servDivisaoBenef = window._servDivisaoBenef || {};
+  if (ativo) { window._servDivisaoBenef[tipo] = window._servDivisaoBenef[tipo] || []; servRenderizarDivisaoBenef(tipo); }
+  else window._servDivisaoBenef[tipo] = [];
+}
+function servAdicionarDivisaoBenef(tipo) {
+  const nome = (document.getElementById('serv_divbenef_' + tipo) || {}).value;
+  const valor = rdMoedaParaNumero((document.getElementById('serv_divbenef_valor_' + tipo) || {}).value);
+  if (!nome) { showToast('⚠️ Selecione o beneficiário.'); return; }
+  if (!valor) { showToast('⚠️ Informe o valor deste beneficiário.'); return; }
+  window._servDivisaoBenef = window._servDivisaoBenef || {};
+  window._servDivisaoBenef[tipo] = window._servDivisaoBenef[tipo] || [];
+  window._servDivisaoBenef[tipo].push({ benef: nome, valor });
+  servComboSetValor('serv_divbenef_' + tipo, '');
+  const valorEl = document.getElementById('serv_divbenef_valor_' + tipo); if (valorEl) valorEl.value = '';
+  servRenderizarDivisaoBenef(tipo);
+}
+function servRemoverDivisaoBenef(tipo, i) {
+  if (!window._servDivisaoBenef || !window._servDivisaoBenef[tipo]) return;
+  window._servDivisaoBenef[tipo].splice(i, 1);
+  servRenderizarDivisaoBenef(tipo);
+}
+function servRenderizarDivisaoBenef(tipo) {
+  const lista = document.getElementById('serv_divisaobenef_lista_' + tipo);
+  const totalEl = document.getElementById('serv_divisaobenef_total_' + tipo);
+  if (!lista) return;
+  const itens = (window._servDivisaoBenef && window._servDivisaoBenef[tipo]) || [];
+  lista.innerHTML = itens.map((d, i) => `
+    <div style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:6px 10px;border-radius:8px;font-size:.8rem;margin-bottom:6px">
+      <span style="flex:1">👤 ${d.benef}</span>
+      <span style="font-weight:700">R$ ${rdNumeroParaMoeda(d.valor)}</span>
+      <span style="cursor:pointer;color:var(--text-muted)" onclick="servRemoverDivisaoBenef('${tipo}',${i})" title="Remover">✕</span>
+    </div>`).join('') || '<div style="font-size:.75rem;color:var(--text-muted)">Nenhum beneficiário adicionado ainda.</div>';
+  const soma = itens.reduce((s, d) => s + (d.valor || 0), 0);
+  const totalAtual = rdMoedaParaNumero((document.getElementById('val_total_' + tipo) || {}).value);
+  if (!totalEl) return;
+  if (!totalAtual) {
+    totalEl.style.color = 'var(--text-muted)';
+    totalEl.textContent = 'Soma: R$ ' + rdNumeroParaMoeda(soma) + ' (preencha o serviço/valor acima pra conferir com o total)';
+  } else {
+    const diff = totalAtual - soma;
+    if (Math.abs(diff) < 0.01) {
+      totalEl.style.color = 'var(--green-main)';
+      totalEl.textContent = '✅ Soma: R$ ' + rdNumeroParaMoeda(soma) + ' — bate com o Valor Total.';
+    } else {
+      totalEl.style.color = 'var(--red)';
+      totalEl.textContent = diff > 0
+        ? `⚠️ Faltam R$ ${rdNumeroParaMoeda(diff)} para completar o Valor Total (R$ ${rdNumeroParaMoeda(totalAtual)}).`
+        : `⚠️ Divisão passou R$ ${rdNumeroParaMoeda(Math.abs(diff))} do Valor Total (R$ ${rdNumeroParaMoeda(totalAtual)}).`;
+    }
+  }
+}
+
 // Mapeia o tipo de lançamento (diárias/veículos/projetos) para a
 // Categoria/Subcategoria de Despesas usada ao sincronizar um lançamento pago.
 const SERV_TIPO_PARA_CATEGORIA = {
@@ -23140,26 +23288,63 @@ function renderServicosTab(items, tipo) {
     .map(c => c.id + ' · ' + c.contrato);
   const podeLancar = _servicosPodeLancar();
 
+  // Registra as opções de cada lista suspensa digitável do formulário deste
+  // tipo (pedido 10/09/2026: todas as listas suspensas devem ser digitáveis
+  // e filtráveis, não só o Centro de Custo).
+  servComboRegistrar('sel_servico_' + tipo, items.map(i => ({
+    value: i.id,
+    label: i.id + ' · ' + i.desc + (i.percentual != null ? ' — ' + String(i.percentual).replace('.', ',') + '% sobre contrato' : (i.unidade ? ' (' + i.unidade + ')' : '')),
+    valor: i.valor,
+  })), (valor, opt) => {
+    const unitEl = document.getElementById('val_unit_' + tipo);
+    if (unitEl) unitEl.value = (opt && opt.valor !== null && opt.valor !== undefined && !isNaN(opt.valor) && opt.valor > 0) ? opt.valor.toFixed(2) : '';
+    calcTotal(tipo);
+  });
+  if (tipo === 'diarias') {
+    servComboRegistrar('val_adicional_' + tipo, [
+      { value: '', label: 'Nenhum' },
+      { value: 'fora_domicilio', label: 'Fora Domicílio (+20%)' },
+      { value: 'urgencia', label: 'Urgência (+25%)' },
+      { value: 'feriado_fds', label: 'Feriado/FDS (+20%)' },
+      { value: 'noturno', label: 'Noturno (+25%)' },
+    ], () => calcTotal(tipo));
+  }
+  if (tipo === 'veiculos') {
+    servComboRegistrar('val_veiculo_' + tipo, [
+      ...frota.map(v => ({ value: v, label: v })),
+      { value: '__outro__', label: 'Outros (digitar)' },
+    ], () => servToggleVeiculoOutro(tipo));
+  }
+  servComboRegistrar('val_resp_' + tipo, responsaveis.map(r => ({ value: r, label: r })));
+  if (tipo !== 'veiculos') {
+    servComboRegistrar('val_benef_' + tipo, beneficiarios.map(b => ({ value: b, label: b })));
+    servComboRegistrar('serv_divbenef_' + tipo, beneficiarios.map(b => ({ value: b, label: b })));
+  }
+
   const formulario = !podeLancar ? `
   <div class="card" style="margin-bottom:20px;text-align:center;padding:32px 24px;color:var(--text-muted)">
     <div style="font-size:1.6rem;margin-bottom:8px">🔒</div>
     <div style="font-weight:700;color:var(--text)">Lançamentos restritos à Diretoria e Coordenação</div>
     <div style="font-size:.82rem;margin-top:6px">A tabela de preços abaixo continua disponível para consulta.</div>
   </div>` : `
-  <!-- FORMULÁRIO DE LANÇAMENTO (colapsável) -->
+  <!-- FORMULÁRIO DE LANÇAMENTO (aberto via botão único "Novo Lançamento" na
+       aba Lançamentos, ou ao editar um lançamento existente) -->
   <div style="margin-bottom:20px">
-    <button id="serv-form-toggle-${tipo}" class="btn-primary" onclick="servToggleFormNovo('${tipo}')">➕ Novo Lançamento</button>
-    <div id="serv-form-container-${tipo}" style="display:${(window._servicosFormAberto && window._servicosFormAberto[tipo]) ? 'block' : 'none'};margin-top:14px">
+    <div id="serv-form-container-${tipo}" style="display:${(window._servicosFormAberto && window._servicosFormAberto[tipo]) ? 'block' : 'none'}">
     <div class="card" style="border-top:3px solid var(--green-main)">
-    <div class="card-title" id="serv-form-title-${tipo}" style="font-size:.9rem;margin-bottom:16px">➕ Novo Lançamento</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div class="card-title" id="serv-form-title-${tipo}" style="margin-bottom:0;font-size:.9rem">➕ Novo Lançamento</div>
+      <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="servToggleFormNovo('${tipo}',false)">✕ Fechar</button>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-      <div class="form-group" style="grid-column:span 2">
+      <div class="form-group" style="grid-column:span 2;position:relative">
         <label>Serviço</label>
-        <select id="sel_servico_${tipo}" onchange="onSelectServico('${tipo}')"
-          style="font-size:.82rem">
-          <option value="">Selecione o serviço...</option>
-          ${items.map(i => `<option value="${i.id}" data-valor="${i.valor !== null ? i.valor : ''}">${i.id} · ${i.desc}${i.percentual != null ? ' — '+String(i.percentual).replace('.',',')+'% sobre contrato' : (i.unidade ? ' ('+i.unidade+')' : '')}</option>`).join('')}
-        </select>
+        <input type="text" id="sel_servico_${tipo}_input" placeholder="Digite para buscar o serviço..." autocomplete="off"
+          oninput="servComboFiltrar('sel_servico_${tipo}',this.value)" onfocus="servComboFiltrar('sel_servico_${tipo}',this.value)"
+          onblur="setTimeout(()=>servComboFechar('sel_servico_${tipo}'),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem;outline:none;box-sizing:border-box">
+        <input type="hidden" id="sel_servico_${tipo}">
+        <div id="sel_servico_${tipo}_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:240px;overflow-y:auto;z-index:50;margin-top:4px"></div>
       </div>
       <div class="form-group">
         <label>Valor Unitário (R$)</label>
@@ -23173,15 +23358,14 @@ function renderServicosTab(items, tipo) {
           oninput="calcTotal('${tipo}')">
       </div>
       ${tipo === 'diarias' ? `
-      <div class="form-group">
+      <div class="form-group" style="position:relative">
         <label>Adicional</label>
-        <select id="val_adicional_${tipo}" style="font-size:.82rem" onchange="calcTotal('${tipo}')">
-          <option value="">Nenhum</option>
-          <option value="fora_domicilio">Fora Domicílio (+20%)</option>
-          <option value="urgencia">Urgência (+25%)</option>
-          <option value="feriado_fds">Feriado/FDS (+20%)</option>
-          <option value="noturno">Noturno (+25%)</option>
-        </select>
+        <input type="text" id="val_adicional_${tipo}_input" placeholder="Nenhum" autocomplete="off"
+          oninput="servComboFiltrar('val_adicional_${tipo}',this.value)" onfocus="servComboFiltrar('val_adicional_${tipo}',this.value)"
+          onblur="setTimeout(()=>servComboFechar('val_adicional_${tipo}'),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem;outline:none;box-sizing:border-box">
+        <input type="hidden" id="val_adicional_${tipo}">
+        <div id="val_adicional_${tipo}_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
       </div>
       <div class="form-group">
         <label>Subtotal <span style="font-size:.68rem;color:var(--text-muted)">(sem adicional)</span></label>
@@ -23198,39 +23382,76 @@ function renderServicosTab(items, tipo) {
         <input id="val_data_${tipo}" type="date">
       </div>
       ${tipo === 'veiculos' ? `
-      <div class="form-group">
+      <div class="form-group" style="position:relative">
         <label>Veículo da Empresa</label>
-        <select id="val_veiculo_${tipo}" style="font-size:.82rem" onchange="servToggleVeiculoOutro('${tipo}')">
-          <option value="">Selecione...</option>
-          ${frota.map(v => `<option>${v}</option>`).join('')}
-          <option value="__outro__">Outros (digitar)</option>
-        </select>
+        <input type="text" id="val_veiculo_${tipo}_input" placeholder="Digite para buscar..." autocomplete="off"
+          oninput="servComboFiltrar('val_veiculo_${tipo}',this.value)" onfocus="servComboFiltrar('val_veiculo_${tipo}',this.value)"
+          onblur="setTimeout(()=>servComboFechar('val_veiculo_${tipo}'),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem;outline:none;box-sizing:border-box">
+        <input type="hidden" id="val_veiculo_${tipo}">
+        <div id="val_veiculo_${tipo}_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
       </div>
       <div class="form-group" id="veiculo_outro_container_${tipo}" style="display:none">
         <label>Descrição do Veículo</label>
         <input id="val_veiculo_outro_${tipo}" placeholder="Ex: veículo alugado / de terceiro">
       </div>` : ''}
-      <div class="form-group">
+      <div class="form-group" style="position:relative">
         <label>Responsável pelo Lançamento <span style="font-size:.68rem;color:var(--text-muted)">(Diretoria/Coordenação)</span></label>
-        <select id="val_resp_${tipo}" style="font-size:.82rem">
-          <option value="">Selecione...</option>
-          ${responsaveis.map(r => `<option>${r}</option>`).join('')}
-        </select>
+        <input type="text" id="val_resp_${tipo}_input" placeholder="Digite para buscar..." autocomplete="off"
+          oninput="servComboFiltrar('val_resp_${tipo}',this.value)" onfocus="servComboFiltrar('val_resp_${tipo}',this.value)"
+          onblur="setTimeout(()=>servComboFechar('val_resp_${tipo}'),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem;outline:none;box-sizing:border-box">
+        <input type="hidden" id="val_resp_${tipo}">
+        <div id="val_resp_${tipo}_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
       </div>
       ${tipo !== 'veiculos' ? `
-      <div class="form-group">
+      <div class="form-group" id="serv-benef-group-${tipo}" style="position:relative">
         <label>Beneficiário</label>
-        <select id="val_benef_${tipo}" style="font-size:.82rem">
-          <option value="">Selecione...</option>
-          ${beneficiarios.map(b => `<option>${b}</option>`).join('')}
-        </select>
+        <input type="text" id="val_benef_${tipo}_input" placeholder="Digite para buscar..." autocomplete="off"
+          oninput="servComboFiltrar('val_benef_${tipo}',this.value)" onfocus="servComboFiltrar('val_benef_${tipo}',this.value)"
+          onblur="setTimeout(()=>servComboFechar('val_benef_${tipo}'),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem;outline:none;box-sizing:border-box">
+        <input type="hidden" id="val_benef_${tipo}">
+        <div id="val_benef_${tipo}_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+      </div>
+      <!-- Divisão entre múltiplos beneficiários (ex.: um projeto tocado por 2
+           pessoas) — pedido 10/09/2026. Mantém 1 único lançamento (1 status,
+           1 pagamento), só reparte o valor pra quem participou, no mesmo
+           padrão de "Divisão por Centro de Custo" já usado em Despesas. -->
+      <div class="form-group" style="grid-column:span 2">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:600">
+          <input type="checkbox" id="serv_tem_divisaobenef_${tipo}" onchange="servToggleDivisaoBenef('${tipo}')" style="width:auto">
+          🧩 Dividir este lançamento entre mais de um beneficiário
+        </label>
+        <div id="serv_divisaobenef_editor_${tipo}" style="display:none;margin-top:10px;padding:12px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+            <div style="flex:2;min-width:160px;position:relative">
+              <label style="font-size:.72rem">Beneficiário</label>
+              <input type="text" id="serv_divbenef_${tipo}_input" placeholder="Digite para buscar..." autocomplete="off"
+                oninput="servComboFiltrar('serv_divbenef_${tipo}',this.value)" onfocus="servComboFiltrar('serv_divbenef_${tipo}',this.value)"
+                onblur="setTimeout(()=>servComboFechar('serv_divbenef_${tipo}'),150)"
+                style="width:100%;padding:7px 9px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;box-sizing:border-box">
+              <input type="hidden" id="serv_divbenef_${tipo}">
+              <div id="serv_divbenef_${tipo}_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+            </div>
+            <div style="flex:1;min-width:100px">
+              <label style="font-size:.72rem">Valor (R$)</label>
+              <input type="text" id="serv_divbenef_valor_${tipo}" placeholder="0,00" style="width:100%;padding:7px 9px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;box-sizing:border-box">
+            </div>
+            <button class="btn-secondary" style="padding:7px 12px;font-size:.78rem" onclick="servAdicionarDivisaoBenef('${tipo}')">➕ Adicionar</button>
+          </div>
+          <div id="serv_divisaobenef_lista_${tipo}"></div>
+          <div id="serv_divisaobenef_total_${tipo}" style="margin-top:8px;font-size:.78rem;font-weight:700"></div>
+        </div>
       </div>` : ''}
-      <div class="form-group">
+      <div class="form-group" style="position:relative">
         <label>Centro de Custo</label>
-        <select id="val_cc_${tipo}" style="font-size:.82rem" onchange="servAtualizarMedicaoPorCC('${tipo}',this.value)">
-          <option value="">Selecione...</option>
-          ${centrosCusto.map(c => `<option>${c}</option>`).join('')}
-        </select>
+        <input type="text" id="val_cc_input_${tipo}" placeholder="Digite para buscar..." autocomplete="off"
+          oninput="servFiltrarCCs('${tipo}',this.value)" onfocus="servFiltrarCCs('${tipo}',this.value)"
+          onblur="setTimeout(()=>servFecharDropdownCC('${tipo}'),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none;box-sizing:border-box">
+        <input type="hidden" id="val_cc_${tipo}">
+        <div id="val_cc_dropdown_${tipo}" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
       </div>
       <div class="form-group">
         <label>Nº Medição <span style="font-size:.68rem;color:var(--text-muted)">(opcional)</span></label>
@@ -23457,14 +23678,21 @@ async function carregarLancamentosServicos() {
   // por colaborador, pra saber rapidamente quanto já foi pago e quanto ainda
   // falta pagar pra cada um.
   const porBenef = {};
-  items.forEach(l => {
-    const nome = l.benef || '—';
+  const somarBenef = (nome, st, v) => {
     if (!porBenef[nome]) porBenef[nome] = { pago: 0, aPagar: 0, aguardando: 0 };
-    const st = servStatusDe(l);
-    const v = Number(l.total) || 0;
     if (st === 'Pago') porBenef[nome].pago += v;
     else if (st === 'A Pagar') porBenef[nome].aPagar += v;
     else if (st === 'Aguardando Aprovação') porBenef[nome].aguardando += v;
+  };
+  items.forEach(l => {
+    const st = servStatusDe(l);
+    // Lançamento dividido entre beneficiários (pedido 10/09/2026): soma o
+    // valor de cada um separadamente, não o total inteiro sob um nome só.
+    if (l.DivisaoBenef && l.DivisaoBenef.length) {
+      l.DivisaoBenef.forEach(d => somarBenef(d.benef || '—', st, Number(d.valor) || 0));
+    } else {
+      somarBenef(l.benef || '—', st, Number(l.total) || 0);
+    }
   });
   const benefLinhas = Object.entries(porBenef)
     .filter(([,v]) => v.pago || v.aPagar || v.aguardando)
@@ -23515,7 +23743,7 @@ async function carregarLancamentosServicos() {
           <td style="text-align:right;font-size:.78rem">${fmtBRL(l.unit)}</td>
           <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif;color:var(--green-main)">${fmtBRL(l.total)}</td>
           <td style="font-size:.75rem">${l.resp||'—'}</td>
-          <td style="font-size:.75rem">${l.benef||'—'}</td>
+          <td style="font-size:.75rem">${l.DivisaoBenef && l.DivisaoBenef.length ? '🧩 ' + l.DivisaoBenef.map(d=>d.benef+' ('+fmtBRL(d.valor)+')').join('<br>🧩 ') : (l.benef||'—')}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${l.cc||'—'}${l.medicao?`<br><span style="font-size:.66rem">📏 Med. ${l.medicao}</span>`:''}</td>
           <td><span class="status-pill ${stCor}">* ${st}</span>${st==='Rejeitado'&&l.MotivoRejeicao?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.MotivoRejeicao}</div>`:''}${st==='Pago'&&l.BancoPagamento?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.BancoPagamento}</div>`:''}</td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
@@ -23531,7 +23759,26 @@ async function carregarLancamentosServicos() {
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="margin:0">Lançamentos Registrados <span class="badge">${filtrados.length} itens · ${fmtBRL(totalFiltrado)}</span></div>
-      <button class="btn-secondary" onclick="exportarLancamentosServicosExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${_servicosPodeLancar() ? `<button class="btn-primary" onclick="servAbrirSeletorTipo()" style="font-size:.78rem;padding:6px 12px">➕ Novo Lançamento</button>` : ''}
+        <button class="btn-secondary" onclick="exportarLancamentosServicosExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
+      </div>
+    </div>
+    <!-- Seletor de tipo (pedido 10/09/2026: um botão único de "Novo
+         Lançamento" em vez de um separado em cada aba de catálogo; ao
+         clicar, escolhe se é Diária, Locação de Veículo ou Projeto antes de
+         abrir o formulário certo). -->
+    <div id="serv-seletor-tipo-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:5000;align-items:center;justify-content:center;padding:16px">
+      <div style="background:var(--surface);border-radius:14px;padding:22px;max-width:360px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,.25)">
+        <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;margin-bottom:4px">➕ Novo Lançamento</div>
+        <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:16px">Qual o tipo de lançamento?</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servEscolherTipoENovo('diarias')">👷 Diárias de Serviço</button>
+          <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servEscolherTipoENovo('veiculos')">🚗 Locação de Veículos</button>
+          <button class="btn-secondary" style="text-align:left;padding:12px 14px;font-size:.85rem" onclick="servEscolherTipoENovo('projetos')">📋 Projetos e Relatórios</button>
+        </div>
+        <button class="btn-secondary" style="width:100%;margin-top:14px" onclick="servFecharSeletorTipo()">Cancelar</button>
+      </div>
     </div>
     ${semNenhum ? `
     <div style="text-align:center;padding:40px;color:var(--text-muted)">
@@ -23601,15 +23848,9 @@ async function exportarLancamentosServicosExcel() {
   XLSX.writeFile(wb, 'LancamentosServicos_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
-function onSelectServico(tipo) {
-  const sel = document.getElementById('sel_servico_' + tipo);
-  const opt = sel.options[sel.selectedIndex];
-  const valor = opt ? parseFloat(opt.dataset.valor) : 0;
-  const unitEl = document.getElementById('val_unit_' + tipo);
-  if (!isNaN(valor) && valor > 0) unitEl.value = valor.toFixed(2);
-  else unitEl.value = '';
-  calcTotal(tipo);
-}
+// (onSelectServico foi substituído pelo callback onSelect registrado em
+// servComboRegistrar('sel_servico_'+tipo, ...) — o combo digitável já
+// auto-preenche o Valor Unitário ao escolher um item da lista.)
 
 function servToggleVeiculoOutro(tipo) {
   const sel = document.getElementById('val_veiculo_' + tipo);
@@ -23651,23 +23892,45 @@ function preencherForm(tipo, id) {
   const item = db.find(i => i.id === id);
   if (!item) return;
   servToggleFormNovo(tipo, true);
-  const sel = document.getElementById('sel_servico_' + tipo);
-  for (let o of sel.options) { if (o.value === id) { sel.value = id; break; } }
+  servComboSetValor('sel_servico_' + tipo, id);
   const unitEl = document.getElementById('val_unit_' + tipo);
   if (item.valor !== null) unitEl.value = item.valor.toFixed(2);
   calcTotal(tipo);
-  sel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const inp = document.getElementById('sel_servico_' + tipo + '_input');
+  if (inp) inp.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function limparForm(tipo) {
-  ['sel_servico_','val_unit_','val_qtd_','val_data_','val_veiculo_','val_veiculo_outro_','val_resp_','val_benef_','val_cc_','val_medicao_','val_obs_','val_total_','val_adicional_','val_subtotal_'].forEach(p => {
+  ['sel_servico_','val_unit_','val_qtd_','val_data_','val_veiculo_','val_veiculo_outro_','val_resp_','val_benef_','val_cc_','val_cc_input_','val_medicao_','val_obs_','val_total_','val_adicional_','val_subtotal_'].forEach(p => {
     const el = document.getElementById(p + tipo);
     if (el) el.value = el.tagName === 'SELECT' ? '' : el.type === 'number' && p === 'val_qtd_' ? '1' : '';
   });
+  // Comboboxes digitáveis (Serviço/Adicional/Veículo/Responsável/Beneficiário):
+  // limpa o texto visível e fecha o dropdown (o hidden já foi zerado acima,
+  // pois tem o mesmo id usado no loop de prefixos).
+  ['sel_servico_' + tipo, 'val_adicional_' + tipo, 'val_veiculo_' + tipo, 'val_resp_' + tipo, 'val_benef_' + tipo].forEach(campo => {
+    const inp = document.getElementById(campo + '_input'); if (inp) inp.value = '';
+    servComboFechar(campo);
+  });
+  servFecharDropdownCC(tipo);
   const cont = document.getElementById('veiculo_outro_container_' + tipo);
   if (cont) cont.style.display = 'none';
   const hint = document.getElementById('val_medicao_hint_' + tipo);
   if (hint) hint.textContent = '';
+  // Divisão entre beneficiários: desmarca, esconde o editor, zera a lista e
+  // volta a mostrar o campo único de Beneficiário.
+  window._servDivisaoBenef = window._servDivisaoBenef || {};
+  window._servDivisaoBenef[tipo] = [];
+  const divChk = document.getElementById('serv_tem_divisaobenef_' + tipo);
+  if (divChk) divChk.checked = false;
+  const divEditor = document.getElementById('serv_divisaobenef_editor_' + tipo);
+  if (divEditor) divEditor.style.display = 'none';
+  const benefGroup = document.getElementById('serv-benef-group-' + tipo);
+  if (benefGroup) benefGroup.style.display = '';
+  const divInp = document.getElementById('serv_divbenef_' + tipo + '_input'); if (divInp) divInp.value = '';
+  const divHid = document.getElementById('serv_divbenef_' + tipo); if (divHid) divHid.value = '';
+  servComboFechar('serv_divbenef_' + tipo);
+  const divValorEl = document.getElementById('serv_divbenef_valor_' + tipo); if (divValorEl) divValorEl.value = '';
   window._servEditandoId = null;
   const titulo = document.getElementById('serv-form-title-' + tipo);
   if (titulo) titulo.textContent = '➕ Novo Lançamento';
@@ -23767,6 +24030,27 @@ function servToggleFormNovo(tipo, forcar) {
   if (c) c.style.display = abrir ? 'block' : 'none';
 }
 
+/* -- Botão único "➕ Novo Lançamento" (aba Lançamentos) — pedido 10/09/2026,
+   substitui os 3 botões separados que existiam antes em cada aba de
+   catálogo (Diárias/Veículos/Projetos). Abre um seletor simples; ao
+   escolher o tipo, navega pra aba certa já com o formulário aberto. -- */
+function servAbrirSeletorTipo() {
+  if (!_servicosPodeLancar()) { showToast('⛔ Lançamentos restritos à Diretoria e Coordenação.'); return; }
+  const m = document.getElementById('serv-seletor-tipo-modal');
+  if (m) m.style.display = 'flex';
+}
+function servFecharSeletorTipo() {
+  const m = document.getElementById('serv-seletor-tipo-modal');
+  if (m) m.style.display = 'none';
+}
+function servEscolherTipoENovo(tipo) {
+  servFecharSeletorTipo();
+  window._servicosTab = tipo;
+  window._servicosFormAberto = window._servicosFormAberto || {};
+  window._servicosFormAberto[tipo] = true;
+  navigate('servicos');
+}
+
 async function salvarLancamento(tipo) {
   if (!_servicosPodeLancar()) { showToast('⛔ Lançamentos restritos à Diretoria e Coordenação.'); return; }
   const db = tipo === 'diarias' ? servicosDB.diarias : tipo === 'veiculos' ? servicosDB.veiculos : servicosDB.projetos;
@@ -23793,13 +24077,29 @@ async function salvarLancamento(tipo) {
   const subtotal = unit * qtd;
   const total = subtotal * (1 + adicionalPct);
 
+  // Divisão entre múltiplos beneficiários (pedido 10/09/2026) — se ativa,
+  // substitui a checagem do Beneficiário único: precisa ter pelo menos 1
+  // beneficiário na lista e a soma tem que bater com o Total.
+  const divisaoBenefChk = document.getElementById('serv_tem_divisaobenef_' + tipo);
+  const divisaoBenefAtiva = tipo !== 'veiculos' && !!(divisaoBenefChk && divisaoBenefChk.checked);
+  const divisaoBenef = divisaoBenefAtiva ? ((window._servDivisaoBenef && window._servDivisaoBenef[tipo]) || []) : [];
+
   if (!selId)   { showToast('⚠️ Selecione um serviço.'); return; }
   if (!data)    { showToast('⚠️ Informe a data.'); return; }
   if (!resp)    { showToast('⚠️ Informe o responsável.'); return; }
   if (tipo === 'veiculos' && veiculoSel === '__outro__' && !veiculo) { showToast('⚠️ Descreva o veículo.'); return; }
   if (tipo === 'veiculos' && !veiculoSel) { showToast('⚠️ Selecione o veículo da empresa.'); return; }
-  if (tipo !== 'veiculos' && !benef) { showToast('⚠️ Informe o beneficiário.'); return; }
+  if (divisaoBenefAtiva) {
+    if (!divisaoBenef.length) { showToast('⚠️ Adicione ao menos um beneficiário na divisão.'); return; }
+    const somaDivisao = divisaoBenef.reduce((s, d) => s + (d.valor || 0), 0);
+    if (Math.abs(somaDivisao - total) > 0.01) { showToast(`⚠️ A soma da divisão (R$ ${rdNumeroParaMoeda(somaDivisao)}) não bate com o Valor Total (R$ ${rdNumeroParaMoeda(total)}).`); return; }
+  } else if (tipo !== 'veiculos' && !benef) { showToast('⚠️ Informe o beneficiário.'); return; }
   if (!cc)      { showToast('⚠️ Informe o centro de custo.'); return; }
+
+  // Quando dividido, o campo "benef" (string única, usado em telas/relatórios
+  // antigos que só leem esse campo) vira a lista de nomes juntada; o detalhe
+  // por valor fica em DivisaoBenef.
+  const benefFinal = divisaoBenefAtiva ? divisaoBenef.map(d => d.benef).join(' + ') : benef;
 
   // Edição de um lançamento já existente (lápis ✏️ na tabela) — reaproveita o
   // mesmo formulário, só pré-preenchido; ao salvar, detecta window._servEditandoId
@@ -23814,7 +24114,8 @@ async function salvarLancamento(tipo) {
       adicional: adicionalKey || '', adicionalLabel: adicionalKey ? SERV_ADICIONAL_LABEL[adicionalKey] : '', adicionalPct,
       total, dataISO: data,
       data: data ? new Date(data + 'T00:00').toLocaleDateString('pt-BR') : '—',
-      veiculo, resp, benef, cc, medicao, obs,
+      veiculo, resp, benef: benefFinal, cc, medicao, obs,
+      DivisaoBenef: divisaoBenefAtiva ? divisaoBenef : [],
     };
     const ok = await dbAtualizar('Lancamentos_Servicos', editandoId, patch);
     showToast(ok ? '✅ Lançamento atualizado! Total: ' + fmtBRL(total) : '❌ Erro ao atualizar lançamento.');
@@ -23834,7 +24135,8 @@ async function salvarLancamento(tipo) {
     total,
     dataISO: data,
     data: data ? new Date(data + 'T00:00').toLocaleDateString('pt-BR') : '—',
-    veiculo, resp, benef, cc, medicao, obs,
+    veiculo, resp, benef: benefFinal, cc, medicao, obs,
+    DivisaoBenef: divisaoBenefAtiva ? divisaoBenef : [],
     LancadoPor: window._currentUser ? window._currentUser.name : '',
     Status: 'Aguardando Aprovação',
   };
@@ -23864,22 +24166,29 @@ async function servEditarLancamento(id) {
 
   setTimeout(async () => {
     const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
-    set('sel_servico_' + tipo, l.codServico);
+    servComboSetValor('sel_servico_' + tipo, l.codServico);
     set('val_unit_' + tipo, l.unit);
     set('val_qtd_' + tipo, l.qtd);
     set('val_data_' + tipo, l.dataISO);
-    if (tipo === 'diarias') set('val_adicional_' + tipo, l.adicional || '');
+    if (tipo === 'diarias') servComboSetValor('val_adicional_' + tipo, l.adicional || '');
     if (tipo === 'veiculos') {
       const frota = _servicosFrotaVeiculos();
-      const veicEl = document.getElementById('val_veiculo_' + tipo);
-      if (veicEl) {
-        if (frota.includes(l.veiculo)) { veicEl.value = l.veiculo; servToggleVeiculoOutro(tipo); }
-        else { veicEl.value = '__outro__'; servToggleVeiculoOutro(tipo); set('val_veiculo_outro_' + tipo, l.veiculo); }
-      }
+      if (frota.includes(l.veiculo)) { servComboSetValor('val_veiculo_' + tipo, l.veiculo); servToggleVeiculoOutro(tipo); }
+      else { servComboSetValor('val_veiculo_' + tipo, '__outro__'); servToggleVeiculoOutro(tipo); set('val_veiculo_outro_' + tipo, l.veiculo); }
     }
-    set('val_resp_' + tipo, l.resp);
-    if (tipo !== 'veiculos') set('val_benef_' + tipo, l.benef);
+    servComboSetValor('val_resp_' + tipo, l.resp);
+    if (tipo !== 'veiculos') {
+      servComboSetValor('val_benef_' + tipo, l.benef);
+      // Restaura a divisão entre beneficiários, se este lançamento foi salvo
+      // dividido (pedido 10/09/2026).
+      window._servDivisaoBenef = window._servDivisaoBenef || {};
+      window._servDivisaoBenef[tipo] = (l.DivisaoBenef && l.DivisaoBenef.length) ? l.DivisaoBenef.slice() : [];
+      const divChk = document.getElementById('serv_tem_divisaobenef_' + tipo);
+      if (divChk) divChk.checked = !!(l.DivisaoBenef && l.DivisaoBenef.length);
+      servToggleDivisaoBenef(tipo);
+    }
     set('val_cc_' + tipo, l.cc);
+    set('val_cc_input_' + tipo, l.cc);
     await servAtualizarMedicaoPorCC(tipo, l.cc || '');
     set('val_medicao_' + tipo, l.medicao);
     set('val_obs_' + tipo, l.obs);
@@ -25250,17 +25559,19 @@ const eroGrupos = [
     ]
   },
   {
-    num: 5, titulo: '5. Contaminação/Poluição Ambiental', peso: 3,
+    num: 5, titulo: '5. Risco Ambiental', peso: 3,
     itens: [
-      { id:'5.1', texto:'Há bacia de contenção para o(s) transformador(es) do empreendimento?', peso:3 },
-      { id:'5.2', texto:'O Kit de Mitigação Ambiental está completo?', peso:3 },
-      { id:'5.3', texto:'As bacias de contenção estão em bom estado de conservação?', peso:3 },
-      { id:'5.4', texto:'Existem sinais de vazamento de óleo do(s) transformador(es)? Indicar qual a TAG do transformador.', peso:3 },
-      { id:'5.5', texto:'Há caixa separadora de Água e Óleo no empreendimento?', peso:3 },
-      { id:'5.6', texto:'Há Kit de Mitigação Ambiental no empreendimento (contendo pá e enxada com isolamento elétrico)?', peso:3 },
-      { id:'5.7', texto:'O volume de óleo armazenado na caixa separadora de água e óleo é superior a 30% de sua capacidade de armazenamento?', peso:3 },
-      { id:'5.8', texto:'Existe a necessidade de programar o bombeamento do óleo acondicionado na caixa separadora?', peso:3 },
-      { id:'5.9', texto:'Há algum tipo de vazamento de óleo no pátio da subestação por outros equipamentos?', peso:3 },
+      { id:'5.1', texto:'Há transformador sob bacia de contenção?', peso:3 },
+      { id:'5.2', texto:'Há trafo sem bacia de contenção?', peso:3 },
+      { id:'5.3', texto:'Há vazamento de trafo sem bacia de contenção?', peso:3 },
+      { id:'5.4', texto:'O Kit de Mitigação Ambiental está completo?', peso:3 },
+      { id:'5.5', texto:'As bacias de contenção estão em bom estado de conservação?', peso:3 },
+      { id:'5.6', texto:'Existem sinais de vazamento de óleo do(s) transformador(es)? Indicar qual a TAG do transformador.', peso:3 },
+      { id:'5.7', texto:'Há caixa separadora de Água e Óleo no empreendimento?', peso:3 },
+      { id:'5.8', texto:'Há Kit de Mitigação Ambiental no empreendimento (contendo pá e enxada com isolamento elétrico)?', peso:3 },
+      { id:'5.9', texto:'O volume de óleo armazenado na caixa separadora de água e óleo é superior a 30% de sua capacidade de armazenamento?', peso:3 },
+      { id:'5.10', texto:'Existe a necessidade de programar o bombeamento do óleo acondicionado na caixa separadora?', peso:3 },
+      { id:'5.11', texto:'Há algum tipo de vazamento de óleo no pátio da subestação por outros equipamentos?', peso:3 },
     ]
   }
 ];
@@ -45927,6 +46238,12 @@ const BACKUP_TABELAS = [
   'OrdensServicoEnergisa','Outorgas','PerfilUsuario','Prazos','PrestacaoContas','Receitas',
   'RelatoriosObraEmpreiteira','ServicosCatalogo',
   'SolicitacoesGerais','TermosEquipamento','TreinamentosEventos','bpo_saidas_v4','contratos',
+  // Monitoramento Ambiental ERO (empreendimentos/vistorias + serviços adicionais do roteiro) e
+  // Veículos a Diesel (Teste de Opacidade) não tinham backup diário — foi exatamente por isso que
+  // a exclusão acidental/condição de corrida que apagou "SED CUJUBIM" (registro nº65, sumido em
+  // 10/09/2026) não teve nenhuma cópia de segurança pra recuperar automaticamente; reconstruí o
+  // registro manualmente com os dados que ainda tinha em mãos. Adicionado aqui pra não repetir.
+  'MonitoramentoAmbientalERO','MonitoramentoAmbientalERO_Adicionais','VeiculosOpacidade',
 ];
 const BACKUP_DIAS_RETENCAO = 30;
 
