@@ -10387,16 +10387,41 @@ async function exportarNotasFiscaisExcel() {
       document.head.appendChild(s);
     });
   }
-  const rows = items.map(i => ({
-    'Nº NF': i.NumeroNF || '', 'Cliente': i.Cliente || '', 'Centro de Custo': i.CentroCusto || '',
-    'Data Emissão': i.DataEmissao ? new Date(i.DataEmissao+'T00:00:00').toLocaleDateString('pt-BR') : '',
-    'Data de Recebimento': i.DataRecebimento ? new Date(i.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR') : '',
-    'Valor': i.Valor || 0, 'Status': i.Status || '', 'Empresa': normalizarEmpresa(i.Empresa) || '',
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
+  // Cabeçalho com o mês filtrado (regime de caixa, mesmo filtro da tela) — pedido
+  // em 11/09/2026: exportação só das NFs do mês, com uma "tarja" no topo do
+  // Excel indicando a qual mês aquilo se refere.
+  const fMes = (document.getElementById('nf_filtro_mes')||{}).value || '';
+  const mesLabel = fMes
+    ? (new Date(fMes + '-02T12:00').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })).replace(/^./, c => c.toUpperCase())
+    : 'Todos os meses';
+  const empresaAtiva = normalizarEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]) || '';
+  const titulo = 'NOTAS FISCAIS — ' + mesLabel.toUpperCase() + (empresaAtiva ? ' — ' + empresaAtiva.toUpperCase() : '');
+
+  const colunas = ['Nº NF', 'Cliente', 'Centro de Custo', 'Data Emissão', 'Data de Recebimento', 'Valor', 'Status', 'Empresa'];
+  const linhasDados = items.map(i => [
+    i.NumeroNF || '', i.Cliente || '', i.CentroCusto || '',
+    i.DataEmissao ? new Date(i.DataEmissao+'T00:00:00').toLocaleDateString('pt-BR') : '',
+    i.DataRecebimento ? new Date(i.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR') : '',
+    i.Valor || 0, i.Status || '', normalizarEmpresa(i.Empresa) || '',
+  ]);
+  const somaValor = items.reduce((s, i) => s + (i.Valor || 0), 0);
+
+  const aoa = [
+    [titulo],
+    [],
+    colunas,
+    ...linhasDados,
+    [],
+    ['Total de notas: ' + items.length, '', '', '', 'Valor Total:', somaValor],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: colunas.length - 1 } }];
+  ws['!cols'] = colunas.map(() => ({ wch: 18 }));
+  if (ws['A1']) ws['A1'].s = { font: { bold: true, sz: 13 } };
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Notas Fiscais');
-  XLSX.writeFile(wb, 'NotasFiscais_' + new Date().toISOString().slice(0,10) + '.xlsx');
+  const sufixoMes = fMes || 'todos-meses';
+  XLSX.writeFile(wb, 'NotasFiscais_' + sufixoMes + '_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
 function renderDespesasTab() {
