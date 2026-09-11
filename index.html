@@ -9985,6 +9985,26 @@ async function financeiroObterAliquota(empresa) {
   } catch (e) { return 0; }
 }
 
+// Tarja fixa mostrando em qual Anexo/Faixa RBT12 do Simples Nacional a
+// empresa ativa está enquadrada, e a alíquota efetiva usada pra provisionar
+// o DAS automaticamente. Dados vêm de ConfigFinanceiro (pedido 11/09/2026).
+async function financeiroAtualizarTarjaSimples(empresa) {
+  const el = document.getElementById('nf-tarja-simples');
+  if (!el) return;
+  try {
+    const config = await dbLer('ConfigFinanceiro').catch(() => []);
+    const rec = (config || []).find(c => c.Empresa === empresa);
+    if (!rec || !rec.AliquotaSimples) {
+      el.innerHTML = `<div style="background:var(--surface2);border:1px dashed var(--border);border-radius:10px;padding:10px 14px;font-size:.76rem;color:var(--text-muted)">🧮 Simples Nacional (${empresa}): alíquota não configurada — clique em "🧮 Alíquota" acima para configurar.</div>`;
+      return;
+    }
+    const partes = [`Alíquota efetiva: <strong>${Number(rec.AliquotaSimples).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}%</strong>`];
+    if (rec.Anexo) partes.push(`Anexo <strong>${rec.Anexo}</strong>`);
+    if (rec.FaixaRBT12) partes.push(`Faixa RBT12: <strong>${rec.FaixaRBT12}</strong>`);
+    el.innerHTML = `<div style="background:var(--surface2);border:1px solid var(--border);border-left:4px solid var(--primary);border-radius:10px;padding:10px 14px;font-size:.78rem">🧮 <strong>Simples Nacional — ${empresa}:</strong> ${partes.join(' · ')}</div>`;
+  } catch (e) { el.innerHTML = ''; }
+}
+
 function financeiroAbrirConfigAliquota() {
   const existente = document.getElementById('fin-aliquota-modal'); if (existente) existente.remove();
   const modal = document.createElement('div');
@@ -9996,7 +10016,7 @@ function financeiroAbrirConfigAliquota() {
         <div style="font-weight:800;font-size:1rem">🧮 Alíquota do Simples Nacional</div>
         <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('fin-aliquota-modal').remove()">✕</div>
       </div>
-      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Usada pra estimar automaticamente o imposto (DAS) ao marcar uma Nota Fiscal como recebida. Ajuste aqui sempre que a faixa de faturamento (RBT12) mudar de anexo/alíquota.</div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Usada pra estimar automaticamente o imposto (DAS) ao marcar uma Nota Fiscal como recebida. Ajuste aqui sempre que a faixa de faturamento (RBT12) mudar de anexo/alíquota. O Anexo e a Faixa RBT12 aparecem no extrato "Cálculo do Simples Nacional" do PGDAS-D — copie de lá.</div>
       <div id="fin-aliquota-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
       <div style="display:flex;gap:8px;margin-top:14px">
         <button class="btn-primary" style="flex:1" onclick="financeiroSalvarAliquota()">💾 Salvar</button>
@@ -10013,12 +10033,25 @@ async function financeiroCarregarConfigAliquota() {
   const config = await dbLer('ConfigFinanceiro').catch(() => []);
   window._finConfigAliquota = RD_EMPRESAS.map(emp => {
     const rec = (config || []).find(c => c.Empresa === emp);
-    return { Empresa: emp, Id: rec ? rec.Id : null, AliquotaSimples: rec ? rec.AliquotaSimples : '' };
+    return { Empresa: emp, Id: rec ? rec.Id : null, AliquotaSimples: rec ? rec.AliquotaSimples : '', Anexo: rec ? (rec.Anexo || '') : '', FaixaRBT12: rec ? (rec.FaixaRBT12 || '') : '' };
   });
   el.innerHTML = window._finConfigAliquota.map((c, i) => `
-    <div class="form-group" style="margin-bottom:12px">
-      <label>${c.Empresa} <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">(% sobre o valor de cada NF)</span></label>
-      <input type="text" inputmode="decimal" value="${c.AliquotaSimples || ''}" placeholder="Ex: 6,00" oninput="window._finConfigAliquota[${i}].AliquotaSimples = this.value.replace(',','.')" style="width:100%">
+    <div class="form-group" style="margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)">
+      <label style="font-weight:700">${c.Empresa}</label>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <div style="flex:1">
+          <label style="font-size:.7rem;font-weight:400">% sobre o valor de cada NF</label>
+          <input type="text" inputmode="decimal" value="${c.AliquotaSimples || ''}" placeholder="Ex: 8,36" oninput="window._finConfigAliquota[${i}].AliquotaSimples = this.value.replace(',','.')" style="width:100%">
+        </div>
+        <div style="flex:1">
+          <label style="font-size:.7rem;font-weight:400">Anexo</label>
+          <input type="text" value="${c.Anexo || ''}" placeholder="Ex: III" oninput="window._finConfigAliquota[${i}].Anexo = this.value" style="width:100%">
+        </div>
+      </div>
+      <div style="margin-top:6px">
+        <label style="font-size:.7rem;font-weight:400">Faixa RBT12 atual</label>
+        <input type="text" value="${c.FaixaRBT12 || ''}" placeholder="Ex: R$ 360.000,01 a R$ 720.000,00" oninput="window._finConfigAliquota[${i}].FaixaRBT12 = this.value" style="width:100%">
+      </div>
     </div>`).join('');
 }
 
@@ -10027,11 +10060,13 @@ async function financeiroSalvarAliquota() {
   showToast('💾 Salvando...');
   for (const c of itens) {
     const valor = parseFloat(c.AliquotaSimples) || 0;
-    if (c.Id) await dbAtualizar('ConfigFinanceiro', c.Id, { AliquotaSimples: valor });
-    else if (valor) await dbInserir('ConfigFinanceiro', { Empresa: c.Empresa, AliquotaSimples: valor });
+    const campos = { AliquotaSimples: valor, Anexo: c.Anexo || '', FaixaRBT12: c.FaixaRBT12 || '' };
+    if (c.Id) await dbAtualizar('ConfigFinanceiro', c.Id, campos);
+    else if (valor || c.Anexo || c.FaixaRBT12) await dbInserir('ConfigFinanceiro', { Empresa: c.Empresa, ...campos });
   }
   showToast('✅ Alíquotas salvas!');
   const m = document.getElementById('fin-aliquota-modal'); if (m) m.remove();
+  financeiroAtualizarTarjaSimples(window._rdEmpresaAtiva || RD_EMPRESAS[0]);
 }
 
 /* -- Gera a provisão de imposto de UMA nota fiscal ao ser marcada como
@@ -10185,6 +10220,8 @@ function renderNotasFiscaisTab(destino) {
   const mesAtual = new Date().toISOString().slice(0,7);
   return `
 
+  <div id="nf-tarja-simples" style="margin-bottom:14px"></div>
+
   <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:stretch;margin-bottom:16px">
     <div style="flex:1.3;min-width:300px;display:flex;flex-direction:column;gap:12px">
       <div class="kpi-grid" style="margin-bottom:0;align-content:start">
@@ -10230,6 +10267,7 @@ async function carregarNotasFiscais() {
   try {
     const todas = await dbLer('Receitas');
     const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+    financeiroAtualizarTarjaSimples(empresaAtiva);
     const doEmpresa = todas.filter(i => i.Empresa === empresaAtiva);
     // Mantém o cache usado por rcAbrirEdicaoReceita atualizado, já que a edição
     // de uma NF reaproveita o mesmo modal de edição de Receita.
