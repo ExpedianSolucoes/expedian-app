@@ -1398,6 +1398,7 @@ function renderPage(id) {
     adiantamento: () => pageAdiantamento(),
     projetos: () => pageProjetos(),
     fornecedores: () => pageFornecedores(),
+    recibos: () => pageRecibos(),
     // -- Novas rotas do menu Financeiro reorganizado (pedido em 07/09/2026) --
     dre: () => pageDRE(),
     fluxo_caixa: () => pageFluxoCaixa(),
@@ -5388,6 +5389,7 @@ function pagePagar() {
       <button class="btn-secondary" onclick="${window._pagVindoDeDespesas ? "window._pagVindoDeDespesas=false;window._rdTab='despesas';navigate('receitas_despesas')" : "navigate('financeiro')"}">← ${window._pagVindoDeDespesas ? 'Despesas' : 'Financeiro'}</button>
       <button id="pag-form-toggle" class="btn-primary" onclick="pagToggleFormNovo()">➕ Novo Lançamento</button>
       <button class="btn-secondary" onclick="window._fornVindoDe='pagar';navigate('fornecedores')">🏷️ Fornecedores</button>
+      <button class="btn-secondary" onclick="navigate('recibos')">🧾 Recibo</button>
     </div>
     <div id="pag-form-container" style="display:${window._pagFormAberto ? 'block' : 'none'};margin-top:14px">
     <div class="form-card">
@@ -6259,6 +6261,10 @@ function pageFornecedores() {
           <div id="forn_municipio_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-group"><label>Endereço <span style="font-weight:400;color:var(--text-muted)">(usado no Recibo)</span></label><input type="text" id="forn_endereco_pg" placeholder="Rua, número, bairro, cidade - UF"></div>
+        <div class="form-group"><label>Fone <span style="font-weight:400;color:var(--text-muted)">(usado no Recibo)</span></label><input type="text" id="forn_fone_pg" placeholder="(69) 9.9999-9999"></div>
+      </div>
       <div style="display:flex;gap:10px;margin-top:6px">
         <button class="btn-primary" id="forn-btn-salvar" onclick="fornSalvar()">✅ Cadastrar</button>
         <button class="btn-secondary" onclick="fornFecharForm()">Cancelar</button>
@@ -6307,10 +6313,11 @@ function fornAbrirForm(id) {
     set('forn_nome_pg', f.Title); set('forn_cnpj_pg', f.CNPJ);
     set('forn_categoria_pg', f.Categoria);
     set('forn_municipio_input', f.Municipio); set('forn_municipio', f.Municipio);
+    set('forn_endereco_pg', f.Endereco); set('forn_fone_pg', f.Fone);
   } else {
     if (titulo) titulo.textContent = '➕ Novo Fornecedor';
     if (btn) btn.textContent = '✅ Cadastrar';
-    ['forn_nome_pg','forn_cnpj_pg','forn_municipio_input','forn_municipio'].forEach(elId => { const e = document.getElementById(elId); if (e) e.value = ''; });
+    ['forn_nome_pg','forn_cnpj_pg','forn_municipio_input','forn_municipio','forn_endereco_pg','forn_fone_pg'].forEach(elId => { const e = document.getElementById(elId); if (e) e.value = ''; });
     const cat = document.getElementById('forn_categoria_pg'); if (cat) cat.selectedIndex = 0;
   }
   if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -6326,13 +6333,15 @@ async function fornSalvar() {
   const cnpj = (document.getElementById('forn_cnpj_pg').value||'').trim();
   const categoria = document.getElementById('forn_categoria_pg').value || '';
   const municipio = (document.getElementById('forn_municipio').value||'').trim();
+  const endereco = (document.getElementById('forn_endereco_pg').value||'').trim();
+  const fone = (document.getElementById('forn_fone_pg').value||'').trim();
   if (!nome) { showToast('⚠️ Informe o nome do fornecedor.'); return; }
   const editandoId = window._fornEditandoId;
   const todos = window._fornecedoresPagina || await dbLer('Fornecedores').catch(() => []);
   const jaExiste = todos.some(f => f.Id !== editandoId && ((f.Title||'').toLowerCase() === nome.toLowerCase() || (cnpj && f.CNPJ === cnpj)));
   if (jaExiste) { showToast('⚠️ Já existe outro fornecedor com esse nome/CNPJ!'); return; }
   _limparSyncError();
-  const dados = { Title: nome, CNPJ: cnpj, Categoria: categoria, Municipio: municipio };
+  const dados = { Title: nome, CNPJ: cnpj, Categoria: categoria, Municipio: municipio, Endereco: endereco, Fone: fone };
   let ok;
   if (editandoId) {
     ok = await dbAtualizar('Fornecedores', editandoId, dados);
@@ -6356,6 +6365,490 @@ async function fornExcluir(id) {
   const { ok } = await dbRemover('Fornecedores', id);
   showToast(ok ? '🗑️ Fornecedor excluído.' : '❌ Erro ao excluir.');
   if (ok) carregarFornecedoresPagina();
+}
+
+/* =====================================================================
+   RECIBOS — recibo avulso de pagamento (autônomos/serviços), acessível a
+   partir de Contas a Pagar. Pedido em 12/09/2026: modelo parecido com o
+   recibo usado hoje em Word (identificação do beneficiário, itens de
+   serviço, dados de transferência, totais, declaração de autônomo e
+   assinatura), com: (1) escolha da empresa contratante ao abrir, (2)
+   identificação do beneficiário reaproveitando o mesmo cadastro/typeahead
+   de Fornecedores, e (3) exportação em PDF pronta pra assinatura. Tabela
+   'Recibos' é restrita (TABELAS_RESTRITAS_DIRETORIA), mesma pasta protegida
+   de ContasPagar/Despesas. Numeração sequencial por empresa+ano (padrão
+   observado no modelo real: "032/2026").
+   -- Dados da empresa contratante por linha de negócio. Só a Expedian tem
+   CNPJ/endereço confirmados (mesmos usados em todo o resto do app); TL3 e
+   EXP Brasil ficam em branco — o formulário permite editar antes de gerar o
+   PDF, sem inventar dado societário não confirmado. -- */
+const CONTRATANTES_RECIBO = {
+  'Expedian': { nome: 'EXPEDIAN SOLUÇÕES AMBIENTAIS', cnpj: '37.553.680/0001-80', endereco: 'Rua Salgado Filho, nº 1596, Sala 02, Bairro Nossa Senhora das Graças, Porto Velho – RO' },
+  'TL3': { nome: '', cnpj: '', endereco: '' },
+  'EXP Brasil': { nome: '', cnpj: '', endereco: '' },
+};
+
+function pageRecibos() {
+  if (!['diretoria','coordenador'].includes(currentProfile)) {
+    return `<div class="page-header"><h1>Recibos</h1></div>
+    <div class="card" style="text-align:center;padding:48px 24px;color:var(--text-muted)">
+      <div style="font-size:2rem;margin-bottom:10px">🔒</div>
+      <div style="font-weight:700;color:var(--text)">Acesso restrito à Diretoria e Coordenação</div>
+    </div>`;
+  }
+  window._recEmpresaAtiva = window._recEmpresaAtiva || RD_EMPRESAS[0];
+  setTimeout(() => { carregarFornecedoresLista(); recCarregarLista(); }, 150);
+  const empresaBotoesHtml = RD_EMPRESAS.map(emp => {
+    const ativo = emp === window._recEmpresaAtiva;
+    const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
+    return `<button onclick="recSelecionarEmpresa('${emp}')"
+      style="display:flex;align-items:center;gap:7px;padding:9px 16px;border-radius:10px;
+        border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
+        background:${ativo?cor:'var(--surface2)'};
+        color:${ativo?'#fff':'var(--text)'};
+        font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${ativo?'700':'500'};cursor:pointer">
+      🏢 ${emp}
+    </button>`;
+  }).join('');
+  return `
+  <div class="page-header"><h1>🧾 Recibos</h1><p>Recibo de pagamento avulso (serviços autônomos), com identificação, itens e dados para assinatura</p></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+    <button class="btn-secondary" onclick="navigate('pagar')">← Contas a Pagar</button>
+    <button class="btn-primary" onclick="recAbrirForm()">➕ Novo Recibo</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap">${empresaBotoesHtml}</div>
+
+  <div id="rec-form-container" style="display:none;margin-bottom:24px">
+    <div class="form-card">
+      <div id="rec-form-titulo" style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:700;color:var(--green-main);margin-bottom:14px;text-transform:uppercase;letter-spacing:.07em">➕ Novo Recibo</div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Empresa (Contratante)</label>
+          <select id="rec_empresa" onchange="recTrocarEmpresaForm()">${RD_EMPRESAS.map(e=>`<option>${e}</option>`).join('')}</select>
+        </div>
+        <div class="form-group"><label>Nº do Recibo</label><input type="text" id="rec_numero" readonly style="background:var(--surface2);font-weight:700"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Razão Social da Contratante</label><input type="text" id="rec_contratante_nome" placeholder="Razão social"></div>
+        <div class="form-group"><label>CNPJ da Contratante</label><input type="text" id="rec_contratante_cnpj" placeholder="00.000.000/0001-00"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:span 2"><label>Endereço da Contratante</label><input type="text" id="rec_contratante_endereco" placeholder="Endereço completo"></div>
+      </div>
+
+      <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Identificação do Recibo (Beneficiário)</div>
+      <div class="form-row">
+        <div class="form-group" style="position:relative">
+          <label>Nome/Razão Social</label>
+          <input type="text" id="rec_benef_nome" placeholder="Digite para buscar em Fornecedores..." autocomplete="off"
+            oninput="recFiltrarFornecedores(this.value)" onfocus="recFiltrarFornecedores(this.value)" onblur="setTimeout(()=>recFecharDropdownFornecedor(),150)">
+          <div id="rec_forn_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+        </div>
+        <div class="form-group"><label>CPF/CNPJ</label><input type="text" id="rec_benef_cpfcnpj" placeholder="000.000.000-00"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Endereço</label><input type="text" id="rec_benef_endereco" placeholder="Cidade - UF"></div>
+        <div class="form-group"><label>Fone</label><input type="text" id="rec_benef_fone" placeholder="(69) 9.9999-9999"></div>
+      </div>
+
+      <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Serviços Prestados</div>
+      <div id="rec_itens_lista"></div>
+      <button type="button" class="btn-secondary" style="margin-top:6px;font-size:.78rem;padding:6px 12px" onclick="recAddItem()">+ Adicionar item</button>
+
+      <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 6px">Dados para Transferência</div>
+      <div class="form-row">
+        <div class="form-group"><label>Chave Pix</label><input type="text" id="rec_pix_chave" placeholder="CPF/CNPJ/E-mail/Telefone/Aleatória"></div>
+        <div class="form-group"><label>Tipo de Chave</label>
+          <select id="rec_pix_tipo"><option value="">Selecione...</option><option>CPF</option><option>CNPJ</option><option>E-mail</option><option>Telefone</option><option>Aleatória</option></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:span 2"><label>Banco</label><input type="text" id="rec_banco" placeholder="Nome do banco"></div>
+      </div>
+
+      <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 6px">Totais</div>
+      <div class="form-row">
+        <div class="form-group"><label>Subtotal (R$)</label><input type="text" id="rec_subtotal" readonly style="background:var(--surface2);font-weight:700"></div>
+        <div class="form-group"><label>Acréscimo (R$)</label><input type="text" id="rec_acrescimo" inputmode="decimal" placeholder="0,00" oninput="rdFormatarMoedaInput(this);recRecalcularTotais()"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Desconto (R$)</label><input type="text" id="rec_desconto" inputmode="decimal" placeholder="0,00" oninput="rdFormatarMoedaInput(this);recRecalcularTotais()"></div>
+        <div class="form-group"><label>Outros (R$)</label><input type="text" id="rec_outros" inputmode="decimal" placeholder="0,00" oninput="rdFormatarMoedaInput(this);recRecalcularTotais()"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:span 2"><label>TOTAL GERAL</label><input type="text" id="rec_total_geral" readonly style="background:var(--green-pale);color:var(--green-main);font-weight:800;font-size:1.05rem"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:span 2"><label>Local e Data</label><input type="text" id="rec_local_data" placeholder="Porto Velho – RO, DD de mês de AAAA"></div>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+        <button class="btn-primary" onclick="recSalvar()">💾 Salvar</button>
+        <button class="btn-secondary" onclick="recSalvarEGerarPDF()">📄 Salvar e Gerar PDF p/ Assinatura</button>
+        <button class="btn-secondary" onclick="recFecharForm()">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="margin:0">Histórico de Recibos</div>
+      <input type="text" id="rec_busca" placeholder="Buscar por nome, CPF/CNPJ ou nº..." oninput="recCarregarLista()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;min-width:220px">
+    </div>
+    <div id="lista-recibos"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>`;
+}
+
+function recSelecionarEmpresa(emp) { window._recEmpresaAtiva = emp; navigate('recibos'); }
+
+function recTrocarEmpresaForm() { recAtualizarContratante(); }
+
+function recAtualizarContratante() {
+  const empresa = (document.getElementById('rec_empresa')||{}).value || RD_EMPRESAS[0];
+  const c = CONTRATANTES_RECIBO[empresa] || { nome:'', cnpj:'', endereco:'' };
+  const set = (elId,v) => { const e=document.getElementById(elId); if(e) e.value = v||''; };
+  set('rec_contratante_nome', c.nome); set('rec_contratante_cnpj', c.cnpj); set('rec_contratante_endereco', c.endereco);
+}
+
+/* -- Itens de serviço: array em memória (window._recItens), edição direta
+      sem re-renderizar a lista inteira a cada tecla (só recAddItem/
+      recRemoverItem re-renderizam) — evita perder o foco do campo. -- */
+function recRenderItens() {
+  const el = document.getElementById('rec_itens_lista'); if (!el) return;
+  const itens = window._recItens || [];
+  el.innerHTML = itens.map((it, i) => {
+    const total = (parseFloat(it.qtd)||0) * rdMoedaParaNumero(it.valorUnit);
+    return `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+      <input type="text" placeholder="Descrição do serviço" value="${(it.desc||'').replace(/"/g,'&quot;')}" oninput="recAtualizarItem(${i},'desc',this.value)" style="flex:2;min-width:160px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
+      <input type="text" placeholder="Qtd" value="${it.qtd||''}" inputmode="decimal" oninput="recAtualizarItem(${i},'qtd',this.value)" style="width:60px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
+      <input type="text" placeholder="Valor Unit." value="${it.valorUnit||''}" inputmode="decimal" oninput="rdFormatarMoedaInput(this);recAtualizarItem(${i},'valorUnit',this.value)" style="width:110px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
+      <div id="rec_item_total_${i}" style="width:100px;font-size:.78rem;font-weight:700;text-align:right">${rdNumeroParaMoeda(total)}</div>
+      <button type="button" onclick="recRemoverItem(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.9rem">🗑️</button>
+    </div>`;
+  }).join('') || '<div style="color:var(--text-muted);font-size:.8rem">Nenhum item adicionado.</div>';
+}
+function recAddItem() { window._recItens = window._recItens || []; window._recItens.push({ desc:'', qtd:'1', valorUnit:'' }); recRenderItens(); recRecalcularTotais(); }
+function recRemoverItem(i) { window._recItens.splice(i,1); recRenderItens(); recRecalcularTotais(); }
+function recAtualizarItem(i, campo, valor) {
+  window._recItens[i][campo] = valor;
+  const totalEl = document.getElementById('rec_item_total_'+i);
+  if (totalEl) { const it = window._recItens[i]; const total = (parseFloat(it.qtd)||0) * rdMoedaParaNumero(it.valorUnit); totalEl.textContent = rdNumeroParaMoeda(total); }
+  recRecalcularTotais();
+}
+function recRecalcularTotais() {
+  const itens = window._recItens || [];
+  const subtotal = itens.reduce((s,it) => s + (parseFloat(it.qtd)||0) * rdMoedaParaNumero(it.valorUnit), 0);
+  const acrescimo = rdMoedaParaNumero((document.getElementById('rec_acrescimo')||{}).value);
+  const desconto = rdMoedaParaNumero((document.getElementById('rec_desconto')||{}).value);
+  const outros = rdMoedaParaNumero((document.getElementById('rec_outros')||{}).value);
+  const total = subtotal + acrescimo - desconto + outros;
+  const set = (id,v) => { const e=document.getElementById(id); if(e) e.value = rdNumeroParaMoeda(v); };
+  set('rec_subtotal', subtotal); set('rec_total_geral', total);
+}
+
+function recAbrirForm(id) {
+  window._recEditandoId = id || null;
+  const c = document.getElementById('rec-form-container'); if (c) c.style.display = 'block';
+  const titulo = document.getElementById('rec-form-titulo');
+  const set = (elId,v) => { const e=document.getElementById(elId); if(e) e.value = v||''; };
+  if (id) {
+    const r = (window._recTodos||[]).find(x => x.Id === id);
+    if (!r) { showToast('⚠️ Recibo não encontrado.'); return; }
+    if (titulo) titulo.textContent = '✏️ Editar Recibo Nº ' + (r.NumeroRecibo||'');
+    set('rec_empresa', r.Empresa); set('rec_numero', r.NumeroRecibo);
+    set('rec_contratante_nome', r.ContratanteNome); set('rec_contratante_cnpj', r.ContratanteCnpj); set('rec_contratante_endereco', r.ContratanteEndereco);
+    set('rec_benef_nome', r.Beneficiario); set('rec_benef_cpfcnpj', r.CpfCnpj); set('rec_benef_endereco', r.Endereco); set('rec_benef_fone', r.Fone);
+    set('rec_pix_chave', r.ChavePix); set('rec_pix_tipo', r.TipoChave); set('rec_banco', r.Banco);
+    set('rec_acrescimo', r.Acrescimo ? rdNumeroParaMoeda(r.Acrescimo) : ''); set('rec_desconto', r.Desconto ? rdNumeroParaMoeda(r.Desconto) : ''); set('rec_outros', r.Outros ? rdNumeroParaMoeda(r.Outros) : '');
+    set('rec_local_data', r.LocalData);
+    window._recItens = (r.Itens||[]).map(it => ({ desc: it.desc, qtd: it.qtd, valorUnit: it.valorUnit != null ? rdNumeroParaMoeda(it.valorUnit) : '' }));
+    window._recFornecedorSelId = r.FornecedorId || null;
+  } else {
+    if (titulo) titulo.textContent = '➕ Novo Recibo';
+    const empresa = window._recEmpresaAtiva || RD_EMPRESAS[0];
+    ['rec_benef_nome','rec_benef_cpfcnpj','rec_benef_endereco','rec_benef_fone','rec_pix_chave','rec_pix_tipo','rec_banco','rec_acrescimo','rec_desconto','rec_outros'].forEach(elId => { const e=document.getElementById(elId); if(e) e.value=''; });
+    set('rec_empresa', empresa);
+    recAtualizarContratante();
+    set('rec_numero', '(gerado ao salvar)');
+    const hoje = new Date();
+    set('rec_local_data', 'Porto Velho – RO, ' + hoje.toLocaleDateString('pt-BR',{day:'2-digit'}) + ' de ' + hoje.toLocaleDateString('pt-BR',{month:'long'}) + ' de ' + hoje.getFullYear());
+    window._recItens = [{ desc:'', qtd:'1', valorUnit:'' }];
+    window._recFornecedorSelId = null;
+  }
+  recRenderItens();
+  recRecalcularTotais();
+  if (c) c.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+function recFecharForm() { window._recEditandoId = null; const c = document.getElementById('rec-form-container'); if (c) c.style.display = 'none'; }
+
+/* -- Typeahead de beneficiário reaproveitando o mesmo cadastro de
+      Fornecedores usado em Contas a Pagar/Despesas/Prestação de Contas
+      (pedido: "identificação semelhante à lista de fornecedor pra
+      cadastrar"). Se a pessoa não estiver cadastrada, os campos continuam
+      editáveis manualmente — não é obrigatório estar em Fornecedores. -- */
+function recFiltrarFornecedores(texto) {
+  const dd = document.getElementById('rec_forn_dropdown'); if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  let matches = t ? (_fornecedoresCadastrados||[]).filter(f => (f.Title||'').toLowerCase().includes(t)) : (_fornecedoresCadastrados||[]);
+  matches = matches.slice(0,30);
+  let html = matches.map(f => {
+    const esc = String(f.Title).replace(/'/g,"\\'");
+    return `<div onclick="recSelecionarFornecedor('${esc}')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''"><strong>${f.Title}</strong>${f.CNPJ?' <span style="color:var(--text-muted);font-size:.72rem">· '+f.CNPJ+'</span>':''}</div>`;
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum fornecedor encontrado — pode digitar os dados manualmente abaixo.</div>';
+  dd.innerHTML = html; dd.style.display = 'block';
+}
+function recFecharDropdownFornecedor() { const dd = document.getElementById('rec_forn_dropdown'); if (dd) dd.style.display = 'none'; }
+function recSelecionarFornecedor(nome) {
+  const f = (_fornecedoresCadastrados||[]).find(x => x.Title === nome);
+  const set = (elId,v) => { const e=document.getElementById(elId); if(e) e.value = v||''; };
+  set('rec_benef_nome', nome);
+  if (f) { set('rec_benef_cpfcnpj', f.CNPJ); set('rec_benef_endereco', f.Endereco); set('rec_benef_fone', f.Fone); window._recFornecedorSelId = f.Id; }
+  recFecharDropdownFornecedor();
+}
+
+async function recCarregarLista() {
+  const el = document.getElementById('lista-recibos'); if (!el) return;
+  if (!['diretoria','coordenador'].includes(currentProfile)) { el.innerHTML = ''; return; }
+  const token = await getSharePointToken();
+  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>'; return; }
+  const todos = await dbLer('Recibos').catch(() => []);
+  window._recTodos = todos;
+  const empresa = window._recEmpresaAtiva || RD_EMPRESAS[0];
+  const busca = ((document.getElementById('rec_busca')||{}).value || '').trim().toLowerCase();
+  let itens = todos.filter(r => normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa));
+  if (busca) itens = itens.filter(r => (r.Beneficiario||'').toLowerCase().includes(busca) || (r.CpfCnpj||'').toLowerCase().includes(busca) || (r.NumeroRecibo||'').toLowerCase().includes(busca));
+  itens = itens.slice().sort((a,b) => (b.NumeroRecibo||'').localeCompare(a.NumeroRecibo||''));
+  if (!itens.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum recibo emitido ainda.</div>'; return; }
+  const isDir = currentProfile === 'diretoria';
+  el.innerHTML = '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Nº</th><th>Data</th><th>Beneficiário</th><th>CPF/CNPJ</th><th>Total</th><th>Ações</th></tr></thead><tbody>' +
+    itens.map(r => `<tr>
+      <td><strong>${r.NumeroRecibo||'—'}</strong></td>
+      <td>${r.Data ? new Date(r.Data+'T12:00').toLocaleDateString('pt-BR') : '—'}</td>
+      <td>${r.Beneficiario||'—'}</td>
+      <td style="font-size:.78rem">${r.CpfCnpj||'—'}</td>
+      <td style="white-space:nowrap"><strong>${rdNumeroParaMoeda(r.TotalGeral)}</strong></td>
+      <td style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px">
+        <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="recGerarPDF(${r.Id})">📄 PDF</button>
+        <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="recAbrirForm(${r.Id})">✏️ Editar</button>
+        ${isDir ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="recExcluir(${r.Id})">🗑️ Excluir</button>` : ''}
+      </td>
+    </tr>`).join('') + '</tbody></table></div>';
+}
+
+async function recExcluir(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const r = (window._recTodos||[]).find(x => x.Id === id);
+  if (!confirm(`Excluir o recibo Nº ${r?r.NumeroRecibo:id}? Essa ação não pode ser desfeita.`)) return;
+  const { ok } = await dbRemover('Recibos', id);
+  showToast(ok ? '🗑️ Recibo excluído.' : '❌ Erro ao excluir.');
+  if (ok) recCarregarLista();
+}
+
+async function recProximoNumero(empresa) {
+  const todos = (window._recTodos && window._recTodos.length) ? window._recTodos : await dbLer('Recibos').catch(()=>[]);
+  const ano = new Date().getFullYear();
+  const doAno = todos.filter(r => normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa) && Number(r.Ano) === ano);
+  const max = doAno.reduce((m,r) => Math.max(m, Number(r.Sequencial)||0), 0);
+  const seq = max + 1;
+  return { sequencial: seq, ano, numero: String(seq).padStart(3,'0') + '/' + ano };
+}
+
+function _recColetarDadosForm() {
+  const beneficiario = (document.getElementById('rec_benef_nome').value||'').trim();
+  if (!beneficiario) { showToast('⚠️ Informe o nome do beneficiário.'); return null; }
+  const itens = (window._recItens||[]).filter(it => it.desc || it.qtd || it.valorUnit).map(it => ({ desc: it.desc||'', qtd: parseFloat(it.qtd)||0, valorUnit: rdMoedaParaNumero(it.valorUnit) }));
+  if (!itens.length) { showToast('⚠️ Adicione ao menos um item de serviço.'); return null; }
+  const empresa = (document.getElementById('rec_empresa')||{}).value || RD_EMPRESAS[0];
+  const subtotal = itens.reduce((s,it) => s + it.qtd*it.valorUnit, 0);
+  const acrescimo = rdMoedaParaNumero((document.getElementById('rec_acrescimo')||{}).value);
+  const desconto = rdMoedaParaNumero((document.getElementById('rec_desconto')||{}).value);
+  const outros = rdMoedaParaNumero((document.getElementById('rec_outros')||{}).value);
+  const totalGeral = subtotal + acrescimo - desconto + outros;
+  return {
+    Empresa: empresa,
+    ContratanteNome: (document.getElementById('rec_contratante_nome').value||'').trim(),
+    ContratanteCnpj: (document.getElementById('rec_contratante_cnpj').value||'').trim(),
+    ContratanteEndereco: (document.getElementById('rec_contratante_endereco').value||'').trim(),
+    Beneficiario: beneficiario,
+    FornecedorId: window._recFornecedorSelId || null,
+    CpfCnpj: (document.getElementById('rec_benef_cpfcnpj').value||'').trim(),
+    Endereco: (document.getElementById('rec_benef_endereco').value||'').trim(),
+    Fone: (document.getElementById('rec_benef_fone').value||'').trim(),
+    Itens: itens, Subtotal: subtotal, Acrescimo: acrescimo, Desconto: desconto, Outros: outros, TotalGeral: totalGeral,
+    ChavePix: (document.getElementById('rec_pix_chave').value||'').trim(),
+    TipoChave: (document.getElementById('rec_pix_tipo').value||'').trim(),
+    Banco: (document.getElementById('rec_banco').value||'').trim(),
+    LocalData: (document.getElementById('rec_local_data').value||'').trim(),
+    Data: new Date().toISOString().slice(0,10),
+    LancadoPor: window._currentUser ? window._currentUser.name : '',
+  };
+}
+
+async function _recSalvarInterno() {
+  const dados = _recColetarDadosForm();
+  if (!dados) return null;
+  const editandoId = window._recEditandoId;
+  if (editandoId) {
+    const existente = (window._recTodos||[]).find(x => x.Id === editandoId);
+    dados.NumeroRecibo = existente ? existente.NumeroRecibo : (document.getElementById('rec_numero')||{}).value;
+    dados.Sequencial = existente ? existente.Sequencial : null;
+    dados.Ano = existente ? existente.Ano : null;
+    const ok = await dbAtualizar('Recibos', editandoId, dados);
+    if (!ok) { showToast('❌ Erro ao salvar recibo.' + syncErrorDetalhe()); return null; }
+    dados.Id = editandoId;
+  } else {
+    const prox = await recProximoNumero(dados.Empresa);
+    dados.NumeroRecibo = prox.numero; dados.Sequencial = prox.sequencial; dados.Ano = prox.ano;
+    const ok = await salvarNoSharePoint('Recibos', dados);
+    if (!ok) { showToast('❌ Erro ao salvar recibo.' + syncErrorDetalhe()); return null; }
+  }
+  showToast('✅ Recibo Nº ' + dados.NumeroRecibo + ' salvo!');
+  const numEl = document.getElementById('rec_numero'); if (numEl) numEl.value = dados.NumeroRecibo;
+  await recCarregarLista();
+  return dados;
+}
+
+async function recSalvar() { await _recSalvarInterno(); }
+async function recSalvarEGerarPDF() {
+  const dados = await _recSalvarInterno();
+  if (dados) await recGerarPDF(dados);
+}
+
+/* -- PDF do Recibo, no padrão visual do app (mesmo cabeçalho/rodapé com
+      logo usado em Medição/Flash Report/Notificação de NC via
+      _pdfCabecalhoRodape), reproduzindo os blocos do modelo real em Word:
+      identificação do recibo, declaração de recebimento, tabela de itens,
+      dados de transferência + totais lado a lado, declaração de autônomo
+      e assinatura. -- */
+async function recGerarPDF(regOrId) {
+  const r = (typeof regOrId === 'object' && regOrId) ? regOrId : (window._recTodos||[]).find(x => x.Id === regOrId);
+  if (!r) { showToast('⚠️ Recibo não encontrado.'); return; }
+  await _garantirJsPDF();
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'RECIBO Nº ' + (r.NumeroRecibo || '');
+  const subtitulo = normalizarEmpresa(r.Empresa) || '';
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.4, CW = pageW - 2.8;
+  function quebrarSeNecessario(altura) { if (y + altura > pageH - 1.6) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); }
+
+  quebrarSeNecessario(0.55);
+  doc.setFillColor(128,196,118); doc.rect(ML, y, CW, 0.55, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(255,255,255);
+  doc.text('IDENTIFICAÇÃO DO RECIBO', ML+0.25, y+0.37);
+  y += 0.55;
+  const idLabelW = 3.2;
+  function linhaId(label, valor) {
+    const linhaH = 0.6;
+    quebrarSeNecessario(linhaH);
+    doc.setFillColor(224,238,219); doc.rect(ML, y, idLabelW, linhaH, 'F');
+    doc.setDrawColor(210,210,210); doc.setLineWidth(0.02); doc.rect(ML, y, CW, linhaH); doc.rect(ML, y, idLabelW, linhaH);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(63,38,31);
+    doc.text(label, ML+0.2, y+0.38);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(30,30,30);
+    doc.text(String(valor||'—'), ML+idLabelW+0.2, y+0.38);
+    y += linhaH;
+  }
+  linhaId('NOME/RAZÃO SOCIAL', r.Beneficiario);
+  linhaId('CPF/CNPJ', r.CpfCnpj);
+  linhaId('ENDEREÇO', r.Endereco);
+  linhaId('FONE', r.Fone);
+  y += 0.3;
+
+  const declaracao = `Declaro, para os devidos fins, que recebi da ${r.ContratanteNome||'—'}, inscrita no CNPJ sob o nº ${r.ContratanteCnpj||'—'}, com sede à ${r.ContratanteEndereco||'—'}, na data de assinatura deste recibo, a quantia discriminada no quadro abaixo, referente aos respectivos serviços prestados.`;
+  const declLines = doc.splitTextToSize(declaracao, CW);
+  quebrarSeNecessario(declLines.length*0.42+0.2);
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(40,40,40);
+  declLines.forEach(ln => { doc.text(ln, ML, y); y += 0.42; });
+  y += 0.25;
+
+  quebrarSeNecessario(0.55);
+  doc.setFillColor(63,38,31); doc.rect(ML, y, CW, 0.55, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(255,255,255);
+  const colSeq=0.9, colQtd=1.8, colUnit=3.0, colTot=3.2;
+  const colDesc = CW - (colSeq+colQtd+colUnit+colTot);
+  const xs = { seq: ML, desc: ML+colSeq, qtd: ML+colSeq+colDesc, unit: ML+colSeq+colDesc+colQtd, tot: ML+colSeq+colDesc+colQtd+colUnit };
+  doc.text('Nº', xs.seq+0.15, y+0.37);
+  doc.text('Descrição dos Serviços', xs.desc+0.15, y+0.37);
+  doc.text('Qtd.', xs.qtd+0.15, y+0.37);
+  doc.text('R$ Unit.', xs.unit+0.15, y+0.37);
+  doc.text('Total', xs.tot+0.15, y+0.37);
+  y += 0.55;
+  const rowH = 0.55;
+  (r.Itens||[]).forEach((it, i) => {
+    const descLines = doc.splitTextToSize(it.desc || '—', colDesc-0.3);
+    const rowHItem = Math.max(rowH, 0.24 + descLines.length*0.34);
+    quebrarSeNecessario(rowHItem);
+    if (i%2===1) { doc.setFillColor(250,248,246); doc.rect(ML,y,CW,rowHItem,'F'); }
+    doc.setDrawColor(220,213,209); doc.setLineWidth(0.015); doc.rect(ML,y,CW,rowHItem);
+    const total = (it.qtd||0)*(it.valorUnit||0);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(40,40,40);
+    doc.text(String(i+1), xs.seq+0.15, y+0.38);
+    doc.text(descLines, xs.desc+0.15, y+0.38);
+    doc.text(String(it.qtd||0), xs.qtd+0.15, y+0.38);
+    doc.text(rdNumeroParaMoeda(it.valorUnit), xs.unit+0.15, y+0.38);
+    doc.setFont('helvetica','bold');
+    doc.text(rdNumeroParaMoeda(total), xs.tot+0.15, y+0.38);
+    y += rowHItem;
+  });
+  y += 0.2;
+
+  quebrarSeNecessario(1.6);
+  const totColW = CW*0.42, totColX = ML+CW-totColW;
+  const pixColW = CW - totColW - 0.3;
+  doc.setDrawColor(210,210,210); doc.setLineWidth(0.02); doc.rect(ML, y, pixColW, 1.5);
+  doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(140,120,110);
+  doc.text('DADOS PARA TRANSFERÊNCIA', ML+0.2, y+0.3);
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(40,40,40);
+  doc.text('Chave Pix: ' + (r.ChavePix||'—') + (r.TipoChave ? ' (' + r.TipoChave + ')' : ''), ML+0.2, y+0.7);
+  doc.text('Banco: ' + (r.Banco||'—'), ML+0.2, y+1.05);
+  let ty = y;
+  function linhaTotal(label, valor) {
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(100,100,100);
+    doc.text(label, totColX+0.15, ty+0.3);
+    doc.text(rdNumeroParaMoeda(valor), totColX+totColW-0.15, ty+0.3, {align:'right'});
+    ty += 0.35;
+  }
+  doc.setDrawColor(210,210,210); doc.rect(totColX, y, totColW, 1.5);
+  linhaTotal('SUBTOTAL', r.Subtotal);
+  linhaTotal('ACRÉSCIMO', r.Acrescimo);
+  linhaTotal('DESCONTO', -Math.abs(r.Desconto||0));
+  linhaTotal('OUTROS', r.Outros);
+  doc.setFillColor(128,196,118); doc.rect(totColX, ty, totColW, 0.5, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(255,255,255);
+  doc.text('TOTAL GERAL', totColX+0.15, ty+0.34);
+  doc.text(rdNumeroParaMoeda(r.TotalGeral), totColX+totColW-0.15, ty+0.34, {align:'right'});
+  y += 1.6;
+
+  const decl2 = 'Declaro ainda que o pagamento acima descrito se refere exclusivamente à prestação de serviços autônomos, sem qualquer vínculo empregatício, trabalhista e previdenciário com o contratante, nos termos da legislação vigente.';
+  const decl2Lines = doc.splitTextToSize(decl2, CW);
+  quebrarSeNecessario(decl2Lines.length*0.42+0.2);
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(40,40,40);
+  decl2Lines.forEach(ln => { doc.text(ln, ML, y); y += 0.42; });
+  y += 0.3;
+
+  quebrarSeNecessario(0.5);
+  doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(60,60,60);
+  doc.text(r.LocalData || '', ML+CW, y, {align:'right'});
+  y += 0.9;
+
+  quebrarSeNecessario(1.2);
+  doc.setDrawColor(60,60,60); doc.setLineWidth(0.02);
+  const linhaW = CW*0.55, linhaX = ML + (CW-linhaW)/2;
+  doc.line(linhaX, y, linhaX+linhaW, y);
+  y += 0.4;
+  doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(40,40,40);
+  doc.text(r.Beneficiario || '', ML+CW/2, y, {align:'center'});
+  y += 0.35;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(100,100,100);
+  doc.text('CPF/CNPJ: ' + (r.CpfCnpj||'—'), ML+CW/2, y, {align:'center'});
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  const nomeArq = 'Recibo_' + String(r.NumeroRecibo||'semnumero').replace(/\//g,'-') + '_' + (r.Beneficiario||'').replace(/[^\wÀ-ÿ ]/g,'').trim().replace(/\s+/g,'_') + '.pdf';
+  doc.save(nomeArq);
 }
 
 /* -- Parcelamento em Contas a Pagar: gera as parcelas automaticamente
@@ -46866,7 +47359,7 @@ const TABELAS_BPO_FINANCEIRO = [
   'bpo_impostos_v2', 'bpo_transferencias_v1'
 ];
 // Tabelas (dbLer/dbInserir/dbAtualizar/dbSalvar) que ficam SÓ na pasta central restrita.
-const TABELAS_RESTRITAS_DIRETORIA = ['ContasPagar', 'ContasReceber', 'Despesas', 'contratos', 'Empreendimentos', 'Outorgas', 'OrcamentosProjetos', ...TABELAS_BPO_FINANCEIRO];
+const TABELAS_RESTRITAS_DIRETORIA = ['ContasPagar', 'ContasReceber', 'Despesas', 'contratos', 'Empreendimentos', 'Outorgas', 'OrcamentosProjetos', 'Recibos', ...TABELAS_BPO_FINANCEIRO];
 // Prefixos de subpasta (OD_FOLDERS ou caminhos relativos de upload) que ficam SÓ na pasta central restrita.
 const PASTAS_RESTRITAS_DIRETORIA = ['Contratos'];
 
