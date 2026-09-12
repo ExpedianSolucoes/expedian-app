@@ -27283,39 +27283,173 @@ function meaKPIs() {
   var vPendente    = t - vRealizada - vParcial - vProgramada - vNaoRealizada;
   var licVencida = MEA_DADOS.filter(function(x){ return meaStatusLicenca(x.vencimento).label.indexOf('Vencida')===0; }).length;
   var lic90      = MEA_DADOS.filter(function(x){ var l=meaStatusLicenca(x.vencimento).label; return l.indexOf('Vence em')===0; }).length;
-  var ruidoPend  = MEA_DADOS.filter(function(x){return !x.ruido || x.ruido.status!=='realizado';}).length;
-  var pocoPend   = MEA_DADOS.filter(function(x){return !x.poco || x.poco.status!=='realizado';}).length;
-  var csaoPend   = MEA_DADOS.filter(function(x){return !x.csao || x.csao.status!=='realizado';}).length;
-  return { t: t, vRealizada: vRealizada, vParcial: vParcial, vProgramada: vProgramada, vNaoRealizada: vNaoRealizada, vPendente: vPendente, licVencida: licVencida, lic90: lic90, ruidoPend: ruidoPend, pocoPend: pocoPend, csaoPend: csaoPend };
+  // Pendente aqui é estrito (não inclui Agendado) pra não somar duas vezes
+  // com os cards próprios de Agendado/Realizado abaixo.
+  var ruidoPend  = MEA_DADOS.filter(function(x){return !x.ruido || !x.ruido.status || x.ruido.status==='pendente';}).length;
+  var pocoPend   = MEA_DADOS.filter(function(x){return !x.poco || !x.poco.status || x.poco.status==='pendente';}).length;
+  var csaoPend   = MEA_DADOS.filter(function(x){return !x.csao || !x.csao.status || x.csao.status==='pendente';}).length;
+  // -- Detalhamento por status (pedido em 12/09/2026: agrupar os cards por
+  // "Visão Geral / RMA / Vistorias / Ruído / Teste de Opacidade e outras
+  // necessárias") — RMA, Ruído, Poço e CSAO ganham um card por status,
+  // reaproveitando os mesmos rótulos de meaStatusBadge. -- */
+  var rmaPendente          = MEA_DADOS.filter(function(x){return (x.rma||{}).status==='pendente' || !x.rma || !x.rma.status;}).length;
+  var rmaEmEdicao          = MEA_DADOS.filter(function(x){return x.rma && x.rma.status==='em_edicao';}).length;
+  var rmaAguardandoRevisao = MEA_DADOS.filter(function(x){return x.rma && x.rma.status==='aguardando_revisao';}).length;
+  var rmaPronto            = MEA_DADOS.filter(function(x){return x.rma && x.rma.status==='pronto';}).length;
+  var rmaEnviadoEro        = MEA_DADOS.filter(function(x){return x.rma && x.rma.status==='enviado_ero';}).length;
+  var ruidoAgendado  = MEA_DADOS.filter(function(x){return x.ruido && x.ruido.status==='agendado';}).length;
+  var ruidoRealizado = MEA_DADOS.filter(function(x){return x.ruido && x.ruido.status==='realizado';}).length;
+  var pocoAgendado   = MEA_DADOS.filter(function(x){return x.poco && x.poco.status==='agendado';}).length;
+  var pocoRealizado  = MEA_DADOS.filter(function(x){return x.poco && x.poco.status==='realizado';}).length;
+  var csaoAgendado   = MEA_DADOS.filter(function(x){return x.csao && x.csao.status==='agendado';}).length;
+  var csaoRealizado  = MEA_DADOS.filter(function(x){return x.csao && x.csao.status==='realizado';}).length;
+  return {
+    t: t, vRealizada: vRealizada, vParcial: vParcial, vProgramada: vProgramada, vNaoRealizada: vNaoRealizada, vPendente: vPendente,
+    licVencida: licVencida, lic90: lic90,
+    ruidoPend: ruidoPend, pocoPend: pocoPend, csaoPend: csaoPend,
+    rmaPendente: rmaPendente, rmaEmEdicao: rmaEmEdicao, rmaAguardandoRevisao: rmaAguardandoRevisao, rmaPronto: rmaPronto, rmaEnviadoEro: rmaEnviadoEro,
+    ruidoAgendado: ruidoAgendado, ruidoRealizado: ruidoRealizado,
+    pocoAgendado: pocoAgendado, pocoRealizado: pocoRealizado,
+    csaoAgendado: csaoAgendado, csaoRealizado: csaoRealizado,
+  };
 }
+
+/* KPIs do painel principal do MEA são clicáveis e agrupados por assunto
+   (pedido em 12/09/2026 — "os cards tem que ser clicaveis e filtarveis" +
+   "quero que fique... total geral de empreendimentos, depois por RMA,
+   quantos vistorias realizadas parciais pendentes programadas, depois por
+   ruido, depois por teste opacidade, e outras necessarias"). Grupos:
+   Visão Geral (total) / RMA (por status) / Vistorias (por status) /
+   Ruído / Poço / CSAO (cada um Pendente-Agendado-Realizado) / Licenças /
+   Teste de Opacidade (resumo de veículos, com atalho pra aba própria).
+   Vistoria reaproveita o filtro do dropdown "mea-f-vistoria"
+   (window._meaFiltroVistoria); os demais grupos usam uma dimensão própria
+   (window._meaFiltroCard), tratada em meaAplicarFiltros. */
+if (typeof window._meaFiltroCard === 'undefined') window._meaFiltroCard = '';
 
 function meaRenderizarKPIs() {
   var el = document.getElementById('mea-kpis');
   if (!el) return;
   var k = meaKPIs();
-  function card(cor, label, valor, icon) {
-    return '<div class="kpi-card" style="border-top:3px solid '+cor+'"><div class="kpi-label">'+label+'</div><div class="kpi-value" style="color:'+cor+'">'+valor+'</div><div class="kpi-icon">'+icon+'</div></div>';
+  var visAtivo = window._meaFiltroVistoria || '';
+  var cardAtivo = window._meaFiltroCard || '';
+  var semFiltro = !visAtivo && !cardAtivo;
+  function card(cor, label, valor, icon, filtro, ehVistoria) {
+    var sel = filtro === 'todos' ? semFiltro : (ehVistoria ? visAtivo === filtro : cardAtivo === filtro);
+    return '<div class="kpi-card" style="border-top:3px solid '+cor+';cursor:pointer'+(sel?';box-shadow:0 0 0 2px '+cor+' inset':'')+'" onclick="meaFiltrarPorCard(\''+filtro+'\')"><div class="kpi-label">'+label+'</div><div class="kpi-value" style="color:'+cor+'">'+valor+'</div><div class="kpi-icon">'+icon+'</div></div>';
   }
-  el.innerHTML =
-    card('var(--brand-green)','Empreendimentos', k.t, '🏭') +
-    card('#28a745','Vistorias Realizadas', k.vRealizada, '✅') +
-    card('#fd7e14','Vistorias Parciais', k.vParcial, '🔶') +
-    card('#0d6efd','Vistorias Programadas', k.vProgramada, '📅') +
-    card('#dc3545','Vistorias Não Realizadas', k.vNaoRealizada, '🚫') +
-    card('#dc3545','Vistorias Pendentes', k.vPendente, '❌') +
-    card('#dc3545','Licenças Vencidas', k.licVencida, '📋') +
-    card('#ffc107','Licenças <90d', k.lic90, '⏰') +
-    card('#6f42c1','Ruído Pendente', k.ruidoPend, '🔊') +
-    card('#0d6efd','Poço Pendente', k.pocoPend, '💧') +
-    card('#20c997','CSAO Pendente', k.csaoPend, '🛢️');
+  function grupo(titulo, cardsHtml) {
+    return '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 8px">'+titulo+'</div><div class="kpi-grid">'+cardsHtml+'</div>';
+  }
+  var opac = (typeof OPAC_DADOS !== 'undefined' ? OPAC_DADOS : []);
+  var opacTotal = opac.length;
+  var opacRealizado = opac.filter(function(v){return v.status==='realizado';}).length;
+  var opacPendente = opacTotal - opacRealizado;
+
+  var htmlGeral = grupo('Visão Geral', card('var(--brand-green)','Empreendimentos', k.t, '🏭', 'todos', false));
+
+  var htmlRma = grupo('RMA', [
+    card('#dc3545','Pendente', k.rmaPendente, '❌', 'rma_pendente', false),
+    card('#0d6efd','Em Edição', k.rmaEmEdicao, '🔷', 'rma_em_edicao', false),
+    card('#fd7e14','Ag. Revisão', k.rmaAguardandoRevisao, '🔶', 'rma_aguardando_revisao', false),
+    card('#28a745','Pronto', k.rmaPronto, '✅', 'rma_pronto', false),
+    card('#6f42c1','Enviado a ERO', k.rmaEnviadoEro, '📤', 'rma_enviado_ero', false),
+  ].join(''));
+
+  var htmlVistorias = grupo('Vistorias', [
+    card('#28a745','Realizadas', k.vRealizada, '✅', 'realizada', true),
+    card('#fd7e14','Parciais', k.vParcial, '🔶', 'parcial', true),
+    card('#dc3545','Pendentes', k.vPendente, '❌', 'pendente', true),
+    card('#0d6efd','Programadas', k.vProgramada, '📅', 'programada', true),
+    card('#dc3545','Não Realizadas', k.vNaoRealizada, '🚫', 'nao_realizada', true),
+  ].join(''));
+
+  var htmlRuido = grupo('🔊 Ruído Ambiental', [
+    card('#dc3545','Pendente', k.ruidoPend, '❌', 'ruido_pendente', false),
+    card('#fd7e14','Agendado', k.ruidoAgendado, '🔶', 'ruido_agendado', false),
+    card('#28a745','Realizado', k.ruidoRealizado, '✅', 'ruido_realizado', false),
+  ].join(''));
+
+  var htmlPoco = grupo('💧 Coleta de Poço', [
+    card('#dc3545','Pendente', k.pocoPend, '❌', 'poco_pendente', false),
+    card('#fd7e14','Agendado', k.pocoAgendado, '🔶', 'poco_agendado', false),
+    card('#28a745','Realizado', k.pocoRealizado, '✅', 'poco_realizado', false),
+  ].join(''));
+
+  var htmlCsao = grupo('🛢️ CSAO', [
+    card('#dc3545','Pendente', k.csaoPend, '❌', 'csao_pendente', false),
+    card('#fd7e14','Agendado', k.csaoAgendado, '🔶', 'csao_agendado', false),
+    card('#28a745','Realizado', k.csaoRealizado, '✅', 'csao_realizado', false),
+  ].join(''));
+
+  var htmlLicencas = grupo('Licenças Ambientais', [
+    card('#dc3545','Vencidas', k.licVencida, '📋', 'lic_vencida', false),
+    card('#ffc107','Vencendo em <90d', k.lic90, '⏰', 'lic_90', false),
+  ].join(''));
+
+  // Teste de Opacidade não é por empreendimento (é por veículo), então os
+  // cards aqui não filtram a lista abaixo — clicar leva direto pra aba de
+  // Opacidade já filtrada (meaAbrirOpacidadeFiltrada).
+  function cardOpac(cor, label, valor, icon, status) {
+    return '<div class="kpi-card" style="border-top:3px solid '+cor+';cursor:pointer" onclick="meaAbrirOpacidadeFiltrada(\''+status+'\')"><div class="kpi-label">'+label+'</div><div class="kpi-value" style="color:'+cor+'">'+valor+'</div><div class="kpi-icon">'+icon+'</div></div>';
+  }
+  var htmlOpacidade = grupo('🚚 Teste de Opacidade (Veículos)', [
+    cardOpac('var(--brand-green)','Total de Veículos', opacTotal, '🚚', ''),
+    cardOpac('#28a745','Realizados', opacRealizado, '✅', 'realizado'),
+    cardOpac('#dc3545','Pendentes', opacPendente, '❌', 'pendente'),
+  ].join(''));
+
+  el.innerHTML = htmlGeral + htmlRma + htmlVistorias + htmlRuido + htmlPoco + htmlCsao + htmlLicencas + htmlOpacidade;
+}
+
+function meaFiltrarPorCard(tipo) {
+  window._meaFiltroCard = '';
+  window._meaFiltroVistoria = '';
+  if (['realizada','parcial','programada','nao_realizada','pendente'].indexOf(tipo) !== -1) {
+    window._meaFiltroVistoria = tipo;
+  } else if (tipo !== 'todos') {
+    window._meaFiltroCard = tipo;
+  }
+  var selVis = document.getElementById('mea-f-vistoria');
+  if (selVis) selVis.value = window._meaFiltroVistoria;
+  meaRenderizarKPIs();
+  meaRenderizarLista();
+}
+
+/* Deep-link do grupo "Teste de Opacidade" do painel principal pra aba
+   própria de Veículos, já com o status pré-filtrado (pedido em
+   12/09/2026). */
+function meaAbrirOpacidadeFiltrada(status) {
+  window._opacFiltroStatus = status || '';
+  window._meaAba = 'opacidade';
+  navigate('checklist_ero');
 }
 
 function meaAplicarFiltros(lista) {
   var reg = window._meaFiltroRegional, vis = window._meaFiltroVistoria, busca = (window._meaBusca||'').toLowerCase();
+  var card = window._meaFiltroCard || '';
   return lista.filter(function(x) {
     if (reg && x.regional !== reg) return false;
     if (vis && (!x.vistoria || x.vistoria.status !== vis)) return false;
     if (busca && (x.empreendimento||'').toLowerCase().indexOf(busca) === -1 && (x.municipio||'').toLowerCase().indexOf(busca) === -1) return false;
+    if (card === 'lic_vencida' && meaStatusLicenca(x.vencimento).label.indexOf('Vencida') !== 0) return false;
+    if (card === 'lic_90' && meaStatusLicenca(x.vencimento).label.indexOf('Vence em') !== 0) return false;
+    if (card.indexOf('rma_') === 0) {
+      var stRma = (x.rma && x.rma.status) || 'pendente';
+      if (stRma !== card.slice(4)) return false;
+    }
+    if (card.indexOf('ruido_') === 0) {
+      var stRu = (x.ruido && x.ruido.status) || 'pendente';
+      if (stRu !== card.slice(6)) return false;
+    }
+    if (card.indexOf('poco_') === 0) {
+      var stPo = (x.poco && x.poco.status) || 'pendente';
+      if (stPo !== card.slice(5)) return false;
+    }
+    if (card.indexOf('csao_') === 0) {
+      var stCs = (x.csao && x.csao.status) || 'pendente';
+      if (stCs !== card.slice(5)) return false;
+    }
     return true;
   });
 }
@@ -27324,6 +27458,8 @@ function meaFiltrar() {
   window._meaFiltroRegional = document.getElementById('mea-f-regional').value;
   window._meaFiltroVistoria = document.getElementById('mea-f-vistoria').value;
   window._meaBusca = document.getElementById('mea-f-busca').value;
+  window._meaFiltroCard = '';
+  meaRenderizarKPIs();
   meaRenderizarLista();
 }
 
@@ -27405,6 +27541,7 @@ function meaAbrirDetalhe(id) {
   set('mea-rma-art', r.art);
   set('mea-rma-tecart', r.tecnicoArt);
   set('mea-rma-tecrma', r.tecnicoRma);
+  var elRmaHist = document.getElementById('mea-rma-historico'); if (elRmaHist) elRmaHist.innerHTML = meaHtmlHistoricoResumo(r.historico);
   var ru = reg.ruido || {};
   set('mea-ruido-necessario', ru.necessario);
   set('mea-ruido-status', ru.status || 'pendente');
@@ -27413,12 +27550,15 @@ function meaAbrirDetalhe(id) {
   set('mea-ruido-tec2', ru.tecnico2);
   set('mea-ruido-obs', ru.obs);
   meaRuidoToggle();
+  var elRuidoHist = document.getElementById('mea-ruido-historico'); if (elRuidoHist) elRuidoHist.innerHTML = meaHtmlHistoricoResumo(ru.historico);
   var po = reg.poco || {};
   set('mea-poco-existe', po.existe);
   set('mea-poco-coleta', po.coleta);
   set('mea-poco-status', po.status || 'pendente');
   set('mea-poco-data', po.data);
   set('mea-poco-obs', po.obs);
+  meaPocoToggle();
+  var elPocoHist = document.getElementById('mea-poco-historico'); if (elPocoHist) elPocoHist.innerHTML = meaHtmlHistoricoResumo(po.historico);
   var cs = reg.csao || {};
   set('mea-csao-existe', cs.existe);
   set('mea-csao-coleta', cs.coleta);
@@ -27426,13 +27566,19 @@ function meaAbrirDetalhe(id) {
   set('mea-csao-status', cs.status || 'pendente');
   set('mea-csao-data', cs.data);
   set('mea-csao-obs', cs.obs);
+  meaCsaoToggle();
+  var elCsaoHist = document.getElementById('mea-csao-historico'); if (elCsaoHist) elCsaoHist.innerHTML = meaHtmlHistoricoResumo(cs.historico);
   set('mea-obs', reg.obs);
   document.getElementById('mea-btn-excluir').style.display = novo ? 'none' : 'inline-block';
   document.getElementById('mea-detalhe-modal').style.display = 'flex';
 }
 
 /* Ruído Ambiental: se "Necessidade de Realização?" = Não, desabilita os
-   demais campos do bloco (status/data/equipe/obs) — pedido em 11/09/2026. */
+   demais campos do bloco (status/data/equipe/obs) — pedido em 11/09/2026.
+   Poço e CSAO: mesma ideia, mas a pergunta que zera o bloco é "Existe?" —
+   se não existe poço/CSAO no empreendimento, não faz sentido pedir coleta,
+   sinalização, status ou data — pedido em 12/09/2026 ("quando em csao e
+   poço clicar que não existe, já inabilitar os demais itens"). -- */
 function meaRuidoToggle() {
   var nec = document.getElementById('mea-ruido-necessario');
   if (!nec) return;
@@ -27441,6 +27587,86 @@ function meaRuidoToggle() {
     var e = document.getElementById(elId);
     if (e) e.disabled = desabilita;
   });
+}
+function meaPocoToggle() {
+  var ex = document.getElementById('mea-poco-existe');
+  if (!ex) return;
+  var desabilita = ex.value === 'Não';
+  ['mea-poco-coleta','mea-poco-status','mea-poco-data','mea-poco-obs'].forEach(function(elId) {
+    var e = document.getElementById(elId);
+    if (e) e.disabled = desabilita;
+  });
+}
+function meaCsaoToggle() {
+  var ex = document.getElementById('mea-csao-existe');
+  if (!ex) return;
+  var desabilita = ex.value === 'Não';
+  ['mea-csao-coleta','mea-csao-sinalizada','mea-csao-status','mea-csao-data','mea-csao-obs'].forEach(function(elId) {
+    var e = document.getElementById(elId);
+    if (e) e.disabled = desabilita;
+  });
+}
+
+/* -- Resumo de histórico (quantas vezes já foi feito antes + data da
+   última) exibido dentro do modal, pra dar visibilidade de controle sobre
+   itens que se repetem no ano (RMA/Ruído/Poço/CSAO costumam ser semestrais)
+   sem precisar sair da tela. Alimentado por "Reiniciar Semestre"
+   (meaReiniciarSemestre), que arquiva o ciclo concluído aqui antes de
+   zerar o status pro próximo semestre. Pedido em 12/09/2026. -- */
+function meaHtmlHistoricoResumo(historico) {
+  var lista = Array.isArray(historico) ? historico : [];
+  if (!lista.length) return '';
+  var ultimo = lista[lista.length - 1];
+  return '<div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">📜 Já realizado ' + lista.length + ' vez(es) antes · última em ' + (ultimo.data ? laFormatarData(ultimo.data) : (ultimo.encerradoEm ? laFormatarData(ultimo.encerradoEm.slice(0,10)) : '—')) + '</div>';
+}
+
+/* -- "Reiniciar Semestre": RMA, Ruído Ambiental e Coleta de Poço costumam
+   ser exigidos 2x ao ano (semestral) — mas o app só guardava UM status por
+   empreendimento, então na 2ª vez do ano não dava pra saber se aquilo já
+   tinha sido feito no semestre ou se era o resultado do semestre passado
+   ainda pendurado. Esse botão (mesmo padrão do "Reiniciar Semestre" de
+   Teste de Opacidade) arquiva o resultado do semestre que terminou dentro
+   de reg.rma/ruido/poco/csao.historico[] (mantendo data, técnico,
+   observação) e volta o status de cada um pra "Pendente"/"❌ Pendente",
+   preparando pro próximo ciclo. CSAO/Poço/Ruído sem necessidade (existe=
+   Não / necessario=Não) não são arquivados, pois não têm ciclo a fechar.
+   Pedido em 12/09/2026: "esses rma, coletas e ruidos podem ser realizadas
+   duas vezes ao ano como faço esse controle?". -- */
+async function meaReiniciarSemestre() {
+  if (!MEA_DADOS.length) { showToast('⚠️ Nenhum empreendimento cadastrado.'); return; }
+  if (!confirm('Reiniciar o semestre de RMA / Ruído Ambiental / Coleta de Poço / CSAO?\n\nPara todos os ' + MEA_DADOS.length + ' empreendimentos, os itens marcados como Realizado/Enviado a ERO são arquivados no histórico e voltam para "Pendente", prontos para o próximo semestre.\n\nConfirma?')) return;
+  var agora = new Date().toISOString();
+  var qtd = 0;
+  MEA_DADOS.forEach(function(reg) {
+    var rma = reg.rma;
+    if (rma && rma.status === 'enviado_ero') {
+      rma.historico = rma.historico || [];
+      rma.historico.push({ status: rma.status, art: rma.art, tecnicoArt: rma.tecnicoArt, tecnicoRma: rma.tecnicoRma, encerradoEm: agora });
+      rma.status = 'pendente'; rma.art = ''; qtd++;
+    }
+    var ru = reg.ruido;
+    if (ru && ru.status === 'realizado') {
+      ru.historico = ru.historico || [];
+      ru.historico.push({ data: ru.data, tecnico1: ru.tecnico1, tecnico2: ru.tecnico2, obs: ru.obs, encerradoEm: agora });
+      ru.status = 'pendente'; ru.data = ''; ru.obs = ''; qtd++;
+    }
+    var po = reg.poco;
+    if (po && po.status === 'realizado') {
+      po.historico = po.historico || [];
+      po.historico.push({ data: po.data, coleta: po.coleta, obs: po.obs, encerradoEm: agora });
+      po.status = 'pendente'; po.data = ''; po.obs = ''; qtd++;
+    }
+    var cs = reg.csao;
+    if (cs && cs.status === 'realizado') {
+      cs.historico = cs.historico || [];
+      cs.historico.push({ data: cs.data, coleta: cs.coleta, sinalizada: cs.sinalizada, obs: cs.obs, encerradoEm: agora });
+      cs.status = 'pendente'; cs.data = ''; cs.obs = ''; qtd++;
+    }
+  });
+  await meaSalvar();
+  meaRenderizarLista();
+  meaRenderizarKPIs();
+  showToast('🔄 Semestre reiniciado — ' + qtd + ' item(ns) arquivado(s) e voltaram para Pendente.');
 }
 
 function meaFecharDetalhe() {
@@ -27471,10 +27697,10 @@ async function meaSalvarDetalhe() {
   reg.emissao = g('mea-emissao');
   reg.vencimento = g('mea-vencimento');
   reg.vistoria = { status: g('mea-vistoria-status'), statusLinha: (reg.vistoria && reg.vistoria.statusLinha) || '', statusSubestacao: (reg.vistoria && reg.vistoria.statusSubestacao) || '', dataProgramada: g('mea-vistoria-dataprog'), responsavelProgramado: g('mea-vistoria-respprog'), responsavelProgramado2: g('mea-vistoria-respprog2'), data: g('mea-vistoria-data'), tecnico1: g('mea-vistoria-tec1'), tecnico2: g('mea-vistoria-tec2'), motivo: g('mea-vistoria-motivo'), lss: (reg.vistoria && reg.vistoria.lss) || { status: '', obs: '' }, pernoite: (reg.vistoria && reg.vistoria.pernoite) || '', lssNumero: (reg.vistoria && reg.vistoria.lssNumero) || '', observacao: (reg.vistoria && reg.vistoria.observacao) || '', ordemRoteiro: (reg.vistoria && reg.vistoria.ordemRoteiro != null) ? reg.vistoria.ordemRoteiro : null, fotosEnviadas: (reg.vistoria && reg.vistoria.fotosEnviadas) || 0 };
-  reg.rma = { necessario: g('mea-rma-necessario'), status: g('mea-rma-status'), art: g('mea-rma-art'), tecnicoArt: g('mea-rma-tecart'), tecnicoRma: g('mea-rma-tecrma') };
-  reg.ruido = { necessario: g('mea-ruido-necessario'), status: g('mea-ruido-status'), data: g('mea-ruido-data'), tecnico1: g('mea-ruido-tec1'), tecnico2: g('mea-ruido-tec2'), obs: g('mea-ruido-obs') };
-  reg.poco = { existe: g('mea-poco-existe'), coleta: g('mea-poco-coleta'), status: g('mea-poco-status'), data: g('mea-poco-data'), obs: g('mea-poco-obs') };
-  reg.csao = { existe: g('mea-csao-existe'), coleta: g('mea-csao-coleta'), sinalizada: g('mea-csao-sinalizada'), status: g('mea-csao-status'), data: g('mea-csao-data'), obs: g('mea-csao-obs') };
+  reg.rma = { necessario: g('mea-rma-necessario'), status: g('mea-rma-status'), art: g('mea-rma-art'), tecnicoArt: g('mea-rma-tecart'), tecnicoRma: g('mea-rma-tecrma'), historico: (reg.rma && reg.rma.historico) || [] };
+  reg.ruido = { necessario: g('mea-ruido-necessario'), status: g('mea-ruido-status'), data: g('mea-ruido-data'), tecnico1: g('mea-ruido-tec1'), tecnico2: g('mea-ruido-tec2'), obs: g('mea-ruido-obs'), historico: (reg.ruido && reg.ruido.historico) || [] };
+  reg.poco = { existe: g('mea-poco-existe'), coleta: g('mea-poco-coleta'), status: g('mea-poco-status'), data: g('mea-poco-data'), obs: g('mea-poco-obs'), historico: (reg.poco && reg.poco.historico) || [] };
+  reg.csao = { existe: g('mea-csao-existe'), coleta: g('mea-csao-coleta'), sinalizada: g('mea-csao-sinalizada'), status: g('mea-csao-status'), data: g('mea-csao-data'), obs: g('mea-csao-obs'), historico: (reg.csao && reg.csao.historico) || [] };
   reg.obs = g('mea-obs');
   if (idx === -1) MEA_DADOS.push(reg);
   await meaSalvar();
@@ -27504,6 +27730,10 @@ function meaOptsTecnicos(selecionado) {
 
 function pageMonitoramentoAmbientalERO() {
   meaCarregar().then(function() { meaRenderizarLista(); meaRenderizarKPIs(); });
+  // Carrega também os veículos de Opacidade só pra alimentar o grupo de
+  // cards "Teste de Opacidade" deste painel (a lista de veículos em si
+  // mora na aba própria) — pedido em 12/09/2026.
+  opacCarregar().then(function() { meaRenderizarKPIs(); });
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
     <div>
@@ -27512,15 +27742,16 @@ function pageMonitoramentoAmbientalERO() {
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-secondary" onclick="window._meaAba='vistorias';navigate('checklist_ero')">📅 Vistorias</button>
-      <button class="btn-secondary" onclick="window._meaAba='opacidade';navigate('checklist_ero')">🚚 Teste de Opacidade</button>
+      <button class="btn-secondary" onclick="window._opacFiltroStatus='';window._meaAba='opacidade';navigate('checklist_ero')">🚚 Teste de Opacidade</button>
       <button class="btn-secondary" onclick="window._meaAba='form';navigate('checklist_ero')">📋 Checklist Inspeção Ambiental (Subestação)</button>
       <button class="btn-secondary" onclick="navigate('checklist_linha')">⚡ Checklist Linha de Distribuição</button>
+      ${(currentProfile === 'diretoria' || currentProfile === 'coordenador') ? `<button class="btn-secondary" onclick="meaReiniciarSemestre()">🔄 Reiniciar Semestre</button>` : ''}
       <button class="btn-primary" onclick="meaAbrirDetalhe(null)">+ Novo Empreendimento</button>
     </div>
   </div>
 
-  <div class="kpi-grid" id="mea-kpis" style="margin-bottom:20px">
-    <div style="text-align:center;padding:40px;color:var(--text-muted);grid-column:1/-1">Carregando...</div>
+  <div id="mea-kpis" style="margin-bottom:20px">
+    <div class="kpi-grid"><div style="text-align:center;padding:40px;color:var(--text-muted);grid-column:1/-1">Carregando...</div></div>
   </div>
 
   <div class="card" style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
@@ -27634,6 +27865,7 @@ function pageMonitoramentoAmbientalERO() {
           <div class="form-group"><label>Técnico ART</label><select id="mea-rma-tecart">${meaOptsTecnicos()}</select></div>
           <div class="form-group"><label>Técnico RMA</label><select id="mea-rma-tecrma">${meaOptsTecnicos()}</select></div>
         </div>
+        <div id="mea-rma-historico"></div>
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">🔊 Ruído Ambiental</div>
         <div class="form-row">
@@ -27652,11 +27884,12 @@ function pageMonitoramentoAmbientalERO() {
           <div class="form-group"><label>Equipe 2</label><select id="mea-ruido-tec2">${meaOptsTecnicos()}</select></div>
         </div>
         <div class="form-group"><label>Observação</label><input id="mea-ruido-obs"></div>
+        <div id="mea-ruido-historico"></div>
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">💧 Coleta de Poço</div>
         <div class="form-row">
           <div class="form-group"><label>Existe?</label>
-            <select id="mea-poco-existe"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+            <select id="mea-poco-existe" onchange="meaPocoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
           <div class="form-group"><label>Necessidade de Coleta p/ Análise?</label>
             <select id="mea-poco-coleta"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
@@ -27669,11 +27902,12 @@ function pageMonitoramentoAmbientalERO() {
           <div class="form-group"><label>Data de Realização</label><input type="date" id="mea-poco-data"></div>
         </div>
         <div class="form-group"><label>Observação</label><input id="mea-poco-obs"></div>
+        <div id="mea-poco-historico"></div>
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">🛢️ CSAO (Caixa Separadora de Água e Óleo)</div>
         <div class="form-row">
           <div class="form-group"><label>Existe?</label>
-            <select id="mea-csao-existe"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+            <select id="mea-csao-existe" onchange="meaCsaoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
           <div class="form-group"><label>Necessidade de Coleta p/ Análise?</label>
             <select id="mea-csao-coleta"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
@@ -27689,6 +27923,7 @@ function pageMonitoramentoAmbientalERO() {
           <div class="form-group"><label>Data de Realização</label><input type="date" id="mea-csao-data"></div>
         </div>
         <div class="form-group"><label>Observação</label><input id="mea-csao-obs"></div>
+        <div id="mea-csao-historico"></div>
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Observações Gerais</div>
         <div class="form-group"><textarea id="mea-obs" rows="2"></textarea></div>
@@ -27946,13 +28181,17 @@ async function vistSalvarModal() {
 /* ===============================================================
    PÁGINA — VEÍCULOS A DIESEL — TESTE DE OPACIDADE
    =============================================================== */
+if (typeof window._opacFiltroStatus === 'undefined') window._opacFiltroStatus = '';
+
 function opacRenderizarLista() {
   var busca = (window._opacBusca || '').trim().toLowerCase();
   var sem = window._opacSemestre || '';
+  var st = window._opacFiltroStatus || '';
   var lista = OPAC_DADOS.filter(function(v) {
     if (busca && (v.placa || '').toLowerCase().indexOf(busca) === -1 &&
         (v.tipo || '').toLowerCase().indexOf(busca) === -1 &&
         (v.frota || '').toLowerCase().indexOf(busca) === -1) return false;
+    if (st && (v.status || 'pendente') !== st) return false;
     if (sem) {
       if (!v.data) return false;
       var mes = parseInt(v.data.slice(5,7), 10);
@@ -27995,13 +28234,25 @@ function opacRenderizarLista() {
 }
 
 function opacRenderizarKPIs() {
+  var el = document.getElementById('opac-kpis');
+  if (!el) return;
   var total = OPAC_DADOS.length;
   var realizados = OPAC_DADOS.filter(function(v) { return v.status === 'realizado'; }).length;
   var pendentes = total - realizados;
-  var set = function(id, val) { var e = document.getElementById(id); if (e) e.textContent = val; };
-  set('opac-kpi-total', total);
-  set('opac-kpi-realizados', realizados);
-  set('opac-kpi-pendentes', pendentes);
+  var st = window._opacFiltroStatus || '';
+  function card(cor, label, valor, icon, filtro) {
+    var sel = st === filtro;
+    return '<div class="kpi-card" style="border-top:3px solid '+cor+';cursor:pointer'+(sel?';box-shadow:0 0 0 2px '+cor+' inset':'')+'" onclick="opacFiltrarPorCard(\''+filtro+'\')"><div class="kpi-label">'+label+'</div><div class="kpi-value" style="color:'+cor+'">'+valor+'</div><div class="kpi-icon">'+icon+'</div></div>';
+  }
+  el.innerHTML = card('var(--brand-green)', 'Total de Veículos', total, '🚚', '')
+    + card('#28a745', 'Testes Realizados', realizados, '✅', 'realizado')
+    + card('#dc3545', 'Pendentes', pendentes, '❌', 'pendente');
+}
+
+function opacFiltrarPorCard(status) {
+  window._opacFiltroStatus = status || '';
+  opacRenderizarKPIs();
+  opacRenderizarLista();
 }
 
 function opacFiltrar(val) {
@@ -28187,20 +28438,7 @@ function pageOpacidadeVeiculos() {
     ${(currentProfile === 'diretoria' || currentProfile === 'coordenador') ? `<button class="btn-secondary" onclick="opacReiniciarSemestre()">🔄 Reiniciar Semestre</button>` : ''}
   </div>
 
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
-    <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px;text-align:center">
-      <div style="font-size:1.4rem;font-weight:800" id="opac-kpi-total">0</div>
-      <div style="font-size:.7rem;color:var(--text-muted);font-weight:700">TOTAL DE VEÍCULOS</div>
-    </div>
-    <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px;text-align:center">
-      <div style="font-size:1.4rem;font-weight:800;color:#28a745" id="opac-kpi-realizados">0</div>
-      <div style="font-size:.7rem;color:var(--text-muted);font-weight:700">TESTES REALIZADOS</div>
-    </div>
-    <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px;text-align:center">
-      <div style="font-size:1.4rem;font-weight:800;color:#dc3545" id="opac-kpi-pendentes">0</div>
-      <div style="font-size:.7rem;color:var(--text-muted);font-weight:700">PENDENTES</div>
-    </div>
-  </div>
+  <div id="opac-kpis" class="kpi-grid" style="margin-bottom:16px"><div style="text-align:center;padding:20px;color:var(--text-muted);grid-column:1/-1">Carregando...</div></div>
 
   <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">
     <input placeholder="🔍 Buscar por placa, tipo ou frota..." style="flex:1;min-width:220px;font-size:.85rem;padding:10px 14px;border:1px solid var(--border);border-radius:10px" oninput="opacFiltrar(this.value)">
