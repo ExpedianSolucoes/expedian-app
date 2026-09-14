@@ -27184,6 +27184,7 @@ function renderEROMiniDashboard() {
               </div>
               <div style="display:flex;gap:4px;flex-shrink:0">
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="${r.documentoUrl?'Ver PDF/documento gerado':'Ainda sem PDF exportado'}" onclick="eroVerChecklist(${r.Id})">👁️ Ver</button>
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Gerar/reimprimir o PDF direto, sem abrir o formulário" onclick="eroExportarPDFdireto(${r.Id})">📄 PDF</button>
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="eroEditarChecklist(${r.Id})">✏️ Editar</button>
               </div>
             </div>`).join('')
@@ -46482,6 +46483,32 @@ function eroVerChecklist(id) {
   }
 }
 
+/* -- Gera (ou reimprime) o PDF de um checklist ERO direto da linha do
+   histórico, sem precisar abrir o formulário de edição — pedido em
+   14/09/2026. Carrega os dados completos salvos (mesmo caminho usado por
+   eroEditarChecklist) só pra dentro de window._eroData e chama
+   exportarEROpdf() normalmente; nunca marca _eroFormAberto nem navega pro
+   formulário. -- */
+async function eroExportarPDFdireto(id) {
+  const r = (window._eroHistorico || []).find(x => x.Id === id);
+  if (!r) { showToast('⚠️ Checklist não encontrado.'); return; }
+  showSyncStatus('Carregando dados do checklist...');
+  const texto = await baixarArquivoCentral('Checklists/ERO/dados/' + id + '.json');
+  if (!texto) {
+    showSyncStatus('Não foi possível carregar', 'err', 4000);
+    showToast('⚠️ Não encontrei os dados completos desse checklist (pode ter sido salvo antes desse recurso existir). Abra em "Editar" pra tentar de novo.');
+    return;
+  }
+  try {
+    window._eroData = JSON.parse(texto);
+    window._eroRegistroAtualId = id;
+    showSyncStatus('Dados carregados!', 'ok', 2000);
+    exportarEROpdf();
+  } catch(e) {
+    showToast('⚠️ Erro ao interpretar os dados salvos desse checklist.');
+  }
+}
+
 async function salvarEROnoSharePoint() {
   try {
     const token = await getSharePointToken();
@@ -46580,6 +46607,13 @@ function exportarEROpdf() {
     const d = window._eroData;
     const semCasaPdf = eroSemCasaAtiva();
     const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
+    // Nomenclatura do arquivo (pedido em 14/09/2026): "Checklist Inspeção -
+    // <Empreendimento> dd.mm.aa" — ex: "Checklist Inspeção - SED Alto Paraíso 12.09.26".
+    // Usado tanto no <title> (sugestão de nome ao "Salvar como PDF" na
+    // impressão) quanto no nome do arquivo enviado ao OneDrive.
+    const dataObjNome = d.data ? new Date(d.data + 'T12:00') : new Date();
+    const dataCurtaNome = String(dataObjNome.getDate()).padStart(2,'0') + '.' + String(dataObjNome.getMonth()+1).padStart(2,'0') + '.' + String(dataObjNome.getFullYear()).slice(-2);
+    const nomeArquivoERO = ('Checklist Inspeção - ' + (d.empreendimento || 'Checklist') + ' ' + dataCurtaNome).replace(/[\\/:*?"<>|]/g, '');
 
     // Calculate totals (excluindo itens que não valem pra essa sub-aba, N/A
     // e não respondidos, igual ao dashboard)
@@ -46609,7 +46643,7 @@ function exportarEROpdf() {
     const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Checklist Inspeção Ambiental ERO</title>
+    <title>${nomeArquivoERO}</title>
     <style>
       @page { size: A4; margin: 15mm 12mm; }
       * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -46813,15 +46847,11 @@ function exportarEROpdf() {
     // -- Sincronizar com OneDrive diretamente (sem hook) --
     if (typeof uploadParaOneDrive === 'function') {
       try {
-        const dataFmtOD = d.data
-          ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR').replace(/\//g, '-')
-          : new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
-        const empreendOD = (d.empreendimento || 'Checklist')
-          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 40);
-        const respOD = (d.responsaveis || '')
-          .replace(/[^a-zA-Z0-9À-ú\s]/g, '').trim().replace(/\s+/g, '_').substring(0, 20);
-        const nomeBase = `ChecklistERO_${empreendOD}_${respOD}_${dataFmtOD}`;
-        await uploadChecklistHtml(htmlContent, nomeBase);
+        // Pedido em 14/09/2026: nome do arquivo padronizado como
+        // "Checklist Inspeção - <Empreendimento> dd.mm.aa" (nomeArquivoERO,
+        // calculado no topo da função) — mesmo nome sugerido no <title> da
+        // impressão.
+        await uploadChecklistHtml(htmlContent, nomeArquivoERO);
       } catch(e) {
         console.warn('[OneDrive] Erro ao sincronizar ERO:', e);
         showSyncStatus('Erro ao sincronizar com OneDrive', 'err', 6000);
