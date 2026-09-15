@@ -5379,6 +5379,69 @@ const CONC_CATEGORIAS_CUSTO = ['Mão de Obra', 'Equipamento', 'Material/Insumo',
 // Padrão genérico — ajustar com os valores reais da Expedian quando disponíveis.
 const CONC_PADRAO = { bdi: 30, impostoPercentual: 8, impostoRegime: 'Simples Nacional (estimado — conferir anexo/faixa real)' };
 
+/* -- Dados de identidade de cada uma das 3 empresas do grupo, usados pra
+   montar o cabeçalho/rodapé certo na Proposta Comercial em PDF conforme a
+   empresa escolhida no orçamento (pedido em 15/09/2026). `logoVar` é o nome
+   da variável global com o logo em base64 (como _expedianMarromB64, já
+   existente e usado nos outros PDFs do app).
+
+   PENDÊNCIA: TL3 e EXP Brasil ainda não têm logoVar (fica null) — recebi os
+   dois PNGs ("NOVA LOGO TL3.png" e "LOGO EPX BRASIL.png") mas não consegui
+   converter pra base64 porque o acesso ao meu sandbox de shell segue fora
+   do ar (mesma falha de infraestrutura desde 08/09, já reportada). Enquanto
+   isso, o PDF usa um cabeçalho tipográfico com a cor da marca de cada uma
+   (concLogoOuNomeHtml abaixo) — assim que o sandbox voltar, gero
+   _tl3LogoB64/_expBrasilLogoB64 e troco o logoVar aqui, sem mexer no resto. -- */
+const CONC_EMPRESA_DADOS = {
+  'Expedian': {
+    razaoSocial: 'EXPEDIAN SOLUÇÕES AMBIENTAIS',
+    cnpj: '37.553.680/0001-80',
+    ie: 'isenta',
+    endereco: 'Rua Salgado Filho, nº 1596 – Sala 02, Bairro Nossa Senhora das Graças, CEP 76.804-118, Porto Velho – RO',
+    telefone: '(69) 9.9964-9406',
+    email: 'atendimento@expediansolucoes.com.br',
+    cor: '#6B4A3A',
+    logoVar: '_expedianMarromB64',
+  },
+  'TL3': {
+    razaoSocial: 'TL3 ENGENHARIA & SERVIÇOS LTDA',
+    cnpj: '45.665.785/0001-50',
+    ie: '00000006283080',
+    endereco: 'Rua D, Quadra 12, Lote 108, Bairro Socialista, CEP 76.829-021, Porto Velho – RO',
+    telefone: '(69) 9600-0908',
+    email: 'tl3engenharia@gmail.com',
+    cor: '#1E8A4C',
+    logoVar: '_tl3LogoB64', // pendente — ver comentário acima de CONC_EMPRESA_DADOS
+  },
+  'EXP Brasil': {
+    razaoSocial: 'EXP BRASIL - SOLUÇÕES EM LOGÍSTICA E SERVIÇOS LTDA',
+    cnpj: '63.286.211/0001-52',
+    ie: '00000007437021',
+    endereco: 'Rua D, Quadra 12, Lote 108, Sala B, Bairro Socialista, CEP 76.829-021, Porto Velho – RO',
+    telefone: '',
+    email: '',
+    cor: '#6B3A1F',
+    logoVar: '_expBrasilLogoB64', // pendente — ver comentário acima de CONC_EMPRESA_DADOS
+  },
+};
+
+/* -- Monta o bloco do "logo" no cabeçalho do PDF: usa a imagem em base64 se
+   a empresa já tiver uma (logoVar aponta pra uma variável global existente),
+   senão cai num wordmark tipográfico na cor da marca (ver pendência acima). -- */
+function concLogoOuNomeHtml(emp) {
+  // OBS: não dá pra resolver o logo dinamicamente via window[emp.logoVar] —
+  // _expedianMarromB64 (como as demais consts de logo do app) é declarada
+  // com `const` no escopo global do script, e `const`/`let` de topo NÃO
+  // viram propriedade de `window` em JS (só `var`/função viram). Por isso o
+  // nome da variável é resolvido aqui, explicitamente, por empresa.
+  let b64 = null;
+  if (emp.logoVar === '_expedianMarromB64' && typeof _expedianMarromB64 !== 'undefined') b64 = _expedianMarromB64;
+  else if (emp.logoVar === '_tl3LogoB64' && typeof _tl3LogoB64 !== 'undefined') b64 = _tl3LogoB64;
+  else if (emp.logoVar === '_expBrasilLogoB64' && typeof _expBrasilLogoB64 !== 'undefined') b64 = _expBrasilLogoB64;
+  if (b64) return `<img src="${b64}" alt="${emp.razaoSocial}" style="height:46px;object-fit:contain">`;
+  return `<div style="font-family:Arial,sans-serif;font-size:20pt;font-weight:900;color:${emp.cor};letter-spacing:.5px">${emp.razaoSocial.split(' ')[0]}</div>`;
+}
+
 let CONC_LISTA = [];
 let CONC_CATALOGO = [];
 window._concFiltroStatus = window._concFiltroStatus || '';
@@ -5429,7 +5492,7 @@ function pageConcorrencias() {
   <div class="page-header"><h1>📐 Orçamentos / Concorrências</h1><p>Controle de propostas comerciais, itens de custo, BDI e impostos</p></div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
     <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
-    <button class="btn-primary" onclick="concAbrirForm()">➕ Novo Orçamento</button>
+    <button class="btn-primary" onclick="concAbrirEscolhaEmpresa()">➕ Novo Orçamento</button>
     <button class="btn-secondary" onclick="concAbrirCatalogoModal()">🗂️ Catálogo de Itens de Custo</button>
   </div>
   <div id="conc-kpis" style="margin-bottom:16px">Carregando...</div>
@@ -5487,13 +5550,15 @@ function concRenderizarLista() {
   const lista = concListaFiltrada();
   if (!lista.length) { el.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)">Nenhum orçamento encontrado.</div>'; return; }
   el.innerHTML = `<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr>
-    <th>Nº</th><th>Título / Empreendimento</th><th>Cliente</th><th>Emissão</th><th>Validade</th><th>Valor Total</th><th>Status</th><th>Ações</th>
+    <th>Nº</th><th>Empresa</th><th>Título / Empreendimento</th><th>Cliente</th><th>Emissão</th><th>Validade</th><th>Valor Total</th><th>Status</th><th>Ações</th>
   </tr></thead><tbody>
   ${lista.map(c => {
     const st = concStatusEfetivo(c);
     const info = CONC_STATUS[st] || {label: st, cor: 'var(--text-muted)', emoji: ''};
+    const corEmp = RD_EMPRESA_CORES[c.empresa] || 'var(--text-muted)';
     return `<tr>
       <td><strong>${c.numero||'—'}</strong></td>
+      <td>${c.empresa ? `<span style="background:${corEmp}22;color:${corEmp};padding:3px 8px;border-radius:12px;font-size:.7rem;font-weight:700">🏢 ${c.empresa}</span>` : '—'}</td>
       <td>${(c.titulo||'—')}</td>
       <td>${(c.cliente||'—')}</td>
       <td>${c.dataEmissao ? laFormatarData(c.dataEmissao) : '—'}</td>
@@ -5509,20 +5574,68 @@ function concRenderizarLista() {
   </tbody></table></div>`;
 }
 
-function concAbrirForm(id) {
+/* -- Pedido em 15/09/2026: antes de abrir o formulário de um orçamento
+   novo, pergunta de qual das 3 empresas do grupo é esse orçamento (mesmo
+   trio já usado em Despesas/Receitas — RD_EMPRESAS/RD_EMPRESA_CORES).
+   Orçamentos existentes já têm a empresa salva e pulam direto pro form. -- */
+function concAbrirEscolhaEmpresa(id) {
+  // Guarda explicitamente pra qual orçamento essa escolha é (null = orçamento
+  // novo). Não reaproveita window._concEditandoId direto aqui porque ele fica
+  // "sujo" com o id do último orçamento aberto — sem esse controle à parte,
+  // clicar em "Novo Orçamento" depois de ter editado outro acabava herdando o
+  // id antigo e sobrescrevendo o orçamento errado.
+  window._concEscolhaEmpresaParaId = id || null;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'conc-modal-empresa';
+  modal.innerHTML = `<div class="modal-box" style="max-width:420px">
+    <div class="modal-header"><h3>🏢 De qual empresa é esse orçamento?</h3></div>
+    <div class="modal-body">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${RD_EMPRESAS.map(emp => {
+          const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
+          return `<button onclick="concEscolherEmpresa('${emp}')" style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-radius:10px;border:2px solid ${cor};background:var(--surface);color:${cor};font-family:'Mont',sans-serif;font-size:.95rem;font-weight:700;cursor:pointer;text-align:left">🏢 ${emp}</button>`;
+        }).join('')}
+      </div>
+      <button class="btn-secondary" style="width:100%;margin-top:14px" onclick="concFecharEscolhaEmpresa()">Cancelar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+function concFecharEscolhaEmpresa() {
+  const el = document.getElementById('conc-modal-empresa');
+  if (el) el.remove();
+}
+
+function concEscolherEmpresa(empresa) {
+  concFecharEscolhaEmpresa();
+  concAbrirForm(window._concEscolhaEmpresaParaId || null, empresa);
+}
+
+function concAbrirForm(id, empresaPreSelecionada) {
   const existente = id ? CONC_LISTA.find(c => c.Id === id) : null;
   window._concEditandoId = existente ? existente.Id : null;
+  window._concEmpresaAtual = existente ? (existente.empresa || '') : (empresaPreSelecionada || '');
   window._concItens = existente ? JSON.parse(JSON.stringify(existente.itens || [])) : [{ descricao: '', unidade: 'un', quantidade: 1, valorUnitario: 0 }];
   const bdi = existente ? existente.bdiPercentual : CONC_PADRAO.bdi;
   const imposto = existente ? existente.impostoPercentual : CONC_PADRAO.impostoPercentual;
   const podeExcluir = currentProfile === 'diretoria';
+  const empresaAtual = window._concEmpresaAtual;
+  const corEmpresa = RD_EMPRESA_CORES[empresaAtual] || 'var(--text-muted)';
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'conc-modal-form';
   modal.innerHTML = `<div class="modal-box" style="max-width:820px">
     <div class="modal-header"><h3>${existente ? '📐 Orçamento ' + (existente.numero||'') : '➕ Novo Orçamento'}</h3></div>
     <div class="modal-body" style="max-height:78vh;overflow-y:auto">
-      ${existente ? `<div style="margin-bottom:12px">${(()=>{const st=concStatusEfetivo(existente);const info=CONC_STATUS[st]||{label:st,cor:'var(--text-muted)',emoji:''};return '<span style="background:'+info.cor+'22;color:'+info.cor+';padding:4px 10px;border-radius:12px;font-size:.75rem;font-weight:700">'+info.emoji+' '+info.label+'</span>';})()}</div>` : ''}
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        ${empresaAtual
+          ? `<span style="background:${corEmpresa}22;color:${corEmpresa};padding:4px 10px;border-radius:12px;font-size:.75rem;font-weight:700">🏢 ${empresaAtual}</span>`
+          : `<span style="background:var(--text-muted)22;color:var(--text-muted);padding:4px 10px;border-radius:12px;font-size:.75rem;font-weight:700">🏢 Empresa não definida</span>`}
+        <a href="javascript:void(0)" onclick="concAbrirEscolhaEmpresa(${existente ? existente.Id : 'null'})" style="font-size:.7rem;color:var(--green-main);font-weight:700;text-decoration:underline">trocar empresa</a>
+        ${existente ? `<span>${(()=>{const st=concStatusEfetivo(existente);const info=CONC_STATUS[st]||{label:st,cor:'var(--text-muted)',emoji:''};return '<span style="background:'+info.cor+'22;color:'+info.cor+';padding:4px 10px;border-radius:12px;font-size:.75rem;font-weight:700">'+info.emoji+' '+info.label+'</span>';})()}</span>` : ''}
+      </div>
       <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-bottom:10px">
         <div class="form-group" style="margin:0"><label>Número</label><input id="conc_numero" value="${existente ? (existente.numero||'') : concProximoNumero()}" placeholder="Ex: 041-2026"></div>
         <div class="form-group" style="margin:0"><label>Título / Empreendimento</label><input id="conc_titulo" value="${(existente&&existente.titulo||'').replace(/"/g,'&quot;')}" placeholder="Ex: Gestão Ambiental - UTE Acre"></div>
@@ -5694,6 +5807,7 @@ async function concSalvar() {
   const numero = (document.getElementById('conc_numero').value||'').trim();
   const titulo = (document.getElementById('conc_titulo').value||'').trim();
   const cliente = (document.getElementById('conc_cliente').value||'').trim();
+  if (!window._concEmpresaAtual) { showToast('⚠️ Escolha de qual empresa é esse orçamento.'); return; }
   if (!titulo) { showToast('⚠️ Informe o título/empreendimento.'); return; }
   if (!cliente) { showToast('⚠️ Informe o cliente.'); return; }
   const itens = (window._concItens||[]).filter(it => (it.descricao||'').trim() || Number(it.valorUnitario) > 0);
@@ -5712,6 +5826,7 @@ async function concSalvar() {
   const valorTotal = baseAntesImposto + valorImposto;
   const dados = {
     numero, titulo, cliente,
+    empresa: window._concEmpresaAtual,
     local: (document.getElementById('conc_local').value||'').trim(),
     modalidade: document.getElementById('conc_modalidade').value,
     dataEmissao, validadeDias, dataValidade,
@@ -5856,6 +5971,10 @@ function concGerarPDF(id) {
     const dataEmissaoFmt = c.dataEmissao ? laFormatarData(c.dataEmissao) : '—';
     const dataValidadeFmt = c.dataValidade ? laFormatarData(c.dataValidade) : '—';
     const nomeArquivo = ('Proposta Comercial - ' + (c.numero||'') + ' - ' + (c.cliente||c.titulo||'')).replace(/[\\/:*?"<>|]/g,'');
+    // Identidade da empresa dona do orçamento — cabeçalho/rodapé/cores mudam
+    // conforme quem emite (Expedian/TL3/EXP Brasil). Orçamentos antigos sem
+    // empresa salva caem no padrão Expedian pra não quebrar o PDF.
+    const emp = CONC_EMPRESA_DADOS[c.empresa] || CONC_EMPRESA_DADOS['Expedian'];
     const itensHtml = (c.itens||[]).map(it => `<tr>
       <td>${it.descricao||''}</td>
       <td style="text-align:center">${it.unidade||'un'}</td>
@@ -5870,33 +5989,35 @@ function concGerarPDF(id) {
       @page { size: A4; margin: 15mm 12mm; }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body { font-family: Arial, sans-serif; font-size: 9.5pt; color: #1a1a1a; }
-      .header-box { border: 2px solid #6B4A3A; border-radius: 6px; padding: 12px 16px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+      .header-box { border: 2px solid ${emp.cor}; border-radius: 6px; padding: 12px 16px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
       .header-info { text-align: right; font-size: 7.5pt; color: #555; }
-      .titulo-proposta { font-size: 15pt; font-weight: 900; color: #6B4A3A; margin-bottom: 2px; }
-      .section-title { background: #6B4A3A; color: #fff; padding: 6px 10px; font-weight: 700; font-size: 9.5pt; margin: 14px 0 8px; border-radius: 4px; }
+      .titulo-proposta { font-size: 15pt; font-weight: 900; color: ${emp.cor}; margin-bottom: 2px; }
+      .section-title { background: ${emp.cor}; color: #fff; padding: 6px 10px; font-weight: 700; font-size: 9.5pt; margin: 14px 0 8px; border-radius: 4px; }
       table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
       th { background: #f0ece9; font-size: 8pt; font-weight: 700; padding: 6px 8px; text-align: left; border: 1px solid #ccc; }
       td { font-size: 8.5pt; padding: 6px 8px; border: 1px solid #ddd; vertical-align: top; }
-      .resumo-box { background: #f7f3f1; border: 1.5px solid #6B4A3A; border-radius: 6px; padding: 12px 16px; margin-top: 10px; }
+      .resumo-box { background: #f7f3f1; border: 1.5px solid ${emp.cor}; border-radius: 6px; padding: 12px 16px; margin-top: 10px; }
       .resumo-linha { display: flex; justify-content: space-between; padding: 3px 0; font-size: 9pt; }
-      .resumo-total { display: flex; justify-content: space-between; padding-top: 8px; margin-top: 6px; border-top: 1.5px solid #6B4A3A; font-size: 13pt; font-weight: 900; color: #6B4A3A; }
+      .resumo-total { display: flex; justify-content: space-between; padding-top: 8px; margin-top: 6px; border-top: 1.5px solid ${emp.cor}; font-size: 13pt; font-weight: 900; color: ${emp.cor}; }
       .footer { margin-top: 24px; border-top: 1px solid #ccc; padding-top: 8px; font-size: 7pt; color: #888; }
       @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
     </style></head><body>
     <div class="header-box">
-      <img src="${_expedianMarromB64}" alt="EXPEDIAN" style="height:46px;object-fit:contain">
+      ${concLogoOuNomeHtml(emp)}
       <div class="header-info">
-        EXPEDIAN SOLUÇÕES AMBIENTAIS<br>
-        Rua Salgado Filho, nº 1596 – Sala 02, Porto Velho – RO<br>
-        atendimento@expediansolucoes.com.br
+        ${emp.razaoSocial}<br>
+        ${emp.endereco}<br>
+        ${[emp.telefone, emp.email].filter(Boolean).join(' · ')}<br>
+        CNPJ: ${emp.cnpj}${emp.ie ? ' · IE: ' + emp.ie : ''}
       </div>
     </div>
     <div class="titulo-proposta">PROPOSTA COMERCIAL ${c.numero||''}</div>
     <div style="font-size:9.5pt;color:#555;margin-bottom:12px">${c.titulo||''}</div>
 
     <table style="margin-bottom:10px">
-      <tr><th style="width:34%">Cliente</th><th style="width:22%">Local</th><th style="width:22%">Modalidade</th><th style="width:22%">Emissão / Validade</th></tr>
+      <tr><th style="width:26%">Empresa</th><th style="width:26%">Cliente</th><th style="width:16%">Local</th><th style="width:16%">Modalidade</th><th style="width:16%">Emissão / Validade</th></tr>
       <tr>
+        <td><strong>${c.empresa||'—'}</strong></td>
         <td><strong>${c.cliente||'—'}</strong></td>
         <td>${c.local||'—'}</td>
         <td>${c.modalidade||'—'}</td>
@@ -5924,7 +6045,7 @@ function concGerarPDF(id) {
       <p>A presente proposta é válida até <strong>${dataValidadeFmt}</strong>, contados a partir da emissão.</p>
       <p style="margin-top:16px">Porto Velho – RO, ${dataEmissaoFmt}</p>
       <p style="margin-top:30px">_________________________________________</p>
-      <p><strong>EXPEDIAN SOLUÇÕES AMBIENTAIS</strong><br>${c.responsavel||''}</p>
+      <p><strong>${emp.razaoSocial}</strong><br>${c.responsavel||''}</p>
     </div>
 
     <div class="footer">Gerado pelo sistema Expedian em ${new Date().toLocaleDateString('pt-BR')} · Documento simplificado — sujeito à conferência final antes do envio.</div>
