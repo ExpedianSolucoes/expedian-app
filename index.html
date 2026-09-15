@@ -5367,11 +5367,16 @@ function calcularStatusVencimento(vencimento) {
    Ambos os campos ficam editáveis por orçamento; ajuste os valores reais
    quando tiver em mãos o percentual certo de cada modelo.
 ========================================================================= */
+// Chaves internas ('ganho'/'perdido') seguem as mesmas de sempre — só os
+// rótulos exibidos mudaram pra "Aprovado"/"Reprovado" (pedido em 15/09/2026),
+// que é como o fluxo de aprovar/reprovar o orçamento com o cliente funciona
+// na prática. Nada que usa a chave interna (filtros, cores, histórico)
+// precisou mudar, só o texto que aparece pro usuário.
 const CONC_STATUS = {
   aberto:    { label: 'Em Aberto', cor: '#6c7a89', emoji: '📝' },
   enviado:   { label: 'Enviado',   cor: 'var(--amber)', emoji: '📤' },
-  ganho:     { label: 'Ganho',     cor: 'var(--green-main)', emoji: '🏆' },
-  perdido:   { label: 'Perdido',   cor: 'var(--red)', emoji: '❌' },
+  ganho:     { label: 'Aprovado',  cor: 'var(--green-main)', emoji: '✅' },
+  perdido:   { label: 'Reprovado', cor: 'var(--red)', emoji: '❌' },
   vencido:   { label: 'Vencido',   cor: '#8a5a44', emoji: '⏳' },
   realizado: { label: 'Realizado', cor: '#1f7a5c', emoji: '🏗️' },
 };
@@ -5448,6 +5453,9 @@ let CONC_LISTA = [];
 let CONC_CATALOGO = [];
 window._concFiltroStatus = window._concFiltroStatus || '';
 window._concBusca = window._concBusca || '';
+// Pedido em 15/09/2026: filtro por empresa do grupo no dashboard de
+// Orçamentos (Expedian / TL3 / EXP Brasil) — vazio = consolidado das 3.
+window._concFiltroEmpresa = window._concFiltroEmpresa || '';
 
 async function concCarregar() {
   const [lista, catalogo] = await Promise.all([dbLer('Concorrencias'), dbLer('CatalogoCustosOrcamento')]);
@@ -5490,12 +5498,35 @@ function pageConcorrencias() {
     </div>`;
   }
   setTimeout(async () => { await concCarregar(); concRenderizarKPIs(); concRenderizarLista(); }, 150);
+  const empresaFiltro = window._concFiltroEmpresa;
   return `
   <div class="page-header"><h1>📐 Orçamentos / Concorrências</h1><p>Controle de propostas comerciais, itens de custo, BDI e impostos</p></div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
     <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
     <button class="btn-primary" onclick="concAbrirEscolhaEmpresa()">➕ Novo Orçamento</button>
     <button class="btn-secondary" onclick="concAbrirCatalogoModal()">🗂️ Catálogo de Itens de Custo</button>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+    <button onclick="concFiltrarEmpresa('')"
+      style="display:flex;align-items:center;gap:7px;padding:9px 16px;border-radius:10px;
+        border:${!empresaFiltro?'2px solid var(--green-main)':'1px solid var(--border)'};
+        background:${!empresaFiltro?'var(--green-pale)':'var(--surface2)'};
+        color:${!empresaFiltro?'var(--green-main)':'var(--text)'};
+        font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${!empresaFiltro?'700':'500'};cursor:pointer">
+      📊 Consolidado (3 empresas)
+    </button>
+    ${RD_EMPRESAS.map(emp => {
+      const cor = RD_EMPRESA_CORES[emp] || 'var(--green-main)';
+      const sel = empresaFiltro === emp;
+      return `<button onclick="concFiltrarEmpresa('${emp}')"
+        style="display:flex;align-items:center;gap:7px;padding:9px 16px;border-radius:10px;
+          border:${sel?'2px solid '+cor:'1px solid var(--border)'};
+          background:${sel?cor+'22':'var(--surface2)'};
+          color:${sel?cor:'var(--text)'};
+          font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${sel?'700':'500'};cursor:pointer">
+        🏢 ${emp}
+      </button>`;
+    }).join('')}
   </div>
   <div id="conc-kpis" style="margin-bottom:16px">Carregando...</div>
   <div class="card">
@@ -5509,16 +5540,21 @@ function pageConcorrencias() {
 
 // Pedido em 15/09/2026: os cards do dashboard de Orçamentos mostravam só a
 // QUANTIDADE de orçamentos por status — agora cada card também mostra a
-// SOMA em R$ dos orçamentos daquele status, embaixo da quantidade.
+// SOMA em R$ dos orçamentos daquele status, embaixo da quantidade. E, com o
+// filtro por empresa (abas Consolidado/Expedian/TL3/EXP Brasil) logo acima,
+// os cards recalculam tudo só sobre os orçamentos da empresa selecionada
+// (ou das 3 juntas, quando "Consolidado" está ativo).
 function concRenderizarKPIs() {
   const el = document.getElementById('conc-kpis');
   if (!el) return;
-  const efetivos = CONC_LISTA.map(c => concStatusEfetivo(c));
-  const contagem = { total: CONC_LISTA.length };
-  const somas = { total: CONC_LISTA.reduce((s,c) => s + (Number(c.valorTotal)||0), 0) };
+  const empresaFiltro = window._concFiltroEmpresa;
+  const base = empresaFiltro ? CONC_LISTA.filter(c => c.empresa === empresaFiltro) : CONC_LISTA;
+  const efetivos = base.map(c => concStatusEfetivo(c));
+  const contagem = { total: base.length };
+  const somas = { total: base.reduce((s,c) => s + (Number(c.valorTotal)||0), 0) };
   Object.keys(CONC_STATUS).forEach(k => {
     contagem[k] = efetivos.filter(st => st === k).length;
-    somas[k] = CONC_LISTA.reduce((s,c,i) => s + (efetivos[i] === k ? (Number(c.valorTotal)||0) : 0), 0);
+    somas[k] = base.reduce((s,c,i) => s + (efetivos[i] === k ? (Number(c.valorTotal)||0) : 0), 0);
   });
   const ativo = window._concFiltroStatus;
   function card(key, label, qtd, soma, cor, emoji) {
@@ -5541,10 +5577,20 @@ function concFiltrarStatus(key) {
   concRenderizarLista();
 }
 
+// Pedido em 15/09/2026: alterna a visão do dashboard entre Consolidado
+// (3 empresas juntas — clicar na mesma empresa ativa também volta pro
+// consolidado) e uma empresa específica do grupo.
+function concFiltrarEmpresa(emp) {
+  window._concFiltroEmpresa = window._concFiltroEmpresa === emp ? '' : emp;
+  navigate('concorrencias');
+}
+
 function concListaFiltrada() {
   const busca = (window._concBusca||'').trim().toLowerCase();
   const filtro = window._concFiltroStatus;
+  const empresaFiltro = window._concFiltroEmpresa;
   return CONC_LISTA.filter(c => {
+    if (empresaFiltro && c.empresa !== empresaFiltro) return false;
     if (filtro && concStatusEfetivo(c) !== filtro) return false;
     if (busca) {
       const alvo = [(c.numero||''), (c.titulo||''), (c.cliente||'')].join(' ').toLowerCase();
@@ -5868,13 +5914,17 @@ function concRecalcularTotais() {
     <div style="font-size:.65rem;color:var(--text-muted);margin-top:6px">⚠️ Cálculo simplificado (imposto aplicado "por fora" sobre custos+BDI+outros). Confira o método real de composição antes de enviar ao cliente.</div>`;
 }
 
+// Pedido em 15/09/2026: deixar explícito que "Ganho/Perdido" é, na prática,
+// o cliente aprovando ou reprovando o orçamento — os botões e o aviso de
+// confirmação agora usam essa linguagem (a chave interna 'ganho'/'perdido'
+// não muda, só o texto).
 function concBotoesTransicao(c) {
   const st = concStatusEfetivo(c);
   const btns = [];
   if (st === 'aberto') btns.push(`<button class="btn-secondary" onclick="concMudarStatus(${c.Id},'enviado')">📤 Marcar como Enviado</button>`);
   if (st === 'enviado' || st === 'vencido') {
-    btns.push(`<button class="btn-secondary" style="color:var(--green-main);border-color:var(--green-main)" onclick="concMudarStatus(${c.Id},'ganho')">🏆 Ganho</button>`);
-    btns.push(`<button class="btn-secondary" style="color:var(--red);border-color:var(--red)" onclick="concMudarStatus(${c.Id},'perdido')">❌ Perdido</button>`);
+    btns.push(`<button class="btn-secondary" style="color:var(--green-main);border-color:var(--green-main)" onclick="concMudarStatus(${c.Id},'ganho')">✅ Aprovar (Cliente aceitou)</button>`);
+    btns.push(`<button class="btn-secondary" style="color:var(--red);border-color:var(--red)" onclick="concMudarStatus(${c.Id},'perdido')">❌ Reprovar (Cliente recusou)</button>`);
   }
   if (st === 'ganho') btns.push(`<button class="btn-secondary" style="color:#1f7a5c;border-color:#1f7a5c" onclick="concMudarStatus(${c.Id},'realizado')">🏗️ Marcar Realizado</button>`);
   return btns.join('');
@@ -5883,11 +5933,13 @@ function concBotoesTransicao(c) {
 async function concMudarStatus(id, novoStatus) {
   const atual = CONC_LISTA.find(c => c.Id === id);
   if (!atual) return;
+  const rotulo = (CONC_STATUS[novoStatus] || {}).label || novoStatus;
+  if (!confirm(`Confirmar mudança de status para "${rotulo}"?`)) return;
   let obs = '';
-  if (novoStatus === 'perdido') obs = (prompt('Motivo (opcional):','') || '').trim();
+  if (novoStatus === 'perdido') obs = (prompt('Motivo da reprovação (opcional):','') || '').trim();
   const historico = (atual.historico || []).concat([{ status: novoStatus, data: new Date().toISOString(), usuario: (window._currentUser&&window._currentUser.name)||'', obs }]);
   const ok = await dbAtualizar('Concorrencias', id, { status: novoStatus, historico });
-  showToast(ok ? '✅ Status atualizado!' : '❌ Erro ao atualizar.');
+  showToast(ok ? `✅ Orçamento marcado como "${rotulo}"!` : '❌ Erro ao atualizar.');
   if (ok) { await concCarregar(); concRenderizarKPIs(); concRenderizarLista(); concFecharForm(); concAbrirForm(id); }
 }
 
@@ -6082,8 +6134,10 @@ function concGerarPDF(id) {
       @page { size: A4; margin: 15mm 12mm; }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body { font-family: Arial, sans-serif; font-size: 9.5pt; color: #1a1a1a; }
-      .header-box { border: 2px solid ${emp.cor}; border-radius: 6px; padding: 18px 16px; margin-bottom: 14px; display: flex; flex-direction: column; align-items: center; text-align: center; }
-      .grupo-badge { margin-top: 10px; font-size: 7.5pt; color: ${emp.cor}; font-weight: 700; background: ${emp.cor}14; padding: 4px 12px; border-radius: 10px; }
+      .header-box { border: 2px solid ${emp.cor}; border-radius: 6px; padding: 14px 18px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+      .header-info { text-align: right; font-size: 8pt; color: #555; line-height: 1.5; }
+      .header-info .nome { font-size: 9.5pt; font-weight: 700; color: #333; }
+      .grupo-badge { font-size: 7.5pt; color: ${emp.cor}; font-weight: 700; background: ${emp.cor}14; padding: 4px 12px; border-radius: 10px; }
       .titulo-proposta { font-size: 15pt; font-weight: 900; color: ${emp.cor}; margin-bottom: 2px; }
       .section-title { background: ${emp.cor}; color: #fff; padding: 6px 10px; font-weight: 700; font-size: 9.5pt; margin: 14px 0 8px; border-radius: 4px; }
       table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
@@ -6092,6 +6146,9 @@ function concGerarPDF(id) {
       .resumo-box { background: #f7f3f1; border: 1.5px solid ${emp.cor}; border-radius: 6px; padding: 12px 16px; margin-top: 10px; }
       .resumo-linha { display: flex; justify-content: space-between; padding: 3px 0; font-size: 9pt; }
       .resumo-total { display: flex; justify-content: space-between; padding-top: 8px; margin-top: 6px; border-top: 1.5px solid ${emp.cor}; font-size: 13pt; font-weight: 900; color: ${emp.cor}; }
+      .total-geral-box { background: ${emp.cor}; color: #fff; border-radius: 8px; padding: 14px 18px; margin-top: 22px; display: flex; justify-content: space-between; align-items: center; }
+      .total-geral-box .label { font-size: 10pt; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+      .total-geral-box .valor { font-size: 16pt; font-weight: 900; }
       .footer { margin-top: 24px; border-top: 1px solid #ccc; padding-top: 10px; text-align: center; }
       .footer .footer-nome { font-size: 9pt; font-weight: 700; color: #333; margin-bottom: 2px; }
       .footer .footer-contato { font-size: 8pt; color: #555; }
@@ -6100,8 +6157,12 @@ function concGerarPDF(id) {
     </style></head><body>
     <div class="header-box">
       ${concLogoOuNomeHtml(emp)}
-      ${(c.vinculoGrupoExpedian && c.empresa !== 'Expedian') ? `<div class="grupo-badge">🔗 Uma empresa do Grupo Expedian</div>` : ''}
+      <div class="header-info">
+        <div class="nome">${emp.razaoSocial}</div>
+        <div>CNPJ: ${emp.cnpj}${emp.ie ? ' · IE: ' + emp.ie : ''}</div>
+      </div>
     </div>
+    ${(c.vinculoGrupoExpedian && c.empresa !== 'Expedian') ? `<div style="text-align:center;margin-bottom:12px"><span class="grupo-badge">🔗 Uma empresa do Grupo Expedian</span></div>` : ''}
     <div class="titulo-proposta">PROPOSTA COMERCIAL ${c.numero||''}</div>
     <div style="font-size:9.5pt;color:#555;margin-bottom:12px">${c.titulo||''}</div>
 
@@ -6139,6 +6200,11 @@ function concGerarPDF(id) {
     </table>` : ''}
 
     ${c.observacoes ? `<div class="section-title">Observações</div><div style="font-size:8.5pt;color:#333;white-space:pre-wrap">${c.observacoes}</div>` : ''}
+
+    <div class="total-geral-box">
+      <span class="label">Total Geral da Proposta</span>
+      <span class="valor">${rdNumeroParaMoeda(c.valorTotal||0)}</span>
+    </div>
 
     <div style="margin-top:28px;font-size:9pt">
       <p>A presente proposta é válida até <strong>${dataValidadeFmt}</strong>, contados a partir da emissão.</p>
