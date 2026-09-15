@@ -5614,10 +5614,19 @@ function concEscolherEmpresa(empresa) {
 }
 
 function concAbrirForm(id, empresaPreSelecionada) {
+  // Fecha qualquer instância anterior do modal antes de criar uma nova.
+  // Sem isso, o fluxo "trocar empresa" (que reabre o form por cima do form
+  // antigo, sem remover o de baixo) deixava DOIS elementos com o mesmo id
+  // "conc-modal-form" na página — como document.getElementById() sempre
+  // pega o PRIMEIRO da página (o antigo, escondido atrás), os botões
+  // "Item em branco" e a atualização de "Validade até" ficavam escrevendo
+  // no modal errado (invisível), parecendo que não faziam nada.
+  concFecharForm();
   const existente = id ? CONC_LISTA.find(c => c.Id === id) : null;
   window._concEditandoId = existente ? existente.Id : null;
   window._concEmpresaAtual = existente ? (existente.empresa || '') : (empresaPreSelecionada || '');
   window._concItens = existente ? JSON.parse(JSON.stringify(existente.itens || [])) : [{ descricao: '', unidade: 'un', quantidade: 1, valorUnitario: 0 }];
+  window._concTaxas = existente ? JSON.parse(JSON.stringify(existente.taxasContratante || [])) : [];
   const bdi = existente ? existente.bdiPercentual : CONC_PADRAO.bdi;
   const imposto = existente ? existente.impostoPercentual : CONC_PADRAO.impostoPercentual;
   const podeExcluir = currentProfile === 'diretoria';
@@ -5677,6 +5686,15 @@ function concAbrirForm(id, empresaPreSelecionada) {
       </div>
       <div class="form-group" style="margin-bottom:14px"><label>Observações dos outros custos</label><input id="conc_outros_obs" value="${(existente&&existente.outrosCustosObs||'').replace(/"/g,'&quot;')}"></div>
 
+      <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <div style="font-weight:700;font-size:.85rem">Taxas do Processo (por conta do Contratante)</div>
+          <button class="btn-secondary" style="padding:5px 10px;font-size:.72rem" onclick="concAdicionarTaxa()">➕ Adicionar taxa</button>
+        </div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:8px">Ex: ART, taxas de licenciamento, publicação etc. — são informativas, de responsabilidade do cliente, e NÃO entram no total do orçamento.</div>
+        <div id="conc_taxas_wrap"></div>
+      </div>
+
       <div style="background:var(--surface2);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:.82rem" id="conc_resumo_totais">Calculando...</div>
 
       <div class="form-group" style="margin-bottom:10px"><label>Responsável Comercial</label><input id="conc_responsavel" value="${existente ? (existente.responsavel||'') : ((window._currentUser&&window._currentUser.name)||'')}"></div>
@@ -5702,12 +5720,14 @@ function concAbrirForm(id, empresaPreSelecionada) {
   </div>`;
   document.body.appendChild(modal);
   concRenderizarItens();
+  concRenderizarTaxas();
   concAtualizarValidade();
 }
 
 function concFecharForm() {
-  const el = document.getElementById('conc-modal-form');
-  if (el) el.remove();
+  // querySelectorAll (não getElementById) de propósito: remove TODAS as
+  // instâncias do modal, cobrindo o caso de já existir duplicata acumulada.
+  document.querySelectorAll('#conc-modal-form').forEach(el => el.remove());
 }
 
 function concAtualizarValidade() {
@@ -5754,6 +5774,39 @@ function concItemValorUnitario(i, input) {
   const num = rdMoedaParaNumero(input.value);
   window._concItens[i].valorUnitario = num;
   concRenderizarItens();
+}
+
+/* -- Taxas do processo por conta do Contratante (ART, licenciamento,
+   publicação etc.) — apenas informativas: aparecem no formulário e na
+   proposta em PDF pra deixar claro pro cliente o que ele vai arcar à
+   parte, mas NÃO entram no total do orçamento (esse total é só do que a
+   empresa está cobrando). Pedido em 15/09/2026. -- */
+function concRenderizarTaxas() {
+  const wrap = document.getElementById('conc_taxas_wrap');
+  if (!wrap) return;
+  const taxas = window._concTaxas || [];
+  if (!taxas.length) { wrap.innerHTML = '<div style="font-size:.72rem;color:var(--text-muted);padding:4px 0">Nenhuma taxa adicionada.</div>'; return; }
+  wrap.innerHTML = taxas.map((tx, i) => `
+    <div style="display:grid;grid-template-columns:3fr 1.2fr auto;gap:6px;margin-bottom:6px;align-items:center">
+      <input value="${(tx.descricao||'').replace(/"/g,'&quot;')}" placeholder="Descrição (ex: ART, taxa de licenciamento...)" oninput="concTaxaCampo(${i},'descricao',this.value)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
+      <input type="text" inputmode="decimal" value="${tx.valor?Number(tx.valor).toFixed(2).replace('.',','):''}" placeholder="Valor (R$)" oninput="rdFormatarMoedaInput(this);concTaxaValor(${i},this)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
+      <span onclick="concRemoverTaxa(${i})" style="cursor:pointer;color:var(--red);font-size:.9rem">✕</span>
+    </div>`).join('');
+}
+function concAdicionarTaxa() {
+  window._concTaxas = window._concTaxas || [];
+  window._concTaxas.push({ descricao: '', valor: 0 });
+  concRenderizarTaxas();
+}
+function concRemoverTaxa(i) {
+  window._concTaxas.splice(i,1);
+  concRenderizarTaxas();
+}
+function concTaxaCampo(i, campo, valor) {
+  window._concTaxas[i][campo] = valor;
+}
+function concTaxaValor(i, input) {
+  window._concTaxas[i].valor = rdMoedaParaNumero(input.value);
 }
 
 function concCustosDiretos() {
@@ -5812,6 +5865,7 @@ async function concSalvar() {
   if (!cliente) { showToast('⚠️ Informe o cliente.'); return; }
   const itens = (window._concItens||[]).filter(it => (it.descricao||'').trim() || Number(it.valorUnitario) > 0);
   if (!itens.length) { showToast('⚠️ Adicione ao menos um item.'); return; }
+  const taxasContratante = (window._concTaxas||[]).filter(tx => (tx.descricao||'').trim() || Number(tx.valor) > 0);
   const dataEmissao = document.getElementById('conc_data_emissao').value;
   const validadeDias = parseInt(document.getElementById('conc_validade_dias').value,10) || 0;
   let dataValidade = '';
@@ -5833,6 +5887,7 @@ async function concSalvar() {
     itens,
     custosDiretos, bdiPercentual, valorBDI,
     outrosCustos, outrosCustosObs: (document.getElementById('conc_outros_obs').value||'').trim(),
+    taxasContratante,
     impostoPercentual, impostoRegime: (document.getElementById('conc_imposto_regime').value||'').trim(),
     valorImposto, valorTotal,
     responsavel: (document.getElementById('conc_responsavel').value||'').trim(),
@@ -6038,6 +6093,14 @@ function concGerarPDF(id) {
       <div class="resumo-linha"><span>Impostos (${c.impostoPercentual||0}%)${c.impostoRegime?' — '+c.impostoRegime:''}</span><strong>${rdNumeroParaMoeda(c.valorImposto||0)}</strong></div>
       <div class="resumo-total"><span>VALOR TOTAL</span><span>${rdNumeroParaMoeda(c.valorTotal||0)}</span></div>
     </div>
+
+    ${(c.taxasContratante && c.taxasContratante.length) ? `
+    <div class="section-title">Taxas do Processo (por conta do Contratante)</div>
+    <div style="font-size:7.5pt;color:#777;margin-bottom:6px">Valores informativos, de responsabilidade do CONTRATANTE — não incluídos no Valor Total acima.</div>
+    <table>
+      <thead><tr><th style="width:75%">Descrição</th><th style="width:25%">Valor Estimado</th></tr></thead>
+      <tbody>${c.taxasContratante.map(tx => `<tr><td>${tx.descricao||''}</td><td style="text-align:right">${rdNumeroParaMoeda(tx.valor||0)}</td></tr>`).join('')}</tbody>
+    </table>` : ''}
 
     ${c.observacoes ? `<div class="section-title">Observações</div><div style="font-size:8.5pt;color:#333;white-space:pre-wrap">${c.observacoes}</div>` : ''}
 
@@ -27661,7 +27724,15 @@ function eroPendentesChecklist() {
     const nome = (e.empreendimento || '').trim().toLowerCase();
     if (!nome) return false;
     const dataVist = v.data || v.dataProgramada || '';
+    // Pedido em 15/09/2026: o item não estava sumindo da lista depois de
+    // salvo o checklist. Causa provável — comparação de nome+data (string)
+    // é frágil (formatos de data levemente diferentes já quebram a
+    // comparação ">="). Agora checklists salvos a partir daqui gravam o
+    // meaId de origem, e essa é a checagem PRINCIPAL (exata, sem ambiguidade).
+    // O nome+data continua como fallback só pra checklists antigos, salvos
+    // antes dessa mudança, que não têm meaId gravado.
     const jaTemChecklist = hist.some(function(h) {
+      if (h.meaId != null) return h.meaId === e.id;
       return (h.empreendimento || '').trim().toLowerCase() === nome && (!dataVist || (h.data || '') >= dataVist);
     });
     return !jaTemChecklist;
@@ -27679,6 +27750,13 @@ function eroIniciarChecklistDe(id) {
     tecnico2: v.tecnico2 || '',
     data: v.data || '',
     elaboracao: 'Energisa Rondônia',
+    // Guarda o id do empreendimento (MEA_DADOS) de origem — pedido 15/09/2026:
+    // usado depois em eroPendentesChecklist() pra reconhecer com certeza que
+    // ESSE checklist cobre ESSA vistoria, sem depender de comparação de nome
+    // (maiúscula/minúscula, espaço) e data (que podia falhar se algum dos dois
+    // tivesse um formato levemente diferente, ex: com hora embutida) — isso
+    // fazia o item "sumir" da lista de pendentes de forma pouco confiável.
+    meaId: e.id,
   };
   window._eroRegistroAtualId = null;
   window._eroPickerAberto = false;
@@ -47153,6 +47231,11 @@ async function salvarEROChecklist() {
     Status: 'Salvo',
     temCasaComando: d.temCasaComando || '',
     arquivoDados: 'Checklists/ERO/dados/' + meuId + '.json', // referência para "Editar" recarregar tudo depois
+    // Id do empreendimento (MEA_DADOS) de origem, quando o checklist veio do
+    // picker "Novo Checklist" — usado por eroPendentesChecklist() pra saber
+    // com certeza que essa vistoria já foi coberta. Fica vazio em checklists
+    // preenchidos manualmente (sem vistoria vinculada).
+    meaId: d.meaId || null,
   };
 
   showSyncStatus('Enviando para OneDrive...');
