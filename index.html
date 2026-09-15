@@ -5682,7 +5682,14 @@ function concAbrirForm(id, empresaPreSelecionada) {
   window._concEditandoId = existente ? existente.Id : null;
   window._concEmpresaAtual = existente ? (existente.empresa || '') : (empresaPreSelecionada || '');
   window._concItens = existente ? JSON.parse(JSON.stringify(existente.itens || [])) : [{ descricao: '', unidade: 'un', quantidade: 1, valorUnitario: 0 }];
-  window._concTaxas = existente ? JSON.parse(JSON.stringify(existente.taxasContratante || [])) : [];
+  // Pedido em 15/09/2026: taxas agora têm quantidade + valor unitário (igual
+  // aos itens do orçamento) em vez de um valor único. Normaliza registros
+  // antigos (salvos só com "valor") pra esse novo formato ao reabrir.
+  window._concTaxas = existente ? JSON.parse(JSON.stringify(existente.taxasContratante || [])).map(tx => ({
+    descricao: tx.descricao || '',
+    quantidade: tx.quantidade != null ? tx.quantidade : 1,
+    valorUnitario: tx.valorUnitario != null ? tx.valorUnitario : (tx.valor || 0),
+  })) : [];
   const bdi = existente ? existente.bdiPercentual : CONC_PADRAO.bdi;
   const imposto = existente ? existente.impostoPercentual : CONC_PADRAO.impostoPercentual;
   const podeExcluir = currentProfile === 'diretoria';
@@ -5860,34 +5867,59 @@ function concItemValorUnitario(i, input) {
 /* -- Taxas do processo por conta do Contratante (ART, licenciamento,
    publicação etc.) — apenas informativas: aparecem no formulário e na
    proposta em PDF pra deixar claro pro cliente o que ele vai arcar à
-   parte, mas NÃO entram no total do orçamento (esse total é só do que a
-   empresa está cobrando). Pedido em 15/09/2026. -- */
+   parte, mas NÃO entram no VALOR TOTAL da proposta (esse total é só do que
+   a empresa está cobrando) — entram sim no TOTAL GERAL, que soma os dois.
+   Pedido em 15/09/2026: descrição + quantidade + valor unitário, com
+   subtotal por linha e total das taxas somando automático (mesmo padrão
+   dos itens do orçamento). -- */
+function concSomaTaxas() {
+  return (window._concTaxas||[]).reduce((s,tx) => s + (Number(tx.quantidade)||0) * (Number(tx.valorUnitario)||0), 0);
+}
 function concRenderizarTaxas() {
   const wrap = document.getElementById('conc_taxas_wrap');
   if (!wrap) return;
   const taxas = window._concTaxas || [];
   if (!taxas.length) { wrap.innerHTML = '<div style="font-size:.72rem;color:var(--text-muted);padding:4px 0">Nenhuma taxa adicionada.</div>'; return; }
   wrap.innerHTML = taxas.map((tx, i) => `
-    <div style="display:grid;grid-template-columns:3fr 1.2fr auto;gap:6px;margin-bottom:6px;align-items:center">
+    <div style="display:grid;grid-template-columns:2.4fr .8fr 1fr 1fr auto;gap:6px;margin-bottom:6px;align-items:center">
       <input value="${(tx.descricao||'').replace(/"/g,'&quot;')}" placeholder="Descrição (ex: ART, taxa de licenciamento...)" oninput="concTaxaCampo(${i},'descricao',this.value)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
-      <input type="text" inputmode="decimal" value="${tx.valor?Number(tx.valor).toFixed(2).replace('.',','):''}" placeholder="Valor (R$)" oninput="rdFormatarMoedaInput(this);concTaxaValor(${i},this)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
+      <input type="number" step="0.01" value="${tx.quantidade!=null?tx.quantidade:1}" placeholder="Qtd" oninput="concTaxaCampo(${i},'quantidade',this.value)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
+      <input type="text" inputmode="decimal" value="${tx.valorUnitario?Number(tx.valorUnitario).toFixed(2).replace('.',','):''}" placeholder="Vlr. Unit." oninput="rdFormatarMoedaInput(this);concTaxaValorUnitario(${i},this)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
+      <div id="conc_taxa_subtotal_${i}" style="font-size:.78rem;font-weight:700;text-align:right">${rdNumeroParaMoeda((Number(tx.quantidade)||0) * (Number(tx.valorUnitario)||0))}</div>
       <span onclick="concRemoverTaxa(${i})" style="cursor:pointer;color:var(--red);font-size:.9rem">✕</span>
-    </div>`).join('');
+    </div>`).join('') + `
+    <div style="display:flex;justify-content:flex-end;gap:8px;font-size:.76rem;font-weight:700;padding-top:4px;border-top:1px solid var(--border)">
+      <span style="color:var(--text-muted)">Total das taxas:</span>
+      <span id="conc_taxas_total">${rdNumeroParaMoeda(concSomaTaxas())}</span>
+    </div>`;
 }
 function concAdicionarTaxa() {
   window._concTaxas = window._concTaxas || [];
-  window._concTaxas.push({ descricao: '', valor: 0 });
+  window._concTaxas.push({ descricao: '', quantidade: 1, valorUnitario: 0 });
   concRenderizarTaxas();
 }
 function concRemoverTaxa(i) {
   window._concTaxas.splice(i,1);
   concRenderizarTaxas();
 }
+// Só atualiza o subtotal da linha + o total geral das taxas, sem
+// reconstruir a lista inteira — mesmo motivo da correção em
+// concAtualizarSubtotalItem (evitar derrubar o foco de quem está digitando).
+function concAtualizarSubtotalTaxa(i) {
+  const tx = (window._concTaxas || [])[i];
+  if (!tx) return;
+  const elLinha = document.getElementById('conc_taxa_subtotal_' + i);
+  if (elLinha) elLinha.textContent = rdNumeroParaMoeda((Number(tx.quantidade)||0) * (Number(tx.valorUnitario)||0));
+  const elTotal = document.getElementById('conc_taxas_total');
+  if (elTotal) elTotal.textContent = rdNumeroParaMoeda(concSomaTaxas());
+}
 function concTaxaCampo(i, campo, valor) {
   window._concTaxas[i][campo] = valor;
+  if (campo === 'quantidade') concAtualizarSubtotalTaxa(i);
 }
-function concTaxaValor(i, input) {
-  window._concTaxas[i].valor = rdMoedaParaNumero(input.value);
+function concTaxaValorUnitario(i, input) {
+  window._concTaxas[i].valorUnitario = rdMoedaParaNumero(input.value);
+  concAtualizarSubtotalTaxa(i);
 }
 
 function concCustosDiretos() {
@@ -5952,7 +5984,8 @@ async function concSalvar() {
   if (!cliente) { showToast('⚠️ Informe o cliente.'); return; }
   const itens = (window._concItens||[]).filter(it => (it.descricao||'').trim() || Number(it.valorUnitario) > 0);
   if (!itens.length) { showToast('⚠️ Adicione ao menos um item.'); return; }
-  const taxasContratante = (window._concTaxas||[]).filter(tx => (tx.descricao||'').trim() || Number(tx.valor) > 0);
+  const taxasContratante = (window._concTaxas||[]).filter(tx => (tx.descricao||'').trim() || Number(tx.valorUnitario) > 0);
+  const somaTaxas = taxasContratante.reduce((s,tx) => s + (Number(tx.quantidade)||0) * (Number(tx.valorUnitario)||0), 0);
   const dataEmissao = document.getElementById('conc_data_emissao').value;
   const validadeDias = parseInt(document.getElementById('conc_validade_dias').value,10) || 0;
   let dataValidade = '';
@@ -5974,7 +6007,11 @@ async function concSalvar() {
     itens,
     custosDiretos, bdiPercentual, valorBDI,
     outrosCustos, outrosCustosObs: (document.getElementById('conc_outros_obs').value||'').trim(),
-    taxasContratante,
+    taxasContratante, somaTaxas,
+    // valorGeral = valorTotal (o que a empresa cobra) + somaTaxas (o que o
+    // contratante paga à parte no processo) — pedido em 15/09/2026, pra ter
+    // no PDF um "Total Geral" único com tudo que o cliente vai desembolsar.
+    valorGeral: valorTotal + somaTaxas,
     impostoPercentual, impostoRegime: (document.getElementById('conc_imposto_regime').value||'').trim(),
     valorImposto, valorTotal,
     responsavel: (document.getElementById('conc_responsavel').value||'').trim(),
@@ -6127,6 +6164,17 @@ function concGerarPDF(id) {
       <td style="text-align:right">${rdNumeroParaMoeda(it.valorUnitario||0)}</td>
       <td style="text-align:right">${rdNumeroParaMoeda((Number(it.quantidade)||0)*(Number(it.valorUnitario)||0))}</td>
     </tr>`).join('');
+    // Pedido em 15/09/2026: o Total Geral (no fim do PDF) soma o valor da
+    // proposta + as taxas do contratante. Recalcula na hora (com fallback pro
+    // formato antigo das taxas, {valor} sem quantidade) em vez de confiar só
+    // no c.valorGeral salvo, pra não quebrar em orçamentos salvos antes dessa
+    // mudança.
+    const somaTaxasPdf = (c.taxasContratante||[]).reduce((s,tx) => {
+      const qtd = tx.quantidade != null ? tx.quantidade : 1;
+      const vUnit = tx.valorUnitario != null ? tx.valorUnitario : (tx.valor || 0);
+      return s + (Number(qtd)||0) * (Number(vUnit)||0);
+    }, 0);
+    const totalGeralPdf = c.valorGeral != null ? c.valorGeral : (Number(c.valorTotal)||0) + somaTaxasPdf;
     const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${nomeArquivo}</title>
@@ -6193,17 +6241,31 @@ function concGerarPDF(id) {
 
     ${(c.taxasContratante && c.taxasContratante.length) ? `
     <div class="section-title">Taxas do Processo (por conta do Contratante)</div>
-    <div style="font-size:7.5pt;color:#777;margin-bottom:6px">Valores informativos, de responsabilidade do CONTRATANTE — não incluídos no Valor Total acima.</div>
+    <div style="font-size:7.5pt;color:#777;margin-bottom:6px">Valores informativos, de responsabilidade do CONTRATANTE — não incluídos no VALOR TOTAL acima, mas somados no TOTAL GERAL ao final.</div>
     <table>
-      <thead><tr><th style="width:75%">Descrição</th><th style="width:25%">Valor Estimado</th></tr></thead>
-      <tbody>${c.taxasContratante.map(tx => `<tr><td>${tx.descricao||''}</td><td style="text-align:right">${rdNumeroParaMoeda(tx.valor||0)}</td></tr>`).join('')}</tbody>
+      <thead><tr><th style="width:40%">Descrição</th><th style="width:14%">Qtd.</th><th style="width:23%">Valor Unit.</th><th style="width:23%">Subtotal</th></tr></thead>
+      <tbody>${c.taxasContratante.map(tx => {
+        const txQtd = tx.quantidade != null ? tx.quantidade : 1;
+        const txValorUnit = tx.valorUnitario != null ? tx.valorUnitario : (tx.valor || 0);
+        return `<tr>
+          <td>${tx.descricao||''}</td>
+          <td style="text-align:center">${txQtd}</td>
+          <td style="text-align:right">${rdNumeroParaMoeda(txValorUnit)}</td>
+          <td style="text-align:right">${rdNumeroParaMoeda((Number(txQtd)||0)*(Number(txValorUnit)||0))}</td>
+        </tr>`;
+      }).join('')}
+      <tr><td colspan="3" style="text-align:right;font-weight:700">Total das taxas</td><td style="text-align:right;font-weight:700">${rdNumeroParaMoeda(somaTaxasPdf)}</td></tr>
+      </tbody>
     </table>` : ''}
 
     ${c.observacoes ? `<div class="section-title">Observações</div><div style="font-size:8.5pt;color:#333;white-space:pre-wrap">${c.observacoes}</div>` : ''}
 
     <div class="total-geral-box">
-      <span class="label">Total Geral da Proposta</span>
-      <span class="valor">${rdNumeroParaMoeda(c.valorTotal||0)}</span>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <span class="label">Total Geral da Proposta</span>
+        ${somaTaxasPdf ? `<span style="font-size:7pt;font-weight:400;opacity:.9">Valor total da proposta + taxas do processo</span>` : ''}
+      </div>
+      <span class="valor">${rdNumeroParaMoeda(totalGeralPdf)}</span>
     </div>
 
     <div style="margin-top:28px;font-size:9pt">
@@ -30896,7 +30958,7 @@ function pageChecklistEROForm() {
                 ? `<img src="${d['foto_'+item.id+'_'+fn]}" style="width:100%;height:100%;object-fit:cover;border-radius:6px">`
                 : `<span style="font-size:1.1rem;opacity:.5">📷</span>`}
             </div>
-            <input type="file" accept="image/*" capture="environment" multiple style="display:none"
+            <input type="file" accept="image/*" multiple style="display:none"
               onchange="loadEROPhoto(event,'${item.id}',${fn})">
           </label>
           ${d['foto_'+item.id+'_'+fn] ? `<button onclick="removeEROPhoto('${item.id}',${fn})" style="position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:var(--red);border:none;color:#fff;font-size:.55rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>` : ''}
