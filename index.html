@@ -5385,6 +5385,10 @@ const CONC_CATEGORIAS_CUSTO = ['Mão de Obra', 'Equipamento', 'Material/Insumo',
 const CONC_PADRAO = { bdi: 30, impostoPercentual: 8, impostoRegime: 'Simples Nacional (estimado — conferir anexo/faixa real)' };
 // Responsáveis financeiros pelo orçamento — lista fechada, pedido em 15/09/2026.
 const CONC_RESPONSAVEIS_FINANCEIROS = ['Luiz', 'Marcelo', 'Cassiane'];
+// Colunas da grade "Itens do Orçamento" — pedido em 15/09/2026: aumentar a
+// coluna de Serviço/Descrição e diminuir Unidade, Qtd. e Valor Unitário;
+// nova coluna de Desconto (%) por item, com o Total do item somando sozinho.
+const CONC_ITEM_GRID = '3.2fr .55fr .55fr .9fr .65fr 1fr auto';
 
 /* -- Dados de identidade de cada uma das 3 empresas do grupo, usados pra
    montar o cabeçalho/rodapé certo na Proposta Comercial em PDF conforme a
@@ -5451,6 +5455,11 @@ function concLogoOuNomeHtml(emp) {
 
 let CONC_LISTA = [];
 let CONC_CATALOGO = [];
+// Cadastro de Clientes (tabela 'Clientes', a mesma já usada em Receitas) —
+// pedido em 15/09/2026: o campo Cliente do orçamento vira um combobox
+// ligado a esse cadastro compartilhado (mesmo padrão CRM de rc_cliente em
+// Receitas), em vez de texto livre digitado do zero em cada orçamento.
+let CONC_CLIENTES = [];
 window._concFiltroStatus = window._concFiltroStatus || '';
 window._concBusca = window._concBusca || '';
 // Pedido em 15/09/2026: filtro por empresa do grupo no dashboard de
@@ -5458,9 +5467,105 @@ window._concBusca = window._concBusca || '';
 window._concFiltroEmpresa = window._concFiltroEmpresa || '';
 
 async function concCarregar() {
-  const [lista, catalogo] = await Promise.all([dbLer('Concorrencias'), dbLer('CatalogoCustosOrcamento')]);
+  const [lista, catalogo, clientes] = await Promise.all([dbLer('Concorrencias'), dbLer('CatalogoCustosOrcamento'), dbLer('Clientes').catch(() => [])]);
   CONC_LISTA = Array.isArray(lista) ? lista : [];
   CONC_CATALOGO = Array.isArray(catalogo) ? catalogo : [];
+  CONC_CLIENTES = Array.isArray(clientes) ? clientes : [];
+}
+
+/* -- Combobox de Cliente no formulário de Orçamento, ligado ao mesmo
+   cadastro-mestre de Clientes (tabela 'Clientes') já usado em Receitas
+   (rc_cliente) e na página própria "Clientes" — pedido em 15/09/2026: em
+   vez de digitar o nome do cliente do zero em cada orçamento, busca entre
+   os já cadastrados ou cadastra um novo na hora, sem sair do formulário.
+   Mesmo padrão de rcFiltrarClientes/rcSelecionarCliente, mas com ids
+   próprios (conc_cliente*) pra não colidir com o combobox de Receitas. -- */
+function concFiltrarClientes(texto) {
+  const hid = document.getElementById('conc_cliente'); if (hid) hid.value = texto;
+  const dd = document.getElementById('conc_cliente_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  let matches = t ? CONC_CLIENTES.filter(c => (c.Title||'').toLowerCase().includes(t)) : CONC_CLIENTES;
+  matches = matches.slice(0, 30);
+  let html = matches.map(c => {
+    const esc = String(c.Title).replace(/'/g,"\\'");
+    return '<div onclick="concSelecionarCliente(\''+esc+'\')" style="padding:8px 12px;cursor:pointer;font-size:.8rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>'+c.Title+'</strong>'+(c.Municipio?' <span style="color:var(--text-muted);font-size:.7rem">· '+c.Municipio+'</span>':'') +
+    '</div>';
+  }).join('');
+  if (t && !CONC_CLIENTES.some(c => (c.Title||'').toLowerCase() === t)) {
+    html += '<div onclick="concNovoClienteComNome(\''+t.replace(/'/g,"\\'")+'\')" style="padding:8px 12px;cursor:pointer;font-size:.8rem;color:var(--green-main);font-weight:700">+ Cadastrar "'+texto+'" como novo cliente</div>';
+  }
+  if (!html) html = '<div style="padding:10px 12px;font-size:.78rem;color:var(--text-muted)">Nenhum cliente cadastrado encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function concFecharDropdownCliente() {
+  const dd = document.getElementById('conc_cliente_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+function concSelecionarCliente(nome) {
+  const inp = document.getElementById('conc_cliente_input'); if (inp) inp.value = nome;
+  const hid = document.getElementById('conc_cliente'); if (hid) hid.value = nome;
+  concFecharDropdownCliente();
+}
+function concNovoClienteComNome(nomeSugerido) {
+  concFecharDropdownCliente();
+  concAbrirCadastroCliente(nomeSugerido);
+}
+// Modal de cadastro rápido — criado sob demanda (mesmo padrão de
+// concAbrirCatalogoModal) em vez de ficar fixo no DOM, já que o próprio
+// formulário do orçamento também é criado/removido dinamicamente.
+function concAbrirCadastroCliente(nomeSugerido) {
+  const existenteModal = document.getElementById('conc-modal-cliente');
+  if (existenteModal) existenteModal.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'conc-modal-cliente';
+  modal.style.zIndex = '1100';
+  modal.innerHTML = `<div class="modal-box" style="max-width:420px">
+    <div class="modal-header"><h3>👤 Cadastrar Novo Cliente</h3></div>
+    <div class="modal-body">
+      <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Clientes cadastrados ficam disponíveis para todos os orçamentos e para os demais módulos do sistema (ex: Receitas).</div>
+      <div class="form-group" style="margin-bottom:12px"><label>Razão Social / Nome</label><input type="text" id="conc_cli_nome" value="${(nomeSugerido||'').replace(/"/g,'&quot;')}" placeholder="Nome completo do cliente"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>CNPJ / CPF</label><input type="text" id="conc_cli_cnpj" placeholder="00.000.000/0001-00"></div>
+      <div class="form-group" style="margin-bottom:16px;position:relative">
+        <label>Município</label>
+        <input type="text" id="conc_cli_municipio_input" placeholder="Digite para buscar..." autocomplete="off" oninput="municipioFiltrar(this.value,'conc_cli')" onfocus="municipioFiltrar(this.value,'conc_cli')" onblur="setTimeout(()=>municipioFecharDropdown('conc_cli'),150)">
+        <input type="hidden" id="conc_cli_municipio">
+        <div id="conc_cli_municipio_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:2100;margin-top:4px"></div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn-primary" onclick="concConfirmarCadastroCliente()" style="flex:1">✅ Cadastrar</button>
+        <button class="btn-secondary" onclick="concFecharModalCliente()" style="flex:1">Cancelar</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+function concFecharModalCliente() {
+  const el = document.getElementById('conc-modal-cliente');
+  if (el) el.remove();
+}
+async function concConfirmarCadastroCliente() {
+  const nome = (document.getElementById('conc_cli_nome').value||'').trim();
+  const cnpj = (document.getElementById('conc_cli_cnpj').value||'').trim();
+  const municipio = (document.getElementById('conc_cli_municipio').value||'').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do cliente.'); return; }
+  const jaExiste = CONC_CLIENTES.some(c => (c.Title||'').toLowerCase() === nome.toLowerCase() || (cnpj && c.CNPJ === cnpj));
+  if (jaExiste) { showToast('⚠️ Cliente já cadastrado!'); return; }
+  const dados = { Title: nome, CNPJ: cnpj, Municipio: municipio };
+  const ok = await salvarNoSharePoint('Clientes', dados);
+  if (ok) {
+    showToast('✅ Cliente cadastrado!');
+    concFecharModalCliente();
+    try { CONC_CLIENTES = await dbLer('Clientes'); } catch(e) {}
+    window._clientesCache = null; // mantém em sincronia com a página "Clientes" se já tiver sido carregada
+    concSelecionarCliente(nome);
+  } else {
+    showToast('❌ Erro ao cadastrar cliente.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():''));
+  }
 }
 
 function concVencida(c) {
@@ -5505,6 +5610,7 @@ function pageConcorrencias() {
     <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
     <button class="btn-primary" onclick="concAbrirEscolhaEmpresa()">➕ Novo Orçamento</button>
     <button class="btn-secondary" onclick="concAbrirCatalogoModal()">🗂️ Catálogo de Itens de Custo</button>
+    <button class="btn-secondary" onclick="navigate('clientes')">👥 Clientes</button>
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
     <button onclick="concFiltrarEmpresa('')"
@@ -5681,7 +5787,7 @@ function concAbrirForm(id, empresaPreSelecionada) {
   const existente = id ? CONC_LISTA.find(c => c.Id === id) : null;
   window._concEditandoId = existente ? existente.Id : null;
   window._concEmpresaAtual = existente ? (existente.empresa || '') : (empresaPreSelecionada || '');
-  window._concItens = existente ? JSON.parse(JSON.stringify(existente.itens || [])) : [{ descricao: '', unidade: 'un', quantidade: 1, valorUnitario: 0 }];
+  window._concItens = existente ? JSON.parse(JSON.stringify(existente.itens || [])) : [{ descricao: '', unidade: 'un', quantidade: 1, valorUnitario: 0, descontoPercentual: 0 }];
   // Pedido em 15/09/2026: taxas agora têm quantidade + valor unitário (igual
   // aos itens do orçamento) em vez de um valor único. Normaliza registros
   // antigos (salvos só com "valor") pra esse novo formato ao reabrir.
@@ -5718,7 +5824,19 @@ function concAbrirForm(id, empresaPreSelecionada) {
         <div class="form-group" style="margin:0"><label>Título / Empreendimento</label><input id="conc_titulo" value="${(existente&&existente.titulo||'').replace(/"/g,'&quot;')}" placeholder="Ex: Gestão Ambiental - UTE Acre"></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
-        <div class="form-group" style="margin:0"><label>Cliente</label><input id="conc_cliente" value="${(existente&&existente.cliente||'').replace(/"/g,'&quot;')}" placeholder="Nome do cliente/contratante"></div>
+        <div class="form-group" style="margin:0;position:relative"><label>Cliente</label>
+          <div style="display:flex;gap:6px">
+            <div style="flex:1;position:relative">
+              <input type="text" id="conc_cliente_input" value="${(existente&&existente.cliente||'').replace(/"/g,'&quot;')}" placeholder="Digite para buscar..." autocomplete="off"
+                oninput="concFiltrarClientes(this.value)" onfocus="concFiltrarClientes(this.value)"
+                onblur="setTimeout(()=>concFecharDropdownCliente(),150)"
+                style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.82rem;background:var(--surface);color:var(--text)">
+              <input type="hidden" id="conc_cliente" value="${(existente&&existente.cliente||'').replace(/"/g,'&quot;')}">
+              <div id="conc_cliente_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:60;margin-top:4px"></div>
+            </div>
+            <button type="button" onclick="concAbrirCadastroCliente()" class="btn-secondary" style="padding:6px 9px;font-size:.68rem;white-space:nowrap">+ Novo</button>
+          </div>
+        </div>
         <div class="form-group" style="margin:0"><label>Local</label><input id="conc_local" value="${(existente&&existente.local||'').replace(/"/g,'&quot;')}" placeholder="Cidade - UF"></div>
         <div class="form-group" style="margin:0"><label>Modalidade</label>
           <select id="conc_modalidade">
@@ -5745,6 +5863,15 @@ function concAbrirForm(id, empresaPreSelecionada) {
             <button class="btn-secondary" style="padding:5px 10px;font-size:.72rem" onclick="concAbrirCatalogoModal(true)">🗂️ Do catálogo</button>
           </div>
         </div>
+        <div style="display:grid;grid-template-columns:${CONC_ITEM_GRID};gap:6px;padding:0 2px;margin-bottom:4px">
+          <div style="font-size:.6rem;color:var(--text-muted);font-weight:700;text-transform:uppercase">Serviço</div>
+          <div style="font-size:.6rem;color:var(--text-muted);font-weight:700;text-transform:uppercase">Un.</div>
+          <div style="font-size:.6rem;color:var(--text-muted);font-weight:700;text-transform:uppercase">Qtd.</div>
+          <div style="font-size:.6rem;color:var(--text-muted);font-weight:700;text-transform:uppercase">Vlr. Unit.</div>
+          <div style="font-size:.6rem;color:var(--text-muted);font-weight:700;text-transform:uppercase">Desc. %</div>
+          <div style="font-size:.6rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;text-align:right">Total</div>
+          <div></div>
+        </div>
         <div id="conc_itens_wrap"></div>
       </div>
 
@@ -5758,7 +5885,7 @@ function concAbrirForm(id, empresaPreSelecionada) {
       </div>
       <div class="form-group" style="margin-bottom:14px"><label>Observações dos outros custos</label><input id="conc_outros_obs" value="${(existente&&existente.outrosCustosObs||'').replace(/"/g,'&quot;')}"></div>
       <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-bottom:14px">
-        <div class="form-group" style="margin:0"><label>Desconto (%)</label><input type="number" step="0.01" min="0" max="100" id="conc_desconto" value="${existente&&existente.descontoPercentual?existente.descontoPercentual:''}" placeholder="0" oninput="concRecalcularTotais()"></div>
+        <div class="form-group" style="margin:0"><label>Desconto Geral (%) <span style="font-size:.68rem;color:var(--text-muted);font-weight:400">— sobre o total, além do desconto por item acima</span></label><input type="number" step="0.01" min="0" max="100" id="conc_desconto" value="${existente&&existente.descontoPercentual?existente.descontoPercentual:''}" placeholder="0" oninput="concRecalcularTotais()"></div>
         <div class="form-group" style="margin:0"><label>Motivo do desconto <span style="font-size:.68rem;color:var(--text-muted);font-weight:400">(opcional)</span></label><input id="conc_desconto_obs" value="${(existente&&existente.descontoObs||'').replace(/"/g,'&quot;')}" placeholder="Ex: fidelização, pacote fechado..."></div>
       </div>
 
@@ -5825,24 +5952,34 @@ function concAtualizarValidade() {
   alvoEl.textContent = laFormatarData(d.toISOString().slice(0,10));
 }
 
+// Subtotal de um item já com o desconto DELE aplicado (pedido em 15/09/2026:
+// desconto configurável por item, não só um desconto único pro orçamento
+// inteiro — dá pra descontar o item 1, o item 2, ambos, ou nenhum).
+function concItemSubtotal(it) {
+  const bruto = (Number(it.quantidade)||0) * (Number(it.valorUnitario)||0);
+  const descPct = Math.min(Math.max(Number(it.descontoPercentual)||0, 0), 100);
+  return bruto * (1 - descPct/100);
+}
+
 function concRenderizarItens() {
   const wrap = document.getElementById('conc_itens_wrap');
   if (!wrap) return;
   const itens = window._concItens || [];
   wrap.innerHTML = itens.map((it, i) => `
-    <div style="display:grid;grid-template-columns:2.4fr .8fr .7fr 1fr 1fr auto;gap:6px;margin-bottom:6px;align-items:center">
-      <input value="${(it.descricao||'').replace(/"/g,'&quot;')}" placeholder="Descrição" oninput="concItemCampo(${i},'descricao',this.value)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
+    <div style="display:grid;grid-template-columns:${CONC_ITEM_GRID};gap:6px;margin-bottom:6px;align-items:center">
+      <input value="${(it.descricao||'').replace(/"/g,'&quot;')}" placeholder="Descrição do serviço" oninput="concItemCampo(${i},'descricao',this.value)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
       <input value="${(it.unidade||'').replace(/"/g,'&quot;')}" placeholder="Un." oninput="concItemCampo(${i},'unidade',this.value)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
       <input type="number" step="0.01" value="${it.quantidade!=null?it.quantidade:1}" placeholder="Qtd" oninput="concItemCampo(${i},'quantidade',this.value)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
       <input type="text" inputmode="decimal" value="${it.valorUnitario?Number(it.valorUnitario).toFixed(2).replace('.',','):''}" placeholder="Vlr. Unit." oninput="rdFormatarMoedaInput(this);concItemValorUnitario(${i},this)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
-      <div id="conc_item_subtotal_${i}" style="font-size:.78rem;font-weight:700;text-align:right">${rdNumeroParaMoeda((Number(it.quantidade)||0) * (Number(it.valorUnitario)||0))}</div>
+      <input type="number" step="0.01" min="0" max="100" value="${it.descontoPercentual?it.descontoPercentual:''}" placeholder="0" oninput="concItemCampo(${i},'descontoPercentual',this.value)" style="padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-size:.78rem;background:var(--surface);color:var(--text)">
+      <div id="conc_item_subtotal_${i}" style="font-size:.78rem;font-weight:700;text-align:right">${rdNumeroParaMoeda(concItemSubtotal(it))}</div>
       ${itens.length > 1 ? `<span onclick="concRemoverItem(${i})" style="cursor:pointer;color:var(--red);font-size:.9rem">✕</span>` : '<span></span>'}
     </div>`).join('');
   concRecalcularTotais();
 }
 
 function concAdicionarItem() {
-  window._concItens.push({ descricao: '', unidade: 'un', quantidade: 1, valorUnitario: 0 });
+  window._concItens.push({ descricao: '', unidade: 'un', quantidade: 1, valorUnitario: 0, descontoPercentual: 0 });
   concRenderizarItens();
 }
 function concRemoverItem(i) {
@@ -5859,12 +5996,12 @@ function concAtualizarSubtotalItem(i) {
   const it = (window._concItens || [])[i];
   if (!it) return;
   const el = document.getElementById('conc_item_subtotal_' + i);
-  if (el) el.textContent = rdNumeroParaMoeda((Number(it.quantidade)||0) * (Number(it.valorUnitario)||0));
+  if (el) el.textContent = rdNumeroParaMoeda(concItemSubtotal(it));
   concRecalcularTotais();
 }
 function concItemCampo(i, campo, valor) {
   window._concItens[i][campo] = valor;
-  if (campo === 'quantidade') concAtualizarSubtotalItem(i);
+  if (campo === 'quantidade' || campo === 'descontoPercentual') concAtualizarSubtotalItem(i);
 }
 function concItemValorUnitario(i, input) {
   const num = rdMoedaParaNumero(input.value);
@@ -5931,32 +6068,42 @@ function concTaxaValorUnitario(i, input) {
 }
 
 function concCustosDiretos() {
+  return (window._concItens||[]).reduce((s,it) => s + concItemSubtotal(it), 0);
+}
+// Soma bruta dos itens SEM os descontos por item — usada só pra mostrar,
+// no resumo, quanto os descontos por item tiraram do total (transparência).
+function concCustosBrutos() {
   return (window._concItens||[]).reduce((s,it) => s + (Number(it.quantidade)||0) * (Number(it.valorUnitario)||0), 0);
 }
 
 function concRecalcularTotais() {
   const resumoEl = document.getElementById('conc_resumo_totais');
   if (!resumoEl) return;
+  const custosBrutos = concCustosBrutos();
   const custosDiretos = concCustosDiretos();
+  const descontoItensValor = custosBrutos - custosDiretos;
   const bdiPct = parseFloat((document.getElementById('conc_bdi')||{}).value) || 0;
   const impostoPct = parseFloat((document.getElementById('conc_imposto')||{}).value) || 0;
   const outros = rdMoedaParaNumero((document.getElementById('conc_outros_custos')||{}).value || '0');
   const valorBDI = custosDiretos * bdiPct / 100;
   const base = custosDiretos + valorBDI + outros;
+  // Impostos entram por último, sobre custos (já líquidos dos descontos por
+  // item) + BDI + outros custos — é a última parcela somada antes do TOTAL.
   const valorImposto = base * impostoPct / 100;
   const subtotal = base + valorImposto;
   const descontoPct = parseFloat((document.getElementById('conc_desconto')||{}).value) || 0;
   const valorDesconto = subtotal * descontoPct / 100;
   const total = subtotal - valorDesconto;
   resumoEl.innerHTML = `
+    ${descontoItensValor > 0.004 ? `<div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--red)"><span>Descontos aplicados nos itens</span><strong>−${rdNumeroParaMoeda(descontoItensValor)}</strong></div>` : ''}
     <div style="display:flex;justify-content:space-between;padding:2px 0"><span>Custos diretos (itens)</span><strong>${rdNumeroParaMoeda(custosDiretos)}</strong></div>
     <div style="display:flex;justify-content:space-between;padding:2px 0"><span>BDI (${bdiPct}%)</span><strong>${rdNumeroParaMoeda(valorBDI)}</strong></div>
     <div style="display:flex;justify-content:space-between;padding:2px 0"><span>Outros custos</span><strong>${rdNumeroParaMoeda(outros)}</strong></div>
     <div style="display:flex;justify-content:space-between;padding:2px 0;border-top:1px solid var(--border);margin-top:4px;padding-top:4px"><span>Impostos (${impostoPct}%)</span><strong>${rdNumeroParaMoeda(valorImposto)}</strong></div>
     ${descontoPct ? `<div style="display:flex;justify-content:space-between;padding:2px 0"><span>Subtotal</span><strong>${rdNumeroParaMoeda(subtotal)}</strong></div>
-    <div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--red)"><span>Desconto (${descontoPct}%)</span><strong>−${rdNumeroParaMoeda(valorDesconto)}</strong></div>` : ''}
+    <div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--red)"><span>Desconto geral (${descontoPct}%)</span><strong>−${rdNumeroParaMoeda(valorDesconto)}</strong></div>` : ''}
     <div style="display:flex;justify-content:space-between;padding-top:6px;font-size:1rem"><span style="font-weight:700">TOTAL</span><strong style="color:var(--green-main)">${rdNumeroParaMoeda(total)}</strong></div>
-    <div style="font-size:.65rem;color:var(--text-muted);margin-top:6px">⚠️ Cálculo simplificado (imposto aplicado "por fora" sobre custos+BDI+outros). Confira o método real de composição antes de enviar ao cliente.</div>`;
+    <div style="font-size:.65rem;color:var(--text-muted);margin-top:6px">⚠️ Cálculo simplificado (imposto aplicado "por fora", por último, sobre custos já com desconto por item + BDI + outros). Confira o método real de composição antes de enviar ao cliente.</div>`;
 }
 
 // Pedido em 15/09/2026: deixar explícito que "Ganho/Perdido" é, na prática,
@@ -6006,7 +6153,9 @@ async function concSalvar() {
   const bdiPercentual = parseFloat(document.getElementById('conc_bdi').value) || 0;
   const impostoPercentual = parseFloat(document.getElementById('conc_imposto').value) || 0;
   const outrosCustos = rdMoedaParaNumero(document.getElementById('conc_outros_custos').value || '0');
-  const custosDiretos = itens.reduce((s,it) => s + (Number(it.quantidade)||0)*(Number(it.valorUnitario)||0), 0);
+  const custosBrutos = itens.reduce((s,it) => s + (Number(it.quantidade)||0)*(Number(it.valorUnitario)||0), 0);
+  const custosDiretos = itens.reduce((s,it) => s + concItemSubtotal(it), 0);
+  const descontoItensValor = custosBrutos - custosDiretos;
   const valorBDI = custosDiretos * bdiPercentual / 100;
   const baseAntesImposto = custosDiretos + valorBDI + outrosCustos;
   const valorImposto = baseAntesImposto * impostoPercentual / 100;
@@ -6024,6 +6173,7 @@ async function concSalvar() {
     formaPagamento: (document.getElementById('conc_forma_pagamento').value||'').trim(),
     dataEmissao, validadeDias, dataValidade,
     itens,
+    custosBrutos, descontoItensValor,
     custosDiretos, bdiPercentual, valorBDI,
     outrosCustos, outrosCustosObs: (document.getElementById('conc_outros_obs').value||'').trim(),
     taxasContratante, somaTaxas,
@@ -6152,9 +6302,9 @@ function concUsarItemCatalogo(id) {
   const itensAtuais = window._concItens || [];
   // Se o único item ainda está vazio, substitui em vez de empilhar.
   if (itensAtuais.length === 1 && !itensAtuais[0].descricao && !itensAtuais[0].valorUnitario) {
-    itensAtuais[0] = { descricao: it.descricao, unidade: it.unidade || 'un', quantidade: 1, valorUnitario: it.valorReferencia || 0 };
+    itensAtuais[0] = { descricao: it.descricao, unidade: it.unidade || 'un', quantidade: 1, valorUnitario: it.valorReferencia || 0, descontoPercentual: 0 };
   } else {
-    itensAtuais.push({ descricao: it.descricao, unidade: it.unidade || 'un', quantidade: 1, valorUnitario: it.valorReferencia || 0 });
+    itensAtuais.push({ descricao: it.descricao, unidade: it.unidade || 'un', quantidade: 1, valorUnitario: it.valorReferencia || 0, descontoPercentual: 0 });
   }
   window._concItens = itensAtuais;
   concFecharCatalogoModal();
@@ -6184,7 +6334,8 @@ function concGerarPDF(id) {
       <td style="text-align:center">${it.unidade||'un'}</td>
       <td style="text-align:center">${it.quantidade||0}</td>
       <td style="text-align:right">${rdNumeroParaMoeda(it.valorUnitario||0)}</td>
-      <td style="text-align:right">${rdNumeroParaMoeda((Number(it.quantidade)||0)*(Number(it.valorUnitario)||0))}</td>
+      <td style="text-align:center">${it.descontoPercentual ? String(it.descontoPercentual).replace('.',',') + '%' : '—'}</td>
+      <td style="text-align:right">${rdNumeroParaMoeda(concItemSubtotal(it))}</td>
     </tr>`).join('');
     // Pedido em 15/09/2026: o Total Geral (no fim do PDF) soma o valor da
     // proposta + as taxas do contratante. Recalcula na hora (com fallback pro
@@ -6249,17 +6400,18 @@ function concGerarPDF(id) {
 
     <div class="section-title">Itens do Orçamento</div>
     <table>
-      <thead><tr><th style="width:52%">Descrição</th><th style="width:8%">Un.</th><th style="width:8%">Qtd.</th><th style="width:16%">Valor Unit.</th><th style="width:16%">Subtotal</th></tr></thead>
+      <thead><tr><th style="width:44%">Descrição</th><th style="width:5%">Un.</th><th style="width:6%">Qtd.</th><th style="width:11%">Valor Unit.</th><th style="width:8%">Desc.</th><th style="width:26%">Total</th></tr></thead>
       <tbody>${itensHtml}</tbody>
     </table>
 
     <div class="resumo-box">
+      ${c.descontoItensValor ? `<div class="resumo-linha" style="color:#b23"><span>Descontos aplicados nos itens</span><strong>−${rdNumeroParaMoeda(c.descontoItensValor)}</strong></div>` : ''}
       <div class="resumo-linha"><span>Custos diretos</span><strong>${rdNumeroParaMoeda(c.custosDiretos||0)}</strong></div>
       <div class="resumo-linha"><span>BDI (${c.bdiPercentual||0}%)</span><strong>${rdNumeroParaMoeda(c.valorBDI||0)}</strong></div>
       ${c.outrosCustos ? `<div class="resumo-linha"><span>Outros custos${c.outrosCustosObs?' — '+c.outrosCustosObs:''}</span><strong>${rdNumeroParaMoeda(c.outrosCustos)}</strong></div>` : ''}
       <div class="resumo-linha"><span>Impostos (${c.impostoPercentual||0}%)${c.impostoRegime?' — '+c.impostoRegime:''}</span><strong>${rdNumeroParaMoeda(c.valorImposto||0)}</strong></div>
       ${c.descontoPercentual ? `<div class="resumo-linha"><span>Subtotal</span><strong>${rdNumeroParaMoeda(c.valorAntesDesconto!=null?c.valorAntesDesconto:c.valorTotal)}</strong></div>
-      <div class="resumo-linha" style="color:#b23"><span>Desconto (${c.descontoPercentual}%)${c.descontoObs?' — '+c.descontoObs:''}</span><strong>−${rdNumeroParaMoeda(c.valorDesconto||0)}</strong></div>` : ''}
+      <div class="resumo-linha" style="color:#b23"><span>Desconto geral (${c.descontoPercentual}%)${c.descontoObs?' — '+c.descontoObs:''}</span><strong>−${rdNumeroParaMoeda(c.valorDesconto||0)}</strong></div>` : ''}
       <div class="resumo-total"><span>VALOR TOTAL</span><span>${rdNumeroParaMoeda(c.valorTotal||0)}</span></div>
     </div>
 
@@ -6295,8 +6447,16 @@ function concGerarPDF(id) {
     <div style="margin-top:28px;font-size:9pt">
       <p>A presente proposta é válida até <strong>${dataValidadeFmt}</strong>, contados a partir da emissão.</p>
       <p style="margin-top:16px">Porto Velho – RO, ${dataEmissaoFmt}</p>
-      <p style="margin-top:30px">_________________________________________</p>
-      <p><strong>${emp.razaoSocial}</strong><br>${c.responsavel||''}</p>
+      <div style="display:flex;justify-content:space-between;gap:24px;margin-top:36px">
+        <div style="flex:1;text-align:center">
+          <p>_________________________________________</p>
+          <p style="margin-top:4px"><strong>${emp.razaoSocial}</strong><br>${c.responsavel||''}</p>
+        </div>
+        <div style="flex:1;text-align:center">
+          <p>_________________________________________</p>
+          <p style="margin-top:4px"><strong>${c.cliente||''}</strong><br>Aprovação do Cliente</p>
+        </div>
+      </div>
     </div>
 
     <div class="footer">
