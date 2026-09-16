@@ -12530,6 +12530,28 @@ function renderDespesasTab() {
       </div>
     </div>
 
+    <!-- Linha 2d: "Também teve veículo nesta diária?" — só aparece na categoria
+         Diárias. Ao marcar, abre a lista suspensa com os veículos cadastrados
+         no Catálogo de Serviços (card Financeiro → Catálogo de Serviços,
+         grupo "Locação de Veículos") e soma o valor da diária do veículo ao
+         Valor Total automaticamente. Pedido em 16/09/2026. -->
+    <div class="form-row" id="rd_diaria_veiculo_toggle_row" style="display:none">
+      <div class="form-group" style="flex:1">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;text-transform:none;letter-spacing:normal">
+          <input type="checkbox" id="rd_diaria_teve_veiculo" onchange="rdToggleDiariaVeiculo()" style="width:16px;height:16px;cursor:pointer">
+          🚗 Também teve uso de veículo nesta diária?
+        </label>
+      </div>
+    </div>
+    <div class="form-row" id="rd_diaria_veiculo_select_row" style="display:none">
+      <div class="form-group" style="flex:1">
+        <label>Veículo <span style="font-size:.7rem;color:var(--text-muted)">(valor da diária do veículo, conforme o Catálogo de Serviços, somado ao Valor Total)</span></label>
+        <select id="rd_diaria_veiculo_sel" onchange="rdSelecionarVeiculoDiaria()">
+          <option value="">Selecione...</option>
+        </select>
+      </div>
+    </div>
+
     <!-- Linha 3: Descrição + Local (mesmo padrão de Contas a Pagar — "do que se trata"). Pedido em 05/09/2026. -->
     <div class="form-row">
       <div class="form-group">
@@ -12882,12 +12904,75 @@ function rdSelecionarGrupoServico(grupo) {
 
   const mostrarBenef = (grupo === 'diarias' || grupo === 'projetos');
   const mostrarVeic = (grupo === 'veiculos');
+  const mostrarToggleDiariaVeic = (grupo === 'diarias');
   const benefField = document.getElementById('rd_beneficiario_field');
   const veicRow = document.getElementById('rd_veiculo_row');
   if (benefField) benefField.style.display = mostrarBenef ? 'flex' : 'none';
   if (veicRow) veicRow.style.display = mostrarVeic ? 'flex' : 'none';
   if (!mostrarBenef) { const bi=document.getElementById('rd_beneficiario_input'); if(bi) bi.value=''; const bh=document.getElementById('rd_beneficiario'); if(bh) bh.value=''; }
   if (!mostrarVeic) { const vi=document.getElementById('rd_veiculo_input'); if(vi) vi.value=''; const vh=document.getElementById('rd_veiculo'); if(vh) vh.value=''; }
+
+  const toggleRow = document.getElementById('rd_diaria_veiculo_toggle_row');
+  if (toggleRow) toggleRow.style.display = mostrarToggleDiariaVeic ? 'flex' : 'none';
+  if (!mostrarToggleDiariaVeic) {
+    const chk = document.getElementById('rd_diaria_teve_veiculo'); if (chk) chk.checked = false;
+    const selRow = document.getElementById('rd_diaria_veiculo_select_row'); if (selRow) selRow.style.display = 'none';
+    const sel = document.getElementById('rd_diaria_veiculo_sel'); if (sel) sel.value = '';
+    rdAplicarValorVeiculoDiaria(0, '', '');
+  }
+}
+
+/* -- "Também teve veículo?" (categoria Diárias) — checkbox que abre a lista
+   suspensa com os veículos do Catálogo de Serviços (grupo "veiculos") e soma
+   o valor da diária do veículo escolhido ao Valor Total, sem perder o valor
+   já digitado da diária do colaborador. Pedido em 16/09/2026. -- */
+function rdPopularSelectVeiculoDiaria() {
+  const sel = document.getElementById('rd_diaria_veiculo_sel');
+  if (!sel) return;
+  _rdServicosTodos(); // garante que o catálogo (ServicosCatalogo) já foi carregado, não só o seed
+  const itens = (servicosDB.veiculos || []).slice().sort((a,b) => (a.desc||'').localeCompare(b.desc||'', 'pt-BR'));
+  sel.innerHTML = '<option value="">Selecione...</option>' + itens.map(i =>
+    `<option value="${i.id}">${i.desc} — ${rdNumeroParaMoeda(i.valor||0)}</option>`
+  ).join('');
+}
+
+function rdToggleDiariaVeiculo() {
+  const marcado = (document.getElementById('rd_diaria_teve_veiculo')||{}).checked;
+  const row = document.getElementById('rd_diaria_veiculo_select_row');
+  if (row) row.style.display = marcado ? 'flex' : 'none';
+  if (marcado) {
+    rdPopularSelectVeiculoDiaria();
+  } else {
+    const sel = document.getElementById('rd_diaria_veiculo_sel'); if (sel) sel.value = '';
+    rdAplicarValorVeiculoDiaria(0, '', '');
+  }
+}
+
+// Soma (ou remove, ao trocar/desmarcar) o valor da diária do veículo no campo
+// Valor Total — guarda o último valor já somado em
+// window._rdDiariaVeiculoValorAtual pra poder subtraí-lo antes de somar de
+// novo (troca de veículo) ou ao desmarcar o checkbox, sem afetar o que o
+// usuário digitou manualmente pra diária do colaborador.
+function rdAplicarValorVeiculoDiaria(novoValor, id, desc) {
+  const campo = document.getElementById('rd_valor');
+  if (campo) {
+    const atual = rdMoedaParaNumero(campo.value);
+    const anteriorSomado = window._rdDiariaVeiculoValorAtual || 0;
+    const base = Math.max(0, atual - anteriorSomado);
+    const total = base + (novoValor || 0);
+    campo.value = total ? rdNumeroParaMoeda(total) : '';
+  }
+  window._rdDiariaVeiculoValorAtual = novoValor || 0;
+  window._rdDiariaVeiculoId = id || '';
+  window._rdDiariaVeiculoDesc = desc || '';
+  rdGerarParcelas(); rdRenderizarDistribuicoes(); rdRenderizarDivisaoCC(); rdDivccSugerirValor();
+}
+
+function rdSelecionarVeiculoDiaria() {
+  const sel = document.getElementById('rd_diaria_veiculo_sel');
+  const id = sel ? sel.value : '';
+  const item = id ? (servicosDB.veiculos || []).find(v => v.id === id) : null;
+  rdAplicarValorVeiculoDiaria(item ? (item.valor||0) : 0, item ? item.id : '', item ? item.desc : '');
 }
 
 /* -- Combobox digitável de Serviço (filtrado pela categoria/pill ativa) -- */
@@ -13672,6 +13757,10 @@ async function salvarDespesa() {
   const colaboradorPagto = (document.getElementById('rd_colaborador_sel')||{}).value || '';
   const beneficiario = (document.getElementById('rd_beneficiario')||{}).value || '';
   const veiculo = (document.getElementById('rd_veiculo')||{}).value || '';
+  const diariaTeveVeiculo = (document.getElementById('rd_diaria_teve_veiculo')||{}).checked || false;
+  const diariaVeiculoId = (modalidade==='servicos' && window._rdGrupoServico==='diarias' && diariaTeveVeiculo) ? (window._rdDiariaVeiculoId||'') : '';
+  const diariaVeiculoDesc = diariaVeiculoId ? (window._rdDiariaVeiculoDesc||'') : '';
+  const diariaVeiculoValor = diariaVeiculoId ? (window._rdDiariaVeiculoValorAtual||0) : 0;
   const cc = (document.getElementById('rd_cc')||{}).value || '';
   const descLivre = (document.getElementById('rd_desc')||{}).value?.trim() || '';
   const local = (document.getElementById('rd_local')||{}).value || '';
@@ -13700,6 +13789,7 @@ async function salvarDespesa() {
   if (modalidade === 'servicos' && !servicoId) { showToast('⚠️ Selecione o serviço.'); return; }
   if (modalidade === 'servicos' && !beneficiario) { showToast('⚠️ Selecione o beneficiário.'); return; }
   if (modalidade === 'servicos' && ehServicoVeiculo && !veiculo) { showToast('⚠️ Selecione o veículo da empresa usado nessa diária.'); return; }
+  if (modalidade === 'servicos' && window._rdGrupoServico === 'diarias' && diariaTeveVeiculo && !diariaVeiculoId) { showToast('⚠️ Selecione o veículo usado nessa diária, ou desmarque a opção.'); return; }
   if (modalidade === 'fornecedor' && !fornecedor) { showToast('⚠️ Selecione o fornecedor.'); return; }
   if (modalidade === 'colaborador' && !colaboradorPagto) { showToast('⚠️ Selecione o colaborador.'); return; }
   // No parcelado o Contrato é escolhido por parcela (campo do topo fica oculto),
@@ -13740,6 +13830,7 @@ async function salvarDespesa() {
     Fornecedor: modalidade==='fornecedor' ? fornecedor : '', Colaborador: modalidade==='colaborador' ? colaboradorPagto : '',
     Beneficiario: modalidade==='servicos' ? beneficiario : '',
     Veiculo: (modalidade==='servicos' && ehServicoVeiculo) ? veiculo : '',
+    DiariaVeiculoId: diariaVeiculoId, DiariaVeiculoDesc: diariaVeiculoDesc, DiariaVeiculoValor: diariaVeiculoValor,
     Descricao: descLivre,
     CentroCusto: temDivisaoCC ? divisaoCC.map(d=>d.cc).join(' + ') : cc, Local: local, TipoPagamento: tipoPagamento, FormaPagamento: formaPgto,
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: dataPagamento, Banco: banco,
@@ -13824,6 +13915,10 @@ async function salvarDespesa() {
   const comprovStatus = document.getElementById('rd_comprovante_status'); if (comprovStatus) comprovStatus.textContent = '';
   const anexoStatus = document.getElementById('rd_anexo_status'); if (anexoStatus) anexoStatus.textContent = '';
   const dataEl = document.getElementById('rd_data_lancamento'); if (dataEl) dataEl.value = new Date().toISOString().split('T')[0];
+  const diariaVeicChkReset = document.getElementById('rd_diaria_teve_veiculo'); if (diariaVeicChkReset) diariaVeicChkReset.checked = false;
+  const diariaVeicSelReset = document.getElementById('rd_diaria_veiculo_sel'); if (diariaVeicSelReset) diariaVeicSelReset.value = '';
+  const diariaVeicSelRowReset = document.getElementById('rd_diaria_veiculo_select_row'); if (diariaVeicSelRowReset) diariaVeicSelRowReset.style.display = 'none';
+  window._rdDiariaVeiculoValorAtual = 0; window._rdDiariaVeiculoId = ''; window._rdDiariaVeiculoDesc = '';
   window._rdGrupoServico = null;
   const distChkReset = document.getElementById('rd_tem_distribuicao'); if (distChkReset) distChkReset.checked = false;
   window._rdDistribuicoes = [];
@@ -14013,7 +14108,7 @@ async function carregarDespesas() {
         return `<tr>
           <td style="font-size:.78rem">${i.DataLancamento ? new Date(i.DataLancamento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td style="font-size:.76rem">${i.Categoria||'—'}${i.Subcategoria?`<div style="font-size:.66rem;color:var(--text-muted)">${i.Subcategoria}</div>`:''}${tipoMovimentacaoBadge(i.TipoMovimentacao || rdTipoMovimentacao(i.Categoria, i.Subcategoria))}</td>
-          <td style="font-size:.78rem"><strong>${desc}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}${i.Veiculo?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.Veiculo}</div>`:''}</td>
+          <td style="font-size:.78rem"><strong>${desc}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}${i.Veiculo?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.Veiculo}</div>`:''}${i.DiariaVeiculoDesc?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.DiariaVeiculoDesc} (${rdNumeroParaMoeda(i.DiariaVeiculoValor||0)})</div>`:''}</td>
           <td style="font-size:.72rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px" title="${(i.CentroCusto||'').replace(/"/g,'&quot;')}">${i.CentroCusto||'—'}${(i.DivisaoCC&&i.DivisaoCC.length) ? ` <span style="color:var(--blue)" title="Dividido entre ${i.DivisaoCC.length} contratos — editar para ver/ajustar">🧩${i.DivisaoCC.length}</span>` : ''}</td>
           <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
           <td style="font-size:.72rem">${pgtoCel}</td>
@@ -14500,6 +14595,7 @@ async function rdVisualizarDespesa(id) {
       ${linha('Empresa', normalizarEmpresa(i.Empresa)||'—')}
       ${i.Beneficiario ? linha('Beneficiário', i.Beneficiario) : ''}
       ${i.Veiculo ? linha('Veículo', '🚗 '+i.Veiculo) : ''}
+      ${i.DiariaVeiculoDesc ? linha('Veículo da diária', '🚗 '+i.DiariaVeiculoDesc+' ('+rdNumeroParaMoeda(i.DiariaVeiculoValor||0)+')') : ''}
       ${linha('Centro de Custo', i.CentroCusto||'—')}
       ${i.Categoria ? linha('Categoria', i.Categoria) : ''}
       ${i.Subcategoria ? linha('Subcategoria', i.Subcategoria) : ''}
@@ -14560,6 +14656,17 @@ async function rdAbrirEdicaoDespesa(id) {
     set('rd_servico_input', servicoOpt ? (servicoOpt.id+' · '+servicoOpt.desc+(servicoOpt.unidade?' ('+servicoOpt.unidade+')':'')) : (i.ServicoDesc||''));
     set('rd_beneficiario', i.Beneficiario); set('rd_beneficiario_input', i.Beneficiario);
     set('rd_veiculo', i.Veiculo); set('rd_veiculo_input', i.Veiculo);
+    if (window._rdGrupoServico === 'diarias' && i.DiariaVeiculoId) {
+      const diariaChk = document.getElementById('rd_diaria_teve_veiculo'); if (diariaChk) diariaChk.checked = true;
+      rdPopularSelectVeiculoDiaria();
+      const diariaSel = document.getElementById('rd_diaria_veiculo_sel'); if (diariaSel) diariaSel.value = i.DiariaVeiculoId;
+      const diariaSelRow = document.getElementById('rd_diaria_veiculo_select_row'); if (diariaSelRow) diariaSelRow.style.display = 'flex';
+      // Só rastreia o estado (não re-soma) — o Valor Total abaixo já vem
+      // direto de i.ValorTotal, que já inclui a diária do veículo salva.
+      window._rdDiariaVeiculoValorAtual = i.DiariaVeiculoValor || 0;
+      window._rdDiariaVeiculoId = i.DiariaVeiculoId;
+      window._rdDiariaVeiculoDesc = i.DiariaVeiculoDesc || '';
+    }
   } else if (i.Modalidade === 'fornecedor') {
     set('rd_fornecedor_sel', i.Fornecedor); set('rd_fornecedor_input', i.Fornecedor);
   } else if (i.Modalidade === 'colaborador') {
@@ -14642,6 +14749,8 @@ async function exportarDespesasExcel() {
     'Serviço/Fornecedor/Colaborador': i.Modalidade === 'servicos' ? (i.ServicoDesc||'') : i.Modalidade === 'colaborador' ? (i.Colaborador||'') : (i.Fornecedor||''),
     'Beneficiário': i.Beneficiario || '',
     'Veículo': i.Veiculo || '',
+    'Veículo da Diária': i.DiariaVeiculoDesc || '',
+    'Valor Veículo da Diária': i.DiariaVeiculoValor || 0,
     'Centro de Custo': i.CentroCusto || '',
     'Local': i.Local || '',
     'Valor': i.Valor || 0,
@@ -26901,19 +27010,30 @@ async function custosCarregarFinanceiro(forcar) {
   navigate('custos');
 }
 
-/* -- Calcula o próximo código CC-XXX livre, a partir do maior sufixo numérico
-      já usado em centrosCustoData (ignora buracos como CC-003/007/009, que
-      não existem — isso não importa, sempre soma a partir do maior id real).
-      Corrige o bug em que o código era gerado por centrosCustoData.length+1,
-      o que colidia com códigos já em uso assim que havia qualquer buraco na
-      numeração (ex: gerava CC-002, que já era "ERO - Gestão de Obras"). -- */
-function _custosProximoId() {
+/* -- Calcula o próximo código de CC livre. Pedido em 16/09/2026: cada empresa
+      precisa da sua PRÓPRIA numeração, começando em 1 — em vez de um único
+      contador global (CC-001, CC-002... compartilhado pelas 3 empresas, como
+      era antes), o código agora carrega o prefixo da empresa (CC-EXP-001,
+      CC-TL3-001, CC-EXB-001), cada um com sua contagem independente. Os CCs
+      antigos (formato CC-XXX, sem prefixo de empresa) continuam exatamente
+      como estão — nada é renumerado, só os CADASTROS NOVOS a partir de agora
+      passam a usar o formato com prefixo, então nenhuma referência já lançada
+      em Despesas/Receitas/Medição quebra.
+      Ignora buracos na numeração (ex: EXP-003 que não existe) — sempre soma a
+      partir do maior sufixo numérico já usado NAQUELE prefixo. -- */
+const CUSTOS_EMPRESA_PREFIXO = { 'Expedian':'EXP', 'TL3':'TL3', 'EXP Brasil':'EXB' };
+function _custosPrefixoEmpresa(empresa) {
+  return CUSTOS_EMPRESA_PREFIXO[empresa] || String(empresa||'CC').replace(/[^A-Za-z0-9]/g,'').toUpperCase().slice(0,3) || 'CC';
+}
+function _custosProximoId(empresa) {
+  const prefixo = _custosPrefixoEmpresa(empresa);
+  const re = new RegExp('^CC-' + prefixo + '-(\\d+)$');
   let max = 0;
   centrosCustoData.forEach(c => {
-    const m = /^CC-(\d+)$/.exec(c.id || '');
+    const m = re.exec(c.id || '');
     if (m) max = Math.max(max, parseInt(m[1], 10));
   });
-  return 'CC-' + String(max + 1).padStart(3, '0');
+  return 'CC-' + prefixo + '-' + String(max + 1).padStart(3, '0');
 }
 
 let _custosExtrasCarregados = false;
@@ -26959,7 +27079,7 @@ async function custosCarregarExtras(forcar) {
       // Colide com um CC de fábrica (hardcoded, sem _spId) de outro contrato -> bug antigo, corrigir.
       const colisao = centrosCustoData.find(c => c.id === ccId && c._spId == null && c.contrato !== l.Contrato);
       if (colisao) {
-        const novoId = _custosProximoId();
+        const novoId = _custosProximoId(l.Empresa);
         console.warn('[Centros de Custo] Corrigindo colisão de código: "' + l.Contrato + '" estava usando ' + ccId + ' (já era de "' + colisao.contrato + '"). Novo código: ' + novoId);
         centrosCustoData.push({
           id: novoId, contrato: l.Contrato, cliente: l.Cliente || '—', empresa: l.Empresa,
@@ -27121,16 +27241,25 @@ function pageCustos() {
         </div>
         <div class="form-group">
           <label>Empresa</label>
-          <select id="novocc_empresa">
+          <select id="novocc_empresa" onchange="novoccAtualizarPlaceholderId()">
             <option value="">Selecione...</option>
             <option>Expedian</option>
             <option>TL3</option>
             <option>EXP Brasil</option>
           </select>
         </div>
-        <div class="form-group">
+        <div class="form-group" style="position:relative">
           <label>Cliente</label>
-          <input type="text" id="novocc_cliente" placeholder="Nome do cliente">
+          <div style="display:flex;gap:8px">
+            <div style="flex:1;position:relative">
+              <input type="text" id="novocc_cliente_input" placeholder="Digite para buscar..." autocomplete="off"
+                oninput="custosccFiltrarClientes(this.value)" onfocus="custosccFiltrarClientes(this.value)"
+                onblur="setTimeout(()=>custosccFecharDropdownCliente(),150)">
+              <input type="hidden" id="novocc_cliente">
+              <div id="novocc_cliente_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:1200;margin-top:4px"></div>
+            </div>
+            <button type="button" onclick="custosccAbrirCadastroCliente()" class="btn-secondary" style="padding:6px 9px;font-size:.68rem;white-space:nowrap">+ Novo</button>
+          </div>
         </div>
         <div class="form-group">
           <label>Gestor Responsável</label>
@@ -27789,9 +27918,111 @@ function novoccAtualizarSubcategorias(valorAtual) {
   if (valorAtual && opcoes.includes(valorAtual)) subSel.value = valorAtual;
 }
 
+/* -- Combobox de Cliente no modal de Centro de Custo, ligado ao mesmo
+   cadastro-mestre de Clientes (tabela 'Clientes') já usado em Orçamentos
+   (conc_cliente) e Receitas (rc_cliente) — pedido em 16/09/2026: em vez de
+   texto livre, busca entre os já cadastrados ou cadastra um novo na hora,
+   sem sair do modal. Mesmo padrão de concFiltrarClientes/concSelecionarCliente,
+   com ids próprios (novocc_cliente*) e lendo de window._clientesCache (o
+   mesmo cache compartilhado da página "Clientes"). -- */
+function custosccFiltrarClientes(texto) {
+  const hid = document.getElementById('novocc_cliente'); if (hid) hid.value = texto;
+  const dd = document.getElementById('novocc_cliente_dropdown');
+  if (!dd) return;
+  const lista = window._clientesCache || [];
+  const t = (texto||'').trim().toLowerCase();
+  let matches = t ? lista.filter(c => (c.Title||'').toLowerCase().includes(t)) : lista;
+  matches = matches.slice(0, 30);
+  let html = matches.map(c => {
+    const esc = String(c.Title).replace(/'/g,"\\'");
+    return '<div onclick="custosccSelecionarCliente(\''+esc+'\')" style="padding:8px 12px;cursor:pointer;font-size:.8rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>'+c.Title+'</strong>'+(c.Municipio?' <span style="color:var(--text-muted);font-size:.7rem">· '+c.Municipio+'</span>':'') +
+    '</div>';
+  }).join('');
+  if (t && !lista.some(c => (c.Title||'').toLowerCase() === t)) {
+    html += '<div onclick="custosccNovoClienteComNome(\''+t.replace(/'/g,"\\'")+'\')" style="padding:8px 12px;cursor:pointer;font-size:.8rem;color:var(--green-main);font-weight:700">+ Cadastrar "'+texto+'" como novo cliente</div>';
+  }
+  if (!html) html = '<div style="padding:10px 12px;font-size:.78rem;color:var(--text-muted)">Nenhum cliente cadastrado encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function custosccFecharDropdownCliente() {
+  const dd = document.getElementById('novocc_cliente_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+function custosccSelecionarCliente(nome) {
+  const inp = document.getElementById('novocc_cliente_input'); if (inp) inp.value = nome;
+  const hid = document.getElementById('novocc_cliente'); if (hid) hid.value = nome;
+  custosccFecharDropdownCliente();
+}
+function custosccNovoClienteComNome(nomeSugerido) {
+  custosccFecharDropdownCliente();
+  custosccAbrirCadastroCliente(nomeSugerido);
+}
+function custosccAbrirCadastroCliente(nomeSugerido) {
+  const existenteModal = document.getElementById('custoscc-modal-cliente');
+  if (existenteModal) existenteModal.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'custoscc-modal-cliente';
+  modal.style.zIndex = '1300';
+  modal.innerHTML = `<div class="modal-box" style="max-width:420px">
+    <div class="modal-header"><h3>👤 Cadastrar Novo Cliente</h3></div>
+    <div class="modal-body">
+      <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Clientes cadastrados ficam disponíveis para todos os Centros de Custo e para os demais módulos do sistema (Orçamentos, Receitas etc).</div>
+      <div class="form-group" style="margin-bottom:12px"><label>Razão Social / Nome</label><input type="text" id="custoscc_cli_nome" value="${(nomeSugerido||'').replace(/"/g,'&quot;')}" placeholder="Nome completo do cliente"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>CNPJ / CPF</label><input type="text" id="custoscc_cli_cnpj" placeholder="00.000.000/0001-00"></div>
+      <div class="form-group" style="margin-bottom:16px;position:relative">
+        <label>Município</label>
+        <input type="text" id="custoscc_cli_municipio_input" placeholder="Digite para buscar..." autocomplete="off" oninput="municipioFiltrar(this.value,'custoscc_cli')" onfocus="municipioFiltrar(this.value,'custoscc_cli')" onblur="setTimeout(()=>municipioFecharDropdown('custoscc_cli'),150)">
+        <input type="hidden" id="custoscc_cli_municipio">
+        <div id="custoscc_cli_municipio_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:2100;margin-top:4px"></div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn-primary" onclick="custosccConfirmarCadastroCliente()" style="flex:1">✅ Cadastrar</button>
+        <button class="btn-secondary" onclick="custosccFecharModalCliente()" style="flex:1">Cancelar</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+function custosccFecharModalCliente() {
+  const el = document.getElementById('custoscc-modal-cliente');
+  if (el) el.remove();
+}
+async function custosccConfirmarCadastroCliente() {
+  const nome = (document.getElementById('custoscc_cli_nome').value||'').trim();
+  const cnpj = (document.getElementById('custoscc_cli_cnpj').value||'').trim();
+  const municipio = (document.getElementById('custoscc_cli_municipio').value||'').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do cliente.'); return; }
+  const lista = window._clientesCache || [];
+  const jaExiste = lista.some(c => (c.Title||'').toLowerCase() === nome.toLowerCase() || (cnpj && c.CNPJ === cnpj));
+  if (jaExiste) { showToast('⚠️ Cliente já cadastrado!'); return; }
+  const dados = { Title: nome, CNPJ: cnpj, Municipio: municipio };
+  const ok = await salvarNoSharePoint('Clientes', dados);
+  if (ok) {
+    showToast('✅ Cliente cadastrado!');
+    custosccFecharModalCliente();
+    try { window._clientesCache = await dbLer('Clientes'); } catch(e) {}
+    custosccSelecionarCliente(nome);
+  } else {
+    showToast('❌ Erro ao cadastrar cliente.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():''));
+  }
+}
+
+// Placeholder do campo Código CC muda conforme a empresa escolhida, pra
+// deixar claro que a numeração é própria de cada empresa (pedido 16/09/2026).
+function novoccAtualizarPlaceholderId() {
+  const empresa = (document.getElementById('novocc_empresa')||{}).value || '';
+  const idField = document.getElementById('novocc_id');
+  if (idField) idField.placeholder = empresa ? 'Gerado automaticamente (' + _custosPrefixoEmpresa(empresa) + '-XXX)' : 'Gerado automaticamente';
+}
+
 function abrirModalNovoCC(idParaEditar) {
   const m = document.getElementById('modal-novo-cc');
   if (!m) return;
+  if (!window._clientesCache) { dbLer('Clientes').then(l => { window._clientesCache = l || []; }).catch(() => { window._clientesCache = []; }); }
   window._custosEditandoId = idParaEditar || null;
   const titulo = document.getElementById('novocc-titulo');
   const btnConfirmar = document.getElementById('novocc-btn-confirmar');
@@ -27803,19 +28034,23 @@ function abrirModalNovoCC(idParaEditar) {
     if (btnConfirmar) btnConfirmar.textContent = '💾 Salvar Alterações';
     document.getElementById('novocc_contrato').value = cc.contrato;
     document.getElementById('novocc_empresa').value  = cc.empresa;
-    document.getElementById('novocc_cliente').value  = cc.cliente === '—' ? '' : cc.cliente;
+    const clienteVal = cc.cliente === '—' ? '' : cc.cliente;
+    document.getElementById('novocc_cliente').value  = clienteVal;
+    document.getElementById('novocc_cliente_input').value = clienteVal;
     document.getElementById('novocc_gestor').value   = cc.gestor;
     document.getElementById('novocc_categoria').value= cc.categoria;
     novoccAtualizarSubcategorias(cc.subcategoria);
     document.getElementById('novocc_status').value   = cc.status;
     if (idField) { idField.value = cc.id; idField.disabled = true; }
+    novoccAtualizarPlaceholderId();
   } else {
     if (titulo) titulo.textContent = '➕ Novo Centro de Custo';
     if (btnConfirmar) btnConfirmar.textContent = '✅ Cadastrar Centro de Custo';
-    ['novocc_contrato','novocc_cliente','novocc_id'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+    ['novocc_contrato','novocc_cliente','novocc_cliente_input','novocc_id'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
     ['novocc_empresa','novocc_gestor','novocc_categoria','novocc_status'].forEach(id=>{ const e=document.getElementById(id); if(e) e.selectedIndex=0; });
     novoccAtualizarSubcategorias();
     if (idField) idField.disabled = false;
+    novoccAtualizarPlaceholderId();
   }
   m.style.display = 'flex';
 }
@@ -27824,7 +28059,7 @@ function fecharModalNovoCC() {
   const m = document.getElementById('modal-novo-cc');
   if (m) m.style.display = 'none';
   window._custosEditandoId = null;
-  ['novocc_contrato','novocc_cliente','novocc_id'].forEach(id=>{
+  ['novocc_contrato','novocc_cliente','novocc_cliente_input','novocc_id'].forEach(id=>{
     const e=document.getElementById(id);if(e){e.value='';e.disabled=false;}
   });
 }
@@ -27870,10 +28105,10 @@ async function confirmarCC() {
 
   const jaExiste = centrosCustoData.some(c => c.contrato.toLowerCase() === contrato.toLowerCase());
   if (jaExiste) { showToast('⚠️ Já existe um CC com esse nome!'); return; }
-  let novoId = idCustom || _custosProximoId();
+  let novoId = idCustom || _custosProximoId(empresa);
   if (centrosCustoData.some(c => c.id === novoId)) {
     if (idCustom) { showToast('⚠️ O código "' + novoId + '" já está em uso por outro contrato. Deixe em branco para gerar automaticamente.'); return; }
-    novoId = _custosProximoId();
+    novoId = _custosProximoId(empresa);
   }
   const novoCC = { id: novoId, contrato, cliente: cliente||'—', empresa, status, gestor, categoria, subcategoria };
   centrosCustoData.push(novoCC);
