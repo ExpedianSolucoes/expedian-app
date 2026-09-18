@@ -39952,12 +39952,41 @@ function faunaHtmlFiltroMes() {
 async function faunaExportarExcel() {
   const filtroEmp = window._faunaFiltroEmp || '';
   const filtroMes = window._faunaFiltroMes || '';
-  const items = (window._faunaHistorico || [])
+  const itemsLeves = (window._faunaHistorico || [])
     .filter(r => !filtroEmp || (r.empreendimento || '') === filtroEmp)
     .filter(r => !filtroMes || (r.data || '').slice(0, 7) === filtroMes)
     .slice()
     .sort((a, b) => (a.data || '').localeCompare(b.data || '') || ((parseInt(a.numeroFicha, 10) || 0) - (parseInt(b.numeroFicha, 10) || 0)));
-  if (!items.length) { showToast('⚠️ Nenhuma ficha para exportar' + (filtroMes ? ' nesse mês' : '') + '.'); return; }
+  if (!itemsLeves.length) { showToast('⚠️ Nenhuma ficha para exportar' + (filtroMes ? ' nesse mês' : '') + '.'); return; }
+  // A tabela ChecklistFauna guarda só um resumo leve (numeroFicha/data/
+  // tipoRegistro/nomeComum/nomeCientifico/quantidade/empreendimento/
+  // cliente) — os demais campos (clima, profissional, coordenadas UTM,
+  // grupo faunístico, sexo, condição física, destino etc.) ficam num
+  // snapshot completo à parte, em Checklists/Fauna/dados/<id>.json (mesmo
+  // arquivo que "✏️ Editar" já busca). Corrigido em 18/09/2026: o Excel
+  // exportava só o resumo leve e vinha sem essas colunas — agora busca o
+  // snapshot completo de cada ficha antes de montar a planilha.
+  showSyncStatus('Buscando dados completos das fichas (0/' + itemsLeves.length + ')...');
+  let carregadas = 0, falhas = 0;
+  const LOTE = 6;
+  const items = itemsLeves.slice();
+  for (let i = 0; i < items.length; i += LOTE) {
+    const lote = items.slice(i, i + LOTE);
+    await Promise.all(lote.map(async (item, idx) => {
+      const caminho = item.arquivoDados || ('Checklists/Fauna/dados/' + item.Id + '.json');
+      try {
+        const texto = await baixarArquivoCentral(caminho);
+        if (texto) {
+          const completo = JSON.parse(texto);
+          items[i + idx] = { ...item, ...completo };
+        } else {
+          falhas++;
+        }
+      } catch (e) { falhas++; }
+      carregadas++;
+    }));
+    showSyncStatus('Buscando dados completos das fichas (' + carregadas + '/' + itemsLeves.length + ')...');
+  }
   showToast('📊 Gerando planilha...');
   if (typeof XLSX === 'undefined') {
     await new Promise((res, rej) => {
@@ -39967,30 +39996,42 @@ async function faunaExportarExcel() {
       document.head.appendChild(s);
     });
   }
-  const rows = items.map(f => ({
-    'Nº Ficha': f.numeroFicha || '',
-    'Data': f.data ? new Date(f.data + 'T12:00').toLocaleDateString('pt-BR') : '',
-    'Horário': f.horario || '',
-    'Empreendimento': f.empreendimento || '',
-    'Cliente': f.cliente || '',
-    'Atividade': f.atividade || '',
-    'Condições Climáticas': f.clima || '',
-    'Profissional': f.profissionalNome || '',
-    'Cargo': f.profissionalCargo || '',
-    'CRBio': f.crbio || '',
-    'Tipo de Registro': f.tipoRegistro || '',
-    'Material Utilizado': f.materialUtilizado || '',
-    'Grupo Faunístico': f.grupoFaunistico || '',
-    'Nome Científico': f.nomeCientifico || '',
-    'Nome Comum': f.nomeComum || '',
-    'Quantidade': f.quantidade || '',
-    'Sexo do Animal': f.sexoAnimal || '',
-    'Condição Física': f.condicaoFisica || '',
-    'Destino': f.destino || '',
-    'UTM Latitude': f.utmLat || '',
-    'UTM Longitude': f.utmLong || '',
-    'Registrado por': f.CriadoPorNome || '',
-  }));
+  // Pedido em 18/09/2026: uma linha por ANIMAL cadastrado (não uma linha por
+  // ficha) — uma ficha com Quantidade=5 vira 5 linhas idênticas nos dados da
+  // coleta, uma por indivíduo, com uma coluna "Indivíduo" (1 de 5, 2 de 5...)
+  // pra deixar claro que não é duplicata. Ficha sem quantidade informada (ou
+  // 0) ainda gera 1 linha, pra não sumir da planilha.
+  const rows = [];
+  items.forEach(f => {
+    const qtd = Math.max(1, parseInt(f.quantidade, 10) || 0);
+    for (let i = 1; i <= qtd; i++) {
+      rows.push({
+        'Nº Ficha': f.numeroFicha || '',
+        'Indivíduo': qtd > 1 ? (i + ' de ' + qtd) : '1 de 1',
+        'Data': f.data ? new Date(f.data + 'T12:00').toLocaleDateString('pt-BR') : '',
+        'Horário': f.horario || '',
+        'Empreendimento': f.empreendimento || '',
+        'Cliente': f.cliente || '',
+        'Atividade': f.atividade || '',
+        'Condições Climáticas': f.clima || '',
+        'Profissional': f.profissionalNome || '',
+        'Cargo': f.profissionalCargo || '',
+        'CRBio': f.crbio || '',
+        'Tipo de Registro': f.tipoRegistro || '',
+        'Material Utilizado': f.materialUtilizado || '',
+        'Grupo Faunístico': f.grupoFaunistico || '',
+        'Nome Científico': f.nomeCientifico || '',
+        'Nome Comum': f.nomeComum || '',
+        'Quantidade Total na Ficha': f.quantidade || '',
+        'Sexo do Animal': f.sexoAnimal || '',
+        'Condição Física': f.condicaoFisica || '',
+        'Destino': f.destino || '',
+        'UTM Latitude': f.utmLat || '',
+        'UTM Longitude': f.utmLong || '',
+        'Registrado por': f.CriadoPorNome || '',
+      });
+    }
+  });
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Fichas de Campo');
