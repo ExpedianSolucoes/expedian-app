@@ -6539,8 +6539,26 @@ function pagePagar() {
     </div>`;
   }
   setTimeout(()=>{ carregarContasPagar(); carregarFornecedoresLista(); carregarBancosLista(); }, 200);
+  const pagFiltroEmpAtivo = window._pagFiltroEmpresa || 'todos';
+  const pagEmpPill = (emp, label) => {
+    const ativo = pagFiltroEmpAtivo === emp;
+    const cor = emp === 'todos' ? 'var(--green-main)' : ({ 'Expedian':'var(--green-main)', 'TL3':'var(--blue)', 'EXP Brasil':'var(--amber)' }[emp] || 'var(--green-main)');
+    return `<button onclick="window._pagFiltroEmpresa='${emp}';navigate('pagar')"
+      style="display:flex;align-items:center;gap:6px;padding:7px 13px;border-radius:9px;
+        border:${ativo?'2px solid '+cor:'1px solid var(--border)'};
+        background:${ativo?cor:'var(--surface2)'};
+        color:${ativo?'#fff':'var(--text)'};
+        font-family:'Mont',sans-serif;font-size:.78rem;font-weight:${ativo?'700':'500'};cursor:pointer">
+      🏢 ${label}
+    </button>`;
+  };
   return `
-  <div class="page-header"><h1>Contas a Pagar</h1><p>Gestão de fornecedores e pagamentos</p></div>
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+    <div><h1>Contas a Pagar</h1><p>Gestão de fornecedores e pagamentos</p></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding-top:2px">
+      ${pagEmpPill('todos','Todas')}${pagEmpPill('Expedian','Expedian')}${pagEmpPill('TL3','TL3')}${pagEmpPill('EXP Brasil','EXP Brasil')}
+    </div>
+  </div>
 
   <!-- Formulário de lançamento (colapsável — só abre ao clicar no botão) -->
   <div style="margin-bottom:24px">
@@ -9084,6 +9102,12 @@ async function carregarContasPagar() {
   if(!token){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>';return;}
   try {
     let items = await dbLer('ContasPagar');
+    // Filtro por empresa — estrutural (igual Receitas/Despesas e Centros de
+    // Custo), aplicado logo após buscar os dados e antes de qualquer KPI, pra
+    // que os totais mostrados já reflitam só a empresa selecionada (pedido em
+    // 18/09/2026, junto com os cards de Contas a Pagar em cada Painel).
+    const pagEmpAtiva = window._pagFiltroEmpresa || 'todos';
+    if (pagEmpAtiva && pagEmpAtiva !== 'todos') items = items.filter(r => normalizarEmpresa(r.Empresa) === pagEmpAtiva);
     // Recalcular status de vencimento automaticamente (exceto estados já definidos por aprovação/pagamento).
     // Também grava de volta no OneDrive quando o status mudou (ex: "Pendente" virou
     // "Vence hoje"), pra outras telas que leem ContasPagar direto (dashboard da
@@ -22992,6 +23016,71 @@ function laRmaExcluir(licId, rmaId) {
 let CT_DADOS = [];
 let CT_FILTRO_STATUS = '';
 
+/* -- Financeiro automático por contrato (pedido em 18/09/2026: "quero
+   automatizar [a planilha financeira] aqui no sistema, a partir do
+   faturamento recebido"). Cada contrato pode ser vinculado a 1+ Centros de
+   Custo (c.centrosCusto, array de ids); a partir daí soma ao vivo o que já
+   está lançado em Receitas/Despesas/ContasPagar para esses CCs — mesma
+   tabela e mesmo campo CentroCusto/DivisaoCC que a tela de Centros de Custo
+   já usa (_custosValorParaCC), só que aqui filtrando por Status pra separar
+   Recebido/A Receber/Vencido (do lado da receita) e Pago/A Pagar/Vencido (do
+   lado da despesa), do jeito que a planilha "📋 Contratos" calculava. Nada
+   fica em cache separado do que a aba Financeiro já grava — lançou algo
+   novo lá, o número aqui já muda na próxima renderização. -- */
+let _ctReceitas = null;
+let _ctDespesas = null;
+let _ctContasPagar = null;
+async function ctCarregarFinanceiro(forcar) {
+  if (_ctReceitas !== null && !forcar) return;
+  try {
+    const [r, d, cp] = await Promise.all([
+      dbLer('Receitas').catch(() => []),
+      dbLer('Despesas').catch(() => []),
+      dbLer('ContasPagar').catch(() => []),
+    ]);
+    _ctReceitas = Array.isArray(r) ? r : [];
+    _ctDespesas = Array.isArray(d) ? d : [];
+    _ctContasPagar = Array.isArray(cp) ? cp : [];
+  } catch (e) {
+    console.warn('[Gestão de Contratos] Falha ao carregar financeiro.', e);
+    _ctReceitas = _ctReceitas || []; _ctDespesas = _ctDespesas || []; _ctContasPagar = _ctContasPagar || [];
+  }
+}
+const CT_STATUS_RECEITA_ABERTO = ['Pendente', 'Vence em breve', 'Vence hoje'];
+const CT_STATUS_DESPESA_ABERTO = ['Pendente', 'Vence em breve', 'Vence hoje', 'Aguardando Aprovação'];
+function ctFinanceiroDoContrato(c) {
+  const ccIds = c.centrosCusto || [];
+  if (!ccIds.length || _ctReceitas === null) return null;
+  let receitaRecebida = 0, aReceber = 0, vencidoReceber = 0;
+  (_ctReceitas || []).forEach(r => {
+    if (r.Status === 'Cancelado') return;
+    ccIds.forEach(ccId => {
+      const v = _custosValorParaCC(r, ccId);
+      if (!v) return;
+      if (r.Status === 'Recebido') receitaRecebida += v;
+      else if (r.Status === 'Em atraso') vencidoReceber += v;
+      else if (CT_STATUS_RECEITA_ABERTO.includes(r.Status)) aReceber += v;
+    });
+  });
+  let despesaPaga = 0;
+  (_ctDespesas || []).forEach(d => {
+    ccIds.forEach(ccId => { despesaPaga += _custosValorParaCC(d, ccId); });
+  });
+  let aPagar = 0, vencidoPagar = 0;
+  (_ctContasPagar || []).forEach(cp => {
+    if (cp.Status === 'Cancelado' || cp.Status === 'Pago') return; // 'Pago' já virou Despesas — não conta 2x
+    ccIds.forEach(ccId => {
+      const v = _custosValorParaCC(cp, ccId);
+      if (!v) return;
+      if (cp.Status === 'Em atraso') vencidoPagar += v;
+      else if (CT_STATUS_DESPESA_ABERTO.includes(cp.Status)) aPagar += v;
+    });
+  });
+  const saldo = receitaRecebida - despesaPaga;
+  const margem = receitaRecebida > 0 ? (saldo / receitaRecebida) : null;
+  return { receitaRecebida, despesaPaga, saldo, margem, aReceber, vencidoReceber, aPagar, vencidoPagar };
+}
+
 const CT_SEED = [
   {
     Id: 'ct-ero1', cliente: 'Energisa Rondônia — Distribuidora de Energia S/A', clienteCnpj: '05.914.650/0001-66',
@@ -23268,16 +23357,21 @@ function ctRenderizarCard(c) {
     '</div>'
   ) : '';
 
+  var empDados = c.empresa ? CONC_EMPRESA_DADOS[c.empresa] : null;
+  var empresaHtml = empDados ? '<span style="font-size:.62rem;font-weight:700;padding:2px 8px;border-radius:10px;background:'+empDados.cor+'14;color:'+empDados.cor+';margin-left:6px">🏢 '+c.empresa+'</span>' : '';
+
+  var finHtml = ctFinanceiroCardHtml(c);
+
   return '<div style="border:1px solid var(--border);border-right:none;border-bottom:none;padding:14px 16px">' +
     '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
       '<div>' +
-        '<div style="font-size:.62rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">'+c.numero+'</div>' +
+        '<div style="font-size:.62rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">'+c.numero+empresaHtml+'</div>' +
         '<div style="font-size:.85rem;font-weight:700;color:var(--text);line-height:1.3;margin-top:2px">'+c.objeto+'</div>' +
       '</div>' +
       '<span style="font-size:.66rem;font-weight:700;padding:3px 9px;border-radius:12px;background:'+statusCor+'14;color:'+statusCor+';white-space:nowrap">● '+statusLbl+'</span>' +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:12px">'+camposHtml+'</div>' +
-    progHtml + alertasHtml +
+    progHtml + alertasHtml + finHtml +
     (c.anexoUrl ? '<div style="margin-top:10px"><a href="'+c.anexoUrl+'" target="_blank" style="font-size:.72rem;color:#0d6efd;text-decoration:none">📎 '+(c.anexoNome||'Anexo do contrato')+'</a></div>' : '') +
     '<div style="display:flex;gap:6px;margin-top:12px">' +
       '<button style="font-size:.72rem;padding:5px 10px;border:1px solid var(--border);background:transparent;color:var(--text);border-radius:7px;cursor:pointer" onclick="ctAbrirModal(\''+c.Id+'\')">✏️ Editar</button>' +
@@ -23286,9 +23380,40 @@ function ctRenderizarCard(c) {
   '</div>';
 }
 
+/* -- Bloco "Financeiro (ao vivo)" de cada card — Receita Recebida, Despesa
+   Paga, Saldo, % Margem, A Receber e A Pagar, a partir dos Centros de Custo
+   vinculados ao contrato (c.centrosCusto). Sem vínculo nenhum, mostra um
+   aviso em vez de custar zero (evita mostrar "R$ 0,00" como se o contrato
+   não tivesse faturado nada, quando na verdade só falta vincular o CC). -- */
+function ctFinanceiroCardHtml(c) {
+  if (!c.centrosCusto || !c.centrosCusto.length) {
+    return '<div style="margin-top:10px;font-size:.7rem;color:var(--text-muted);font-style:italic">💡 Vincule um Centro de Custo (editar contrato) pra ver Receita/Despesa/Saldo automáticos aqui.</div>';
+  }
+  var fin = ctFinanceiroDoContrato(c);
+  if (!fin) {
+    return '<div style="margin-top:10px;font-size:.7rem;color:var(--text-muted)">Carregando financeiro…</div>';
+  }
+  var corMargem = fin.margem === null ? 'var(--text-muted)' : (fin.margem >= 0 ? '#28a745' : '#dc3545');
+  var linhaSec = [];
+  if (fin.aReceber > 0) linhaSec.push('<span style="color:#0d6efd">A Receber: ' + rdNumeroParaMoeda(fin.aReceber) + '</span>');
+  if (fin.vencidoReceber > 0) linhaSec.push('<span style="color:#dc3545">Vencido: ' + rdNumeroParaMoeda(fin.vencidoReceber) + '</span>');
+  if (fin.aPagar > 0) linhaSec.push('<span style="color:#e0851f">A Pagar: ' + rdNumeroParaMoeda(fin.aPagar) + '</span>');
+  if (fin.vencidoPagar > 0) linhaSec.push('<span style="color:#dc3545">Contas vencidas: ' + rdNumeroParaMoeda(fin.vencidoPagar) + '</span>');
+  return '<div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border)">' +
+    '<div style="font-size:.62rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">💰 Financeiro (ao vivo)</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 10px">' +
+      '<div style="display:flex;flex-direction:column;gap:1px"><span style="font-size:.6rem;color:var(--text-muted)">Receita recebida</span><span style="font-size:.8rem;font-weight:700;color:#28a745">' + rdNumeroParaMoeda(fin.receitaRecebida) + '</span></div>' +
+      '<div style="display:flex;flex-direction:column;gap:1px"><span style="font-size:.6rem;color:var(--text-muted)">Despesa paga</span><span style="font-size:.8rem;font-weight:700;color:#dc3545">' + rdNumeroParaMoeda(fin.despesaPaga) + '</span></div>' +
+      '<div style="display:flex;flex-direction:column;gap:1px"><span style="font-size:.6rem;color:var(--text-muted)">Saldo</span><span style="font-size:.8rem;font-weight:700;color:' + corMargem + '">' + rdNumeroParaMoeda(fin.saldo) + (fin.margem !== null ? ' (' + (fin.margem * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '%)' : '') + '</span></div>' +
+    '</div>' +
+    (linhaSec.length ? '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;font-size:.68rem;font-weight:600">' + linhaSec.join('') + '</div>' : '') +
+  '</div>';
+}
+
 /* -- Modal Novo/Editar -- */
 var CT_CAMPOS_TMP = [];
 var CT_ALERTAS_TMP = [];
+var CT_CCS_TMP = []; // ids de Centro de Custo vinculados ao contrato em edição
 
 function ctAbrirModal(id) {
   var c = id ? CT_DADOS.find(function(x){ return x.Id===id; }) : null;
@@ -23299,6 +23424,7 @@ function ctAbrirModal(id) {
   document.getElementById('ct-numero').value = c ? c.numero : '';
   document.getElementById('ct-objeto').value = c ? c.objeto : '';
   document.getElementById('ct-status').value = c ? c.status : 'ativo';
+  document.getElementById('ct-empresa').value = c ? (c.empresa||'') : '';
   document.getElementById('ct-inicio').value = c ? (c.inicio||'') : '';
   document.getElementById('ct-fim').value = c ? (c.fim||'') : '';
   document.getElementById('ct-gestor').value = c ? (c.gestor||'') : '';
@@ -23306,11 +23432,46 @@ function ctAbrirModal(id) {
   document.getElementById('ct-obs').value = c ? (c.obs||'') : '';
   CT_CAMPOS_TMP = c ? JSON.parse(JSON.stringify(c.campos||[])) : [];
   CT_ALERTAS_TMP = c ? JSON.parse(JSON.stringify(c.alertas||[])) : [];
+  CT_CCS_TMP = c ? (c.centrosCusto||[]).slice() : [];
   ctRenderizarCamposForm();
   ctRenderizarAlertasForm();
+  ctRenderizarCCsForm();
   document.getElementById('ct-anexo-atual').innerHTML = c && c.anexoUrl ? ('📎 <a href="'+c.anexoUrl+'" target="_blank">'+(c.anexoNome||'anexo atual')+'</a>') : '';
   var fileInput = document.getElementById('ct-anexo-file'); if (fileInput) fileInput.value = '';
   document.getElementById('ct-modal').style.display = 'flex';
+}
+
+/* -- Checklist de Centros de Custo vinculados, filtrada pela empresa
+   escolhida no select acima (senão a lista de ~40 CCs das 3 empresas
+   misturadas ficaria grande demais pra usar). Reabre/atualiza sempre que a
+   empresa do formulário muda (ctAbrirModal ou onchange do select). -- */
+function ctRenderizarCCsForm() {
+  var el = document.getElementById('ct-ccs-lista');
+  if (!el) return;
+  var empresaSel = (document.getElementById('ct-empresa') || {}).value || '';
+  var ccsDaEmpresa = !empresaSel ? [] : centrosCustoData.filter(function(cc){ return normalizarEmpresa(cc.empresa) === empresaSel && cc.status === 'ativo'; });
+  if (!empresaSel) {
+    el.innerHTML = '<div style="font-size:.75rem;color:var(--text-muted)">Selecione a empresa do contrato acima pra escolher os Centros de Custo.</div>';
+    return;
+  }
+  if (!ccsDaEmpresa.length) {
+    el.innerHTML = '<div style="font-size:.75rem;color:var(--text-muted)">Nenhum Centro de Custo ativo cadastrado para essa empresa.</div>';
+    return;
+  }
+  el.innerHTML = '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px">' +
+    ccsDaEmpresa.map(function(cc) {
+      var marcado = CT_CCS_TMP.indexOf(cc.id) !== -1;
+      return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:.78rem;cursor:pointer">' +
+        '<input type="checkbox" ' + (marcado?'checked':'') + ' onchange="ctToggleCC(\''+cc.id+'\')">' +
+        '<span><b>'+cc.id+'</b> · '+cc.contrato+'</span>' +
+      '</label>';
+    }).join('') +
+  '</div>';
+}
+function ctMudarEmpresaForm() { CT_CCS_TMP = []; ctRenderizarCCsForm(); }
+function ctToggleCC(ccId) {
+  var i = CT_CCS_TMP.indexOf(ccId);
+  if (i === -1) CT_CCS_TMP.push(ccId); else CT_CCS_TMP.splice(i, 1);
 }
 
 function ctFecharModal() { document.getElementById('ct-modal').style.display = 'none'; }
@@ -23357,6 +23518,7 @@ async function ctSalvarRegistro() {
     numero: numero,
     objeto: document.getElementById('ct-objeto').value.trim(),
     status: document.getElementById('ct-status').value,
+    empresa: document.getElementById('ct-empresa').value,
     inicio: document.getElementById('ct-inicio').value,
     fim: document.getElementById('ct-fim').value,
     gestor: document.getElementById('ct-gestor').value.trim(),
@@ -23364,6 +23526,7 @@ async function ctSalvarRegistro() {
     obs: document.getElementById('ct-obs').value.trim(),
     campos: CT_CAMPOS_TMP.filter(function(f){ return f.label || f.valor; }),
     alertas: CT_ALERTAS_TMP.filter(function(a){ return a.label && a.data; }),
+    centrosCusto: CT_CCS_TMP.slice(),
   };
 
   var arquivo = document.getElementById('ct-anexo-file').files[0];
@@ -23404,13 +23567,118 @@ async function ctExcluir(id) {
   showToast('🗑️ Contrato removido.');
 }
 
+/* -- Remuneração dos Sócios — segunda automação pedida em 18/09/2026,
+   espelhando a aba "📐 Gestão de Contratos" da planilha: um teto mensal de
+   gestão (% da Receita Recebida do mês, limitado a um valor fixo) é
+   repartido entre os sócios na proporção do teto individual de cada um.
+   Matematicamente equivale a somar linha a linha por medição (como a
+   planilha fazia): Bolsa = MIN(Receita do mês × %teto, soma dos tetos);
+   cada sócio recebe Bolsa × (teto dele ÷ soma dos tetos). Config (percentual
+   e tetos individuais) fica numa única linha da tabela nova
+   'RemuneracaoSociosConfig' (auto-criada no primeiro salvamento). Receita do
+   mês é sempre a soma de TODAS as Receitas com Status "Recebido" no mês
+   escolhido, grupo todo (Expedian+TL3+EXP Brasil), igual à planilha original. -- */
+let CT_SOCIOS_CONFIG = null;
+let CT_SOCIOS_CONFIG_TMP = [];
+const CT_SOCIOS_CONFIG_PADRAO = { TetoPercentual: 10, Socios: [
+  { nome: 'Sócio 1', teto: 5000 }, { nome: 'Sócio 2', teto: 5000 },
+  { nome: 'Sócio 3', teto: 5000 }, { nome: 'Sócio 4', teto: 1621 },
+] };
+
+async function ctSociosCarregarConfig() {
+  try {
+    const lista = await dbLer('RemuneracaoSociosConfig');
+    CT_SOCIOS_CONFIG = (Array.isArray(lista) && lista.length) ? lista[0] : null;
+  } catch (e) { CT_SOCIOS_CONFIG = null; }
+}
+function ctSociosConfigAtual() { return CT_SOCIOS_CONFIG || CT_SOCIOS_CONFIG_PADRAO; }
+
+async function ctSociosCarregar() {
+  await ctSociosCarregarConfig();
+  if (!window._ctSociosMes) window._ctSociosMes = new Date().toISOString().slice(0, 7);
+  const mesEl = document.getElementById('ct-socios-mes');
+  if (mesEl) mesEl.value = window._ctSociosMes;
+  await ctCarregarFinanceiro();
+  ctSociosRenderizar();
+}
+
+function ctSociosMudarMes(v) { window._ctSociosMes = v || new Date().toISOString().slice(0, 7); ctSociosRenderizar(); }
+
+function ctSociosRenderizar() {
+  const cont = document.getElementById('ct-socios-conteudo');
+  if (!cont) return;
+  if (_ctReceitas === null) { cont.innerHTML = 'Carregando…'; return; }
+  const cfg = ctSociosConfigAtual();
+  const mes = window._ctSociosMes || new Date().toISOString().slice(0, 7);
+  const receitaMes = (_ctReceitas || []).filter(r => r.Status === 'Recebido' && (r.DataRecebimento || r.DataEmissao || '').slice(0, 7) === mes)
+    .reduce((s, r) => s + (Number(r.Valor) || 0), 0);
+  const socios = cfg.Socios || [];
+  const somaTetos = socios.reduce((s, x) => s + (Number(x.teto) || 0), 0);
+  const tetoPct = (Number(cfg.TetoPercentual) || 0) / 100;
+  const bolsa = somaTetos > 0 ? Math.min(receitaMes * tetoPct, somaTetos) : 0;
+  cont.innerHTML = `
+    <div class="kpi-grid" style="margin-bottom:14px">
+      <div class="kpi-card green"><div class="kpi-label">Receita Recebida do mês</div><div class="kpi-value" style="font-size:1.05rem">${rdNumeroParaMoeda(receitaMes)}</div><div class="kpi-icon">💰</div></div>
+      <div class="kpi-card blue"><div class="kpi-label">Bolsa de Gestão do mês</div><div class="kpi-value" style="font-size:1.05rem">${rdNumeroParaMoeda(bolsa)}</div><div class="kpi-icon">🧮</div></div>
+      <div class="kpi-card amber"><div class="kpi-label">% Teto configurado</div><div class="kpi-value">${(cfg.TetoPercentual || 0).toLocaleString('pt-BR')}%</div><div class="kpi-icon">⚙️</div></div>
+    </div>
+    ${!socios.length ? `<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.85rem">Nenhum sócio configurado ainda — clique em "⚙️ Configurar tetos".</div>` : `
+    <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+      <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border)"><th style="padding:6px">Sócio</th><th style="padding:6px;text-align:right">Teto individual</th><th style="padding:6px;text-align:right">% do total</th><th style="padding:6px;text-align:right">Recebe no mês</th></tr></thead>
+      <tbody>${socios.map(s => {
+        const pct = somaTetos > 0 ? (Number(s.teto) || 0) / somaTetos : 0;
+        const valor = bolsa * pct;
+        return `<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px;font-weight:700">${s.nome}</td><td style="padding:6px;text-align:right">${rdNumeroParaMoeda(s.teto || 0)}</td><td style="padding:6px;text-align:right">${(pct * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</td><td style="padding:6px;text-align:right;font-weight:700;color:#28a745">${rdNumeroParaMoeda(valor)}</td></tr>`;
+      }).join('')}</tbody>
+    </table>`}`;
+}
+
+function ctSociosAbrirConfig() {
+  const cfg = ctSociosConfigAtual();
+  document.getElementById('ct-socios-pct').value = cfg.TetoPercentual || 0;
+  CT_SOCIOS_CONFIG_TMP = JSON.parse(JSON.stringify(cfg.Socios || []));
+  ctSociosRenderizarForm();
+  document.getElementById('ct-socios-modal').style.display = 'flex';
+}
+function ctSociosFecharConfig() { document.getElementById('ct-socios-modal').style.display = 'none'; }
+function ctSociosRenderizarForm() {
+  const el = document.getElementById('ct-socios-form-lista');
+  if (!el) return;
+  el.innerHTML = CT_SOCIOS_CONFIG_TMP.map((s, i) => `
+    <div style="display:flex;gap:6px;margin-bottom:6px">
+      <input type="text" placeholder="Nome" value="${(s.nome || '').replace(/"/g, '&quot;')}" oninput="CT_SOCIOS_CONFIG_TMP[${i}].nome=this.value" style="flex:2;padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
+      <input type="number" step="0.01" placeholder="Teto R$" value="${s.teto || ''}" oninput="CT_SOCIOS_CONFIG_TMP[${i}].teto=parseFloat(this.value)||0" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
+      <button type="button" onclick="ctSociosRemoverLinha(${i})" style="border:none;background:transparent;color:#dc3545;cursor:pointer;font-size:.9rem">✕</button>
+    </div>`).join('') || '<div style="font-size:.75rem;color:var(--text-muted)">Nenhum sócio cadastrado.</div>';
+}
+function ctSociosAddLinha() { CT_SOCIOS_CONFIG_TMP.push({ nome: '', teto: 0 }); ctSociosRenderizarForm(); }
+function ctSociosRemoverLinha(i) { CT_SOCIOS_CONFIG_TMP.splice(i, 1); ctSociosRenderizarForm(); }
+async function ctSociosSalvarConfig() {
+  const pct = parseFloat(document.getElementById('ct-socios-pct').value) || 0;
+  const socios = CT_SOCIOS_CONFIG_TMP.filter(s => s.nome);
+  const dados = { TetoPercentual: pct, Socios: socios };
+  let ok;
+  if (CT_SOCIOS_CONFIG && CT_SOCIOS_CONFIG.Id) {
+    ok = await dbAtualizar('RemuneracaoSociosConfig', CT_SOCIOS_CONFIG.Id, dados);
+  } else {
+    const novo = await dbInserir('RemuneracaoSociosConfig', dados);
+    ok = !!(novo && novo.Id);
+  }
+  showToast(ok ? '✅ Configuração salva!' : '❌ Erro ao salvar.');
+  if (ok) { await ctSociosCarregarConfig(); ctSociosRenderizar(); ctSociosFecharConfig(); }
+}
+
 function pageContratos() {
-  ctCarregar().then(function() { ctRenderizarLista(); });
+  ctCarregar().then(function() {
+    ctRenderizarLista();
+    ctCarregarFinanceiro().then(function() { ctRenderizarLista(); });
+  });
+  setTimeout(function() { ctSociosCarregar(); }, 150);
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
     <div>
       <h1>📜 Gestão de Contratos</h1>
-      <p>Contratos ativos, valores, vigências e alertas de vencimento — acesso restrito à Diretoria</p>
+      <p>Contratos ativos, valores, vigências, alertas de vencimento e financeiro automático a partir do faturamento recebido — acesso restrito à Diretoria</p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
@@ -23433,6 +23701,41 @@ function pageContratos() {
   </div>
 
   <div id="ct-lista"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+
+  <!-- Remuneração dos Sócios — pedido em 18/09/2026, espelhando a aba "📐 Gestão
+       de Contratos" da planilha: reparte um teto mensal de gestão entre os
+       sócios, proporcional à Receita Recebida do mês (grupo todo). -- -->
+  <div class="card" style="padding:16px;margin-top:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:4px">
+      <div class="card-title">🧮 Remuneração dos Sócios — por Receita Recebida no mês</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="month" id="ct-socios-mes" onchange="ctSociosMudarMes(this.value)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
+        <button class="btn-secondary" onclick="ctSociosAbrirConfig()" style="font-size:.75rem;padding:6px 10px">⚙️ Configurar tetos</button>
+      </div>
+    </div>
+    <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:12px">Bolsa de gestão do mês = MENOR valor entre (Receita Recebida do mês × % teto) e (soma dos tetos individuais) — depois repartida entre os sócios na proporção do teto de cada um. Calculado ao vivo a partir das Receitas com status "Recebido".</div>
+    <div id="ct-socios-conteudo">Carregando…</div>
+  </div>
+
+  <!-- Modal de configuração dos sócios/tetos -->
+  <div id="ct-socios-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px">
+    <div style="background:var(--surface);border-radius:16px;width:min(480px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+      <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+        <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)">⚙️ Configurar Sócios e Tetos</div>
+        <button onclick="ctSociosFecharConfig()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
+      </div>
+      <div style="padding:20px">
+        <div class="form-group"><label>% do teto sobre a Receita Recebida do mês</label><input type="number" step="0.1" id="ct-socios-pct" placeholder="10"></div>
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:14px 0 8px;text-transform:uppercase;letter-spacing:.04em">Sócios (nome e teto individual em R$)</div>
+        <div id="ct-socios-form-lista"></div>
+        <button type="button" class="btn-secondary" style="font-size:.78rem;padding:6px 12px;margin-top:4px" onclick="ctSociosAddLinha()">+ Sócio</button>
+        <div style="display:flex;gap:10px;margin-top:20px">
+          <button class="btn-primary" style="flex:1" onclick="ctSociosSalvarConfig()">💾 Salvar</button>
+          <button class="btn-secondary" onclick="ctSociosFecharConfig()">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- MODAL: Novo/Editar Contrato -->
   <div id="ct-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px">
@@ -23467,6 +23770,20 @@ function pageContratos() {
           <div class="form-group"><label>Valor Global (R$)</label><input type="number" step="0.01" id="ct-valor-global" placeholder="0,00"></div>
         </div>
         <div class="form-group"><label>Observações</label><input type="text" id="ct-obs" placeholder="Observações gerais"></div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.04em">💰 Financeiro automático (a partir do faturamento recebido)</div>
+        <div class="form-group">
+          <label>Empresa do contrato</label>
+          <select id="ct-empresa" onchange="ctMudarEmpresaForm()">
+            <option value="">Selecione...</option>
+            ${RD_EMPRESAS.map(emp => `<option value="${emp}">${emp}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Centro(s) de Custo vinculado(s)</label>
+          <div id="ct-ccs-lista"></div>
+          <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">Marque o(s) CC(s) que faturam por esse contrato — Receita Recebida, Despesa, Saldo e % Margem passam a ser calculados ao vivo a partir das Receitas/Despesas/Contas a Pagar já lançadas neles.</div>
+        </div>
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.04em">Campos adicionais (exibidos no card)</div>
         <div id="ct-campos-lista"></div>
@@ -33330,6 +33647,11 @@ const FINANCEIRO_CATALOGO = [
   { rota: 'cadastro_empresas', icon: '🏢', titulo: 'Empresas', subtitulo: 'Empresas do grupo', perfis: ['diretoria'] },
   { rota: 'cadastro_categorias', icon: '🗂️', titulo: 'Categorias', subtitulo: 'Categorias e subcategorias de Despesas/Receitas', perfis: ['diretoria'] },
   { rota: 'custos', icon: '🗃️', titulo: 'Centros de Resultado', subtitulo: 'Contratos e projetos ativos, com valor aprovado, receitas, despesas e saldo', perfis: ['diretoria'] },
+  // Pedido em 18/09/2026: faltava um jeito de chegar na tela (só existia a
+  // rota, sem card nenhum apontando pra ela) — agora com Receita
+  // Recebida/Despesa/Saldo automáticos por contrato e o cálculo de
+  // Remuneração dos Sócios, ambos a partir do faturamento recebido.
+  { rota: 'contratos', icon: '📜', titulo: 'Gestão de Contratos', subtitulo: 'Prazos, alertas, financeiro automático por contrato e remuneração dos sócios', perfis: ['diretoria'] },
 ];
 
 function pageFinanceiroHub() {
@@ -34234,12 +34556,14 @@ function pageTL3Painel() {
   if (!['diretoria', 'coordenador'].includes(currentProfile)) return tl3AcessoRestrito('📈 Painel — TL3');
   setTimeout(async () => {
     await tl3Carregar();
-    const [fin, bancosCCs] = await Promise.all([
+    const [fin, bancosCCs, pagar] = await Promise.all([
       empresaFinanceiroCarregar('TL3').catch(() => null),
       empresaBancosECCsCarregar('TL3').catch(() => null),
+      empresaContasPagarCarregar('TL3').catch(() => null),
     ]);
     window._tl3PainelFin = fin;
     window._tl3PainelBancosCCs = bancosCCs;
+    window._tl3PainelContasPagar = pagar;
     tl3RenderizarPainel();
   }, 150);
   return `
@@ -34249,8 +34573,12 @@ function pageTL3Painel() {
     <div class="kpi-card blue"><div class="kpi-label">Carregando...</div><div class="kpi-value">—</div></div>
   </div>
   <div class="card" style="padding:16px;margin-bottom:20px">
-    <div class="card-title" style="margin-bottom:10px">💰 Financeiro — TL3 (mês atual)</div>
+    <div class="card-title" style="margin-bottom:10px">💰 Financeiro — TL3</div>
     <div id="tl3-painel-financeiro">Carregando…</div>
+  </div>
+  <div class="card" style="padding:16px;margin-bottom:20px">
+    <div class="card-title" style="margin-bottom:10px">💸 Contas a Pagar — TL3</div>
+    <div id="tl3-painel-contaspagar">Carregando…</div>
   </div>
   <div class="card" style="padding:16px;margin-bottom:20px">
     <div class="card-title" style="margin-bottom:10px">🏦 Contas Bancárias e 🏗️ Centros de Custo — TL3</div>
@@ -34267,6 +34595,8 @@ function pageTL3Painel() {
 function tl3RenderizarPainel() {
   const finCont = document.getElementById('tl3-painel-financeiro');
   if (finCont) finCont.innerHTML = empresaFinanceiroCardHtml('TL3', window._tl3PainelFin);
+  const pagCont = document.getElementById('tl3-painel-contaspagar');
+  if (pagCont) pagCont.innerHTML = empresaContasPagarCardHtml('TL3', window._tl3PainelContasPagar);
   const bccCont = document.getElementById('tl3-painel-bancoscc');
   if (bccCont) bccCont.innerHTML = empresaBancosCCsCardHtml('TL3', window._tl3PainelBancosCCs);
   const kpis = document.getElementById('tl3-painel-kpis');
@@ -35199,25 +35529,61 @@ async function empresaFinanceiroCarregar(empresa) {
   ]);
   const despesasEmpresa = (despesasTodas || []).filter(d => normalizarEmpresa(d.Empresa) === empresa);
   const receitasEmpresa = (receitasTodas || []).filter(r => normalizarEmpresa(r.Empresa) === empresa);
-  const mesAtual = new Date().toISOString().slice(0, 7);
-  const despesaMes = despesasEmpresa.filter(d => (d.DataLancamento || '').slice(0, 7) === mesAtual).reduce((s, d) => s + (Number(d.Valor) || 0), 0);
-  const receitaMes = receitasEmpresa.filter(r => (r.DataEmissao || r.DataPrevista || '').slice(0, 7) === mesAtual).reduce((s, r) => s + (Number(r.Valor) || 0), 0);
-  return { despesaMes, receitaMes, saldoMes: receitaMes - despesaMes, despesasEmpresa, receitasEmpresa };
+  const mes = window._painelMes || new Date().toISOString().slice(0, 7);
+  const despesaMes = despesasEmpresa.filter(d => (d.DataLancamento || '').slice(0, 7) === mes).reduce((s, d) => s + (Number(d.Valor) || 0), 0);
+  const receitaMes = receitasEmpresa.filter(r => (r.DataEmissao || r.DataPrevista || '').slice(0, 7) === mes).reduce((s, r) => s + (Number(r.Valor) || 0), 0);
+  return { despesaMes, receitaMes, saldoMes: receitaMes - despesaMes, despesasEmpresa, receitasEmpresa, mes };
 }
 function abrirFinanceiroEmpresa(empresa) {
   window._dashFinEmpresa = empresa;
   navigate('dashboard_financeiro');
 }
+// Pedido em 18/09/2026: "todos os cards que foi inserido em painel devem ser
+// filtráveis" — o card de Financeiro ganha um seletor de mês (padrão: mês
+// atual), e os valores de Receita/Despesa passam a abrir, filtrado por essa
+// empresa, a tela cheia de Receitas/Despesas correspondente.
+function painelMudarMes(valor) {
+  window._painelMes = valor || new Date().toISOString().slice(0, 7);
+  navigate(currentPage);
+}
 function empresaFinanceiroCardHtml(empresa, fin) {
-  const botao = `<div style="margin-top:10px"><button class="btn-secondary" onclick="abrirFinanceiroEmpresa('${empresa}')" style="font-size:.75rem;padding:6px 10px">📊 Ver Dashboard Financeiro completo →</button></div>`;
+  const mesAtual = window._painelMes || new Date().toISOString().slice(0, 7);
+  const seletorMes = `<input type="month" value="${mesAtual}" onchange="painelMudarMes(this.value)" title="Filtrar por mês" style="padding:6px 9px;border-radius:8px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">`;
+  const botao = `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">${seletorMes}<button class="btn-secondary" onclick="abrirFinanceiroEmpresa('${empresa}')" style="font-size:.75rem;padding:6px 10px">📊 Ver Dashboard Financeiro completo →</button></div>`;
   if (currentProfile !== 'diretoria') {
     return `<div class="card" style="padding:16px;text-align:center;color:var(--text-muted);font-size:.85rem">🔒 Receita/Despesa/Saldo visíveis apenas para Diretoria.${botao}</div>`;
   }
-  if (!fin) return `<div class="kpi-grid"><div class="kpi-card blue"><div class="kpi-label">Carregando...</div><div class="kpi-value">—</div></div></div>`;
+  if (!fin) return `<div class="kpi-grid"><div class="kpi-card blue"><div class="kpi-label">Carregando...</div><div class="kpi-value">—</div></div></div>${botao}`;
+  const irReceitas = `window._rdEmpresaAtiva='${empresa}';window._rdTab='receitas';navigate('receitas_despesas')`;
+  const irDespesas = `window._rdEmpresaAtiva='${empresa}';window._rdTab='despesas';navigate('receitas_despesas')`;
   return `<div class="kpi-grid" style="margin-bottom:4px">
-    <div class="kpi-card green"><div class="kpi-label">Receita do mês</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(fin.receitaMes)}</div><div class="kpi-icon">💰</div></div>
-    <div class="kpi-card red"><div class="kpi-label">Despesa do mês</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(fin.despesaMes)}</div><div class="kpi-icon">💸</div></div>
+    <div class="kpi-card green" style="cursor:pointer" onclick="${irReceitas}" title="Ver Receitas de ${empresa}"><div class="kpi-label">Receita do mês</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(fin.receitaMes)}</div><div class="kpi-icon">💰</div></div>
+    <div class="kpi-card red" style="cursor:pointer" onclick="${irDespesas}" title="Ver Despesas de ${empresa}"><div class="kpi-label">Despesa do mês</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(fin.despesaMes)}</div><div class="kpi-icon">💸</div></div>
     <div class="kpi-card blue"><div class="kpi-label">Saldo do mês</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(fin.saldoMes)}</div><div class="kpi-icon">⚖️</div></div>
+  </div>${botao}`;
+}
+
+/* -- Contas a Pagar vinculado à empresa (pedido em 18/09/2026, junto com
+   Receitas/Despesas/Centro de Custo) — soma o que está em aberto (Pendente/
+   Vence em breve/Vence hoje/Aguardando Aprovação/Aprovado — Aguardando
+   Pagamento) e o que está vencido, só dessa empresa, e leva pra tela cheia
+   de Contas a Pagar já filtrada (ver pagFiltrarEmpresa). -- */
+async function empresaContasPagarCarregar(empresa) {
+  const todas = await dbLer('ContasPagar').catch(() => []);
+  const daEmpresa = (Array.isArray(todas) ? todas : []).filter(cp => normalizarEmpresa(cp.Empresa) === empresa && cp.Status !== 'Pago' && cp.Status !== 'Cancelado');
+  const vencido = daEmpresa.filter(cp => cp.Status === 'Em atraso');
+  const aberto = daEmpresa.filter(cp => cp.Status !== 'Em atraso');
+  return {
+    totalAberto: aberto.reduce((s, cp) => s + (Number(cp.Valor) || 0), 0), qtdAberto: aberto.length,
+    totalVencido: vencido.reduce((s, cp) => s + (Number(cp.Valor) || 0), 0), qtdVencido: vencido.length,
+  };
+}
+function empresaContasPagarCardHtml(empresa, dados) {
+  const botao = `<div style="margin-top:10px"><button class="btn-secondary" onclick="window._pagFiltroEmpresa='${empresa}';navigate('pagar')" style="font-size:.75rem;padding:6px 10px">Ver Contas a Pagar completo →</button></div>`;
+  if (!dados) return `<div class="kpi-grid"><div class="kpi-card blue"><div class="kpi-label">Carregando...</div><div class="kpi-value">—</div></div></div>${botao}`;
+  return `<div class="kpi-grid" style="margin-bottom:4px">
+    <div class="kpi-card amber" style="cursor:pointer" onclick="window._pagFiltroEmpresa='${empresa}';navigate('pagar')"><div class="kpi-label">Em aberto</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(dados.totalAberto)}</div><div class="kpi-icon">💸</div><div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">${dados.qtdAberto} lançamento(s)</div></div>
+    <div class="kpi-card red" style="cursor:pointer" onclick="window._pagFiltroEmpresa='${empresa}';navigate('pagar')"><div class="kpi-label">Vencido</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(dados.totalVencido)}</div><div class="kpi-icon">⚠️</div><div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">${dados.qtdVencido} lançamento(s)</div></div>
   </div>${botao}`;
 }
 
@@ -35250,6 +35616,7 @@ function empresaBancosCCsCardHtml(empresa, dados) {
     <div>
       <div style="font-weight:700;font-size:.82rem;margin-bottom:8px">🏗️ Centros de Custo (${dados.ccs.length})</div>
       ${ccsHtml}
+      <div style="margin-top:10px"><button class="btn-secondary" onclick="window._custosEmp='${empresa}';navigate('custos')" style="font-size:.75rem;padding:6px 10px">Ver todos →</button></div>
     </div>
   </div>`;
 }
@@ -35264,16 +35631,18 @@ function pageEmpresaResumo(empresa) {
   if (!['diretoria', 'coordenador'].includes(currentProfile)) return tl3AcessoRestrito('📈 Painel — ' + empresa);
   setTimeout(async () => {
     await concCarregar();
-    const [receitas, aliquota, fin, bancosCCs] = await Promise.all([
+    const [receitas, aliquota, fin, bancosCCs, pagar] = await Promise.all([
       dbLer('Receitas').catch(() => []),
       financeiroObterAliquota(empresa).catch(() => 0),
       empresaFinanceiroCarregar(empresa).catch(() => null),
       empresaBancosECCsCarregar(empresa).catch(() => null),
+      empresaContasPagarCarregar(empresa).catch(() => null),
     ]);
     window._empresaResumoReceitas = Array.isArray(receitas) ? receitas : [];
     window._empresaResumoAliquota = aliquota || 0;
     window._empresaResumoFin = fin;
     window._empresaResumoBancosCCs = bancosCCs;
+    window._empresaResumoContasPagar = pagar;
     empresaResumoRenderizar(empresa);
   }, 150);
   return `
@@ -35282,8 +35651,12 @@ function pageEmpresaResumo(empresa) {
     <div class="kpi-card blue"><div class="kpi-label">Carregando...</div><div class="kpi-value">—</div></div>
   </div>
   <div class="card" style="padding:16px;margin-bottom:20px">
-    <div class="card-title" style="margin-bottom:10px">💰 Financeiro — ${empresa} (mês atual)</div>
+    <div class="card-title" style="margin-bottom:10px">💰 Financeiro — ${empresa}</div>
     <div id="empresa-resumo-financeiro">Carregando…</div>
+  </div>
+  <div class="card" style="padding:16px;margin-bottom:20px">
+    <div class="card-title" style="margin-bottom:10px">💸 Contas a Pagar — ${empresa}</div>
+    <div id="empresa-resumo-contaspagar">Carregando…</div>
   </div>
   <div class="card" style="padding:16px;margin-bottom:20px">
     <div class="card-title" style="margin-bottom:10px">🏦 Contas Bancárias e 🏗️ Centros de Custo — ${empresa}</div>
@@ -35307,6 +35680,8 @@ function empresaResumoRenderizar(empresa) {
   const aliquota = window._empresaResumoAliquota || 0;
   const finCont = document.getElementById('empresa-resumo-financeiro');
   if (finCont) finCont.innerHTML = empresaFinanceiroCardHtml(empresa, window._empresaResumoFin);
+  const pagCont = document.getElementById('empresa-resumo-contaspagar');
+  if (pagCont) pagCont.innerHTML = empresaContasPagarCardHtml(empresa, window._empresaResumoContasPagar);
   const bccCont = document.getElementById('empresa-resumo-bancoscc');
   if (bccCont) bccCont.innerHTML = empresaBancosCCsCardHtml(empresa, window._empresaResumoBancosCCs);
   const kpis = document.getElementById('empresa-resumo-kpis');
