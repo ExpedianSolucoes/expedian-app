@@ -35260,29 +35260,42 @@ function tl3MedRenderizar() {
   <div class="card" style="padding:16px">
     <div class="card-title" style="margin-bottom:10px">Histórico de medições</div>
     ${!medicoesDoOrc.length ? '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:.82rem">Nenhuma medição registrada ainda.</div>' : medicoesDoOrc.map(m => `
-      <div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:.82rem">
-        <b>${laFormatarData(m.Data)}</b> — ${(m.Itens || []).map(it => `${it.Nome}: ${it.Quantidade}`).join(', ')}
-        ${m.Observacao ? `<div style="color:var(--text-muted);margin-top:2px">${m.Observacao}</div>` : ''}
+      <div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:.82rem;display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div>
+          <b>${laFormatarData(m.Data)}</b> — ${(m.Itens || []).map(it => `${it.Nome}: ${it.Quantidade}`).join(', ')}
+          ${m.Observacao ? `<div style="color:var(--text-muted);margin-top:2px">${m.Observacao}</div>` : ''}
+        </div>
+        <div style="white-space:nowrap;flex-shrink:0">
+          <span style="cursor:pointer;margin-right:8px" onclick="tl3MedAbrirForm('${orc.Id}', '${m.Id}')" title="Editar">✏️</span>
+          <span style="cursor:pointer;color:var(--red)" onclick="tl3MedExcluir('${m.Id}')" title="Excluir">🗑️</span>
+        </div>
       </div>`).join('')}
   </div>`;
 }
-function tl3MedAbrirForm(orcamentoIdParam) {
+function tl3MedAbrirForm(orcamentoIdParam, idParaEditar) {
   const orc = TL3_ORCAMENTOS.find(o => tl3EqId(o.Id, orcamentoIdParam));
   if (!orc) { showToast('⚠️ Orçamento não encontrado.'); return; }
   const existente = document.getElementById('tl3med-modal-form');
   if (existente) existente.remove();
+  const editando = idParaEditar ? TL3_MEDICOES.find(m => tl3EqId(m.Id, idParaEditar)) : null;
+  window._tl3MedEditandoId = editando ? editando.Id : null;
+  const valorItem = (produtoId) => {
+    if (!editando) return 0;
+    const it = (editando.Itens || []).find(x => tl3EqId(x.ProdutoId, produtoId));
+    return it ? it.Quantidade : 0;
+  };
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'tl3med-modal-form';
   modal.innerHTML = `<div class="modal-box" style="max-width:520px">
-    <div class="modal-header"><h3>📏 Registrar Medição — ${orc.Numero}</h3><button class="modal-close" onclick="tl3MedFecharForm()">✕</button></div>
+    <div class="modal-header"><h3>📏 ${editando ? 'Editar' : 'Registrar'} Medição — ${orc.Numero}</h3><button class="modal-close" onclick="tl3MedFecharForm()">✕</button></div>
     <div class="modal-body">
-      <div class="form-group" style="margin-bottom:14px"><label>Data</label><input type="date" id="tl3med_data" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <div class="form-group" style="margin-bottom:14px"><label>Data</label><input type="date" id="tl3med_data" value="${editando ? (editando.Data || '') : new Date().toISOString().slice(0, 10)}"></div>
       ${(orc.Itens || []).map((it, idx) => `<div class="form-group" style="margin-bottom:10px">
         <label>${it.Nome} <span style="color:var(--text-muted);font-weight:400">(contratado: ${it.Quantidade} ${it.Unidade || ''})</span></label>
-        <input type="number" step="0.01" min="0" id="tl3med_item_${idx}" data-produto-id="${it.ProdutoId}" data-nome="${String(it.Nome).replace(/"/g, '&quot;')}" value="0">
+        <input type="number" step="0.01" min="0" id="tl3med_item_${idx}" data-produto-id="${it.ProdutoId}" data-nome="${String(it.Nome).replace(/"/g, '&quot;')}" value="${valorItem(it.ProdutoId)}">
       </div>`).join('')}
-      <div class="form-group" style="margin-bottom:16px"><label>Observação</label><textarea id="tl3med_obs" rows="2"></textarea></div>
+      <div class="form-group" style="margin-bottom:16px"><label>Observação</label><textarea id="tl3med_obs" rows="2">${editando ? (editando.Observacao || '') : ''}</textarea></div>
       <div style="display:flex;gap:10px">
         <button class="btn-primary" onclick="tl3MedSalvar('${orc.Id}', '${String(orc.Numero).replace(/'/g, "\\'")}', ${(orc.Itens || []).length})" style="flex:1">✅ Salvar</button>
         <button class="btn-secondary" onclick="tl3MedFecharForm()" style="flex:1">Cancelar</button>
@@ -35294,6 +35307,7 @@ function tl3MedAbrirForm(orcamentoIdParam) {
 function tl3MedFecharForm() {
   const el = document.getElementById('tl3med-modal-form');
   if (el) el.remove();
+  window._tl3MedEditandoId = null;
 }
 async function tl3MedSalvar(orcamentoId, orcamentoNumero, qtdItens) {
   const itens = [];
@@ -35309,9 +35323,23 @@ async function tl3MedSalvar(orcamentoId, orcamentoNumero, qtdItens) {
     Data: document.getElementById('tl3med_data').value || new Date().toISOString().slice(0, 10),
     Itens: itens, Observacao: (document.getElementById('tl3med_obs').value || '').trim(), Empresa: 'TL3',
   };
-  const criado = await dbInserir('TL3Medicoes', dados);
-  showToast(criado ? '✅ Medição registrada!' : '❌ Erro ao salvar.');
-  if (criado) { tl3MedFecharForm(); await tl3Carregar(); tl3MedRenderizar(); }
+  const editandoId = window._tl3MedEditandoId;
+  let ok;
+  if (editandoId) ok = await dbAtualizar('TL3Medicoes', editandoId, dados);
+  else { const criado = await dbInserir('TL3Medicoes', dados); ok = !!criado; }
+  showToast(ok ? '✅ Medição salva!' : '❌ Erro ao salvar.');
+  if (ok) { tl3MedFecharForm(); await tl3Carregar(); tl3MedRenderizar(); }
+}
+async function tl3MedExcluir(idParaExcluir) {
+  if (currentProfile !== 'diretoria') { showToast('⚠️ Exclusão restrita à Diretoria.'); return; }
+  const m = TL3_MEDICOES.find(x => tl3EqId(x.Id, idParaExcluir));
+  if (!m) { showToast('⚠️ Medição não encontrada.'); return; }
+  const temNota = TL3_NOTAS.some(n => tl3EqId(n.MedicaoId, m.Id));
+  if (temNota && !confirm('Já existe uma Nota Fiscal emitida contra esta medição (ela não será excluída, mas ficará referenciando uma medição removida). Excluir mesmo assim?')) return;
+  if (!temNota && !confirm('Excluir esta medição? Essa ação não pode ser desfeita.')) return;
+  const { ok } = await dbRemover('TL3Medicoes', m.Id);
+  showToast(ok ? '🗑️ Medição excluída.' : '❌ Erro ao excluir.');
+  if (ok) { await tl3Carregar(); tl3MedRenderizar(); }
 }
 
 /* -- NOTAS FISCAIS -- */
@@ -35340,34 +35368,41 @@ function tl3RenderizarNotas() {
         <td style="padding:10px">${n.DataEmissao ? laFormatarData(n.DataEmissao) : '—'}</td>
         <td style="padding:10px;text-align:right">${n.Quantidade || 0}</td>
         <td style="padding:10px;text-align:right;font-weight:700">${rdNumeroParaMoeda(n.Valor || 0)}</td>
-        <td style="padding:10px"><span style="cursor:pointer;color:var(--red)" onclick="tl3NotaExcluir('${n.Id}')">🗑️</span></td>
+        <td style="padding:10px;white-space:nowrap">
+          <span style="cursor:pointer;margin-right:8px" onclick="tl3NotaGerarPDF('${n.Id}')" title="Baixar PDF">📄</span>
+          <span style="cursor:pointer;margin-right:8px" onclick="tl3NotaAbrirForm('${n.Id}')" title="Editar">✏️</span>
+          <span style="cursor:pointer;color:var(--red)" onclick="tl3NotaExcluir('${n.Id}')" title="Excluir">🗑️</span>
+        </td>
       </tr>`).join('')}</tbody>
     </table>
   </div>`;
 }
-function tl3NotaAbrirForm() {
+function tl3NotaAbrirForm(idParaEditar) {
   if (!TL3_MEDICOES.length) { showToast('⚠️ Registre ao menos uma medição antes de emitir uma nota fiscal.'); return; }
   const existente = document.getElementById('tl3nota-modal-form');
   if (existente) existente.remove();
+  const editando = idParaEditar ? TL3_NOTAS.find(n => tl3EqId(n.Id, idParaEditar)) : null;
+  window._tl3NotaEditandoId = editando ? editando.Id : null;
   const medicoesOrdenadas = TL3_MEDICOES.slice().sort((a, b) => new Date(b.Data || 0) - new Date(a.Data || 0));
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'tl3nota-modal-form';
   modal.innerHTML = `<div class="modal-box" style="max-width:480px">
-    <div class="modal-header"><h3>📄 Nova Nota Fiscal — TL3</h3><button class="modal-close" onclick="tl3NotaFecharForm()">✕</button></div>
+    <div class="modal-header"><h3>📄 ${editando ? 'Editar' : 'Nova'} Nota Fiscal — TL3</h3><button class="modal-close" onclick="tl3NotaFecharForm()">✕</button></div>
     <div class="modal-body">
       <div class="form-group" style="margin-bottom:12px"><label>Medição</label>
         <select id="tl3nota_medicao" onchange="tl3NotaMedicaoSelecionada()">
           ${medicoesOrdenadas.map(m => {
             const totalQtd = (m.Itens || []).reduce((s, it) => s + (Number(it.Quantidade) || 0), 0);
-            return `<option value="${m.Id}">${m.OrcamentoNumero} — ${laFormatarData(m.Data)} (${totalQtd} un.)</option>`;
+            const sel = editando && tl3EqId(editando.MedicaoId, m.Id) ? 'selected' : '';
+            return `<option value="${m.Id}" ${sel}>${m.OrcamentoNumero} — ${laFormatarData(m.Data)} (${totalQtd} un.)</option>`;
           }).join('')}
         </select>
       </div>
-      <div class="form-group" style="margin-bottom:12px"><label>Número da NF</label><input type="text" id="tl3nota_numero" placeholder="Ex.: 000123"></div>
-      <div class="form-group" style="margin-bottom:12px"><label>Data de emissão</label><input type="date" id="tl3nota_data_emissao" value="${new Date().toISOString().slice(0, 10)}"></div>
-      <div class="form-group" style="margin-bottom:12px"><label>Valor (R$)</label><input type="text" id="tl3nota_valor" oninput="rdFormatarMoedaInput(this)" placeholder="R$ 0,00"></div>
-      <div class="form-group" style="margin-bottom:16px"><label>Quantidade</label><input type="number" step="0.01" id="tl3nota_qtd"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>Número da NF</label><input type="text" id="tl3nota_numero" value="${editando ? String(editando.Numero || '').replace(/"/g, '&quot;') : ''}" placeholder="Ex.: 000123"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>Data de emissão</label><input type="date" id="tl3nota_data_emissao" value="${editando ? (editando.DataEmissao || '') : new Date().toISOString().slice(0, 10)}"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>Valor (R$)</label><input type="text" id="tl3nota_valor" value="${editando ? rdNumeroParaMoeda(editando.Valor || 0) : ''}" oninput="rdFormatarMoedaInput(this)" placeholder="R$ 0,00"></div>
+      <div class="form-group" style="margin-bottom:16px"><label>Quantidade</label><input type="number" step="0.01" id="tl3nota_qtd" value="${editando ? (editando.Quantidade || 0) : ''}"></div>
       <div style="display:flex;gap:10px">
         <button class="btn-primary" onclick="tl3NotaSalvar()" style="flex:1">✅ Salvar</button>
         <button class="btn-secondary" onclick="tl3NotaFecharForm()" style="flex:1">Cancelar</button>
@@ -35375,7 +35410,7 @@ function tl3NotaAbrirForm() {
     </div>
   </div>`;
   document.body.appendChild(modal);
-  tl3NotaMedicaoSelecionada();
+  if (!editando) tl3NotaMedicaoSelecionada();
 }
 function tl3NotaMedicaoSelecionada() {
   const sel = document.getElementById('tl3nota_medicao');
@@ -35387,6 +35422,7 @@ function tl3NotaMedicaoSelecionada() {
 function tl3NotaFecharForm() {
   const el = document.getElementById('tl3nota-modal-form');
   if (el) el.remove();
+  window._tl3NotaEditandoId = null;
 }
 async function tl3NotaSalvar() {
   const medicaoId = (document.getElementById('tl3nota_medicao') || {}).value;
@@ -35401,9 +35437,12 @@ async function tl3NotaSalvar() {
     Numero: numero, DataEmissao: document.getElementById('tl3nota_data_emissao').value,
     Valor: valor, Quantidade: parseFloat(document.getElementById('tl3nota_qtd').value) || 0, Empresa: 'TL3',
   };
-  const criado = await dbInserir('TL3NotasFiscais', dados);
-  showToast(criado ? '✅ Nota fiscal registrada!' : '❌ Erro ao salvar.');
-  if (criado) { tl3NotaFecharForm(); await tl3Carregar(); tl3RenderizarNotas(); }
+  const editandoId = window._tl3NotaEditandoId;
+  let ok;
+  if (editandoId) ok = await dbAtualizar('TL3NotasFiscais', editandoId, dados);
+  else { const criado = await dbInserir('TL3NotasFiscais', dados); ok = !!criado; }
+  showToast(ok ? '✅ Nota fiscal salva!' : '❌ Erro ao salvar.');
+  if (ok) { tl3NotaFecharForm(); await tl3Carregar(); tl3RenderizarNotas(); }
 }
 async function tl3NotaExcluir(idParaExcluir) {
   if (currentProfile !== 'diretoria') { showToast('⚠️ Exclusão restrita à Diretoria.'); return; }
@@ -35413,6 +35452,54 @@ async function tl3NotaExcluir(idParaExcluir) {
   const { ok } = await dbRemover('TL3NotasFiscais', n.Id);
   showToast(ok ? '🗑️ Nota fiscal excluída.' : '❌ Erro ao excluir.');
   if (ok) { await tl3Carregar(); tl3RenderizarNotas(); }
+}
+// PDF da Nota Fiscal — mesmo mecanismo de tl3OrcGerarPDF (window.open +
+// document.write, sem lib nova), pedido em 18/09/2026 junto com Editar
+// (antes só tinha Excluir).
+function tl3NotaGerarPDF(id) {
+  const n = TL3_NOTAS.find(x => tl3EqId(x.Id, id));
+  if (!n) { showToast('⚠️ Nota fiscal não encontrada.'); return; }
+  showToast('🔄 Gerando nota fiscal... aguarde.');
+  setTimeout(() => {
+    const emp = CONC_EMPRESA_DADOS['TL3'];
+    const nomeArquivo = ('NF - ' + (n.Numero || '') + ' - ' + (n.OrcamentoNumero || '')).replace(/[\\/:*?"<>|]/g, '');
+    const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${nomeArquivo}</title>
+    <style>
+      @page { size: A4; margin: 15mm 12mm; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { height: 100%; }
+      body { font-family: Arial, sans-serif; font-size: 10.5pt; color: #222; min-height: 100vh; display: flex; flex-direction: column; }
+      .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid ${emp.cor}; padding-bottom: 14px; margin-bottom: 18px; }
+      .header .empresa { text-align: right; font-size: 8.5pt; color: #555; line-height: 1.5; }
+      .titulo { font-size: 16pt; font-weight: 900; color: ${emp.cor}; margin-bottom: 4px; }
+      table { width: 100%; border-collapse: collapse; margin: 14px 0; }
+      th { background: ${emp.cor}; color: #fff; padding: 8px; text-align: left; font-size: 9pt; }
+      td { padding: 7px 8px; border-bottom: 1px solid #ddd; font-size: 9.5pt; }
+      .total { text-align: right; font-size: 12pt; font-weight: 900; margin-top: 10px; }
+      .footer { margin-top: auto; padding-top: 24px; }
+      .footer-inner { border-top: 1px solid #ccc; padding-top: 10px; text-align: center; font-size: 8pt; color: #777; }
+    </style></head>
+    <body>
+      <div class="header">
+        <div>${concLogoOuNomeHtml(emp)}</div>
+        <div class="empresa">
+          <b>${emp.razaoSocial}</b><br>${emp.cnpj}<br>${emp.endereco}<br>${emp.telefone}${emp.email ? ' · ' + emp.email : ''}
+        </div>
+      </div>
+      <div class="titulo">NOTA FISCAL ${n.Numero || ''}</div>
+      <div style="font-size:9.5pt;color:#555;margin-bottom:14px">Orçamento: <b>${n.OrcamentoNumero || '—'}</b> &nbsp;·&nbsp; Medição: ${n.MedicaoData ? laFormatarData(n.MedicaoData) : '—'} &nbsp;·&nbsp; Emissão: ${n.DataEmissao ? laFormatarData(n.DataEmissao) : '—'}</div>
+      <table><thead><tr><th>Descrição</th><th style="text-align:center">Quantidade</th><th style="text-align:right">Valor</th></tr></thead><tbody>
+        <tr><td>Fornecimento conforme medição vinculada ao orçamento ${n.OrcamentoNumero || ''}</td><td style="text-align:center">${n.Quantidade || 0}</td><td style="text-align:right">${rdNumeroParaMoeda(n.Valor || 0)}</td></tr>
+      </tbody></table>
+      <div class="total">Total: ${rdNumeroParaMoeda(n.Valor || 0)}</div>
+      <div class="footer"><div class="footer-inner">${emp.razaoSocial} &nbsp;·&nbsp; Gerado em ${new Date().toLocaleDateString('pt-BR')}</div></div>
+    </body></html>`;
+    const win = window.open('', '_blank');
+    if (win) { win.document.write(htmlContent); win.document.close(); }
+    else showToast('⚠️ Permita pop-ups para visualizar a nota fiscal.');
+  }, 300);
 }
 
 /* =====================================================================
