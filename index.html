@@ -39926,6 +39926,80 @@ function faunaHtmlFiltroEmp() {
   </div>`;
 }
 
+/* -- Filtro por mês (pedido em 18/09/2026: "filtrar por mês e exportar o
+   excel das fichas de campo emitidas no mês", pensado pras fichas do Jirau
+   mas funciona pra qualquer empreendimento) + botão de exportar Excel das
+   fichas atualmente filtradas (empreendimento + mês). Combina com o filtro
+   de empreendimento já existente — os dois juntos restringem a lista. -- */
+if (window._faunaFiltroMes === undefined) window._faunaFiltroMes = '';
+function faunaFiltrarMes(valor) {
+  window._faunaFiltroMes = valor || '';
+  navigate('checklist_fauna');
+}
+function faunaHtmlFiltroMes() {
+  return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+    <span style="font-size:.78rem;font-weight:600;color:var(--text-muted)">📅 Mês:</span>
+    <input type="month" value="${window._faunaFiltroMes || ''}" onchange="faunaFiltrarMes(this.value)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    ${window._faunaFiltroMes ? `<button onclick="faunaFiltrarMes('')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar mês</button>` : ''}
+    <button class="btn-secondary" onclick="faunaExportarExcel()" style="font-size:.76rem;padding:6px 12px;margin-left:auto">📊 Exportar Excel</button>
+  </div>`;
+}
+/* -- Exporta pra .xlsx as fichas de campo que estão sendo mostradas no
+   histórico (respeitando o filtro de empreendimento e o de mês acima) —
+   mesmo padrão de exportarContasPagarExcel()/exportarReceitasExcel (lib
+   XLSX carregada sob demanda via CDN, sem dependência nova). Usa a lista
+   completa filtrada (não só os 80 mais recentes exibidos na tela). -- */
+async function faunaExportarExcel() {
+  const filtroEmp = window._faunaFiltroEmp || '';
+  const filtroMes = window._faunaFiltroMes || '';
+  const items = (window._faunaHistorico || [])
+    .filter(r => !filtroEmp || (r.empreendimento || '') === filtroEmp)
+    .filter(r => !filtroMes || (r.data || '').slice(0, 7) === filtroMes)
+    .slice()
+    .sort((a, b) => (a.data || '').localeCompare(b.data || '') || ((parseInt(a.numeroFicha, 10) || 0) - (parseInt(b.numeroFicha, 10) || 0)));
+  if (!items.length) { showToast('⚠️ Nenhuma ficha para exportar' + (filtroMes ? ' nesse mês' : '') + '.'); return; }
+  showToast('📊 Gerando planilha...');
+  if (typeof XLSX === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  const rows = items.map(f => ({
+    'Nº Ficha': f.numeroFicha || '',
+    'Data': f.data ? new Date(f.data + 'T12:00').toLocaleDateString('pt-BR') : '',
+    'Horário': f.horario || '',
+    'Empreendimento': f.empreendimento || '',
+    'Cliente': f.cliente || '',
+    'Atividade': f.atividade || '',
+    'Condições Climáticas': f.clima || '',
+    'Profissional': f.profissionalNome || '',
+    'Cargo': f.profissionalCargo || '',
+    'CRBio': f.crbio || '',
+    'Tipo de Registro': f.tipoRegistro || '',
+    'Material Utilizado': f.materialUtilizado || '',
+    'Grupo Faunístico': f.grupoFaunistico || '',
+    'Nome Científico': f.nomeCientifico || '',
+    'Nome Comum': f.nomeComum || '',
+    'Quantidade': f.quantidade || '',
+    'Sexo do Animal': f.sexoAnimal || '',
+    'Condição Física': f.condicaoFisica || '',
+    'Destino': f.destino || '',
+    'UTM Latitude': f.utmLat || '',
+    'UTM Longitude': f.utmLong || '',
+    'Registrado por': f.CriadoPorNome || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Fichas de Campo');
+  const sufixoEmp = filtroEmp ? '_' + faunaSlugEmpreendimento(filtroEmp) : '';
+  const sufixoMes = filtroMes ? '_' + filtroMes : '';
+  XLSX.writeFile(wb, 'FichasCampoFauna' + sufixoEmp + sufixoMes + '_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  showToast('✅ Planilha gerada!');
+}
+
 /* -- Ao escolher o empreendimento no dropdown, preenche o cliente automaticamente
    (continua editável, caso precise ajustar). -- */
 function faunaSelecionarEmpreendimento(nome) {
@@ -40401,12 +40475,16 @@ async function faunaExportarFicha() {
 
 function faunaHtmlHistorico() {
   const filtro = window._faunaFiltroEmp || '';
-  const lista = (window._faunaHistorico || []).filter(r => !filtro || (r.empreendimento || '') === filtro).slice().sort((a, b) => {
+  const filtroMes = window._faunaFiltroMes || '';
+  const lista = (window._faunaHistorico || [])
+    .filter(r => !filtro || (r.empreendimento || '') === filtro)
+    .filter(r => !filtroMes || (r.data || '').slice(0, 7) === filtroMes)
+    .slice().sort((a, b) => {
     const na = parseInt(a.numeroFicha, 10) || 0, nb = parseInt(b.numeroFicha, 10) || 0;
     if (nb !== na) return nb - na;
     return (b.data || '').localeCompare(a.data || '');
   }).slice(0, 80);
-  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma ficha registrada ainda' + (filtro ? ' para ' + filtro : '') + '.</div>';
+  if (!lista.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma ficha registrada ainda' + (filtro ? ' para ' + filtro : '') + (filtroMes ? ' nesse mês' : '') + '.</div>';
 
   const linha = f => {
     const dataFmt = f.data ? new Date(f.data + 'T12:00').toLocaleDateString('pt-BR') : '—';
@@ -40476,6 +40554,7 @@ function pageFaunaFicha() {
     <div class="card">
       <div class="card-title">Histórico de Fichas</div>
       ${faunaHtmlFiltroEmp()}
+      ${faunaHtmlFiltroMes()}
       ${faunaHtmlHistorico()}
     </div>`;
   }
