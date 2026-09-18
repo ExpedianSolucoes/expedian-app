@@ -34249,11 +34249,19 @@ function tl3AcessoRestrito(titulo) {
 /* -- PAINEL -- */
 function pageTL3Painel() {
   if (!['diretoria', 'coordenador'].includes(currentProfile)) return tl3AcessoRestrito('📈 Painel — TL3');
-  setTimeout(async () => { await tl3Carregar(); tl3RenderizarPainel(); }, 150);
+  setTimeout(async () => {
+    await tl3Carregar();
+    window._tl3PainelFin = await empresaFinanceiroCarregar('TL3').catch(() => null);
+    tl3RenderizarPainel();
+  }, 150);
   return `
-  ${empresaHeaderHtml('TL3', '📈 Painel — TL3', 'Produtos, orçamentos, medição e notas fiscais da TL3 Engenharia', `<button class="btn-secondary" onclick="painelGrupoAbrirSeletor()">🔁 Trocar empresa</button>`)}
+  ${empresaHeaderHtml('TL3', '📈 Painel — TL3', 'Produtos, orçamentos, medição e notas fiscais da TL3 Engenharia', `<button class="btn-secondary" onclick="abrirFinanceiroEmpresa('TL3')">💰 Financeiro</button><button class="btn-secondary" onclick="painelGrupoAbrirSeletor()">🔁 Trocar empresa</button>`)}
   <div class="kpi-grid" id="tl3-painel-kpis" style="margin-bottom:20px">
     <div class="kpi-card blue"><div class="kpi-label">Carregando...</div><div class="kpi-value">—</div></div>
+  </div>
+  <div class="card" style="padding:16px;margin-bottom:20px">
+    <div class="card-title" style="margin-bottom:10px">💰 Financeiro — TL3 (mês atual)</div>
+    <div id="tl3-painel-financeiro">Carregando…</div>
   </div>
   <div class="card" style="padding:16px">
     <div class="card-title" style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
@@ -34264,6 +34272,8 @@ function pageTL3Painel() {
   </div>`;
 }
 function tl3RenderizarPainel() {
+  const finCont = document.getElementById('tl3-painel-financeiro');
+  if (finCont) finCont.innerHTML = empresaFinanceiroCardHtml('TL3', window._tl3PainelFin);
   const kpis = document.getElementById('tl3-painel-kpis');
   if (kpis) {
     const abertos = TL3_ORCAMENTOS.filter(o => o.Status === 'rascunho' || o.Status === 'enviado');
@@ -35154,27 +35164,71 @@ function empresaHeaderHtml(empresa, titulo, subtitulo, acoesHtml) {
   </div>`;
 }
 
+/* -- Financeiro vinculado ao perfil de cada empresa (pedido em 18/09/2026:
+   "quero que cada empresa tem seu financeiro vinculado ao seu perfil no
+   painel"). Lê Despesas/Receitas ao vivo, filtrando por empresa com o MESMO
+   normalizarEmpresa() que o Dashboard Financeiro completo usa — sem cache
+   próprio, então qualquer lançamento novo no Financeiro já aparece aqui.
+   Mesmo gate do Dashboard Financeiro (só Diretoria vê valores de
+   Receita/Despesa/Saldo); "Financeiro completo" abre o Dashboard Financeiro
+   já filtrado/com a marca da empresa (dashFinMudarEmpresa/pageDashboardFinanceiro). -- */
+async function empresaFinanceiroCarregar(empresa) {
+  const [despesasTodas, receitasTodas] = await Promise.all([
+    dbLer('Despesas').catch(() => []),
+    dbLer('Receitas').catch(() => []),
+  ]);
+  const despesasEmpresa = (despesasTodas || []).filter(d => normalizarEmpresa(d.Empresa) === empresa);
+  const receitasEmpresa = (receitasTodas || []).filter(r => normalizarEmpresa(r.Empresa) === empresa);
+  const mesAtual = new Date().toISOString().slice(0, 7);
+  const despesaMes = despesasEmpresa.filter(d => (d.DataLancamento || '').slice(0, 7) === mesAtual).reduce((s, d) => s + (Number(d.Valor) || 0), 0);
+  const receitaMes = receitasEmpresa.filter(r => (r.DataEmissao || r.DataPrevista || '').slice(0, 7) === mesAtual).reduce((s, r) => s + (Number(r.Valor) || 0), 0);
+  return { despesaMes, receitaMes, saldoMes: receitaMes - despesaMes, despesasEmpresa, receitasEmpresa };
+}
+function abrirFinanceiroEmpresa(empresa) {
+  window._dashFinEmpresa = empresa;
+  navigate('dashboard_financeiro');
+}
+function empresaFinanceiroCardHtml(empresa, fin) {
+  const botao = `<div style="margin-top:10px"><button class="btn-secondary" onclick="abrirFinanceiroEmpresa('${empresa}')" style="font-size:.75rem;padding:6px 10px">📊 Ver Dashboard Financeiro completo →</button></div>`;
+  if (currentProfile !== 'diretoria') {
+    return `<div class="card" style="padding:16px;text-align:center;color:var(--text-muted);font-size:.85rem">🔒 Receita/Despesa/Saldo visíveis apenas para Diretoria.${botao}</div>`;
+  }
+  if (!fin) return `<div class="kpi-grid"><div class="kpi-card blue"><div class="kpi-label">Carregando...</div><div class="kpi-value">—</div></div></div>`;
+  return `<div class="kpi-grid" style="margin-bottom:4px">
+    <div class="kpi-card green"><div class="kpi-label">Receita do mês</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(fin.receitaMes)}</div><div class="kpi-icon">💰</div></div>
+    <div class="kpi-card red"><div class="kpi-label">Despesa do mês</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(fin.despesaMes)}</div><div class="kpi-icon">💸</div></div>
+    <div class="kpi-card blue"><div class="kpi-label">Saldo do mês</div><div class="kpi-value" style="font-size:1.1rem">${rdNumeroParaMoeda(fin.saldoMes)}</div><div class="kpi-icon">⚖️</div></div>
+  </div>${botao}`;
+}
+
 /* -- Resumo comercial + fiscal (Expedian / EXP Brasil) — Orçamentos
    totais/aprovados (Concorrências), NFs Emitidas/Recebidas (Receitas
-   com NumeroNF válido) e Margem de Imposto (alíquota do Simples
-   configurada por empresa). Lido sempre ao vivo (ver nota de
-   sincronização acima). -- */
+   com NumeroNF válido), Margem de Imposto (alíquota do Simples
+   configurada por empresa) e o Financeiro (Receita/Despesa/Saldo do mês)
+   vinculado à empresa. Lido sempre ao vivo (ver nota de sincronização
+   acima). -- */
 function pageEmpresaResumo(empresa) {
   if (!['diretoria', 'coordenador'].includes(currentProfile)) return tl3AcessoRestrito('📈 Painel — ' + empresa);
   setTimeout(async () => {
     await concCarregar();
-    const [receitas, aliquota] = await Promise.all([
+    const [receitas, aliquota, fin] = await Promise.all([
       dbLer('Receitas').catch(() => []),
       financeiroObterAliquota(empresa).catch(() => 0),
+      empresaFinanceiroCarregar(empresa).catch(() => null),
     ]);
     window._empresaResumoReceitas = Array.isArray(receitas) ? receitas : [];
     window._empresaResumoAliquota = aliquota || 0;
+    window._empresaResumoFin = fin;
     empresaResumoRenderizar(empresa);
   }, 150);
   return `
-  ${empresaHeaderHtml(empresa, '📈 Painel — ' + empresa, 'Resumo comercial e fiscal da ' + empresa, `<button class="btn-secondary" onclick="painelGrupoAbrirSeletor()">🔁 Trocar empresa</button>`)}
+  ${empresaHeaderHtml(empresa, '📈 Painel — ' + empresa, 'Resumo comercial e fiscal da ' + empresa, `<button class="btn-secondary" onclick="abrirFinanceiroEmpresa('${empresa}')">💰 Financeiro</button><button class="btn-secondary" onclick="painelGrupoAbrirSeletor()">🔁 Trocar empresa</button>`)}
   <div class="kpi-grid" id="empresa-resumo-kpis" style="margin-bottom:20px">
     <div class="kpi-card blue"><div class="kpi-label">Carregando...</div><div class="kpi-value">—</div></div>
+  </div>
+  <div class="card" style="padding:16px;margin-bottom:20px">
+    <div class="card-title" style="margin-bottom:10px">💰 Financeiro — ${empresa} (mês atual)</div>
+    <div id="empresa-resumo-financeiro">Carregando…</div>
   </div>
   <div class="card" style="padding:16px">
     <div class="card-title" style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
@@ -35188,10 +35242,12 @@ function empresaResumoRenderizar(empresa) {
   const listaOrc = CONC_LISTA.filter(c => c.empresa === empresa);
   const receitas = window._empresaResumoReceitas || [];
   const nfValida = (v) => !!v && String(v).trim().toUpperCase() !== 'N/A';
-  const receitasEmpresa = receitas.filter(r => r.Empresa === empresa);
+  const receitasEmpresa = receitas.filter(r => normalizarEmpresa(r.Empresa) === empresa);
   const nfsEmitidas = receitasEmpresa.filter(r => nfValida(r.NumeroNF));
   const nfsRecebidas = nfsEmitidas.filter(r => r.Status === 'Recebido');
   const aliquota = window._empresaResumoAliquota || 0;
+  const finCont = document.getElementById('empresa-resumo-financeiro');
+  if (finCont) finCont.innerHTML = empresaFinanceiroCardHtml(empresa, window._empresaResumoFin);
   const kpis = document.getElementById('empresa-resumo-kpis');
   if (kpis) {
     const aprovados = listaOrc.filter(c => { const st = concStatusEfetivo(c); return st === 'ganho' || st === 'realizado'; });
