@@ -4962,15 +4962,16 @@ async function aprovarPrestacaoFinanceiro(id, ajustes) {
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
 }
 
-/* -- Lê os campos de ajuste (Centro de Custo/Contrato e Valor) do modal de
-      visualização, se o Financeiro tiver alterado algo, e só então aprova. -- */
-async function aprovarPrestacaoFinanceiroComAjustes(id) {
+/* -- Lê os campos de ajuste (Centro de Custo/Contrato, Valor, Nº Medição e
+      rateio) do modal "Conferir/Ajustar antes de Aprovar" — usada tanto pelo
+      passo de Conferência quanto pela Aprovação final (ver correção abaixo). -- */
+function pcColherAjustesModal() {
   const ccEl = document.getElementById('pcv_cc');
   const valorEl = document.getElementById('pcv_valor');
   const medicaoEl = document.getElementById('pcv_medicao');
   const valorRef = (valorEl && valorEl.value !== '') ? parseFloat(valorEl.value) : (window._aprovValorTotal_pcv || 0);
   const rateio = aprovDivccValidarEColher('pcv', valorRef);
-  if (!rateio.ok) return;
+  if (!rateio.ok) return { ok: false };
   const ajustes = {};
   if (valorEl && valorEl.value !== '') {
     const v = parseFloat(valorEl.value);
@@ -4983,8 +4984,15 @@ async function aprovarPrestacaoFinanceiroComAjustes(id) {
     if (medicaoEl) ajustes.NumMedicao = medicaoEl.value.trim();
     ajustes.DivisaoCC = [];
   }
+  return { ok: true, ajustes };
+}
+/* -- Lê os campos de ajuste do modal de visualização, se o Financeiro tiver
+      alterado algo, e só então aprova. -- */
+async function aprovarPrestacaoFinanceiroComAjustes(id) {
+  const colhido = pcColherAjustesModal();
+  if (!colhido.ok) return;
   const modal = document.getElementById('pc-view-modal'); if (modal) modal.remove();
-  await aprovarPrestacaoFinanceiro(id, ajustes);
+  await aprovarPrestacaoFinanceiro(id, colhido.ajustes);
 }
 
 /* -- Gera automaticamente um lançamento em "Saídas" do BPO Financeiro quando o Financeiro
@@ -5044,15 +5052,24 @@ async function devolverPrestacaoFinanceiro(id) {
    outro nome... depois que ele lançou significa que conferiu e registrou na
    nossa planilha e mandou para eu aprovar". -- */
 async function pcConferirPrestacao(id) {
+  // Corrigido em 19/09/2026 ("os registros que lancei durante a conferência
+  // não estão ficando salvos"): este passo só gravava Conferido/ConferidoPor/
+  // DataConferencia — qualquer ajuste de Centro de Custo/Contrato, Valor ou
+  // Nº Medição feito nos campos "Conferir/Ajustar antes de Aprovar" durante a
+  // conferência era descartado (só a Aprovação final os lia), então quem
+  // aprovava depois via os dados ORIGINAIS do lançamento, não os corrigidos.
+  // Agora os dois passos leem os mesmos campos do modal.
+  const colhido = pcColherAjustesModal();
+  if (!colhido.ok) return;
   const nome = prompt('Quem está conferindo e lançando na planilha de controle?', 'Levi Rabelo');
   if (nome === null) return;
   if (!nome.trim()) { showToast('⚠️ Informe quem está conferindo.'); return; }
   _limparSyncError();
-  const ok = await dbAtualizar('PrestacaoContas', id, {
-    Conferido: true,
-    ConferidoPor: nome.trim(),
-    DataConferencia: new Date().toISOString().split('T')[0],
-  });
+  const patch = Object.assign(
+    { Conferido: true, ConferidoPor: nome.trim(), DataConferencia: new Date().toISOString().split('T')[0] },
+    colhido.ajustes
+  );
+  const ok = await dbAtualizar('PrestacaoContas', id, patch);
   showToast(ok ? '📝 Conferido! Enviado para aprovação final.' : ('❌ Erro' + syncErrorDetalhe()));
   const modalAberto = document.getElementById('pc-view-modal'); if (modalAberto) modalAberto.remove();
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
