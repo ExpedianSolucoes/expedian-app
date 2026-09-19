@@ -23602,6 +23602,30 @@ const CT_SOCIOS_CONFIG_PADRAO = { TetoPercentual: 10, Socios: [
   { nome: 'Sócio 3', teto: 5000 }, { nome: 'Sócio 4', teto: 1621 },
 ] };
 
+/* -- Pagamento da Remuneração dos Sócios — pedido em 19/09/2026: "deixar
+   semelhante a quando a gente lança o DAS". Reconferida a aba "📐 Gestão de
+   Contratos" da planilha original em 19/09/2026: ela só tem o CÁLCULO mês a
+   mês (igual ao que já estava implementado aqui) — não existe nenhuma coluna
+   de status/data/banco de pagamento lá, então o controle de pagamento é
+   funcionalidade nova, não uma migração de algo que já existia na planilha.
+   Um registro por Sócio+Competência na tabela 'RemuneracaoSociosPagamentos'
+   (auto-criada no 1º pagamento registrado), com Valor pago (editável — pode
+   divergir do calculado, igual o "valor real" na reconciliação do DAS),
+   ValorCalculado (o que o sistema apontava na hora, pra auditoria), Data,
+   Banco, Empresa pagadora e quem registrou. Opcionalmente já lança como
+   Despesa (Despesas Societárias > Participação nos Lucros dos Sócios), igual
+   o DAS faz com pagSincronizarDespesa — só que aqui não dá pra reaproveitar
+   aquela função porque ela parte de um registro de ContasPagar, e
+   remuneração de sócio não é conta a pagar. -- */
+let CT_SOCIOS_PAGAMENTOS = [];
+async function ctSociosPagamentosCarregar(mes) {
+  try {
+    const todos = await dbLer('RemuneracaoSociosPagamentos');
+    CT_SOCIOS_PAGAMENTOS = (todos || []).filter(p => p.Competencia === mes);
+  } catch (e) { CT_SOCIOS_PAGAMENTOS = []; }
+  window._ctSociosPagamentos = CT_SOCIOS_PAGAMENTOS;
+}
+
 async function ctSociosCarregarConfig() {
   try {
     const lista = await dbLer('RemuneracaoSociosConfig');
@@ -23616,10 +23640,15 @@ async function ctSociosCarregar() {
   const mesEl = document.getElementById('ct-socios-mes');
   if (mesEl) mesEl.value = window._ctSociosMes;
   await ctCarregarFinanceiro();
+  await ctSociosPagamentosCarregar(window._ctSociosMes);
   ctSociosRenderizar();
 }
 
-function ctSociosMudarMes(v) { window._ctSociosMes = v || new Date().toISOString().slice(0, 7); ctSociosRenderizar(); }
+async function ctSociosMudarMes(v) {
+  window._ctSociosMes = v || new Date().toISOString().slice(0, 7);
+  await ctSociosPagamentosCarregar(window._ctSociosMes);
+  ctSociosRenderizar();
+}
 
 function ctSociosRenderizar() {
   const cont = document.getElementById('ct-socios-conteudo');
@@ -23633,21 +23662,74 @@ function ctSociosRenderizar() {
   const somaTetos = socios.reduce((s, x) => s + (Number(x.teto) || 0), 0);
   const tetoPct = (Number(cfg.TetoPercentual) || 0) / 100;
   const bolsa = somaTetos > 0 ? Math.min(receitaMes * tetoPct, somaTetos) : 0;
+  const pagamentos = window._ctSociosPagamentos || [];
+  window._ctSociosValoresCalc = {};
+  const totalPago = pagamentos.reduce((s, p) => s + (Number(p.Valor) || 0), 0);
+  // Detalhamento por contrato/medição — pedido em 19/09/2026: mostrar de onde vem
+  // cada valor do mês, igual a planilha original fazia linha a linha por medição
+  // (uma linha por Receita "Recebida" no mês, com CC/Nº Med. de origem).
+  const itensMes = (_ctReceitas || []).filter(r => r.Status === 'Recebido' && (r.DataRecebimento || r.DataEmissao || '').slice(0, 7) === mes)
+    .sort((a, b) => (a.CentroCusto || '').localeCompare(b.CentroCusto || '', 'pt-BR'));
   cont.innerHTML = `
     <div class="kpi-grid" style="margin-bottom:14px">
       <div class="kpi-card green"><div class="kpi-label">Receita Recebida do mês</div><div class="kpi-value" style="font-size:1.05rem">${rdNumeroParaMoeda(receitaMes)}</div><div class="kpi-icon">💰</div></div>
       <div class="kpi-card blue"><div class="kpi-label">Bolsa de Gestão do mês</div><div class="kpi-value" style="font-size:1.05rem">${rdNumeroParaMoeda(bolsa)}</div><div class="kpi-icon">🧮</div></div>
       <div class="kpi-card amber"><div class="kpi-label">% Teto configurado</div><div class="kpi-value">${(cfg.TetoPercentual || 0).toLocaleString('pt-BR')}%</div><div class="kpi-icon">⚙️</div></div>
+      <div class="kpi-card ${bolsa > 0 && totalPago >= bolsa ? 'green' : 'red'}"><div class="kpi-label">Pago no mês</div><div class="kpi-value" style="font-size:1.05rem">${rdNumeroParaMoeda(totalPago)}</div><div class="kpi-icon">💳</div></div>
     </div>
     ${!socios.length ? `<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.85rem">Nenhum sócio configurado ainda — clique em "⚙️ Configurar tetos".</div>` : `
     <table style="width:100%;border-collapse:collapse;font-size:.82rem">
-      <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border)"><th style="padding:6px">Sócio</th><th style="padding:6px;text-align:right">Teto individual</th><th style="padding:6px;text-align:right">% do total</th><th style="padding:6px;text-align:right">Recebe no mês</th></tr></thead>
+      <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border)"><th style="padding:6px">Sócio</th><th style="padding:6px;text-align:right">Teto individual</th><th style="padding:6px;text-align:right">% do total</th><th style="padding:6px;text-align:right">Recebe no mês</th><th style="padding:6px;text-align:right">Pagamento</th></tr></thead>
       <tbody>${socios.map(s => {
         const pct = somaTetos > 0 ? (Number(s.teto) || 0) / somaTetos : 0;
         const valor = bolsa * pct;
-        return `<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px;font-weight:700">${s.nome}</td><td style="padding:6px;text-align:right">${rdNumeroParaMoeda(s.teto || 0)}</td><td style="padding:6px;text-align:right">${(pct * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</td><td style="padding:6px;text-align:right;font-weight:700;color:#28a745">${rdNumeroParaMoeda(valor)}</td></tr>`;
+        window._ctSociosValoresCalc[s.nome] = valor;
+        const pag = pagamentos.find(p => p.Socio === s.nome);
+        const nomeJs = s.nome.replace(/'/g, "\\'");
+        const pagCel = pag
+          ? `<span style="color:#28a745;font-weight:700">✅ ${rdNumeroParaMoeda(pag.Valor || 0)}</span> <span style="color:var(--text-muted)">em ${(pag.DataPagamento || '').split('-').reverse().join('/')}</span> <button type="button" onclick="ctSociosAbrirPagamento('${nomeJs}')" style="border:none;background:transparent;color:var(--text-muted);cursor:pointer;font-size:.85rem" title="Editar pagamento">✏️</button>`
+          : `<button type="button" class="btn-secondary" style="font-size:.72rem;padding:4px 8px" onclick="ctSociosAbrirPagamento('${nomeJs}')">💳 Registrar</button>`;
+        return `<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px;font-weight:700">${s.nome}</td><td style="padding:6px;text-align:right">${rdNumeroParaMoeda(s.teto || 0)}</td><td style="padding:6px;text-align:right">${(pct * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</td><td style="padding:6px;text-align:right;font-weight:700;color:#28a745">${rdNumeroParaMoeda(valor)}</td><td style="padding:6px;text-align:right;white-space:nowrap">${pagCel}</td></tr>`;
       }).join('')}</tbody>
-    </table>`}`;
+    </table>
+    <details style="margin-top:14px">
+      <summary style="cursor:pointer;font-size:.78rem;font-weight:700;color:var(--brand-green)">🔍 Ver detalhamento por contrato e medição (${itensMes.length} recebimento${itensMes.length === 1 ? '' : 's'} no mês)</summary>
+      <div style="overflow-x:auto;margin-top:8px">
+        <table style="width:100%;border-collapse:collapse;font-size:.74rem;min-width:${640 + socios.length * 90}px">
+          <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border)">
+            <th style="padding:5px">Contrato / Centro de Custo</th><th style="padding:5px">Empresa</th><th style="padding:5px">Nº Med.</th><th style="padding:5px;text-align:right">R$ Recebido</th><th style="padding:5px;text-align:right">% do mês</th><th style="padding:5px;text-align:right">Gestão (R$)</th>
+            ${socios.map(s => `<th style="padding:5px;text-align:right">${s.nome}</th>`).join('')}
+          </tr></thead>
+          <tbody>${itensMes.length ? itensMes.map(r => {
+            const valorR = Number(r.Valor) || 0;
+            const pctR = receitaMes > 0 ? valorR / receitaMes : 0;
+            const gestaoR = bolsa * pctR;
+            return `<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:5px">${r.CentroCusto || 'Receita avulsa'}</td>
+              <td style="padding:5px">${r.Empresa || '—'}</td>
+              <td style="padding:5px">${r.NumMedicao || '—'}</td>
+              <td style="padding:5px;text-align:right">${rdNumeroParaMoeda(valorR)}</td>
+              <td style="padding:5px;text-align:right">${(pctR * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</td>
+              <td style="padding:5px;text-align:right;font-weight:700">${rdNumeroParaMoeda(gestaoR)}</td>
+              ${socios.map(s => {
+                const pctSoc = somaTetos > 0 ? (Number(s.teto) || 0) / somaTetos : 0;
+                return `<td style="padding:5px;text-align:right">${rdNumeroParaMoeda(gestaoR * pctSoc)}</td>`;
+              }).join('')}
+            </tr>`;
+          }).join('') : `<tr><td colspan="${6 + socios.length}" style="padding:10px;text-align:center;color:var(--text-muted)">Nenhum recebimento no mês.</td></tr>`}</tbody>
+          <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
+            <td style="padding:5px" colspan="3">TOTAL</td>
+            <td style="padding:5px;text-align:right">${rdNumeroParaMoeda(receitaMes)}</td>
+            <td style="padding:5px;text-align:right">100%</td>
+            <td style="padding:5px;text-align:right">${rdNumeroParaMoeda(bolsa)}</td>
+            ${socios.map(s => {
+              const pctSoc = somaTetos > 0 ? (Number(s.teto) || 0) / somaTetos : 0;
+              return `<td style="padding:5px;text-align:right">${rdNumeroParaMoeda(bolsa * pctSoc)}</td>`;
+            }).join('')}
+          </tr></tfoot>
+        </table>
+      </div>
+    </details>`}`;
 }
 
 function ctSociosAbrirConfig() {
@@ -23683,6 +23765,125 @@ async function ctSociosSalvarConfig() {
   }
   showToast(ok ? '✅ Configuração salva!' : '❌ Erro ao salvar.');
   if (ok) { await ctSociosCarregarConfig(); ctSociosRenderizar(); ctSociosFecharConfig(); }
+}
+
+/* -- Modal de registro de pagamento — mesmo formato da reconciliação de DAS
+   (financeiroAbrirReconciliacaoDAS): monta o modal via createElement, deixa
+   escolher empresa pagadora/data/banco e confirma em lote. socioFiltro
+   opcional: passa o nome pra abrir já filtrado num sócio só (botão "💳
+   Registrar" da linha); sem argumento, abre com todos os sócios (botão
+   "💳 Registrar Pagamentos" do cabeçalho). -- */
+function ctSociosAbrirPagamento(socioFiltro) {
+  const existente = document.getElementById('ct-socios-pag-modal'); if (existente) existente.remove();
+  const cfg = ctSociosConfigAtual();
+  const socios = (cfg.Socios || []).filter(s => !socioFiltro || s.nome === socioFiltro);
+  if (!socios.length) return;
+  const mes = window._ctSociosMes || new Date().toISOString().slice(0, 7);
+  const pagamentos = window._ctSociosPagamentos || [];
+  const valoresCalc = window._ctSociosValoresCalc || {};
+  const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  const bancosEmpresa = bancosDaEmpresa(empresaAtiva);
+
+  const modal = document.createElement('div');
+  modal.id = 'ct-socios-pag-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <div style="font-weight:800;font-size:1rem">💳 Registrar pagamento — ${mes.split('-').reverse().join('/')}</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('ct-socios-pag-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Registra o pagamento da remuneração de gestão do mês por sócio. O valor vem pré-preenchido do cálculo, mas pode ser ajustado — igual no fechamento do DAS.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <select id="ctspag_empresa" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.8rem" onchange="ctSociosAtualizarBancos()">
+          ${RD_EMPRESAS.map(e => `<option value="${e}" ${e === empresaAtiva ? 'selected' : ''}>${e}</option>`).join('')}
+        </select>
+        <input type="date" id="ctspag_data" value="${new Date().toISOString().slice(0, 10)}" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.8rem">
+        <input type="text" id="ctspag_banco" list="ctspag_bancos_dl" placeholder="Banco" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.8rem;flex:1;min-width:140px">
+        <datalist id="ctspag_bancos_dl">${bancosEmpresa.map(b => `<option value="${b}">`).join('')}</datalist>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
+        ${socios.map(s => {
+          const pag = pagamentos.find(p => p.Socio === s.nome);
+          const valor = pag ? pag.Valor : (valoresCalc[s.nome] || 0);
+          const nomeAttr = s.nome.replace(/"/g, '&quot;');
+          return `<div style="display:flex;align-items:center;gap:8px;background:var(--surface2);padding:8px 10px;border-radius:8px">
+            <input type="checkbox" class="ctspag-chk" data-socio="${nomeAttr}" checked style="width:auto">
+            <span style="flex:1;font-size:.82rem;font-weight:700">${s.nome}${pag ? ' <span style="font-weight:400;color:var(--text-muted);font-size:.72rem">(já registrado — ajustando)</span>' : ''}</span>
+            <input type="text" inputmode="decimal" class="ctspag-valor" data-socio="${nomeAttr}" value="${rdNumeroParaMoeda(valor)}" oninput="rdFormatarMoedaInput(this)" style="width:130px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;text-align:right">
+          </div>`;
+        }).join('')}
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;cursor:pointer;margin-bottom:10px">
+        <input type="checkbox" id="ctspag_lancar_despesa" checked style="width:auto">
+        Também lançar como Despesa (Despesas Societárias)
+      </label>
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" style="flex:1" onclick="ctSociosConfirmarPagamento()">✅ Confirmar Pagamento</button>
+        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('ct-socios-pag-modal').remove()">Cancelar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+function ctSociosAtualizarBancos() {
+  const empresa = (document.getElementById('ctspag_empresa') || {}).value;
+  const dl = document.getElementById('ctspag_bancos_dl');
+  if (!dl || !empresa) return;
+  dl.innerHTML = bancosDaEmpresa(empresa).map(b => `<option value="${b}">`).join('');
+}
+
+async function ctSociosConfirmarPagamento() {
+  const mes = window._ctSociosMes || new Date().toISOString().slice(0, 7);
+  const empresa = (document.getElementById('ctspag_empresa') || {}).value;
+  const dataPag = (document.getElementById('ctspag_data') || {}).value;
+  const banco = (document.getElementById('ctspag_banco') || {}).value;
+  if (!dataPag || !banco) { showToast('⚠️ Informe data e banco do pagamento.'); return; }
+  const lancarDespesa = (document.getElementById('ctspag_lancar_despesa') || {}).checked;
+  const checks = Array.from(document.querySelectorAll('.ctspag-chk')).filter(c => c.checked);
+  if (!checks.length) { showToast('⚠️ Marque pelo menos um sócio.'); return; }
+  showToast('💾 Registrando...');
+  const pagamentosAtuais = window._ctSociosPagamentos || [];
+  const valoresCalc = window._ctSociosValoresCalc || {};
+  for (const chk of checks) {
+    const nome = chk.dataset.socio;
+    const valorInput = document.querySelector('.ctspag-valor[data-socio="' + CSS.escape(nome) + '"]');
+    const valor = rdMoedaParaNumero(valorInput ? valorInput.value : 0);
+    if (!valor) continue;
+    const existenteReg = pagamentosAtuais.find(p => p.Socio === nome);
+    let despesaId = existenteReg ? existenteReg.DespesaId : '';
+    if (lancarDespesa && !despesaId) {
+      const subcategoria = 'Participação nos Lucros dos Sócios';
+      const despesa = await dbInserir('Despesas', {
+        DataLancamento: dataPag, Semana: (typeof _rdSemanaDoAno === 'function' ? _rdSemanaDoAno(dataPag) : ''),
+        Categoria: 'Despesas Societárias', Subcategoria: subcategoria, Modalidade: 'fornecedor',
+        NaturezaEconomica: rdNaturezaDeSubcategoria(subcategoria),
+        Fornecedor: nome, Beneficiario: nome, Veiculo: '',
+        Descricao: 'Remuneração de Gestão de Contratos — competência ' + mes,
+        CentroCusto: '', Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
+        ResponsavelLancamento: window._currentUser ? window._currentUser.name : '',
+        Empresa: normalizarEmpresa(empresa), DataPagamento: dataPag, Banco: banco, Vencimento: dataPag, Valor: valor,
+        Status: 'Pago', Title: 'Remuneração de Sócio — ' + nome + ' · ' + mes,
+        NumParcela: 1, TotalParcelas: 1, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
+        LancadoPor: window._currentUser ? window._currentUser.name : '',
+        DivisaoCC: [],
+      }).catch(() => null);
+      if (despesa && despesa.Id) despesaId = despesa.Id;
+    }
+    const dados = {
+      Competencia: mes, Socio: nome, Valor: valor, ValorCalculado: valoresCalc[nome] || 0,
+      Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco, Empresa: normalizarEmpresa(empresa),
+      PagoPor: window._currentUser ? window._currentUser.name : '', DespesaId: despesaId || '',
+    };
+    if (existenteReg && existenteReg.Id) {
+      await dbAtualizar('RemuneracaoSociosPagamentos', existenteReg.Id, dados);
+    } else {
+      await dbInserir('RemuneracaoSociosPagamentos', dados);
+    }
+  }
+  showToast('✅ Pagamento(s) registrado(s)!');
+  const m = document.getElementById('ct-socios-pag-modal'); if (m) m.remove();
+  await ctSociosPagamentosCarregar(mes);
+  ctSociosRenderizar();
 }
 
 function pageContratos() {
@@ -23728,6 +23929,7 @@ function pageContratos() {
       <div style="display:flex;gap:8px;align-items:center">
         <input type="month" id="ct-socios-mes" onchange="ctSociosMudarMes(this.value)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
         <button class="btn-secondary" onclick="ctSociosAbrirConfig()" style="font-size:.75rem;padding:6px 10px">⚙️ Configurar tetos</button>
+        <button class="btn-primary" onclick="ctSociosAbrirPagamento()" style="font-size:.75rem;padding:6px 10px">💳 Registrar Pagamentos</button>
       </div>
     </div>
     <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:12px">Bolsa de gestão do mês = MENOR valor entre (Receita Recebida do mês × % teto) e (soma dos tetos individuais) — depois repartida entre os sócios na proporção do teto de cada um. Calculado ao vivo a partir das Receitas com status "Recebido".</div>
@@ -39896,6 +40098,21 @@ const FAUNA_TIPOS = ['Afugentamento', 'Resgate', 'Avistamento'];
 const FAUNA_SEXOS = ['Macho', 'Fêmea', 'Indeterminado'];
 const FAUNA_GRUPOS = ['Anfíbio', 'Aves', 'Mamífero', 'Réptil', 'Outro'];
 const FAUNA_CONDICOES = ['Saudável', 'Debilitado', 'Ferido', 'Morto'];
+// Campos adicionados em 19/09/2026 pra alinhar a Ficha de Campo com o
+// "Banco de dados Registros fauna — Jirau coletora.xlsx" (planilha "Registro
+// de espécies") que o Tiago usa — antes só existia como colunas em branco
+// no Excel exportado, agora são coletados na hora junto com o resto da ficha.
+const FAUNA_PERIODOS = ['Matutino', 'Vespertino', 'Noturno'];
+const FAUNA_BIOLOGIA = ['Nativa', 'Exótica', 'Não identificada'];
+const FAUNA_SIMNAO = ['Não', 'Sim'];
+// Classe (taxonomia) sugerida a partir do Grupo Faunístico já escolhido —
+// mesma correspondência usada na exportação; continua editável (ex.: "Outro"
+// não mapeia pra nada, o usuário digita a classe certa se for o caso).
+const FAUNA_CLASSE_POR_GRUPO = { 'Anfíbio': 'Amphibia', 'Aves': 'Aves', 'Mamífero': 'Mammalia', 'Réptil': 'Reptilia' };
+// IUCN/MMA são categorias oficiais e fixas (Lista Vermelha da IUCN / Lista
+// Nacional de Espécies Ameaçadas do MMA) — oferecidas como sugestão (datalist,
+// não trava em uma lista fechada) já que o campo continua de texto livre.
+const FAUNA_CATEGORIAS_AMEACA = ['LC', 'NT', 'VU', 'EN', 'CR', 'RE', 'EX', 'DD', 'NE'];
 /* -- Profissionais cadastrados que atuam no monitoramento de fauna. -- */
 const FAUNA_PROFISSIONAIS = [
   { nome: 'Marcos Fernandes da Silva', cargo: 'Biólogo', crbio: '103393/06-D' },
@@ -40013,49 +40230,96 @@ async function faunaExportarExcel() {
       document.head.appendChild(s);
     });
   }
-  // Pedido em 18/09/2026: uma linha por ANIMAL cadastrado (não uma linha por
-  // ficha) — uma ficha com Quantidade=5 vira 5 linhas idênticas nos dados da
-  // coleta, uma por indivíduo, com uma coluna "Indivíduo" (1 de 5, 2 de 5...)
-  // pra deixar claro que não é duplicata. Ficha sem quantidade informada (ou
-  // 0) ainda gera 1 linha, pra não sumir da planilha.
-  const rows = [];
+  // Pedido em 19/09/2026: exportar no modelo "BD. Afugentamento e Resgate de
+  // Fauna" que o Tiago mandou (planilha "Registro de espécies") — mesmas 21
+  // colunas, mesma ordem, título mesclado no topo, cabeçalho em negrito e
+  // "Coordenadas de coleta" mesclada sobre Latitude/Longitude, igual ao
+  // arquivo original. Uma linha por ANIMAL (não por ficha): Quantidade=5 na
+  // ficha vira 5 linhas idênticas, uma por indivíduo, numeradas em sequência
+  // na coluna Nº — é assim que a planilha de referência já numera as linhas.
+  // A partir de 19/09/2026 a Ficha de Campo passou a coletar Classe/Ordem/
+  // Família/Autores/Ambiente e Período de Registro/Data de soltura/RARA/IUCN/
+  // MMA/Atendimento veterinário direto no formulário, então essas colunas já
+  // vêm preenchidas pra fichas novas; fichas registradas ANTES dessa data não
+  // têm esses campos salvos — pra elas, usa o que dá pra deduzir (Classe a
+  // partir do Grupo Faunístico, Período a partir do Horário) e deixa o resto
+  // em branco pra completar manualmente.
+  const CLASSE_POR_GRUPO = { 'Anfíbio': 'Amphibia', 'Aves': 'Aves', 'Mamífero': 'Mammalia', 'Réptil': 'Reptilia' };
+  const periodoDoHorario = (hhmm) => {
+    const h = parseInt((hhmm || '').split(':')[0], 10);
+    if (isNaN(h)) return '';
+    if (h < 12) return 'Matutino';
+    if (h < 18) return 'Vespertino';
+    return 'Noturno';
+  };
+  const linhas = [];
   items.forEach(f => {
     const qtd = Math.max(1, parseInt(f.quantidade, 10) || 0);
+    const observacaoPartes = [];
+    if (f.sexoAnimal && f.sexoAnimal !== 'Indeterminado') observacaoPartes.push('Sexo: ' + f.sexoAnimal);
+    if (f.condicaoFisica) observacaoPartes.push('Condição física: ' + f.condicaoFisica);
+    if (f.destino) observacaoPartes.push(f.destino);
+    const observacao = observacaoPartes.join(' — ');
     for (let i = 1; i <= qtd; i++) {
-      rows.push({
-        'Nº Ficha': f.numeroFicha || '',
-        'Indivíduo': qtd > 1 ? (i + ' de ' + qtd) : '1 de 1',
-        'Data': f.data ? new Date(f.data + 'T12:00').toLocaleDateString('pt-BR') : '',
-        'Horário': f.horario || '',
-        'Empreendimento': f.empreendimento || '',
-        'Cliente': f.cliente || '',
-        'Atividade': f.atividade || '',
-        'Condições Climáticas': f.clima || '',
-        'Profissional': f.profissionalNome || '',
-        'Cargo': f.profissionalCargo || '',
-        'CRBio': f.crbio || '',
-        'Tipo de Registro': f.tipoRegistro || '',
-        'Material Utilizado': f.materialUtilizado || '',
-        'Grupo Faunístico': f.grupoFaunistico || '',
-        'Nome Científico': f.nomeCientifico || '',
-        'Nome Comum': f.nomeComum || '',
-        'Quantidade Total na Ficha': f.quantidade || '',
-        'Sexo do Animal': f.sexoAnimal || '',
-        'Condição Física': f.condicaoFisica || '',
-        'Destino': f.destino || '',
-        'UTM Latitude': f.utmLat || '',
-        'UTM Longitude': f.utmLong || '',
-        'Registrado por': f.CriadoPorNome || '',
-      });
+      linhas.push([
+        linhas.length + 1,                                                      // N°
+        f.data ? new Date(f.data + 'T12:00:00') : '',                            // Data de registro
+        f.periodoRegistro || periodoDoHorario(f.horario),                        // Período de registro
+        f.ambienteRegistro || '',                                                 // Ambiente de registro
+        f.classe || CLASSE_POR_GRUPO[f.grupoFaunistico] || '',                   // Classe
+        f.ordem || '',                                                            // Ordem
+        f.familia || '',                                                          // Família
+        f.nomeCientifico || '',                                                   // Nome científico
+        f.autores || '',                                                          // Autores
+        f.nomeComum || '',                                                        // Nome popular
+        f.tipoRegistro || '',                                                     // Tipo de registro
+        f.profissionalNome || '',                                                 // Equipe
+        f.utmLat || '',                                                           // Coordenadas de coleta — Latitude
+        f.utmLong || '',                                                          // Coordenadas de coleta — Longitude
+        f.dataSoltura ? new Date(f.dataSoltura + 'T12:00:00') : '',              // Data de soltura
+        f.biologiaEspecies || '',                                                 // BIOLOGIA DAS ESPÉCIES
+        f.rara || '',                                                             // RARA
+        f.iucn || '',                                                             // IUCN
+        f.mma || '',                                                              // MMA
+        f.atendimentoVeterinario || '',                                          // Atendimento veterinário
+        observacao,                                                               // Observação
+      ]);
     }
   });
-  const ws = XLSX.utils.json_to_sheet(rows);
+
+  const empreendimentoLabel = filtroEmp || 'Todos os empreendimentos';
+  const aoa = [
+    ['BD.  AFUGENTAMENTO E RESGATE DE FAUNA  SUPRESSÃO VEGETAL — ' + empreendimentoLabel.toUpperCase()],
+    ['N°', 'Data de registro', 'Período de registro', 'Ambiente de registro', 'Classe', 'Ordem', 'Família', 'Nome científico', 'Autores', 'Nome popular', 'Tipo de registro', 'Equipe', 'Coordenadas de coleta', '', 'Data de soltura', 'BIOLOGIA DAS ESPÉCIES', 'RARA', 'IUCN', 'MMA', 'Atendimento veterinário', 'Observação'],
+    ...linhas,
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 20 } },  // título — A1:U1
+    { s: { r: 1, c: 12 }, e: { r: 1, c: 13 } }, // "Coordenadas de coleta" — M2:N2
+  ];
+  ws['!cols'] = [
+    { wch: 6 }, { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 14 }, { wch: 14 }, { wch: 16 },
+    { wch: 24 }, { wch: 20 }, { wch: 18 }, { wch: 15 }, { wch: 16 }, { wch: 15 }, { wch: 15 },
+    { wch: 14 }, { wch: 20 }, { wch: 9 }, { wch: 9 }, { wch: 8 }, { wch: 20 }, { wch: 34 },
+  ];
+  if (ws['A1']) ws['A1'].s = { font: { bold: true, sz: 12 } };
+  for (let c = 0; c < 21; c++) {
+    const ref = XLSX.utils.encode_cell({ r: 1, c });
+    if (ws[ref]) ws[ref].s = { font: { bold: true }, alignment: { horizontal: 'center', wrapText: true } };
+  }
+  for (let r = 2; r < 2 + linhas.length; r++) {
+    [1, 14].forEach(c => { // Data de registro (B) e Data de soltura (O)
+      const ref = XLSX.utils.encode_cell({ r, c });
+      if (ws[ref] && ws[ref].t === 'd') ws[ref].z = 'dd/mm/yyyy';
+    });
+  }
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Fichas de Campo');
+  XLSX.utils.book_append_sheet(wb, ws, 'Registro de espécies');
   const sufixoEmp = filtroEmp ? '_' + faunaSlugEmpreendimento(filtroEmp) : '';
   const sufixoMes = filtroMes ? '_' + filtroMes : '';
-  XLSX.writeFile(wb, 'FichasCampoFauna' + sufixoEmp + sufixoMes + '_' + new Date().toISOString().slice(0, 10) + '.xlsx');
-  showToast('✅ Planilha gerada!');
+  XLSX.writeFile(wb, 'BD_RegistroFauna' + sufixoEmp + sufixoMes + '_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  showToast('✅ Planilha gerada!' + (falhas ? ` (${falhas} ficha(s) sem dados completos — colunas parciais.)` : ''));
 }
 
 /* -- Ao escolher o empreendimento no dropdown, preenche o cliente automaticamente
@@ -40067,6 +40331,15 @@ function faunaSelecionarEmpreendimento(nome) {
   navigate('checklist_fauna');
 }
 
+/* -- Ao escolher o Grupo Faunístico, sugere a Classe (taxonomia) correspondente
+   — só se o campo Classe ainda estiver vazio, pra não sobrescrever algo que a
+   pessoa já tenha digitado/corrigido manualmente. -- */
+function faunaSelecionarGrupo(valor) {
+  window._faunaData.grupoFaunistico = valor;
+  if (!window._faunaData.classe && FAUNA_CLASSE_POR_GRUPO[valor]) window._faunaData.classe = FAUNA_CLASSE_POR_GRUPO[valor];
+  navigate('checklist_fauna');
+}
+
 function faunaNovoForm() {
   window._faunaData = {
     numeroFicha: '', data: new Date().toISOString().split('T')[0], horario: new Date().toTimeString().slice(0,5),
@@ -40075,6 +40348,9 @@ function faunaNovoForm() {
     utmLat: '', utmLong: '', tipoRegistro: 'Resgate', materialUtilizado: '',
     sexoAnimal: 'Indeterminado', grupoFaunistico: '', nomeCientifico: '', nomeComum: '',
     quantidade: '', condicaoFisica: 'Saudável', destino: '', fotos: [],
+    // Campos do modelo "Banco de dados Registros fauna" (19/09/2026):
+    periodoRegistro: '', ambienteRegistro: '', classe: '', ordem: '', familia: '', autores: '',
+    dataSoltura: '', biologiaEspecies: 'Nativa', rara: 'Não', iucn: '', mma: '', atendimentoVeterinario: 'Não',
   };
 }
 if (!window._faunaData) faunaNovoForm();
@@ -40633,6 +40909,16 @@ function pageFaunaFicha() {
     <div class="form-group" style="margin-bottom:14px"><label>Condições Climáticas</label>
       <select onchange="faunaCampo('clima', this.value)">${FAUNA_CLIMAS.map(c => `<option ${d.clima===c?'selected':''}>${c}</option>`).join('')}</select>
     </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+      <div class="form-group" style="margin:0"><label>Período de Registro</label>
+        <select onchange="faunaCampo('periodoRegistro', this.value)">
+          <option value="">Selecione...</option>
+          ${FAUNA_PERIODOS.map(p => `<option ${d.periodoRegistro===p?'selected':''}>${p}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Ambiente de Registro</label><input value="${(d.ambienteRegistro||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('ambienteRegistro', this.value)" list="fauna_ambiente_dl" placeholder="Ex: Terrícola"></div>
+    </div>
+    <datalist id="fauna_ambiente_dl"><option value="Terrícola"><option value="Arborícola"><option value="Aquático"><option value="Aéreo"><option value="Fossorial"></datalist>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Empreendimento</label>
@@ -40674,11 +40960,19 @@ function pageFaunaFicha() {
         <select onchange="faunaCampo('sexoAnimal', this.value)">${FAUNA_SEXOS.map(s => `<option ${d.sexoAnimal===s?'selected':''}>${s}</option>`).join('')}</select>
       </div>
       <div class="form-group" style="margin:0"><label>Grupo Faunístico</label>
-        <select onchange="faunaCampo('grupoFaunistico', this.value)">
+        <select onchange="faunaSelecionarGrupo(this.value)">
           <option value="">Selecione...</option>
           ${FAUNA_GRUPOS.map(g => `<option ${d.grupoFaunistico===g?'selected':''}>${g}</option>`).join('')}
         </select>
       </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Classe</label><input value="${(d.classe||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('classe', this.value)" placeholder="Ex: Reptilia"></div>
+      <div class="form-group" style="margin:0"><label>Ordem</label><input value="${(d.ordem||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('ordem', this.value)" placeholder="Ex: Squamata"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Família</label><input value="${(d.familia||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('familia', this.value)" placeholder="Ex: Colubridae"></div>
+      <div class="form-group" style="margin:0"><label>Autores</label><input value="${(d.autores||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('autores', this.value)" placeholder="Ex: (Wied-Neuwied, 1824)"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Nome Científico</label><input value="${(d.nomeCientifico||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('nomeCientifico', this.value)" style="font-style:italic" placeholder="Ex: Rhinella major"></div>
@@ -40689,6 +40983,25 @@ function pageFaunaFicha() {
       <div class="form-group" style="margin:0"><label>Condição Física</label>
         <select onchange="faunaCampo('condicaoFisica', this.value)">${FAUNA_CONDICOES.map(c => `<option ${d.condicaoFisica===c?'selected':''}>${c}</option>`).join('')}</select>
       </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Biologia da Espécie</label>
+        <select onchange="faunaCampo('biologiaEspecies', this.value)">${FAUNA_BIOLOGIA.map(b => `<option ${d.biologiaEspecies===b?'selected':''}>${b}</option>`).join('')}</select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Espécie Rara?</label>
+        <select onchange="faunaCampo('rara', this.value)">${FAUNA_SIMNAO.map(s => `<option ${d.rara===s?'selected':''}>${s}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>IUCN</label><input value="${(d.iucn||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('iucn', this.value)" list="fauna_categoria_dl" placeholder="Ex: LC"></div>
+      <div class="form-group" style="margin:0"><label>MMA</label><input value="${(d.mma||'').replace(/"/g,'&quot;')}" oninput="faunaCampo('mma', this.value)" list="fauna_categoria_dl" placeholder="Ex: LC"></div>
+    </div>
+    <datalist id="fauna_categoria_dl">${FAUNA_CATEGORIAS_AMEACA.map(c => `<option value="${c}">`).join('')}</datalist>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Atendimento Veterinário?</label>
+        <select onchange="faunaCampo('atendimentoVeterinario', this.value)">${FAUNA_SIMNAO.map(s => `<option ${d.atendimentoVeterinario===s?'selected':''}>${s}</option>`).join('')}</select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Data de Soltura</label><input type="date" value="${d.dataSoltura||''}" onchange="faunaCampo('dataSoltura', this.value)"></div>
     </div>
     <div class="form-group" style="margin-bottom:0"><label>Destino</label><textarea rows="2" oninput="faunaCampo('destino', this.value)" placeholder="Ex: Animal resgatado e solto posteriormente em boas condições físicas em áreas adjacentes.">${d.destino||''}</textarea></div>
   </div>
