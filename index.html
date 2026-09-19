@@ -23650,29 +23650,52 @@ async function ctSociosMudarMes(v) {
   ctSociosRenderizar();
 }
 
+// Só conta receita de Centro de Custo de CONTRATO (categoria "Prestação de
+// Serviços" no cadastro de CCs) — pedido em 19/09/2026: "não considerar
+// centro de custos consolidado, apenas centro de custos de contratos". Os
+// CCs "Consolidado - <empresa>"/Reserva/Frota são categoria "Outros
+// recebimentos" no cadastro (centrosCustoData) e ficam de fora do cálculo da
+// Bolsa de Gestão e do detalhamento. Receita sem CC cadastrado (legado) não
+// é bloqueada — só exclui quando o CC existe e está claramente fora da
+// categoria de contrato.
+function ctSociosCCEhContrato(centroCusto) {
+  const ccId = _ccIdPuro(centroCusto);
+  if (!ccId) return true;
+  const cc = (centrosCustoData || []).find(c => c.id === ccId);
+  if (!cc) return true;
+  return (cc.categoria || '').toLowerCase() !== 'outros recebimentos';
+}
+
 function ctSociosRenderizar() {
   const cont = document.getElementById('ct-socios-conteudo');
   if (!cont) return;
   if (_ctReceitas === null) { cont.innerHTML = 'Carregando…'; return; }
   const cfg = ctSociosConfigAtual();
   const mes = window._ctSociosMes || new Date().toISOString().slice(0, 7);
-  const receitaMes = (_ctReceitas || []).filter(r => r.Status === 'Recebido' && (r.DataRecebimento || r.DataEmissao || '').slice(0, 7) === mes)
-    .reduce((s, r) => s + (Number(r.Valor) || 0), 0);
+  // Detalhamento por contrato/medição — pedido em 19/09/2026: mostrar de onde vem
+  // cada valor do mês, igual a planilha original fazia linha a linha por medição
+  // (uma linha por Receita "Recebida" no mês, com CC/Nº Med. de origem). A
+  // Receita Recebida do mês (base da Bolsa de Gestão) é a soma dos MESMOS itens
+  // desta lista — já filtrados pra só contrato — não uma soma à parte.
+  const itensMes = (_ctReceitas || []).filter(r => r.Status === 'Recebido' && (r.DataRecebimento || r.DataEmissao || '').slice(0, 7) === mes && ctSociosCCEhContrato(r.CentroCusto))
+    .sort((a, b) => (a.CentroCusto || '').localeCompare(b.CentroCusto || '', 'pt-BR'));
+  const receitaMes = itensMes.reduce((s, r) => s + (Number(r.Valor) || 0), 0);
   const socios = cfg.Socios || [];
   const somaTetos = socios.reduce((s, x) => s + (Number(x.teto) || 0), 0);
   const tetoPct = (Number(cfg.TetoPercentual) || 0) / 100;
   const bolsa = somaTetos > 0 ? Math.min(receitaMes * tetoPct, somaTetos) : 0;
   const pagamentos = window._ctSociosPagamentos || [];
   window._ctSociosValoresCalc = {};
+  // Guardado pra ctSociosDivisaoCCDoSocio() conseguir montar o rateio por CC/
+  // medição na hora de lançar a Despesa — pedido em 19/09/2026 ("quando eu
+  // lançar em despesas vai para cada centro de custos e medição?").
+  window._ctSociosItensMes = itensMes;
+  window._ctSociosReceitaMes = receitaMes;
+  window._ctSociosBolsa = bolsa;
   const totalPago = pagamentos.reduce((s, p) => s + (Number(p.Valor) || 0), 0);
-  // Detalhamento por contrato/medição — pedido em 19/09/2026: mostrar de onde vem
-  // cada valor do mês, igual a planilha original fazia linha a linha por medição
-  // (uma linha por Receita "Recebida" no mês, com CC/Nº Med. de origem).
-  const itensMes = (_ctReceitas || []).filter(r => r.Status === 'Recebido' && (r.DataRecebimento || r.DataEmissao || '').slice(0, 7) === mes)
-    .sort((a, b) => (a.CentroCusto || '').localeCompare(b.CentroCusto || '', 'pt-BR'));
   cont.innerHTML = `
     <div class="kpi-grid" style="margin-bottom:14px">
-      <div class="kpi-card green"><div class="kpi-label">Receita Recebida do mês</div><div class="kpi-value" style="font-size:1.05rem">${rdNumeroParaMoeda(receitaMes)}</div><div class="kpi-icon">💰</div></div>
+      <div class="kpi-card green"><div class="kpi-label">Receita Recebida do mês (contratos)</div><div class="kpi-value" style="font-size:1.05rem">${rdNumeroParaMoeda(receitaMes)}</div><div class="kpi-icon">💰</div></div>
       <div class="kpi-card blue"><div class="kpi-label">Bolsa de Gestão do mês</div><div class="kpi-value" style="font-size:1.05rem">${rdNumeroParaMoeda(bolsa)}</div><div class="kpi-icon">🧮</div></div>
       <div class="kpi-card amber"><div class="kpi-label">% Teto configurado</div><div class="kpi-value">${(cfg.TetoPercentual || 0).toLocaleString('pt-BR')}%</div><div class="kpi-icon">⚙️</div></div>
       <div class="kpi-card ${bolsa > 0 && totalPago >= bolsa ? 'green' : 'red'}"><div class="kpi-label">Pago no mês</div><div class="kpi-value" style="font-size:1.05rem">${rdNumeroParaMoeda(totalPago)}</div><div class="kpi-icon">💳</div></div>
@@ -23832,6 +23855,42 @@ function ctSociosAtualizarBancos() {
   dl.innerHTML = bancosDaEmpresa(empresa).map(b => `<option value="${b}">`).join('');
 }
 
+/* -- Rateio por Centro de Custo/Medição da Despesa lançada no pagamento —
+   pedido em 19/09/2026 ("quando eu lançar em despesas vai para cada centro
+   de custos e medição?"). Usa o mesmo detalhamento por contrato/medição já
+   mostrado no card (window._ctSociosItensMes, preenchido no último
+   ctSociosRenderizar) pra montar um DivisaoCC — mesmo formato usado em
+   Despesas/Receitas/Contas a Pagar ([{cc, medicao, valor}], igual
+   rdAdicionarDivisaoCC monta) — com a fatia de CADA CC/medição que compôs o
+   valor deste sócio no mês, escalado pro valor efetivamente pago (que pode
+   ter sido ajustado no modal, diferente do calculado). -- */
+function ctSociosDivisaoCCDoSocio(nomeSocio, valorPago) {
+  const itensMes = window._ctSociosItensMes || [];
+  const receitaMes = window._ctSociosReceitaMes || 0;
+  const bolsa = window._ctSociosBolsa || 0;
+  const cfg = ctSociosConfigAtual();
+  const somaTetos = (cfg.Socios || []).reduce((s, x) => s + (Number(x.teto) || 0), 0);
+  const socioCfg = (cfg.Socios || []).find(s => s.nome === nomeSocio);
+  const pctSoc = (socioCfg && somaTetos > 0) ? (Number(socioCfg.teto) || 0) / somaTetos : 0;
+  const porCC = {};
+  let totalCalc = 0;
+  itensMes.forEach(r => {
+    const valorR = Number(r.Valor) || 0;
+    const pctR = receitaMes > 0 ? valorR / receitaMes : 0;
+    const shareSoc = bolsa * pctR * pctSoc;
+    if (!shareSoc || !r.CentroCusto) return; // sem CC cadastrado não dá pra ratear
+    if (!porCC[r.CentroCusto]) porCC[r.CentroCusto] = { valor: 0, medicoes: new Set() };
+    porCC[r.CentroCusto].valor += shareSoc;
+    if (r.NumMedicao) porCC[r.CentroCusto].medicoes.add(String(r.NumMedicao));
+    totalCalc += shareSoc;
+  });
+  const escala = (valorPago && totalCalc > 0) ? valorPago / totalCalc : 1;
+  return Object.keys(porCC).map(cc => ({
+    cc, medicao: Array.from(porCC[cc].medicoes).join(', '),
+    valor: Math.round(porCC[cc].valor * escala * 100) / 100,
+  })).filter(d => d.valor);
+}
+
 async function ctSociosConfirmarPagamento() {
   const mes = window._ctSociosMes || new Date().toISOString().slice(0, 7);
   const empresa = (document.getElementById('ctspag_empresa') || {}).value;
@@ -23853,19 +23912,21 @@ async function ctSociosConfirmarPagamento() {
     let despesaId = existenteReg ? existenteReg.DespesaId : '';
     if (lancarDespesa && !despesaId) {
       const subcategoria = 'Participação nos Lucros dos Sócios';
+      const divisaoCC = ctSociosDivisaoCCDoSocio(nome, valor);
       const despesa = await dbInserir('Despesas', {
         DataLancamento: dataPag, Semana: (typeof _rdSemanaDoAno === 'function' ? _rdSemanaDoAno(dataPag) : ''),
         Categoria: 'Despesas Societárias', Subcategoria: subcategoria, Modalidade: 'fornecedor',
         NaturezaEconomica: rdNaturezaDeSubcategoria(subcategoria),
         Fornecedor: nome, Beneficiario: nome, Veiculo: '',
         Descricao: 'Remuneração de Gestão de Contratos — competência ' + mes,
-        CentroCusto: '', Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
+        CentroCusto: divisaoCC.length ? divisaoCC.map(d => d.cc).join(' + ') : '', NumMedicao: '',
+        Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
         ResponsavelLancamento: window._currentUser ? window._currentUser.name : '',
         Empresa: normalizarEmpresa(empresa), DataPagamento: dataPag, Banco: banco, Vencimento: dataPag, Valor: valor,
         Status: 'Pago', Title: 'Remuneração de Sócio — ' + nome + ' · ' + mes,
         NumParcela: 1, TotalParcelas: 1, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
         LancadoPor: window._currentUser ? window._currentUser.name : '',
-        DivisaoCC: [],
+        DivisaoCC: divisaoCC,
       }).catch(() => null);
       if (despesa && despesa.Id) despesaId = despesa.Id;
     }
@@ -23932,7 +23993,7 @@ function pageContratos() {
         <button class="btn-primary" onclick="ctSociosAbrirPagamento()" style="font-size:.75rem;padding:6px 10px">💳 Registrar Pagamentos</button>
       </div>
     </div>
-    <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:12px">Bolsa de gestão do mês = MENOR valor entre (Receita Recebida do mês × % teto) e (soma dos tetos individuais) — depois repartida entre os sócios na proporção do teto de cada um. Calculado ao vivo a partir das Receitas com status "Recebido".</div>
+    <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:12px">Bolsa de gestão do mês = MENOR valor entre (Receita Recebida do mês × % teto) e (soma dos tetos individuais) — depois repartida entre os sócios na proporção do teto de cada um. Calculado ao vivo a partir das Receitas com status "Recebido" e Centro de Custo de contrato (Consolidado/Reserva/Frota não entram).</div>
     <div id="ct-socios-conteudo">Carregando…</div>
   </div>
 
