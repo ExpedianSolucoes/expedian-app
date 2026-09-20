@@ -9868,6 +9868,22 @@ const RC_SUBCATEGORIAS = {
   'Transferencias entre contas': ['Transferencias entre contas','Outros (Transferencias entre contas)'],
 };
 function rcSubcategoriasDe(categoria) { return RC_SUBCATEGORIAS[categoria] || []; }
+// Subcategoria vem primeiro no formulário de Receitas e preenche a Categoria
+// sozinha — mesmo padrão já usado em Despesas/Contas a Pagar (pedido em
+// 20/09/2026: "quero que fique primeiro a subcategoria e ao escolher ela a
+// categoria atualize automático").
+const RC_CATEGORIA_DE_SUBCATEGORIA = Object.entries(RC_SUBCATEGORIAS).reduce((map, [cat, subs]) => {
+  subs.forEach(s => { map[s] = cat; });
+  return map;
+}, {});
+function rcCategoriaDeSubcategoria(subcategoria) { return RC_CATEGORIA_DE_SUBCATEGORIA[subcategoria] || ''; }
+function rcOpcoesSubcategoriasAgrupadas() {
+  return RC_CATEGORIAS.map(cat => {
+    const subs = RC_SUBCATEGORIAS[cat] || [];
+    if (!subs.length) return '';
+    return `<optgroup label="${cat}">${subs.map(s => `<option>${s}</option>`).join('')}</optgroup>`;
+  }).join('');
+}
 const RC_NATUREZA_CATEGORIA = {
   'Prestação de Serviços': 'Operacional',
   'Venda de Produtos': 'Não Operacional',
@@ -10254,19 +10270,12 @@ function rdPresetCategoriaESubcategoria(categoria) {
   const sel = document.getElementById('rd_subcategoria');
   if (sel && subs.length) { sel.value = subs[0]; rdSubcategoriaEscolhidaDespesas(); }
 }
-// Pré-seleciona Categoria "Receitas Financeiras" e restringe a Subcategoria
-// só às opções de Resgate — o usuário ainda pode trocar a categoria manualmente
-// se abriu esse formulário querendo lançar outra coisa.
+// Pré-seleciona Subcategoria "Resgate de CDB" (Categoria "Receitas
+// Financeiras" vem automática a partir dela) — o usuário ainda pode trocar
+// livremente depois, se abriu esse formulário querendo lançar outra coisa.
 function rcPresetResgate() {
-  const catSel = document.getElementById('rc_categoria');
-  if (catSel) catSel.value = 'Receitas Financeiras';
-  rcAtualizarSubcategorias();
   const subSel = document.getElementById('rc_subcategoria');
-  if (!subSel) return;
-  const resgates = ['Resgate de CDB','Resgate de Fundos','Resgate de Renda Fixa','Outros Resgates'];
-  Array.from(subSel.options).forEach(opt => { if (opt.value && !resgates.includes(opt.value)) opt.remove(); });
-  if (subSel.options.length > 1) subSel.selectedIndex = 1;
-  rcAtualizarNaturezaHint();
+  if (subSel) { subSel.value = 'Resgate de CDB'; rcSubcategoriaEscolhida(); }
 }
 
 function transferenciaAbrirModal() {
@@ -10740,21 +10749,22 @@ function renderReceitasTab() {
         <input type="date" id="rc_data_emissao" value="${new Date().toISOString().split('T')[0]}">
       </div>
       <div class="form-group">
-        <label>Categoria</label>
-        <select id="rc_categoria" onchange="rcAtualizarSubcategorias()">
+        <label>Subcategoria</label>
+        <select id="rc_subcategoria" onchange="rcSubcategoriaEscolhida()">
           <option value="">Selecione...</option>
-          ${RC_CATEGORIAS.map(c => `<option>${c}</option>`).join('')}
+          ${rcOpcoesSubcategoriasAgrupadas()}
         </select>
+        <div id="rc_natureza_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
       </div>
     </div>
 
     <div class="form-row">
       <div class="form-group">
-        <label>Subcategoria</label>
-        <select id="rc_subcategoria" onchange="rcAtualizarNaturezaHint()">
-          <option value="">Selecione a categoria primeiro...</option>
+        <label>Categoria <span style="font-size:.7rem;color:var(--text-muted)">(automático)</span></label>
+        <select id="rc_categoria">
+          <option value="">Selecione...</option>
+          ${RC_CATEGORIAS.map(c => `<option>${c}</option>`).join('')}
         </select>
-        <div id="rc_natureza_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
       </div>
     </div>
 
@@ -11347,14 +11357,11 @@ async function rcAnexarComprovante(inputEl) {
   }
 }
 
-function rcAtualizarSubcategorias() {
-  const categoria = (document.getElementById('rc_categoria')||{}).value || '';
-  const sel = document.getElementById('rc_subcategoria');
-  if (!sel) return;
-  const subs = rcSubcategoriasDe(categoria);
-  sel.innerHTML = subs.length
-    ? '<option value="">Selecione...</option>' + subs.map(s => `<option>${s}</option>`).join('')
-    : '<option value="">Selecione a categoria primeiro...</option>';
+function rcSubcategoriaEscolhida() {
+  const sub = (document.getElementById('rc_subcategoria')||{}).value || '';
+  const catSel = document.getElementById('rc_categoria');
+  const cat = rcCategoriaDeSubcategoria(sub);
+  if (catSel) catSel.value = cat;
   rcAtualizarNaturezaHint();
 }
 
@@ -11427,7 +11434,7 @@ async function salvarReceita() {
 
   ['rc_cliente','rc_cliente_input','rc_descricao','rc_valor','rc_data_prevista','rc_data_recebimento','rc_banco','rc_numero_nf'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const catSel = document.getElementById('rc_categoria'); if (catSel) catSel.selectedIndex = 0;
-  const subcatSel = document.getElementById('rc_subcategoria'); if (subcatSel) subcatSel.innerHTML = '<option value="">Selecione a categoria primeiro...</option>';
+  const subcatSel = document.getElementById('rc_subcategoria'); if (subcatSel) subcatSel.selectedIndex = 0;
   const rcNatHint = document.getElementById('rc_natureza_hint'); if (rcNatHint) rcNatHint.textContent = '';
   const formaSel = document.getElementById('rc_forma'); if (formaSel) formaSel.selectedIndex = 0;
   const respSel = document.getElementById('rc_responsavel'); if (respSel) respSel.selectedIndex = 0;
@@ -17937,6 +17944,16 @@ async function cmedSalvar() {
     window._cmedMostrarForm = false; window._cmedRegistroAtualId = null;
     await cmedCarregarSemNavegar(true);
     cmedAtualizarBloco(chaveSalva);
+    // Gera automaticamente um rascunho de Receita quando a medição chega a
+    // NF emitida/Paga (pedido em 20/09/2026) — sem aguardar (fire-and-forget),
+    // pra não atrasar o feedback de "medição salva" pro usuário; a própria
+    // função tem try/catch e não deixa falha vazar como erro não tratado.
+    const medicaoIdGerada = editandoId || (ok && ok.Id);
+    projetosGerarReceitaDeMedicao('MedicoesContratosEnergisa', medicaoIdGerada, {
+      Status: registro.Status, NumeroNF: registro.NumeroNF, Valor: registro.Valor,
+      contratoChave: d.contratoChave, numMedicao: 'BM ' + d.numeroBM,
+      dataFaturamento: registro.DataFaturamento, descricao: registro.Descricao,
+    });
   }
 }
 
@@ -27623,6 +27640,76 @@ const centrosCustoData = [
   { id:'CC-035', contrato:'Roberto Gouveia - Posto Combustível',          cliente:'Roberto Gouveia',      empresa:'EXP Brasil',     status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Licenciamento Ambiental' },
   { id:'CC-036', contrato:'Ruído Ambiental CSS',                          cliente:'C.S da Silva Serviços',empresa:'EXP Brasil',     status:'finalizado', gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Ruído Ambiental' },
 ];
+
+/* -- Gera automaticamente um rascunho de Receita ("Status: Pendente", para
+   conferir/aprovar — NÃO marca como recebida sozinho) quando uma medição de
+   Projetos/Energisa (MedicoesEnergisa ou MedicoesContratosEnergisa) chega a
+   NF emitida/Paga com nota fiscal e valor preenchidos. Pedido em 20/09/2026:
+   "ao cadastrar uma nota fiscal em qualquer medição de projetos, ela já
+   aparecer em receitas... para não precisar ficar cadastrando tudo de novo
+   em medição e em receitas, para não correr risco de digitar errado".
+
+   Idempotência: grava `ReceitaGeradaId` na própria medição depois de gerar,
+   e essa função sai sem fazer nada se o campo já estiver preenchido — assim
+   salvar a mesma medição de novo (ex.: corrigindo outro campo depois) não
+   duplica a Receita. Se não houver Centro de Custo cadastrado para o
+   contrato (contratoChave), não gera nada e só avisa no console — não dá
+   pra criar a Receita sem saber o CC/Empresa corretos.
+
+   Cliente: como o nome da Energisa Rondônia aparece grafado de 3 formas
+   diferentes pelo app (contrato, histórico de Receitas, cadastro de
+   Clientes), busca o cadastro pelo CNPJ (chave estável) em vez de fixar
+   qualquer uma das grafias.
+
+   Subcategoria: prioriza a Subcategoria realmente usada na Receita mais
+   recente já lançada pro mesmo Centro de Custo (fonte mais confiável que o
+   valor fixo em centrosCustoData, que em pelo menos um caso — CC-002 —
+   ficou desatualizado frente ao que já era usado na prática). Só cai no
+   valor de centrosCustoData se não houver nenhuma Receita anterior daquele
+   CC. -- */
+async function projetosGerarReceitaDeMedicao(tabela, id, dadosMedicao) {
+  try {
+    if (!id) return;
+    if ((dadosMedicao.Status || '') !== 'NF emitida' && (dadosMedicao.Status || '') !== 'Paga') return;
+    if (!dadosMedicao.NumeroNF || !dadosMedicao.Valor) return;
+    const lista = await dbLer(tabela).catch(() => []);
+    const atual = (lista || []).find(r => String(r.Id) === String(id));
+    if (!atual || atual.ReceitaGeradaId) return; // já gerada antes, ou registro sumiu — não duplica
+    const cc = (centrosCustoData || []).find(c => c.contratoChave === dadosMedicao.contratoChave);
+    if (!cc) { console.warn('[Projetos] Sem Centro de Custo cadastrado para', dadosMedicao.contratoChave, '— Receita não gerada automaticamente.'); return; }
+    const clientes = await dbLer('Clientes').catch(() => []);
+    const clienteCad = (clientes || []).find(c => (c.CNPJ || '').replace(/\D/g, '') === '05914650000166');
+    const clienteNome = (clienteCad && clienteCad.Title) || cc.cliente || 'Energisa Rondônia';
+    const receitasExistentes = await dbLer('Receitas').catch(() => []);
+    const receitasDoCC = (receitasExistentes || [])
+      .filter(r => _ccIdPuro(r.CentroCusto) === cc.id && r.Subcategoria)
+      .sort((a, b) => (b.DataEmissao || '').localeCompare(a.DataEmissao || ''));
+    const subcategoria = (receitasDoCC[0] && receitasDoCC[0].Subcategoria) || cc.subcategoria || '';
+    const dataEmissao = dadosMedicao.dataFaturamento || new Date().toISOString().slice(0, 10);
+    const dados = {
+      DataEmissao: dataEmissao, Categoria: cc.categoria || 'Prestação de Serviços', Subcategoria: subcategoria,
+      NaturezaEconomica: rcNaturezaDeSubcategoria(subcategoria), TipoMovimentacao: rcTipoMovimentacao(cc.categoria, subcategoria),
+      Cliente: clienteNome, Descricao: dadosMedicao.descricao || '',
+      CentroCusto: cc.id + ' · ' + cc.contrato, Valor: Number(dadosMedicao.Valor) || 0,
+      DataPrevista: '', FormaRecebimento: '', ResponsavelLancamento: '',
+      DataRecebimento: '', Banco: '', Status: 'Pendente',
+      NumMedicao: String(dadosMedicao.numMedicao || ''), NumeroNF: String(dadosMedicao.NumeroNF || ''),
+      ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
+      OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
+      ValorLiquido: Number(dadosMedicao.Valor) || 0, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
+      Empresa: normalizarEmpresa(cc.empresa) || 'Expedian',
+      Title: clienteNome + ' · ' + dataEmissao,
+      LancadoPor: window._currentUser ? window._currentUser.name : '',
+      // Marca de origem — não usada em cálculos, só pra rastrear/auditar de onde veio.
+      GeradoAutomaticamente: true, OrigemMedicaoTabela: tabela, OrigemMedicaoId: id,
+    };
+    const nova = await dbInserir('Receitas', dados);
+    if (nova && nova.Id) {
+      await dbAtualizar(tabela, id, { ReceitaGeradaId: nova.Id });
+      showToast('💰 Receita pré-preenchida gerada a partir da medição — confira em Receitas.');
+    }
+  } catch (e) { console.warn('[Projetos] Falha ao gerar Receita automática da medição.', e); }
+}
 
 /* -- Financeiro por Centro de Custo: Receitas/Despesas são somadas ao vivo
       das tabelas já existentes (mesmo padrão de carregarMedicoesCC, mas
@@ -46273,6 +46360,15 @@ async function medSalvar() {
     window._medMostrarForm = false;
     window._medRegistroAtualId = null;
     await medCarregarHistorico(true);
+    // Gera automaticamente um rascunho de Receita quando a medição chega a
+    // NF emitida/Paga (pedido em 20/09/2026) — fire-and-forget, mesma lógica
+    // de cmedSalvar; a Gestão de Obras (CC-002) é o único contrato desta
+    // tabela, chave fixa 'obras2025022101'.
+    projetosGerarReceitaDeMedicao('MedicoesEnergisa', novo.Id, {
+      Status: registro.Status, NumeroNF: registro.NumeroNF, Valor: registro.Valor,
+      contratoChave: 'obras2025022101', numMedicao: 'BM' + numeroMedicao + ' · ' + frente.nome,
+      dataFaturamento: registro.DataFaturamento, descricao: registro.Title,
+    });
   } else {
     showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
     showToast('⚠️ Não foi possível salvar. Verifique o login com Microsoft e tente de novo.');
