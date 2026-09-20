@@ -17273,12 +17273,26 @@ function projetosHtmlEscopoContratual(chave) {
   </div>`;
 }
 
+/* -- Corrigido em 20/09/2026: usava dbLer() puro, que SEMPRE devolve um array
+   (mesmo em falha de rede/token — dbLerComEtag descarta o "sucesso" nesse
+   caso). Resultado: uma falha passageira pra buscar o OneDrive virava "R$
+   0,00 medido"/"histórico vazio" na tela, como se as medições tivessem
+   sumido — quando na verdade o arquivo MedicoesEnergisa.json no OneDrive
+   continuava intacto (foi o que aconteceu em 20/09/2026: Tiago viu "Nenhuma
+   medição registrada" em Projetos > Gestão de Obras, mas os 25 registros
+   estavam lá). Agora usa dbLerComEtag + checa "sucesso" antes de acreditar
+   que a lista realmente está vazia — mesmo padrão já usado em
+   flashCarregarHistorico/medCarregarHistorico. -- */
 async function projetosCarregarResumoFinanceiroObras() {
   const alvo = document.getElementById('projetos-obras-financeiro');
   if (!alvo) return;
   try {
-    const lista = await dbLer('MedicoesEnergisa') || [];
-    const medido = lista.reduce((s, m) => s + (parseFloat(m.Valor) || 0), 0);
+    const { lista, sucesso } = await dbLerComEtag('MedicoesEnergisa');
+    if (!sucesso) {
+      alvo.innerHTML = '<div style="font-size:.78rem;color:#c0392b">⚠️ Não foi possível confirmar com o OneDrive agora (não significa que as medições sumiram — só não deu pra conferir). <span style="cursor:pointer;text-decoration:underline" onclick="projetosCarregarResumoFinanceiroObras()">Tentar de novo</span></div>';
+      return;
+    }
+    const medido = (lista || []).reduce((s, m) => s + (parseFloat(m.Valor) || 0), 0);
     const global = CONTRATO_ENERGISA_OBRAS.valorGlobal;
     const saldo = global - medido;
     const pct = global ? (medido / global * 100) : 0;
@@ -17303,17 +17317,30 @@ async function projetosCarregarResumoFinanceiroObras() {
    (mesmo renderer/agrupamento por circuito da página checklist_medicao),
    só que carregado com dbLer direto + patch de DOM, sem o navigate('checklist_medicao')
    que medCarregarHistorico() dispara no final (o que redirecionaria pra
-   fora de Projetos por engano). -- */
+   fora de Projetos por engano).
+   Corrigido em 20/09/2026 (mesmo motivo do resumo financeiro acima): guarda
+   um cache local (med_historico_cache) e só substitui window._medHistorico
+   quando a busca no OneDrive realmente teve sucesso — uma falha passageira
+   não apaga mais o histórico da tela, mostra aviso de "não deu pra
+   confirmar agora" com os últimos dados conhecidos, em vez de "vazio". -- */
 async function projetosCarregarHistoricoMedicoesObras() {
   const alvo = document.getElementById('projetos-obras-medicoes-historico');
   if (!alvo) return;
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('med_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
+  if (window._medHistorico == null) window._medHistorico = cacheLocal;
   try {
-    const lista = await dbLer('MedicoesEnergisa') || [];
-    window._medHistorico = lista;
-    try { localStorage.setItem('med_historico_cache', JSON.stringify(lista)); } catch (e) {}
-    alvo.innerHTML = medHtmlDashboard(lista) + medHtmlHistorico();
+    const { lista, sucesso } = await dbLerComEtag('MedicoesEnergisa');
+    if (sucesso && Array.isArray(lista)) {
+      window._medHistorico = lista;
+      try { localStorage.setItem('med_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    } else {
+      console.warn('[Projetos] Falha ao buscar Medições no OneDrive — mantendo o último histórico conhecido, nada foi apagado.');
+    }
+    alvo.innerHTML = (sucesso ? '' : '<div style="font-size:.75rem;color:#c0392b;margin-bottom:8px">⚠️ Não foi possível confirmar com o OneDrive agora — mostrando os últimos dados carregados nesta sessão. <span style="cursor:pointer;text-decoration:underline" onclick="projetosCarregarHistoricoMedicoesObras()">Tentar de novo</span></div>')
+      + medHtmlDashboard(window._medHistorico || []) + medHtmlHistorico();
   } catch (e) {
-    alvo.innerHTML = '<div style="font-size:.78rem;color:var(--text-muted)">Não foi possível carregar o histórico de medições agora.</div>';
+    alvo.innerHTML = '<div style="font-size:.78rem;color:var(--text-muted)">Não foi possível carregar o histórico de medições agora.</div>' + (window._medHistorico && window._medHistorico.length ? medHtmlDashboard(window._medHistorico) + medHtmlHistorico() : '');
   }
 }
 function projetosFiltrarMedicoesObrasCircuito(frenteId) {
@@ -46050,16 +46077,24 @@ async function medExportarPDF(id) {
   doc.save(_medNomeArquivoPdf(dLocal));
 }
 
+/* -- Corrigido em 20/09/2026: "if (Array.isArray(lista))" não protegia nada —
+   dbLer() sempre devolve um array (até em falha de rede/token, vira [] sem
+   avisar), então uma falha passageira acabava substituindo o cache bom por
+   uma lista vazia do mesmo jeito. Trocado pra dbLerComEtag + checagem de
+   "sucesso" (mesmo padrão de flashCarregarHistorico), pra uma falha de
+   conexão não apagar o histórico da tela. -- */
 async function medCarregarHistorico(forcar) {
   if (window._medHistorico !== null && !forcar) return;
   let cacheLocal = [];
   try { cacheLocal = JSON.parse(localStorage.getItem('med_historico_cache') || '[]'); } catch (e) { cacheLocal = []; }
   if (window._medHistorico === null) window._medHistorico = cacheLocal;
   try {
-    const lista = await dbLer('MedicoesEnergisa');
-    if (Array.isArray(lista)) {
+    const { lista, sucesso } = await dbLerComEtag('MedicoesEnergisa');
+    if (sucesso && Array.isArray(lista)) {
       window._medHistorico = lista;
       try { localStorage.setItem('med_historico_cache', JSON.stringify(lista)); } catch (e) {}
+    } else {
+      console.warn('[Medição] Falha ao buscar do OneDrive — mantendo cache local, nada foi apagado.');
     }
   } catch (e) { console.warn('[Medição] Falha ao carregar histórico, usando cache local.', e); }
   navigate('checklist_medicao');
