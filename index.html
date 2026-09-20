@@ -17569,24 +17569,111 @@ function medicaoPrazoAutoData(dadosForm, novoStatus) {
    mesma função de campo genérica que o módulo já tem (cmedCampo/medCampo —
    passada por nome porque cmed e med guardam o form em variáveis globais
    diferentes). -- */
-function medicaoPrazosCamposHtml(dadosForm, nomeFnCampo) {
+function medicaoPrazosCamposHtml(dadosForm, nomeFnCampo, seccionada) {
   // Campo de Nº da Nota Fiscal só aparece a partir do momento em que o BM
   // chega na etapa de Faturamento (dataFaturamento preenchida — que já
   // acontece sozinho assim que o Status vira "NF emitida"), já que antes
   // disso não existe NF nenhuma pra informar. Pedido em 04/09/2026: "quando
   // colocar no status faturamento abrir campo para inserir número da nota
   // fiscal".
-  const mostrarNF = !!dadosForm.dataFaturamento;
+  // "seccionada" (pedido em 20/09/2026: medição faturada em mais de uma NF)
+  // tira as etapas de Faturamento/Recebimento e o campo único de Nº da NF
+  // daqui — cada NF passa a ter seu próprio faturamento/recebimento na
+  // lista de medicaoSeccionadaHtml logo abaixo no formulário. Terceiro
+  // parâmetro opcional: chamadas antigas sem ele mantêm o comportamento de
+  // sempre (1 medição = 1 NF).
+  const etapas = seccionada ? MEDICAO_ETAPAS.filter(e => e.campoData !== 'dataFaturamento' && e.campoData !== 'dataRecebimento') : MEDICAO_ETAPAS;
+  const mostrarNF = !seccionada && !!dadosForm.dataFaturamento;
   return `
   <div class="card" style="margin-bottom:16px">
     <div class="card-title" style="margin-bottom:8px">📅 Linha do Tempo do BM <span style="font-weight:400;font-size:.72rem;color:var(--text-muted)">(preenchida automaticamente ao mudar o Status — pode corrigir à mão)</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
-      ${MEDICAO_ETAPAS.map(e => `
+      ${etapas.map(e => `
       <div class="form-group" style="margin:0"><label>${e.emoji} ${e.label}</label><input type="date" value="${dadosForm[e.campoData] || ''}" onchange="${nomeFnCampo}('${e.campoData}', this.value)"></div>`).join('')}
     </div>
     ${mostrarNF ? `
     <div class="form-group" style="margin:12px 0 0"><label>🧾 Número da Nota Fiscal</label><input value="${(dadosForm.numeroNF || '').replace(/"/g, '&quot;')}" oninput="${nomeFnCampo}('numeroNF', this.value)" placeholder="Ex: 201/2026"></div>` : ''}
+    ${seccionada ? `<div style="font-size:.7rem;color:var(--text-muted);margin-top:8px">🧾 Faturamento e 💰 recebimento agora são controlados por NF, na lista "📑 Notas Fiscais" logo abaixo.</div>` : ''}
   </div>`;
+}
+
+/* -- Bloco "seccionada em mais de uma Nota Fiscal" — compartilhado entre
+   Fiscalização (med*) e Projetos/Energisa (cmed*), por isso recebe "ns"
+   ('med' ou 'cmed') pra saber em qual variável global mexer e como
+   re-renderizar. Pedido em 20/09/2026: "quando uma medição tiver mais de
+   uma nota fiscal, ela for secionada como faz?" — o valor total do BM
+   segue sendo um só (Itens/Escopo, como sempre), mas o FATURAMENTO pode
+   ser dividido: cada NF desta lista tem seu próprio número/valor/emissão/
+   recebimento, e gera seu próprio rascunho de Receita (não um só pra
+   medição inteira) assim que tiver número e valor — ver
+   projetosGerarReceitaDeMedicao. -- */
+function medicaoSeccionadaHtml(ns, dadosForm) {
+  const nfs = dadosForm.notasFiscais || [];
+  const totalNFs = nfs.reduce((s, nf) => s + (Number(nf.valor) || 0), 0);
+  const totalMedicao = ns === 'med' ? medCalcularTotalItens(dadosForm.itens || []) : cmedCalcularTotalItens(dadosForm.itens || []);
+  const bateComTotal = Math.abs(totalNFs - totalMedicao) < 0.01;
+  const fmt = v => (Number(v) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `
+  <div class="card" style="margin-bottom:16px">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem">
+      <input type="checkbox" ${dadosForm.seccionada ? 'checked' : ''} onchange="medicaoSeccionadaToggle('${ns}', this.checked)">
+      📑 Esta medição foi/será faturada em mais de uma Nota Fiscal
+    </label>
+    ${dadosForm.seccionada ? `
+    <div style="margin-top:12px">
+      <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">Cada Nota Fiscal desta medição, com seu próprio valor, emissão e recebimento — o rascunho de Receita é gerado por NF, assim que ela tiver número e valor preenchidos.</div>
+      ${nfs.map((nf, i) => `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--surface2)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <b style="font-size:.76rem">Nota Fiscal ${i + 1}${nf.receitaGeradaId ? ' <span style="color:var(--green-main);font-weight:400">· 💰 Receita já gerada</span>' : ''}</b>
+          ${nfs.length > 1 ? `<span onclick="medicaoNFRemover('${ns}',${i})" style="cursor:pointer;color:var(--red);font-size:.76rem" title="Remover NF">✕ Remover</span>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">
+          <div class="form-group" style="margin:0"><label style="font-size:.66rem">Número da NF</label><input value="${(nf.numero || '').replace(/"/g, '&quot;')}" oninput="medicaoNFCampo('${ns}',${i},'numero',this.value)" placeholder="Ex: 201/2026"></div>
+          <div class="form-group" style="margin:0"><label style="font-size:.66rem">Valor desta NF (R$)</label><input type="number" step="0.01" value="${nf.valor != null ? nf.valor : ''}" oninput="medicaoNFCampo('${ns}',${i},'valor',this.value)"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">
+          <div class="form-group" style="margin:0"><label style="font-size:.66rem">Data de emissão</label><input type="date" value="${nf.dataEmissao || ''}" onchange="medicaoNFCampo('${ns}',${i},'dataEmissao',this.value)"></div>
+          <div class="form-group" style="margin:0"><label style="font-size:.66rem">Data de recebimento <span style="font-weight:400">(em branco se ainda não recebeu)</span></label><input type="date" value="${nf.dataRecebimento || ''}" onchange="medicaoNFCampo('${ns}',${i},'dataRecebimento',this.value); medicaoNFReRenderizar('${ns}')"></div>
+        </div>
+        <div style="font-size:.7rem;color:var(--text-muted)">${nf.numero ? (nf.dataRecebimento ? '💰 Paga' : '🧾 NF emitida') : '📝 aguardando número da NF'}</div>
+      </div>`).join('')}
+      <button type="button" class="btn-secondary" style="font-size:.78rem;padding:6px 12px" onclick="medicaoNFAdicionar('${ns}')">➕ Adicionar Nota Fiscal</button>
+      <div style="margin-top:8px;font-size:.78rem;${bateComTotal ? 'color:var(--text-muted)' : 'color:var(--red);font-weight:600'}">
+        Total das NFs: R$ ${fmt(totalNFs)} ${bateComTotal ? '✓ bate com o valor da medição' : `⚠️ o valor da medição é R$ ${fmt(totalMedicao)} — confira se falta alguma NF`}
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+function medicaoNFReRenderizar(ns) {
+  if (ns === 'med') navigate('checklist_medicao');
+  else cmedAtualizarBloco();
+}
+function medicaoSeccionadaToggle(ns, marcado) {
+  const d = window['_' + ns + 'Data'];
+  d.seccionada = marcado;
+  if (marcado && (!d.notasFiscais || !d.notasFiscais.length)) {
+    d.notasFiscais = [{ numero: '', valor: '', dataEmissao: '', dataRecebimento: '', obs: '', receitaGeradaId: null }];
+  }
+  medicaoNFReRenderizar(ns);
+}
+function medicaoNFAdicionar(ns) {
+  const d = window['_' + ns + 'Data'];
+  d.notasFiscais = d.notasFiscais || [];
+  d.notasFiscais.push({ numero: '', valor: '', dataEmissao: '', dataRecebimento: '', obs: '', receitaGeradaId: null });
+  medicaoNFReRenderizar(ns);
+}
+function medicaoNFRemover(ns, idx) {
+  const d = window['_' + ns + 'Data'];
+  if (!d.notasFiscais || !d.notasFiscais[idx]) return;
+  if (!confirm('Remover esta Nota Fiscal da lista?')) return;
+  d.notasFiscais.splice(idx, 1);
+  medicaoNFReRenderizar(ns);
+}
+function medicaoNFCampo(ns, idx, campo, valor) {
+  const d = window['_' + ns + 'Data'];
+  if (!d.notasFiscais || !d.notasFiscais[idx]) return;
+  d.notasFiscais[idx][campo] = valor;
 }
 /* -- Mini linha do tempo visual pro card/linha do histórico (registro já
    salvo, campos em PascalCase — DataElaboracao etc). Cada etapa é uma
@@ -17820,7 +17907,7 @@ function cmedNovoForm(chave) {
     contratoChave: chave, numeroBM: '', data: '', status: 'Enviada', numeroOS: '', obsGeral: '',
     itens: [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '' }],
     dataElaboracao: '', dataEnvio: '', dataAprovacao: '', dataFaturamento: '', dataRecebimento: '', numeroNF: '',
-    revisoes: [],
+    revisoes: [], seccionada: false, notasFiscais: [],
   };
 }
 /* -- Wrapper do onchange do Status: além de trocar o valor, preenche
@@ -17881,6 +17968,7 @@ function cmedEditar(id) {
     dataElaboracao: m.DataElaboracao || '', dataEnvio: m.DataEnvio || '', dataAprovacao: m.DataAprovacao || '',
     dataFaturamento: m.DataFaturamento || '', dataRecebimento: m.DataRecebimento || '', numeroNF: m.NumeroNF || '',
     revisoes: Array.isArray(m.Revisoes) ? JSON.parse(JSON.stringify(m.Revisoes)) : [],
+    seccionada: !!m.Seccionada, notasFiscais: Array.isArray(m.NotasFiscais) ? JSON.parse(JSON.stringify(m.NotasFiscais)) : [],
   };
   window._cmedRegistroAtualId = id;
   window._cmedMostrarForm = true;
@@ -17926,6 +18014,14 @@ async function cmedSalvar() {
     // Pedido em 04/09/2026: "campo... de revisão para adicionar data da
     // revisão ou retificação de medições".
     Revisoes: (d.revisoes || []).filter(r => r && r.data).map(r => ({ data: r.data, motivo: r.motivo || '' })),
+    // Faturamento seccionado em mais de uma NF (pedido em 20/09/2026) — cada
+    // item preserva o receitaGeradaId que já tinha (não regrava por cima),
+    // pra projetosGerarReceitaDeMedicao saber quais NFs já geraram Receita.
+    Seccionada: !!d.seccionada,
+    NotasFiscais: (d.notasFiscais || []).filter(nf => nf && (nf.numero || nf.valor)).map(nf => ({
+      numero: nf.numero || '', valor: parseFloat(nf.valor) || 0, dataEmissao: nf.dataEmissao || '',
+      dataRecebimento: nf.dataRecebimento || '', obs: nf.obs || '', receitaGeradaId: nf.receitaGeradaId || null,
+    })),
   };
   showSyncStatus('Salvando medição...');
   const editandoId = window._cmedRegistroAtualId;
@@ -17950,9 +18046,7 @@ async function cmedSalvar() {
     // função tem try/catch e não deixa falha vazar como erro não tratado.
     const medicaoIdGerada = editandoId || (ok && ok.Id);
     projetosGerarReceitaDeMedicao('MedicoesContratosEnergisa', medicaoIdGerada, {
-      Status: registro.Status, NumeroNF: registro.NumeroNF, Valor: registro.Valor,
-      contratoChave: d.contratoChave, numMedicao: 'BM ' + d.numeroBM,
-      dataFaturamento: registro.DataFaturamento, descricao: registro.Descricao,
+      contratoChave: d.contratoChave, numMedicao: 'BM ' + d.numeroBM, descricao: registro.Descricao,
     });
   }
 }
@@ -18554,7 +18648,9 @@ function cmedHtmlForm() {
     </div>
   </div>
 
-  ${medicaoPrazosCamposHtml(d, 'cmedCampo')}
+  ${medicaoPrazosCamposHtml(d, 'cmedCampo', d.seccionada)}
+
+  ${medicaoSeccionadaHtml('cmed', d)}
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">📋 Serviços do Escopo Medidos neste BM <span style="font-weight:400;font-size:.72rem;color:var(--text-muted)">(Conforme Anexo 07 do Contrato — adicione quantos itens este BM cobrir)</span></div>
@@ -27666,17 +27762,42 @@ const centrosCustoData = [
    valor fixo em centrosCustoData, que em pelo menos um caso — CC-002 —
    ficou desatualizado frente ao que já era usado na prática). Só cai no
    valor de centrosCustoData se não houver nenhuma Receita anterior daquele
-   CC. -- */
+   CC.
+
+   Seccionada em mais de uma NF (pedido em 20/09/2026: "quando uma medição
+   tiver mais de uma nota fiscal, ela for secionada como faz?"): quando o
+   registro tem `NotasFiscais` (lista — ver medicaoSeccionadaHtml), gera UM
+   rascunho de Receita POR NF da lista, cada um com o valor daquela NF
+   específica, assim que ela tiver número+valor preenchidos — cada NF
+   guarda seu próprio `receitaGeradaId` (idempotência por NF, não por
+   medição inteira: adicionar uma 2ª NF depois não duplica a Receita da
+   1ª). Sem lista (caso comum — 1 medição = 1 NF), usa como sempre o campo
+   único NumeroNF/Valor/Status/DataFaturamento da medição, com
+   `ReceitaGeradaId` no próprio registro. Relê a medição do zero (em vez de
+   confiar no que foi passado por quem chamou) pra sempre trabalhar sobre o
+   que ficou realmente salvo. -- */
 async function projetosGerarReceitaDeMedicao(tabela, id, dadosMedicao) {
   try {
     if (!id) return;
-    if ((dadosMedicao.Status || '') !== 'NF emitida' && (dadosMedicao.Status || '') !== 'Paga') return;
-    if (!dadosMedicao.NumeroNF || !dadosMedicao.Valor) return;
     const lista = await dbLer(tabela).catch(() => []);
     const atual = (lista || []).find(r => String(r.Id) === String(id));
-    if (!atual || atual.ReceitaGeradaId) return; // já gerada antes, ou registro sumiu — não duplica
+    if (!atual) return; // registro sumiu — nada a gerar
     const cc = (centrosCustoData || []).find(c => c.contratoChave === dadosMedicao.contratoChave);
     if (!cc) { console.warn('[Projetos] Sem Centro de Custo cadastrado para', dadosMedicao.contratoChave, '— Receita não gerada automaticamente.'); return; }
+
+    const temLista = Array.isArray(atual.NotasFiscais) && atual.NotasFiscais.length;
+    const itensNF = temLista
+      ? atual.NotasFiscais.map((nf, i) => ({
+          idx: i, numero: nf.numero, valor: nf.valor, dataFaturamento: nf.dataEmissao,
+          pronta: !!(nf.numero && nf.valor), jaGerada: !!nf.receitaGeradaId,
+        }))
+      : [{
+          idx: -1, numero: atual.NumeroNF, valor: atual.Valor, dataFaturamento: atual.DataFaturamento,
+          pronta: (atual.Status === 'NF emitida' || atual.Status === 'Paga') && !!atual.NumeroNF && !!atual.Valor,
+          jaGerada: !!atual.ReceitaGeradaId,
+        }];
+    if (!itensNF.some(item => item.pronta && !item.jaGerada)) return; // nada novo pra gerar
+
     const clientes = await dbLer('Clientes').catch(() => []);
     const clienteCad = (clientes || []).find(c => (c.CNPJ || '').replace(/\D/g, '') === '05914650000166');
     const clienteNome = (clienteCad && clienteCad.Title) || cc.cliente || 'Energisa Rondônia';
@@ -27685,28 +27806,40 @@ async function projetosGerarReceitaDeMedicao(tabela, id, dadosMedicao) {
       .filter(r => _ccIdPuro(r.CentroCusto) === cc.id && r.Subcategoria)
       .sort((a, b) => (b.DataEmissao || '').localeCompare(a.DataEmissao || ''));
     const subcategoria = (receitasDoCC[0] && receitasDoCC[0].Subcategoria) || cc.subcategoria || '';
-    const dataEmissao = dadosMedicao.dataFaturamento || new Date().toISOString().slice(0, 10);
-    const dados = {
-      DataEmissao: dataEmissao, Categoria: cc.categoria || 'Prestação de Serviços', Subcategoria: subcategoria,
-      NaturezaEconomica: rcNaturezaDeSubcategoria(subcategoria), TipoMovimentacao: rcTipoMovimentacao(cc.categoria, subcategoria),
-      Cliente: clienteNome, Descricao: dadosMedicao.descricao || '',
-      CentroCusto: cc.id + ' · ' + cc.contrato, Valor: Number(dadosMedicao.Valor) || 0,
-      DataPrevista: '', FormaRecebimento: '', ResponsavelLancamento: '',
-      DataRecebimento: '', Banco: '', Status: 'Pendente',
-      NumMedicao: String(dadosMedicao.numMedicao || ''), NumeroNF: String(dadosMedicao.NumeroNF || ''),
-      ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
-      OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
-      ValorLiquido: Number(dadosMedicao.Valor) || 0, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
-      Empresa: normalizarEmpresa(cc.empresa) || 'Expedian',
-      Title: clienteNome + ' · ' + dataEmissao,
-      LancadoPor: window._currentUser ? window._currentUser.name : '',
-      // Marca de origem — não usada em cálculos, só pra rastrear/auditar de onde veio.
-      GeradoAutomaticamente: true, OrigemMedicaoTabela: tabela, OrigemMedicaoId: id,
-    };
-    const nova = await dbInserir('Receitas', dados);
-    if (nova && nova.Id) {
-      await dbAtualizar(tabela, id, { ReceitaGeradaId: nova.Id });
-      showToast('💰 Receita pré-preenchida gerada a partir da medição — confira em Receitas.');
+
+    let notasFiscaisAtualizadas = temLista ? JSON.parse(JSON.stringify(atual.NotasFiscais)) : null;
+    for (const item of itensNF) {
+      if (item.jaGerada || !item.pronta) continue;
+      const dataEmissao = item.dataFaturamento || new Date().toISOString().slice(0, 10);
+      const dados = {
+        DataEmissao: dataEmissao, Categoria: cc.categoria || 'Prestação de Serviços', Subcategoria: subcategoria,
+        NaturezaEconomica: rcNaturezaDeSubcategoria(subcategoria), TipoMovimentacao: rcTipoMovimentacao(cc.categoria, subcategoria),
+        Cliente: clienteNome, Descricao: dadosMedicao.descricao || '',
+        CentroCusto: cc.id + ' · ' + cc.contrato, Valor: Number(item.valor) || 0,
+        DataPrevista: '', FormaRecebimento: '', ResponsavelLancamento: '',
+        DataRecebimento: '', Banco: '', Status: 'Pendente',
+        NumMedicao: String(dadosMedicao.numMedicao || ''), NumeroNF: String(item.numero || ''),
+        ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
+        OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
+        ValorLiquido: Number(item.valor) || 0, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
+        Empresa: normalizarEmpresa(cc.empresa) || 'Expedian',
+        Title: clienteNome + ' · ' + dataEmissao,
+        LancadoPor: window._currentUser ? window._currentUser.name : '',
+        // Marca de origem — não usada em cálculos, só pra rastrear/auditar de onde veio.
+        GeradoAutomaticamente: true, OrigemMedicaoTabela: tabela, OrigemMedicaoId: id,
+      };
+      const nova = await dbInserir('Receitas', dados);
+      if (nova && nova.Id) {
+        if (item.idx === -1) {
+          await dbAtualizar(tabela, id, { ReceitaGeradaId: nova.Id });
+        } else if (notasFiscaisAtualizadas && notasFiscaisAtualizadas[item.idx]) {
+          notasFiscaisAtualizadas[item.idx].receitaGeradaId = nova.Id;
+        }
+        showToast('💰 Receita pré-preenchida gerada' + (item.numero ? ' (NF ' + item.numero + ')' : '') + ' — confira em Receitas.');
+      }
+    }
+    if (notasFiscaisAtualizadas) {
+      await dbAtualizar(tabela, id, { NotasFiscais: notasFiscaisAtualizadas });
     }
   } catch (e) { console.warn('[Projetos] Falha ao gerar Receita automática da medição.', e); }
 }
@@ -46199,6 +46332,7 @@ function medNovoForm(frenteIdPre) {
     assinaturaExpedianNome: '', assinaturaReEnergisaNome: '', assinaturaEnergisaNome: '',
     assinaturaExpedian: '', assinaturaReEnergisa: '', assinaturaEnergisa: '',
     dataElaboracao: '', dataEnvio: '', dataAprovacao: '', dataFaturamento: '', dataRecebimento: '', numeroNF: '',
+    seccionada: false, notasFiscais: [],
   };
 }
 /* -- Ao trocar o circuito elétrico em Nova Medição, sugere o Nº da Medição
@@ -46276,6 +46410,7 @@ function medEditarRegistro(id) {
     assinaturaExpedian: m.AssinaturaExpedian || '', assinaturaReEnergisa: m.AssinaturaReEnergisa || '', assinaturaEnergisa: m.AssinaturaEnergisa || '',
     dataElaboracao: m.DataElaboracao || '', dataEnvio: m.DataEnvio || '', dataAprovacao: m.DataAprovacao || '',
     dataFaturamento: m.DataFaturamento || '', dataRecebimento: m.DataRecebimento || '', numeroNF: m.NumeroNF || '',
+    seccionada: !!m.Seccionada, notasFiscais: Array.isArray(m.NotasFiscais) ? JSON.parse(JSON.stringify(m.NotasFiscais)) : [],
   };
   window._medRegistroAtualId = id;
   window._medMostrarForm = true;
@@ -46347,6 +46482,13 @@ async function medSalvar() {
     DataElaboracao: d.dataElaboracao || '', DataEnvio: d.dataEnvio || '', DataAprovacao: d.dataAprovacao || '',
     DataFaturamento: d.dataFaturamento || '', DataRecebimento: d.dataRecebimento || '',
     NumeroNF: d.numeroNF || '',
+    // Faturamento seccionado em mais de uma NF (pedido em 20/09/2026) — ver
+    // mesma anotação em cmedSalvar.
+    Seccionada: !!d.seccionada,
+    NotasFiscais: (d.notasFiscais || []).filter(nf => nf && (nf.numero || nf.valor)).map(nf => ({
+      numero: nf.numero || '', valor: parseFloat(nf.valor) || 0, dataEmissao: nf.dataEmissao || '',
+      dataRecebimento: nf.dataRecebimento || '', obs: nf.obs || '', receitaGeradaId: nf.receitaGeradaId || null,
+    })),
     CriadoPorNome: window._currentUser ? window._currentUser.name : '',
     CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
   };
@@ -46365,9 +46507,7 @@ async function medSalvar() {
     // de cmedSalvar; a Gestão de Obras (CC-002) é o único contrato desta
     // tabela, chave fixa 'obras2025022101'.
     projetosGerarReceitaDeMedicao('MedicoesEnergisa', novo.Id, {
-      Status: registro.Status, NumeroNF: registro.NumeroNF, Valor: registro.Valor,
-      contratoChave: 'obras2025022101', numMedicao: 'BM' + numeroMedicao + ' · ' + frente.nome,
-      dataFaturamento: registro.DataFaturamento, descricao: registro.Title,
+      contratoChave: 'obras2025022101', numMedicao: 'BM' + numeroMedicao + ' · ' + frente.nome, descricao: registro.Title,
     });
   } else {
     showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
@@ -46531,7 +46671,9 @@ function pageChecklistMedicao() {
     </div>
   </div>
 
-  ${medicaoPrazosCamposHtml(d, 'medCampo')}
+  ${medicaoPrazosCamposHtml(d, 'medCampo', d.seccionada)}
+
+  ${medicaoSeccionadaHtml('med', d)}
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">Observações</div>
