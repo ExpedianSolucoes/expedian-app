@@ -30534,7 +30534,8 @@ function opacRenderizarLista() {
     if (busca && (v.placa || '').toLowerCase().indexOf(busca) === -1 &&
         (v.tipo || '').toLowerCase().indexOf(busca) === -1 &&
         (v.frota || '').toLowerCase().indexOf(busca) === -1) return false;
-    if (st && (v.status || 'pendente') !== st) return false;
+    if (st === 'reprovado') { if (opacConformidade(v) !== 'Reprovado') return false; }
+    else if (st && (v.status || 'pendente') !== st) return false;
     if (sem) {
       if (!v.data) return false;
       var mes = parseInt(v.data.slice(5,7), 10);
@@ -30552,10 +30553,11 @@ function opacRenderizarLista() {
   if (!wrap) return;
   if (!lista.length) { wrap.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">Nenhum veículo encontrado.</div>'; return; }
   var linhas = lista.map(function(v) {
+    var conf = opacConformidade(v);
     var corRes = v.resultado === 'Conforme' ? '#28a745' : (v.resultado === 'Não Conforme' ? '#dc3545' : '#999');
-    var lblRes = v.status === 'realizado' ? (v.resultado || '—') : '—';
-    var corConf = v.status === 'realizado' ? (v.resultado === 'Conforme' ? '#28a745' : '#dc3545') : '#999';
-    var lblConf = v.status === 'realizado' ? (v.resultado === 'Conforme' ? '✅ Conforme' : '❌ Não Conforme') : '❌ Pendente';
+    var lblRes = (v.status === 'realizado' && v.resultado !== '' && v.resultado != null) ? v.resultado : '—';
+    var corConf = v.status !== 'realizado' ? '#999' : (conf === 'Aprovado' ? '#28a745' : (conf === 'Reprovado' ? '#dc3545' : '#999'));
+    var lblConf = v.status !== 'realizado' ? '❌ Pendente' : (conf === 'Aprovado' ? '✅ Conforme' : (conf === 'Reprovado' ? '❌ Não Conforme' : '— Não classificado'));
     return '<tr>' +
       '<td style="font-weight:800">' + v.placa + '</td>' +
       '<td>' + (v.tipo || '—') + '</td>' +
@@ -30582,6 +30584,7 @@ function opacRenderizarKPIs() {
   var total = OPAC_DADOS.length;
   var realizados = OPAC_DADOS.filter(function(v) { return v.status === 'realizado'; }).length;
   var pendentes = total - realizados;
+  var reprovados = OPAC_DADOS.filter(function(v) { return opacConformidade(v) === 'Reprovado'; }).length;
   var st = window._opacFiltroStatus || '';
   function card(cor, label, valor, icon, filtro) {
     var sel = st === filtro;
@@ -30589,7 +30592,8 @@ function opacRenderizarKPIs() {
   }
   el.innerHTML = card('var(--brand-green)', 'Total de Veículos', total, '🚚', '')
     + card('#28a745', 'Testes Realizados', realizados, '✅', 'realizado')
-    + card('#dc3545', 'Pendentes', pendentes, '❌', 'pendente');
+    + card('#dc3545', 'Pendentes', pendentes, '❌', 'pendente')
+    + card('#a83232', 'Reprovados', reprovados, '🚨', 'reprovado');
 }
 
 function opacFiltrarPorCard(status) {
@@ -30672,6 +30676,7 @@ async function opacSalvarModal() {
   reg.dpto = g('opac-dpto');
   reg.motorista = g('opac-motorista');
   reg.status = 'realizado';
+  reg.conformidade = reg.resultado === 'Não Conforme' ? 'Reprovado' : 'Aprovado';
   if (window._opacLaudoArquivo) {
     showSyncStatus('Enviando laudo...');
     var resultado = await uploadComprovanteComNomeOriginal(window._opacLaudoArquivo, OD_FOLDERS.opacidadeLaudos, reg.placa + ' - ' + (reg.data || rotHojeISO(0)) + ' - ' + window._opacLaudoArquivo.name);
@@ -31006,8 +31011,27 @@ function opacRegistroVazio() {
   return {
     id: opacUid(), placa: '', tipo: '', frota: '', dpto: '', regional: '', localidade: '',
     status: 'pendente', data: '', limite: '', resultado: '', tecnico: '', observacao: '',
-    motorista: '', laudoUrl: '', laudoNome: '', historico: [],
+    motorista: '', laudoUrl: '', laudoNome: '', historico: [], conformidade: '',
   };
+}
+
+/* -- Aprovado/Reprovado do teste. Motivo de existir separado do `resultado`:
+   `resultado` guarda ora a leitura numérica de opacidade (maioria dos
+   registros, vindos de importação de laudo), ora o texto 'Conforme'/'Não
+   Conforme' (registros feitos pelo modal). Não dá pra decidir aprovado/
+   reprovado comparando a leitura numérica com `limite` do veículo (2,5 fixo
+   pra quase todos) porque o laudo real usa o limite específico do
+   equipamento/motor (ex.: 0,69), bem mais baixo — então nunca inventamos
+   esse resultado a partir de número: só confiamos no campo `conformidade`
+   quando ele foi preenchido (import de laudo) ou no texto Conforme/Não
+   Conforme (registro manual pelo modal). Sem nenhum dos dois, o teste fica
+   "não classificado" — pedido em 21/09/2026 pra ter um filtro só de
+   reprovados. -- */
+function opacConformidade(v) {
+  if (v.conformidade === 'Aprovado' || v.conformidade === 'Reprovado') return v.conformidade;
+  if (v.resultado === 'Conforme') return 'Aprovado';
+  if (v.resultado === 'Não Conforme') return 'Reprovado';
+  return '';
 }
 
 /* -- "Reiniciar Semestre": zera o status de TODOS os veículos de volta pra
