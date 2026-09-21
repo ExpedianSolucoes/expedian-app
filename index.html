@@ -33131,8 +33131,24 @@ function renderLinhaMiniDashboard() {
                 ${r.QtdOcorrencias || 0} ocorr.
               </div>
               ${r.QtdNaoConforme ? `<div style="font-size:.68rem;font-weight:700;color:var(--red);min-width:70px;text-align:right">${r.QtdNaoConforme} não conf.</div>` : ''}
-              <div style="display:flex;gap:4px;flex-shrink:0">
+              <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Visualizar checklist completo" onclick="linhaVerChecklist(${r.Id})">👁️ Ver</button>
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="linhaEditarChecklist(${r.Id})">✏️ Editar</button>
+                <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Exportar/imprimir em PDF" onclick="linhaExportarChecklist(${r.Id})">🖨️ Exportar PDF</button>
+                ${(() => {
+                  // Só a Diretoria exclui direto; colaborador/coordenador precisam solicitar
+                  // com motivo, e a Diretoria aprova/rejeita.
+                  const pendente = r.SolicitacaoExclusao && r.SolicitacaoExclusao.status === 'pendente';
+                  if (currentProfile === 'diretoria') {
+                    return pendente
+                      ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:#fff;background:var(--red);border-color:var(--red)" onclick="linhaResponderSolicitacaoExclusao(${r.Id}, true)" title="Solicitado por ${(r.SolicitacaoExclusao.solicitadoPorNome||'').replace(/"/g,'&quot;')} — motivo: ${(r.SolicitacaoExclusao.motivo||'').replace(/"/g,'&quot;')}">🗑️ Aprovar exclusão</button>
+                         <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="linhaResponderSolicitacaoExclusao(${r.Id}, false)">✋ Rejeitar</button>`
+                      : `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:var(--red)" onclick="linhaExcluirChecklist(${r.Id})">🗑️ Excluir</button>`;
+                  }
+                  return pendente
+                    ? `<span class="status-pill" style="font-size:.62rem;background:#fff8e6;color:#d97706;border:1px solid #d97706">⏳ Exclusão solicitada</span>`
+                    : `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:var(--red)" onclick="linhaSolicitarExclusaoChecklist(${r.Id})">🗑️ Solicitar exclusão</button>`;
+                })()}
               </div>
             </div>`).join('')
       }
@@ -33244,6 +33260,209 @@ function limparLinhaChecklist() {
     window._linhaRegistroAtualId = null;
     navigate('checklist_linha');
   }
+}
+
+/* -- Baixa os dados completos (snapshot com fotos) de um checklist de Linha
+      já salvo, a partir da linha do histórico. Usado por Ver/Exportar. -- */
+async function linhaBaixarDadosCompletos(id) {
+  const r = (window._linhaHistorico || []).find(x => x.Id === id);
+  if (!r) { showToast('⚠️ Checklist não encontrado.'); return null; }
+  if (r.arquivoDados) {
+    try {
+      const texto = await baixarArquivoCentral(r.arquivoDados);
+      if (texto) return JSON.parse(texto);
+    } catch(e) { /* cai no fallback abaixo */ }
+  }
+  showToast('⚠️ Não encontrei os dados completos desse checklist (pode ter sido salvo antes desse recurso existir).');
+  return null;
+}
+
+/* -- Monta o HTML de visualização/impressão de um checklist de Linha já
+      salvo: identificação, respostas do patrulhamento (agrupadas como no
+      formulário) e as ocorrências (com fotos), no mesmo padrão visual dos
+      outros documentos do app (ex.: faunaImprimirFicha). -- */
+function linhaImprimirChecklist(dados, autoPrint) {
+  const d = dados || {};
+  const respostas = d.respostas || {};
+  const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '—';
+  const RESP_LABEL = { C: '✅ Conforme', NC: '❌ Não conforme', NA: '➖ Não aplicável' };
+
+  const gruposHtml = LINHA_CHECKLIST_GRUPOS.map(grupo => `
+    <div class="sec-body" style="padding-top:6px">
+      <span class="grp-label">${grupo.titulo}</span>
+      ${grupo.itens.map(it => `
+        <div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:9.5px;border-bottom:1px dotted #ccc">
+          <div style="flex:1">${it.texto}</div>
+          <div style="font-weight:700;white-space:nowrap">${RESP_LABEL[respostas[it.id]] || '— Pendente'}</div>
+        </div>`).join('')}
+    </div>`).join('');
+
+  const ocorrencias = d.ocorrencias || [];
+  const ocorrenciaHtml = (oc, idx) => {
+    const fotos = [];
+    (oc.itens || []).forEach(it => [1,2,3,4].forEach(n => { if (it['foto' + n]) fotos.push(it['foto' + n]); }));
+    const itensDesc = (oc.itens || []).map(it => {
+      const subTxt = Object.entries(it.sub || {}).filter(([,v]) => v).map(([k,v]) => v).join(' · ');
+      return '<div style="margin-bottom:3px"><b>' + (it.categoria || 'Ocorrência') + '</b>' + (subTxt ? ' — ' + subTxt : '') + (it.descricaoManual ? '<br>' + it.descricaoManual : '') + '</div>';
+    }).join('');
+    return `
+    <div class="section">
+      <div class="sec-body">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px">
+          <div style="font-weight:700;font-size:10.5px">${idx + 1}. Estrutura ${oc.estrutura || '—'} ${oc.tipoEstrutura ? '(' + oc.tipoEstrutura + ')' : ''}</div>
+          <div style="font-size:9px;color:${oc.conformidade === 'nao_conforme' ? '#b00020' : '#555'}">${oc.conformidade === 'nao_conforme' ? '❌ Não conforme' : (oc.conformidade === 'conforme' ? '✅ Conforme' : '—')}</div>
+        </div>
+        ${itensDesc}
+        <div style="font-size:8.5px;color:#666;margin-top:2px">Coordenadas: ${oc.latitude ? (oc.latitude + ', ' + oc.longitude) : '—'}</div>
+        ${fotos.length ? '<div class="foto-grid" style="grid-template-columns:repeat(4,1fr);margin-top:6px">' + fotos.map((f,i) => '<img src="' + f + '" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:3px;border:1px solid #ccc">').join('') + '</div>' : ''}
+      </div>
+    </div>`;
+  };
+
+  const headerTable = (
+    '<table class="doc-header-table"><tbody>' +
+    '<tr><td class="logo-cell" rowspan="3"><img src="' + (typeof ASO_LOGO_B64 !== 'undefined' ? ASO_LOGO_B64 : '') + '" style="width:100%;max-width:110px;height:auto;object-fit:contain" alt="Logo Expedian"></td>' +
+    '<td class="titulo-cell">CHECKLIST DE INSPEÇÃO AMBIENTAL<br>LINHA DE DISTRIBUIÇÃO</td>' +
+    '<td class="codigo-cell">Código: EXP-SGI-FOR-MA-LIN-01</td></tr>' +
+    '<tr><td>Elaborado por: Departamento de Meio Ambiente</td><td>Emissão Inicial: 09/09/2026</td></tr>' +
+    '<tr><td>Aprovação: Diretoria</td><td>Setor: SSMA</td></tr>' +
+    '</tbody></table>'
+  );
+
+  const rodape = (
+    '<div class="doc-footer">' +
+      '<div class="footer-empresa">EXPEDIAN – SOLUCÕES AMBIENTAIS</div>' +
+      '<div>Rua Salgado Filho, nº 1596 – Sala 02 – Bairro Nossa Senhora das Graças, CEP 76.804-118, Porto Velho – RO</div>' +
+      '<div>E-mail: atendimento@expediansolucoes.com.br | Fone (69) 9.9964-9406</div>' +
+    '</div>'
+  );
+
+  const html = '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Checklist Linha — ' + (d.empreendimento || '') + ' — ' + dataFmt + '</title>'
+    + (typeof ASO_FONT_CSS !== 'undefined' ? ASO_FONT_CSS : '')
+    + '<style>'
+    + '* { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; color-adjust:exact; }'
+    + 'body { font-family:"Mont",Arial,sans-serif; font-size:11px; color:#3F261F; padding:14px 18px; max-width:800px; margin:0 auto; }'
+    + '.doc-header-table { width:100%; border-collapse:collapse; margin-bottom:10px; table-layout:fixed; }'
+    + '.doc-header-table td { border:1px solid #3F261F; padding:4px 8px; font-family:"Mont",sans-serif; font-size:7.5px; color:#3F261F; vertical-align:middle; }'
+    + '.doc-header-table .logo-cell { width:19%; text-align:center; padding:6px; }'
+    + '.doc-header-table .titulo-cell { width:52%; background:#3F261F; color:#fff; font-weight:700; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }'
+    + '.doc-header-table .codigo-cell { background:#3F261F; color:#fff; font-weight:700; }'
+    + '.title-bar { background:#3F261F; color:#fff; padding:7px 12px; font-weight:800; font-size:11.5px; text-transform:uppercase; letter-spacing:.4px; margin-bottom:8px; border-radius:2px; }'
+    + '.section { border:1.5px solid #3F261F; margin-bottom:6px; border-radius:3px; overflow:hidden; }'
+    + '.sec-body { padding:6px 10px; }'
+    + '.row3 { display:grid; grid-template-columns:1fr 1fr 1fr; }'
+    + '.field { padding:4px 0; }'
+    + '.field label { font-size:7.5px; text-transform:uppercase; color:#6b3d33; font-weight:700; display:block; margin-bottom:1px; letter-spacing:.4px; }'
+    + '.field span { display:block; font-size:11px; padding:1px 0; color:#3F261F; }'
+    + '.grp-label { font-size:7.5px; text-transform:uppercase; color:#6b3d33; font-weight:700; display:block; margin-bottom:3px; letter-spacing:.4px; }'
+    + '.doc-footer { background:#fff; border-top:2px solid #3F261F; margin-top:14px; padding:6px 18px; text-align:center; font-family:"Mont",sans-serif; font-size:7px; color:#3F261F; line-height:1.5; }'
+    + '.doc-footer .footer-empresa { font-weight:700; font-size:7.5px; text-transform:uppercase; }'
+    + '.foto-grid { display:grid; gap:6px; margin-top:8px; }'
+    + '.print-btn { position:fixed; top:10px; right:10px; z-index:9999; background:#fff; color:#3F261F; border:2px solid #3F261F; padding:8px 18px; border-radius:8px; font-size:13px; font-weight:800; cursor:pointer; font-family:"Mont",Arial,sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.25); }'
+    + '@media print { .print-btn { display:none; } body { padding:6px 10px; } .section { break-inside:avoid; } }'
+    + '</style></head><body>'
+    + '<button class="print-btn" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>'
+
+    + headerTable
+
+    + '<div class="section"><div class="sec-body row3">'
+      + '<div class="field"><label>Empreendimento / Trecho</label><span>' + (d.empreendimento || '—') + '</span></div>'
+      + '<div class="field"><label>Data da inspeção</label><span>' + dataFmt + '</span></div>'
+      + '<div class="field"><label>Tensão da rede</label><span>' + (d.tensao || '—') + '</span></div>'
+    + '</div>'
+    + '<div class="sec-body row3" style="padding-top:0">'
+      + '<div class="field"><label>Técnico 1</label><span>' + (d.tecnico1 || '—') + '</span></div>'
+      + '<div class="field"><label>Técnico 2</label><span>' + (d.tecnico2 || '—') + '</span></div>'
+      + '<div class="field"><label>Ocorrências registradas</label><span>' + ocorrencias.length + '</span></div>'
+    + '</div></div>'
+
+    + '<div class="title-bar">Checklist de Patrulhamento</div>'
+    + '<div class="section">' + gruposHtml + '</div>'
+
+    + (ocorrencias.length
+        ? '<div class="title-bar">Registro Ambiental — Ocorrências</div>' + ocorrencias.map(ocorrenciaHtml).join('')
+        : '')
+
+    + rodape
+
+    + (autoPrint ? '<script>window.onload=function(){window.print();};<\/script>' : '')
+
+    + '</body></html>';
+
+  const w = window.open('', '_blank', 'width=900,height=760,scrollbars=yes');
+  if (!w) { showToast('⚠️ Permita pop-ups para visualizar o checklist.'); return null; }
+  w.document.write(html); w.document.close();
+  return html;
+}
+
+/* -- Botão "👁️ Ver": abre a visualização/impressão do checklist salvo. -- */
+async function linhaVerChecklist(id) {
+  showSyncStatus('Carregando checklist...');
+  const dados = await linhaBaixarDadosCompletos(id);
+  if (!dados) { showSyncStatus('Não foi possível carregar', 'err', 4000); return; }
+  showSyncStatus('Checklist carregado!', 'ok', 2000);
+  linhaImprimirChecklist(dados);
+}
+
+/* -- Botão "🖨️ Exportar PDF": mesma visualização, mas já dispara a
+      impressão (o usuário escolhe "Salvar como PDF" na caixa de diálogo). -- */
+async function linhaExportarChecklist(id) {
+  showSyncStatus('Carregando checklist...');
+  const dados = await linhaBaixarDadosCompletos(id);
+  if (!dados) { showSyncStatus('Não foi possível carregar', 'err', 4000); return; }
+  showSyncStatus('Checklist carregado!', 'ok', 2000);
+  linhaImprimirChecklist(dados, true);
+}
+
+/* -- Exclusão: só a Diretoria exclui direto; Coordenador/Colaborador
+      enviam uma solicitação com motivo, que fica pendente até a Diretoria
+      aprovar ou rejeitar (mesmo padrão de faunaExcluirRegistro /
+      faunaSolicitarExclusao / faunaResponderSolicitacaoExclusao). -- */
+async function linhaExcluirChecklist(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão direta restrita à Diretoria. Use "Solicitar exclusão".'); return; }
+  if (!confirm('Tem certeza que deseja excluir este checklist de Linha?\n\nEssa ação não pode ser desfeita.')) return;
+  showSyncStatus('Excluindo checklist...');
+  const { ok, lista } = await dbRemover('ChecklistLinha', id);
+  showToast(ok ? '🗑️ Checklist excluído.' : '❌ Erro ao excluir.');
+  showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok && lista) { try { localStorage.setItem('linha_historico_cache', JSON.stringify(lista)); } catch(e) {} }
+  await carregarLinhaHistorico(true);
+}
+
+async function linhaSolicitarExclusaoChecklist(id) {
+  const motivo = prompt('Por que este checklist deve ser excluído?\n\nIsso vai ser enviado pra Diretoria aprovar.');
+  if (motivo === null) return;
+  if (!motivo.trim()) { showToast('⚠️ Informe o motivo da solicitação.'); return; }
+  showSyncStatus('Enviando solicitação...');
+  const solicitacao = {
+    motivo: motivo.trim(),
+    solicitadoPorNome: window._currentUser ? window._currentUser.name : '',
+    solicitadoPorEmail: window._currentUser ? window._currentUser.email : '',
+    data: new Date().toISOString(),
+    status: 'pendente',
+  };
+  const ok = await dbAtualizar('ChecklistLinha', id, { SolicitacaoExclusao: solicitacao });
+  showToast(ok ? '📨 Solicitação de exclusão enviada à Diretoria.' : '❌ Erro ao enviar solicitação.');
+  showSyncStatus(ok ? 'Enviada!' : 'Falha ao enviar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) await carregarLinhaHistorico(true);
+}
+
+async function linhaResponderSolicitacaoExclusao(id, aprovar) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Apenas a Diretoria pode responder solicitações de exclusão.'); return; }
+  if (aprovar) {
+    if (!confirm('Aprovar a exclusão deste checklist?\n\nEssa ação não pode ser desfeita.')) return;
+    showSyncStatus('Excluindo checklist...');
+    const { ok, lista } = await dbRemover('ChecklistLinha', id);
+    showToast(ok ? '🗑️ Checklist excluído.' : '❌ Erro ao excluir.');
+    showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+    if (ok && lista) { try { localStorage.setItem('linha_historico_cache', JSON.stringify(lista)); } catch(e) {} }
+  } else {
+    showSyncStatus('Rejeitando solicitação...');
+    const ok = await dbAtualizar('ChecklistLinha', id, { SolicitacaoExclusao: null });
+    showToast(ok ? '✋ Solicitação de exclusão rejeitada.' : '❌ Erro ao rejeitar.');
+    showSyncStatus(ok ? 'Rejeitada!' : 'Falha', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  }
+  await carregarLinhaHistorico(true);
 }
 
 function pageChecklistLinha() {
@@ -51656,6 +51875,7 @@ const OD_FOLDERS = {
   checklistsMitigacao: 'Checklists/Mitigacao',
   checklistsColeta: 'Checklists/ColetaResiduos',
   checklistsFauna: 'Checklists/Fauna',
+  checklistsLinha: 'Checklists/Linha',
   termosEquipamento: 'Termos/Equipamentos',
   notasFiscaisEquip: 'Equipamentos/NotasFiscais',
   certificadosCalibracao: 'Equipamentos/CertificadosCalibracao',
