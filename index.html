@@ -946,6 +946,18 @@
   }
   @keyframes sync-spin { to { transform: rotate(360deg); } }
 
+  /* Spinner reutilizável pra botões que disparam uma gravação assíncrona
+     (ex: aprovar/pagar em Contas a Pagar) — pedido em 21/09/2026: dar
+     feedback visual enquanto a gravação no OneDrive está em andamento,
+     já que sem isso não dava pra saber se o clique tinha "pego" ou não. */
+  .btn-spinner {
+    display: inline-block; width: 12px; height: 12px; vertical-align: -2px;
+    margin-right: 5px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+    animation: sync-spin .7s linear infinite;
+  }
+  button:disabled { opacity: .65; cursor: not-allowed; }
+
   /* pending badge in header */
   .pending-badge {
     background: #f0a500; color: #fff;
@@ -1093,7 +1105,7 @@
          cada uma abre com sua própria cor/logo (ver painelGrupoAbrirSeletor). -->
     <button class="btn-icon" title="Painel por empresa" onclick="painelGrupoAbrirSeletor()" style="width:auto;padding:0 12px;gap:6px;display:flex;align-items:center;font-size:.8rem;font-weight:700">📈 Painel</button>
     <div class="header-actions">
-      <span class="conn-status" id="connStatus" title="Status da conexão">🟢 Conectado</span>
+      <span class="conn-status" id="connStatus" title="Status da conexão — clique para reconectar à Microsoft sem sair do sistema" onclick="reconectarMicrosoft()" style="cursor:pointer">🟢 Conectado</span>
       <div class="btn-icon notif-badge" title="Notificações — clique para ver pendências" onclick="toggleNotifDropdown(event)" style="cursor:pointer;position:relative">🔔<div id="notif-dropdown" class="notif-dropdown" style="display:none"></div></div>
       <span class="pending-badge" id="pendingBadge" title="Registros pendentes de sync">^0</span>
       <div class="btn-icon" title="Pesquisar">🔍</div>
@@ -5321,7 +5333,7 @@ async function salvarContaReceber() {
 async function carregarContasReceber() {
   const el=document.getElementById('lista-receber');if(!el)return;
   const token=await getSharePointToken();
-  if(!token){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>';return;}
+  if(!token){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>';return;}
   try {
     const _recItems = await dbLer('ContasReceber');
     const r = { ok: true, json: async () => ({ value: _recItems.slice().reverse().slice(0,50) }) };
@@ -7863,7 +7875,7 @@ async function recCarregarLista() {
   const el = document.getElementById('lista-recibos'); if (!el) return;
   if (!['diretoria','coordenador'].includes(currentProfile)) { el.innerHTML = ''; return; }
   const token = await getSharePointToken();
-  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>'; return; }
+  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>'; return; }
   const todos = await dbLer('Recibos').catch(() => []);
   window._recTodos = todos;
   const empresa = window._recEmpresaAtiva || RD_EMPRESAS[0];
@@ -8651,8 +8663,8 @@ async function pagAbrirVisualizar(id) {
         <div class="form-group" style="margin-bottom:10px"><label>Nº Medição</label><input type="text" id="pagv_medicao" value="${(i.NumMedicao||'').replace(/"/g,'&quot;')}" placeholder="Opcional"></div>
         ${aprovDivccBlocoHtml('pagv')}
         <div style="display:flex;gap:8px">
-          <button class="btn-primary" style="flex:1" onclick="pagConfirmarAgendamento(${id})">✅ Confirmar e Agendar</button>
-          <button class="btn-secondary" style="flex:1" onclick="pagRejeitarConta(${id})">↩️ Rejeitar</button>
+          <button class="btn-primary" id="pagv-btn-confirmar" style="flex:1" onclick="pagConfirmarAgendamento(${id})">✅ Confirmar e Agendar</button>
+          <button class="btn-secondary" id="pagv-btn-rejeitar" style="flex:1" onclick="pagRejeitarConta(${id})">↩️ Rejeitar</button>
         </div>
       </div>`;
   } else if (i.Status === 'Aprovado — Aguardando Pagamento' && isDir) {
@@ -8668,7 +8680,7 @@ async function pagAbrirVisualizar(id) {
             </select>
           </div>
         </div>
-        <button class="btn-primary" style="width:100%" onclick="pagConfirmarPagamento(${id})">💾 Confirmar Pagamento</button>
+        <button class="btn-primary" id="pagv-btn-pagar" style="width:100%" onclick="pagConfirmarPagamento(${id})">💾 Confirmar Pagamento</button>
       </div>`;
   } else if (i.Status === 'Pago') {
     acoesHtml = `<div style="margin-top:16px;padding:12px 14px;background:#e6f5ed;border-radius:10px;font-size:.82rem">
@@ -8697,8 +8709,8 @@ async function pagAbrirVisualizar(id) {
           </div>
         </div>
         <div style="display:flex;gap:8px">
-          <button class="btn-primary" style="flex:1" onclick="pagConfirmarPagamento(${id})">💾 Confirmar Pagamento</button>
-          <button class="btn-secondary" style="flex:1" onclick="pagRejeitarConta(${id})">↩️ Indeferir / Cancelar</button>
+          <button class="btn-primary" id="pagv-btn-pagar" style="flex:1" onclick="pagConfirmarPagamento(${id})">💾 Confirmar Pagamento</button>
+          <button class="btn-secondary" id="pagv-btn-rejeitar" style="flex:1" onclick="pagRejeitarConta(${id})">↩️ Indeferir / Cancelar</button>
         </div>
       </div>`;
   }
@@ -8740,12 +8752,39 @@ async function pagAbrirVisualizar(id) {
   }
 }
 
+// Desabilita e coloca um spinner nos botões de ação do modal de
+// aprovação/pagamento — pedido em 21/09/2026: "quando clico não aparece se
+// está processando, carregando ou algo tipo", já que a gravação no OneDrive
+// pode levar alguns segundos e, sem nenhum feedback, parecia que o clique
+// não tinha feito nada (levando a cliques repetidos). Desabilita os dois
+// botões da linha (confirmar E rejeitar/cancelar) pra evitar clique duplo
+// nos dois ao mesmo tempo.
+function _pagvBloquearBotoes(idAtivo, textoProcessando) {
+  ['pagv-btn-confirmar', 'pagv-btn-pagar', 'pagv-btn-rejeitar'].forEach(bid => {
+    const b = document.getElementById(bid);
+    if (!b) return;
+    b.disabled = true;
+    if (bid === idAtivo) { b.dataset.textoOriginal = b.innerHTML; b.innerHTML = '<span class="btn-spinner"></span>' + textoProcessando; }
+  });
+}
+function _pagvDesbloquearBotoes() {
+  ['pagv-btn-confirmar', 'pagv-btn-pagar', 'pagv-btn-rejeitar'].forEach(bid => {
+    const b = document.getElementById(bid);
+    if (!b) return;
+    b.disabled = false;
+    if (b.dataset.textoOriginal) { b.innerHTML = b.dataset.textoOriginal; delete b.dataset.textoOriginal; }
+  });
+}
+
 async function pagConfirmarAgendamento(id) {
   const dataAgendada = (document.getElementById('pagv_data_agendada')||{}).value;
   const medicaoEl = document.getElementById('pagv_medicao');
   if (!dataAgendada) { showToast('⚠️ Informe a data agendada de pagamento.'); return; }
   const rateio = aprovDivccValidarEColher('pagv', window._aprovValorTotal_pagv);
   if (!rateio.ok) return;
+  const btn = document.getElementById('pagv-btn-confirmar');
+  if (btn && btn.disabled) return; // já está processando — ignora clique duplo
+  _pagvBloquearBotoes('pagv-btn-confirmar', ' Confirmando...');
   _limparSyncError();
   const patch = {
     Status: 'Aprovado — Aguardando Pagamento', DataAgendada: dataAgendada,
@@ -8759,18 +8798,21 @@ async function pagConfirmarAgendamento(id) {
   }
   const ok = await dbAtualizar('ContasPagar', parseInt(id), patch);
   showToast(ok ? '✅ Confirmado e agendado!' : ('❌ Erro ao confirmar' + syncErrorDetalhe()));
-  const m = document.getElementById('pag-view-modal'); if (m) m.remove();
+  const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
   setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); }, 600);
 }
 
 async function pagRejeitarConta(id) {
   const motivo = prompt('Motivo da rejeição (opcional):', '') || '';
+  const btn = document.getElementById('pagv-btn-rejeitar');
+  if (btn && btn.disabled) return;
+  _pagvBloquearBotoes('pagv-btn-rejeitar', ' Rejeitando...');
   _limparSyncError();
   const ok = await dbAtualizar('ContasPagar', parseInt(id), {
     Status: 'Rejeitada', MotivoRejeicao: motivo, RejeitadoPor: window._currentUser ? window._currentUser.name : '',
   });
   showToast(ok ? '↩️ Conta rejeitada.' : ('❌ Erro' + syncErrorDetalhe()));
-  const m = document.getElementById('pag-view-modal'); if (m) m.remove();
+  const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
   setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); }, 600);
 }
 
@@ -8779,11 +8821,14 @@ async function pagConfirmarPagamento(id) {
   const banco = (document.getElementById('pagv_banco')||{}).value;
   if (!dataPag) { showToast('⚠️ Informe a data do pagamento.'); return; }
   if (!banco) { showToast('⚠️ Selecione o banco.'); return; }
+  const btn = document.getElementById('pagv-btn-pagar');
+  if (btn && btn.disabled) return;
+  _pagvBloquearBotoes('pagv-btn-pagar', ' Registrando...');
   _limparSyncError();
   const ok = await dbAtualizar('ContasPagar', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco, PagoPor: window._currentUser ? window._currentUser.name : '' });
   if (ok) await pagSincronizarDespesa(id, dataPag, banco);
   showToast(ok ? '✅ Pagamento registrado!' : ('❌ Erro' + syncErrorDetalhe()));
-  const m = document.getElementById('pag-view-modal'); if (m) m.remove();
+  const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
   setTimeout(() => carregarContasPagar(), 600);
 }
 
@@ -9116,7 +9161,7 @@ async function carregarContasPagar() {
   // presa em "Acesso restrito à Diretoria").
   if (!['diretoria','coordenador'].includes(currentProfile)) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria e Coordenação.</div>'; return; }
   const token=await getSharePointToken();
-  if(!token){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>';return;}
+  if(!token){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>';return;}
   try {
     let items = await dbLer('ContasPagar');
     // Filtro por empresa — estrutural (igual Receitas/Despesas e Centros de
@@ -9205,14 +9250,31 @@ async function carregarContasPagar() {
 
     items = items.slice().sort((a,b)=>(a.Vencimento||'9999-99-99').localeCompare(b.Vencimento||'9999-99-99') || (b.Id||0)-(a.Id||0)).slice(0,200);
     window._pagFiltradas = items;
+    // Remove da seleção qualquer Id que não está mais na lista filtrada
+    // (ex.: já foi aprovado, ou saiu do filtro atual) — pedido em 21/09/2026
+    // junto com a aprovação em lote, pra seleção nunca ficar "presa" em
+    // itens que não fazem mais sentido selecionar.
+    if (window._pagSelecionados instanceof Set) {
+      const idsAtuais = new Set(items.filter(r => r.Status === 'Aguardando Aprovação').map(r => r.Id));
+      Array.from(window._pagSelecionados).forEach(id => { if (!idsAtuais.has(id)) window._pagSelecionados.delete(id); });
+    } else { window._pagSelecionados = new Set(); }
 
     if(!items.length){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado.</div>';return;}
     const statusColor = (s) => s==='Pago'?'green':s==='Em atraso'||s==='Rejeitada'?'red':s==='Vence hoje'||s==='Vence em breve'?'amber':s==='Aguardando Aprovação'||s==='Aprovado — Aguardando Pagamento'?'blue':'amber';
     const isDir = currentProfile === 'diretoria';
-    el.innerHTML='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Empresa</th><th>Fornecedor</th><th>Lançado em</th><th>Descrição</th><th>CC</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
+    const nSelBar = window._pagSelecionados ? window._pagSelecionados.size : 0;
+    const barraSelecaoHtml = isDir ? `<div id="pag-bulk-bar" style="display:${nSelBar?'flex':'none'};align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:10px">
+      <span id="pag-bulk-texto" style="font-size:.8rem;font-weight:700"></span>
+      <button id="pag-bulk-btn" class="btn-primary" style="font-size:.76rem;padding:5px 10px" onclick="pagAprovarSelecionados()">✅ Aprovar selecionados</button>
+      <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="pagLimparSelecao()">✕ Limpar seleção</button>
+    </div>` : '';
+    el.innerHTML = barraSelecaoHtml + '<div style="overflow-x:auto"><table class="data-table"><thead><tr>' + (isDir?'<th style="width:26px"><input type="checkbox" id="pag-chk-todos" title="Selecionar todas as \'Aguardando Aprovação\' visíveis" onchange="pagToggleTodos(this.checked)"></th>':'') + '<th>Empresa</th><th>Fornecedor</th><th>Lançado em</th><th>Descrição</th><th>CC</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
       items.map(i=>{
         const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}` : (i.FormaPagamento||'—');
+        const podeSelecionar = isDir && i.Status === 'Aguardando Aprovação';
+        const marcado = podeSelecionar && window._pagSelecionados && window._pagSelecionados.has(i.Id);
         return `<tr>
+          ${isDir?`<td>${podeSelecionar?`<input type="checkbox" class="pag-chk-item" data-id="${i.Id}" ${marcado?'checked':''} onchange="pagToggleItem(${i.Id}, this.checked)">`:''}</td>`:''}
           <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
           <td><strong>${i.Fornecedor||'—'}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}${i.Provisorio?`<div style="font-size:.62rem;color:var(--amber);font-weight:700" title="Valor estimado pela alíquota configurada — ainda não reconciliado com o DAS real (ver Notas Fiscais > 🧮 Reconciliar DAS)">📐 Provisão</div>`:''}</td>
           <td style="font-size:.75rem;color:var(--text-muted)">${i.Created?new Date(i.Created).toLocaleDateString('pt-BR'):'—'}</td>
@@ -9235,7 +9297,74 @@ async function carregarContasPagar() {
         </tr>`;
       }).join('')+
       '</tbody></table></div>';
+    pagAtualizarBarraSelecao();
   } catch(e){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';}
+}
+
+/* -- Aprovação em lote — pedido em 21/09/2026 ("teria como colocar a opção
+   de aprovar mais de um pagamento no dia"): cada checkbox só aparece em
+   linhas "Aguardando Aprovação" (mesmo status que já mostra o botão
+   individual "✅ Aprovar"), e só pra Diretoria. Aprovar em lote agenda cada
+   lançamento pra sua PRÓPRIA data de vencimento já cadastrada (sem abrir um
+   formulário por item) — quem precisar de outra data, rateio por mais de um
+   Centro de Custo/Medição, ou quiser rejeitar, continua usando "👁️
+   Visualizar" num item por vez, igual já funcionava. -- */
+function pagToggleItem(id, checked) {
+  if (!(window._pagSelecionados instanceof Set)) window._pagSelecionados = new Set();
+  if (checked) window._pagSelecionados.add(id); else window._pagSelecionados.delete(id);
+  pagAtualizarBarraSelecao();
+}
+function pagToggleTodos(checked) {
+  if (!(window._pagSelecionados instanceof Set)) window._pagSelecionados = new Set();
+  const idsVisiveis = (window._pagFiltradas||[]).filter(r=>r.Status==='Aguardando Aprovação').map(r=>r.Id);
+  idsVisiveis.forEach(id => { if (checked) window._pagSelecionados.add(id); else window._pagSelecionados.delete(id); });
+  document.querySelectorAll('.pag-chk-item').forEach(chk => { chk.checked = checked; });
+  pagAtualizarBarraSelecao();
+}
+function pagLimparSelecao() {
+  window._pagSelecionados = new Set();
+  document.querySelectorAll('.pag-chk-item').forEach(c => { c.checked = false; });
+  const todos = document.getElementById('pag-chk-todos'); if (todos) todos.checked = false;
+  pagAtualizarBarraSelecao();
+}
+function pagAtualizarBarraSelecao() {
+  const bar = document.getElementById('pag-bulk-bar');
+  if (!bar) return;
+  const n = window._pagSelecionados ? window._pagSelecionados.size : 0;
+  bar.style.display = n ? 'flex' : 'none';
+  if (!n) return;
+  const itens = (window._pagFiltradas||[]).filter(r => window._pagSelecionados.has(r.Id));
+  const soma = itens.reduce((s,r)=>s+(r.Valor||0),0);
+  const txt = document.getElementById('pag-bulk-texto');
+  if (txt) txt.textContent = n + ' selecionado' + (n===1?'':'s') + ' · R$ ' + soma.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+async function pagAprovarSelecionados() {
+  const ids = Array.from(window._pagSelecionados || []);
+  if (!ids.length) return;
+  const itens = (window._pagFiltradas||[]).filter(r => ids.includes(r.Id));
+  const soma = itens.reduce((s,r)=>s+(r.Valor||0),0);
+  const ok1 = confirm(`Aprovar e agendar ${ids.length} pagamento(s), totalizando R$ ${soma.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}?\n\nCada um será agendado para a própria data de vencimento já cadastrada. Lançamentos com rateio por mais de um Centro de Custo/Medição não mudam aqui — edite-os individualmente se precisar mudar isso.`);
+  if (!ok1) return;
+  const btn = document.getElementById('pag-bulk-btn');
+  if (btn) { btn.disabled = true; }
+  let ok = 0, falhas = 0;
+  for (let idx = 0; idx < ids.length; idx++) {
+    const id = ids[idx];
+    if (btn) btn.innerHTML = '<span class="btn-spinner"></span> Aprovando ' + (idx+1) + '/' + ids.length + '...';
+    const item = itens.find(r => r.Id === id);
+    const patch = {
+      Status: 'Aprovado — Aguardando Pagamento',
+      DataAgendada: (item && item.Vencimento) || new Date().toISOString().slice(0,10),
+      AprovadoPor: window._currentUser ? window._currentUser.name : '',
+      DataAprovacao: new Date().toISOString().split('T')[0],
+    };
+    const res = await dbAtualizar('ContasPagar', id, patch).catch(() => false);
+    if (res) ok++; else falhas++;
+  }
+  window._pagSelecionados = new Set();
+  showToast(falhas ? `✅ ${ok} aprovado(s), ⚠️ ${falhas} falharam${syncErrorDetalhe()}` : `✅ ${ok} pagamento(s) aprovado(s) e agendado(s)!`);
+  carregarContasPagar();
+  atualizarBadgeNotificacoes();
 }
 
 /* -- Exclusão direta — restrita à Diretoria (a página inteira de Contas a
@@ -11469,7 +11598,7 @@ async function carregarReceitas() {
   if (!el) return;
   if (currentProfile !== 'diretoria') { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria.</div>'; return; }
   const token = await getSharePointToken();
-  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>'; return; }
+  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>'; return; }
   try {
     let items = await dbLer('Receitas');
     const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
@@ -12191,7 +12320,7 @@ async function carregarNotasFiscais() {
   if (!el) return;
   if (currentProfile !== 'diretoria') { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria.</div>'; return; }
   const token = await getSharePointToken();
-  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>'; return; }
+  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>'; return; }
   try {
     const todas = await dbLer('Receitas');
     const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
@@ -14033,7 +14162,7 @@ async function carregarDespesas() {
   if (!el) return;
   if (currentProfile !== 'diretoria') { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria.</div>'; return; }
   const token = await getSharePointToken();
-  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Login Microsoft necessário.</div>'; return; }
+  if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>'; return; }
   try {
     let items = await dbLer('Despesas');
     // Escopo pela empresa ativa no submenu — cada empresa vê só seus próprios lançamentos.
@@ -51121,15 +51250,55 @@ function atualizarStatusConexao() {
   const contas = (window._msalInstance && window._msalInstance.getAllAccounts) ? window._msalInstance.getAllAccounts() : [];
   if (contas.length === 0) {
     el.textContent = '🟡 Sem login Microsoft';
-    el.title = 'Você está online, mas nenhuma conta Microsoft está conectada. Entre com a Microsoft para sincronizar com o OneDrive.';
+    el.title = 'Você está online, mas nenhuma conta Microsoft está conectada. Clique aqui para entrar com a Microsoft e sincronizar com o OneDrive.';
     el.className = 'conn-status warn';
   } else {
     el.textContent = '🟢 Conectado';
-    el.title = 'Conectado como ' + (contas[0].username || contas[0].name || '') + ' — sincronizando com o OneDrive normalmente.';
+    el.title = 'Conectado como ' + (contas[0].username || contas[0].name || '') + ' — sincronizando com o OneDrive normalmente. Clique para reconectar se algo parar de salvar.';
     el.className = 'conn-status ok';
   }
 }
 setInterval(atualizarStatusConexao, 30000);
+
+/* -- Checagem PROATIVA de saúde do token — pedido em 21/09/2026: até aqui,
+   atualizarStatusConexao() só olhava se existia uma CONTA Microsoft em cache
+   (window._msalInstance.getAllAccounts()), não se o TOKEN em si ainda
+   funcionava — então o selo continuava "🟢 Conectado" mesmo quando o token
+   já tinha expirado/falhado no meio do uso, e a pessoa só descobria o
+   problema quando uma tela inteira sumia/zerava no meio de um lançamento ou
+   aprovação, sem nenhum aviso antes disso. Roda de tempos em tempos em
+   segundo plano (silenciosa — não abre popup sozinha, só tenta renovar via
+   acquireTokenSilent, que não interrompe o usuário) e, se falhar, já deixa
+   o selo do topo avisando ANTES que a pessoa esbarre nisso tentando salvar
+   algo. Isso também ajuda a renovar o token cedo, reduzindo a chance dele
+   expirar bem no meio de uma ação. */
+async function _checarSaudeToken() {
+  try {
+    if (!navigator.onLine) return;
+    if (!window._msalInstance || !window._msalReady) return;
+    const contas = window._msalInstance.getAllAccounts();
+    if (!contas.length) return; // já cai no caso "Sem login Microsoft" acima
+    await window._msalInstance.acquireTokenSilent({
+      scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All'],
+      account: contas[0],
+    });
+    // Token ok — se o selo estava marcado como "precisa reconectar", volta ao normal
+    const el = document.getElementById('connStatus');
+    if (el && el.dataset.precisaReconectar) { delete el.dataset.precisaReconectar; atualizarStatusConexao(); }
+  } catch (e) {
+    const code = e.errorCode || e.name || '';
+    if (!['interaction_required', 'consent_required', 'login_required'].includes(code) && !String(e).includes('interaction_required')) return; // erro passageiro (rede etc.) — não avisa à toa
+    const el = document.getElementById('connStatus');
+    if (el) {
+      el.dataset.precisaReconectar = '1';
+      el.textContent = '🟠 Reconectar';
+      el.title = 'Sua sessão Microsoft precisa ser renovada — clique aqui para reconectar sem sair do sistema, antes que isso trave um salvamento.';
+      el.className = 'conn-status warn';
+    }
+  }
+}
+setInterval(_checarSaudeToken, 600000); // a cada 10 min
+setTimeout(_checarSaudeToken, 15000); // uma checagem cedo, 15s depois de abrir
 
 /* -- Eventos online/offline -- */
 function handleOnline() {
@@ -51402,6 +51571,52 @@ function initMsal() {
       errEl.style.fontSize = '.78rem';
       errEl.textContent = msg;
       console.warn('[MSAL] código:', code, '| detalhe:', detail, '| redirectUri:', _redirectUri);
+    }
+  };
+
+  /* -- Reconectar SEM sair do sistema — pedido em 21/09/2026 ("no meio de um
+     lançamento ou aprovação, some tudo da tela, tenho que deslogar e voltar
+     de novo"): antes, a única forma de renovar uma sessão Microsoft travada
+     era usar o botão "🚪 Sair" (que também derruba o login do APP, perde o
+     estado da tela atual etc.). Esta função só repete a autenticação
+     Microsoft — não mexe no login do app (window._currentUser continua o
+     mesmo) — e ao final tenta sincronizar qualquer coisa que ficou
+     pendente na fila offline e recarrega a página atual, pra quem estava
+     vendo uma lista vazia/zerada já ver ela preenchida de novo sem precisar
+     clicar em mais nada. Exposta em window pra poder ser chamada do selo
+     "🟢 Conectado"/"🟠 Reconectar" no topo (ver atualizarStatusConexao /
+     _checarSaudeToken) e dos botões "🔄 Reconectar" que substituem a
+     mensagem morta "Login Microsoft necessário" nas telas. */
+  window.reconectarMicrosoft = async function() {
+    if (!window._msalReady) {
+      let tentativas = 0;
+      while (!window._msalReady && tentativas < 20) { await new Promise(r => setTimeout(r, 300)); tentativas++; }
+      if (!window._msalReady) { showToast('⚠️ Autenticação ainda inicializando — aguarde alguns segundos e tente de novo.'); return; }
+    }
+    if (_msalInteractionLock) { showToast('⏳ Uma autenticação já está em andamento, aguarde...'); return; }
+    showToast('🔄 Reconectando à Microsoft...');
+    await _msalAcquireLock();
+    try {
+      const contas = msalInstance.getAllAccounts();
+      const result = contas.length
+        ? await msalInstance.acquireTokenPopup({ scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All'], account: contas[0] })
+        : await msalInstance.loginPopup({ scopes: ['Files.ReadWrite.All', 'User.Read', 'Sites.ReadWrite.All'], prompt: 'select_account' });
+      _msalReleaseLock();
+      if (result && result.account) {
+        const el = document.getElementById('connStatus');
+        if (el) delete el.dataset.precisaReconectar;
+        if (typeof atualizarStatusConexao === 'function') atualizarStatusConexao();
+        showToast('✅ Reconectado! Sincronizando pendências...');
+        if (typeof syncPending === 'function') await syncPending();
+        if (typeof navigate === 'function' && typeof currentPage !== 'undefined' && currentPage) navigate(currentPage);
+      }
+    } catch (err) {
+      _msalReleaseLock();
+      console.error('[MSAL] Reconexão falhou:', err);
+      const code = err.errorCode || err.name || '';
+      if (code === 'user_cancelled') { showToast('Reconexão cancelada.'); return; }
+      if (code === 'popup_window_error' || String(err).includes('popup')) { showToast('⚠️ Popup bloqueado pelo navegador — permita pop-ups para este site (ícone na barra de endereço) e clique em "🟢 Conectado" de novo.'); return; }
+      showToast('❌ Falha ao reconectar: ' + (err.errorMessage || err.message || code || 'erro desconhecido'));
     }
   };
 
@@ -51836,6 +52051,20 @@ function _setSyncError(msg, status) {
   console.warn('[SYNC]', window._lastSyncError);
 }
 function _limparSyncError() { window._lastSyncError = null; }
+/* -- Sobrescreve a mensagem genérica de "salvo no aparelho, aguardando
+   conexão" que queueSync() sempre mostra, para o caso específico de estar
+   ONLINE mas sem conseguir token Microsoft — pedido em 21/09/2026: sem essa
+   distinção, um problema de sessão expirada parecia "sem internet", e a
+   pessoa ficava esperando a conexão "voltar" sem saber que bastava clicar
+   em reconectar. Não muda o comportamento de guardar na fila (o dado
+   continua seguro, só a mensagem fica mais correta e acionável). -- */
+function _avisarSeSessaoExpirada() {
+  if (!navigator.onLine) return; // isso aqui é offline de verdade — a mensagem padrão já está certa
+  const el = document.getElementById('connStatus');
+  if (el) { el.dataset.precisaReconectar = '1'; el.textContent = '🟠 Reconectar'; el.title = 'Sua sessão Microsoft expirou — clique para reconectar sem sair do sistema.'; el.className = 'conn-status warn'; }
+  _setSyncError('sessão Microsoft expirou — o que você salvou ficou guardado neste aparelho até você reconectar (botão no topo)');
+  showSyncBar('offline', '🔒 Sua sessão Microsoft expirou — o que você salvou ficou guardado neste aparelho, ainda NÃO foi para o OneDrive. Clique em "🟠 Reconectar" no topo (não precisa sair do sistema).');
+}
 /* -- Retorna " — <motivo>" pronto pra colar no final de um showToast('❌ Erro...'),
       ou string vazia se não houver motivo detalhado registrado. -- */
 function syncErrorDetalhe() {
@@ -56885,7 +57114,7 @@ async function baixarArquivoCentral(caminhoRelativo) {
    pessoa acabou de salvar. -- */
 async function dbSalvar(tabela, dados, etagEsperado) {
   const token = await getOneDriveToken();
-  if (!token) { console.warn('[DB] Sem token para salvar', tabela); _setSyncError('não foi possível obter permissão da sua conta Microsoft — tente sair e entrar novamente'); return false; }
+  if (!token) { console.warn('[DB] Sem token para salvar', tabela); _setSyncError('sessão Microsoft expirou — clique em "🔄 Reconectar" no topo (não precisa sair do sistema)'); return false; }
   try {
     // Garantir pasta db (na pasta central OU operacional, dependendo da tabela)
     const pasta = await _resolverRaizPara(tabela, true, token);
@@ -56977,6 +57206,7 @@ async function dbInserir(tabela, registro) {
   if (!token) {
     const novoOffline = { ...registro, Id: registro.Id || Date.now(), Created: new Date().toISOString(), _offlinePendente: true };
     queueSync(tabela, { op: 'inserir', registro: novoOffline });
+    _avisarSeSessaoExpirada();
     return novoOffline;
   }
   const novo = { ...registro, Id: registro.Id || Date.now(), Created: new Date().toISOString() };
@@ -56990,6 +57220,7 @@ async function dbAtualizar(tabela, id, campos) {
   const token = navigator.onLine ? await getOneDriveToken() : null;
   if (!token) {
     queueSync(tabela, { op: 'atualizar', id, campos });
+    _avisarSeSessaoExpirada();
     return true;
   }
   let atualizado = null;
