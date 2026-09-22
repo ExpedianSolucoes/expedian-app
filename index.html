@@ -29791,8 +29791,16 @@ function meaStatusBadge(tipo, status) {
    de "Pendente" nos cards — eles não estão pendentes, são inaplicáveis. -- */
 function meaNaoAplicavel(x, campo) {
   if (x.classificacao && x.classificacao !== 'subestacao') return true;
-  var v = campo === 'ruido' ? (x.ruido || {}).necessario : (x[campo] || {}).existe;
-  return v === 'N/A';
+  var obj = (campo === 'ruido' ? x.ruido : x[campo]) || {};
+  var v = campo === 'ruido' ? obj.necessario : obj.existe;
+  // N/A explícito, "Não" (não possui/não necessário), status já calculado
+  // como 'na', ou (Poço/CSAO) "não houve necessidade de coleta" no
+  // semestre — todos contam como Não Aplicável pro KPI, inclusive
+  // retroativo em registros salvos antes desse ajuste (não depende de
+  // reabrir e salvar de novo). Pedido 22/09/2026.
+  if (v === 'N/A' || v === 'Não' || obj.status === 'na') return true;
+  if (campo !== 'ruido' && obj.coleta === 'Não') return true;
+  return false;
 }
 function meaKPIs() {
   var t = MEA_DADOS.length;
@@ -30145,6 +30153,7 @@ function meaRuidoToggle() {
   });
   var pontosBloco = document.getElementById('mea-ruido-pontos-bloco');
   if (pontosBloco) pontosBloco.style.display = desabilita ? 'none' : '';
+  meaRuidoAtualizarStatusDisplay();
 }
 function meaPocoToggle() {
   var ex = document.getElementById('mea-poco-existe');
@@ -30154,6 +30163,14 @@ function meaPocoToggle() {
     var e = document.getElementById(elId);
     if (e) e.disabled = desabilita;
   });
+  // Não existindo poço, o status não fica "Pendente" pra sempre — muda
+  // automático pra Não Aplicável (editável se precisar corrigir). Pedido
+  // 22/09/2026: mesma lógica pro CSAO.
+  var status = document.getElementById('mea-poco-status');
+  if (status) {
+    if (desabilita) status.value = 'na';
+    else if (status.value === 'na') status.value = 'pendente';
+  }
 }
 function meaCsaoToggle() {
   var ex = document.getElementById('mea-csao-existe');
@@ -30163,6 +30180,28 @@ function meaCsaoToggle() {
     var e = document.getElementById(elId);
     if (e) e.disabled = desabilita;
   });
+  var status = document.getElementById('mea-csao-status');
+  if (status) {
+    if (desabilita) status.value = 'na';
+    else if (status.value === 'na') status.value = 'pendente';
+  }
+}
+// Mesmo quando existe poço/CSAO, se não houve necessidade de coleta neste
+// semestre o status também não deve ficar "Pendente" indefinidamente —
+// muda pra Não Aplicável automático (editável). Pedido 22/09/2026.
+function meaPocoColetaMudou() {
+  var coleta = document.getElementById('mea-poco-coleta');
+  var status = document.getElementById('mea-poco-status');
+  if (!coleta || !status) return;
+  if (coleta.value === 'Não') status.value = 'na';
+  else if (status.value === 'na') status.value = 'pendente';
+}
+function meaCsaoColetaMudou() {
+  var coleta = document.getElementById('mea-csao-coleta');
+  var status = document.getElementById('mea-csao-status');
+  if (!coleta || !status) return;
+  if (coleta.value === 'Não') status.value = 'na';
+  else if (status.value === 'na') status.value = 'pendente';
 }
 
 /* -- Resumo de histórico (quantas vezes já foi feito antes + data da
@@ -30319,7 +30358,7 @@ async function meaSalvarDetalhe() {
   var ruidoNecessario = g('mea-ruido-necessario');
   var ruidoPontos = ruidoNecessario === 'Sim' ? (window._meaPontosRuido || []).map(function(p){ return { data: p.data||'', status: p.status||'pendente' }; }) : [];
   var ultimoPontoComData = ruidoPontos.filter(function(p){ return p.data; }).sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); }).pop();
-  reg.ruido = { necessario: ruidoNecessario, qtdPontos: g('mea-ruido-qtdpontos'), pontos: ruidoPontos, status: meaAgregarStatusRuido(ruidoPontos), data: ultimoPontoComData ? ultimoPontoComData.data : '', tecnico1: g('mea-ruido-tec1'), tecnico2: g('mea-ruido-tec2'), obs: g('mea-ruido-obs'), historico: (reg.ruido && reg.ruido.historico) || [] };
+  reg.ruido = { necessario: ruidoNecessario, qtdPontos: g('mea-ruido-qtdpontos'), pontos: ruidoPontos, status: meaAgregarStatusRuido(ruidoPontos, ruidoNecessario), data: ultimoPontoComData ? ultimoPontoComData.data : '', tecnico1: g('mea-ruido-tec1'), tecnico2: g('mea-ruido-tec2'), obs: g('mea-ruido-obs'), historico: (reg.ruido && reg.ruido.historico) || [] };
   reg.poco = { existe: g('mea-poco-existe'), coleta: g('mea-poco-coleta'), sinalizado: g('mea-poco-sinalizado'), identificacaoAdequada: g('mea-poco-identificacaoadequada'), status: g('mea-poco-status'), data: g('mea-poco-data'), obs: g('mea-poco-obs'), historico: (reg.poco && reg.poco.historico) || [] };
   reg.csao = { existe: g('mea-csao-existe'), coleta: g('mea-csao-coleta'), sinalizada: g('mea-csao-sinalizada'), identificada: g('mea-csao-identificada'), status: g('mea-csao-status'), data: g('mea-csao-data'), obs: g('mea-csao-obs'), historico: (reg.csao && reg.csao.historico) || [] };
   reg.obs = g('mea-obs');
@@ -30429,8 +30468,11 @@ function meaTrafoQtdMudou() {
 function meaTrafoToggle() {
   var possui = document.getElementById('mea-trafo-possui');
   var bloco = document.getElementById('mea-trafo-bloco');
+  var qtdEl = document.getElementById('mea-trafo-qtd');
   if (!possui || !bloco) return;
-  bloco.style.display = (possui.value === 'Sim') ? '' : 'none';
+  var tem = possui.value === 'Sim';
+  bloco.style.display = tem ? '' : 'none';
+  if (qtdEl) qtdEl.disabled = !tem;
 }
 
 /* ===============================
@@ -30443,7 +30485,10 @@ function meaTrafoToggle() {
    pontos estiverem Realizados; Agendado se pelo menos 1 tiver algum
    progresso (Agendado ou Realizado); senão Pendente.
 =============================== */
-function meaAgregarStatusRuido(pontos) {
+function meaAgregarStatusRuido(pontos, necessario) {
+  // Não necessário neste semestre = Não Aplicável, não "Pendente" pra
+  // sempre (mesma lógica pedida pro Poço/CSAO em 22/09/2026).
+  if (necessario === 'Não' || necessario === 'N/A') return 'na';
   var lista = Array.isArray(pontos) ? pontos : [];
   if (!lista.length) return 'pendente';
   if (lista.every(function(p){ return p.status === 'realizado'; })) return 'realizado';
@@ -30472,7 +30517,8 @@ function meaRenderizarPontosRuido() {
 function meaRuidoAtualizarStatusDisplay() {
   var el = document.getElementById('mea-ruido-status-display');
   if (!el) return;
-  var badge = meaStatusBadge('padrao', meaAgregarStatusRuido(window._meaPontosRuido || []));
+  var necEl = document.getElementById('mea-ruido-necessario');
+  var badge = meaStatusBadge('padrao', meaAgregarStatusRuido(window._meaPontosRuido || [], necEl ? necEl.value : ''));
   el.innerHTML = '<span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:700;color:'+badge.cor+';background:'+badge.bg+'">'+badge.label+'</span>';
 }
 function meaRuidoQtdMudou() {
@@ -30535,7 +30581,7 @@ function pageMonitoramentoAmbientalERO() {
 
   <!-- MODAL: Detalhe do Empreendimento -->
   <div id="mea-detalhe-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px">
-    <div style="background:var(--surface);border-radius:16px;width:min(720px,96vw);max-height:92vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+    <div style="background:var(--surface);border-radius:16px;width:min(880px,96vw);max-height:92vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
       <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
         <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)" id="mea-modal-titulo">Empreendimento</div>
         <button onclick="meaFecharDetalhe()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
@@ -30654,11 +30700,9 @@ function pageMonitoramentoAmbientalERO() {
           <div class="form-group"><label>Possui TRAFO?</label>
             <select id="mea-trafo-possui" onchange="meaTrafoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
+          <div class="form-group" style="flex:0 0 140px"><label>Quantidade</label><input type="number" min="0" id="mea-trafo-qtd" oninput="meaTrafoQtdMudou()"></div>
         </div>
         <div id="mea-trafo-bloco">
-          <div class="form-row">
-            <div class="form-group" style="flex:0 0 100px"><label>Quantidade</label><input type="number" min="0" id="mea-trafo-qtd" oninput="meaTrafoQtdMudou()"></div>
-          </div>
           <div id="mea-trafos-lista"></div>
         </div>
 
@@ -30676,10 +30720,10 @@ function pageMonitoramentoAmbientalERO() {
         </div>
         <div class="form-row">
           <div class="form-group"><label>Necessidade de Coleta p/ Análise?</label>
-            <select id="mea-poco-coleta"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+            <select id="mea-poco-coleta" onchange="meaPocoColetaMudou()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
           <div class="form-group"><label>Status</label>
-            <select id="mea-poco-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option></select>
+            <select id="mea-poco-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option><option value="na">➖ Não Aplicável</option></select>
           </div>
           <div class="form-group"><label>Data de Realização</label><input type="date" id="mea-poco-data"></div>
         </div>
@@ -30700,10 +30744,10 @@ function pageMonitoramentoAmbientalERO() {
         </div>
         <div class="form-row">
           <div class="form-group"><label>Houve coleta no semestre?</label>
-            <select id="mea-csao-coleta"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+            <select id="mea-csao-coleta" onchange="meaCsaoColetaMudou()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
           <div class="form-group"><label>Status da Verificação</label>
-            <select id="mea-csao-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option></select>
+            <select id="mea-csao-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option><option value="na">➖ Não Aplicável</option></select>
           </div>
           <div class="form-group"><label>Data de Realização</label><input type="date" id="mea-csao-data"></div>
         </div>
