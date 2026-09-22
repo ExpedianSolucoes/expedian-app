@@ -29659,6 +29659,7 @@ function meaUid() {
 async function meaCarregar() {
   const remoto = await dbLer('MonitoramentoAmbientalERO');
   MEA_DADOS = Array.isArray(remoto) ? remoto : [];
+  MEA_DADOS.forEach(meaMigrarRegistro);
 }
 
 async function meaSalvar() {
@@ -29668,15 +29669,58 @@ async function meaSalvar() {
 function meaRegistroVazio() {
   return {
     id: meaUid(), num: '', empreendimento: '', regional: '', cnpj: '', municipio: '', endereco: '', coordenadas: '',
+    classificacao: '', classificacaoDetalhe: '',
     processoLicenciamento: '', numeroLicenca: '', emissao: '', vencimento: '', areaLicenciada: '',
-    qtdTrafo: '', potencia: '', baciaContencao: '', baciaSinalizada: '',
+    possuiTrafo: '', qtdTrafo: '', potencia: '', trafos: [], baciaContencao: '', baciaSinalizada: '',
     vistoria: { status: 'pendente', statusLinha: '', statusSubestacao: '', dataProgramada: '', responsavelProgramado: '', responsavelProgramado2: '', data: '', tecnico1: '', tecnico2: '', motivo: '', lss: { status: '', obs: '' }, pernoite: '', lssNumero: '', observacao: '', ordemRoteiro: null, fotosEnviadas: 0 },
     rma: { necessario: '', status: 'pendente', art: '', tecnicoArt: '', tecnicoRma: '' },
-    ruido: { status: 'pendente', data: '', obs: '' },
-    poco: { existe: '', status: 'pendente', data: '', obs: '' },
-    csao: { existe: '', sinalizada: '', status: 'pendente', data: '', obs: '' },
+    ruido: { necessario: '', qtdPontos: '', pontos: [], status: 'pendente', data: '', tecnico1: '', tecnico2: '', obs: '' },
+    poco: { existe: '', sinalizado: '', identificacaoAdequada: '', status: 'pendente', data: '', obs: '' },
+    csao: { existe: '', identificada: '', sinalizada: '', status: 'pendente', data: '', obs: '' },
     obs: '',
   };
+}
+
+/* -- Migração de registros antigos (91 empreendimentos já cadastrados antes
+   de 22/09/2026), aplicada na leitura (mesmo padrão de linhaMigrarPontuacao):
+   nada é reescrito às cegas no OneDrive, só preenchido em memória com um
+   valor de partida sensato, e só é persistido de fato quando alguém abre e
+   salva aquele empreendimento de novo.
+   - classificacao: nenhum registro tinha esse campo — como TODOS os 91 já
+     cadastrados vinham sendo tratados com Trafo/CSAO/Poço, o ponto de
+     partida é 'subestacao', pra ninguém perder a visão desses campos
+     (pedido 22/09/2026, confirmado com Tiago).
+   - trafos: se já havia Qtd. Trafo preenchida mas nenhuma lista por
+     transformador (campo novo), gera N entradas usando a Bacia de
+     Contenção/Sinalizada única que existia (nível do site) como valor
+     inicial de cada uma — cada TRAFO passa a ser corrigível individualmente
+     dali em diante.
+   - ruido.pontos: se havia um status/data únicos (formato antigo) e o
+     ruído era necessário, vira 1 ponto de partida com esses mesmos dados,
+     em vez de descartar o que já estava registrado. -- */
+function meaMigrarRegistro(reg) {
+  if (!reg) return reg;
+  if (!reg.classificacao) { reg.classificacao = 'subestacao'; reg.classificacaoDetalhe = reg.classificacaoDetalhe || ''; }
+  if (!Array.isArray(reg.trafos)) {
+    var qtd = parseInt(reg.qtdTrafo, 10) || 0;
+    reg.trafos = [];
+    for (var i = 0; i < qtd; i++) reg.trafos.push({ bacia: reg.baciaContencao || '', sinalizada: reg.baciaSinalizada || '' });
+    if (qtd > 0 && !reg.possuiTrafo) reg.possuiTrafo = 'Sim';
+  }
+  reg.ruido = reg.ruido || {};
+  if (!Array.isArray(reg.ruido.pontos)) {
+    reg.ruido.pontos = [];
+    if (reg.ruido.necessario === 'Sim' && (reg.ruido.data || (reg.ruido.status && reg.ruido.status !== 'pendente'))) {
+      reg.ruido.pontos.push({ data: reg.ruido.data || '', status: reg.ruido.status || 'pendente' });
+    }
+    reg.ruido.qtdPontos = reg.ruido.pontos.length ? String(reg.ruido.pontos.length) : (reg.ruido.necessario === 'Sim' ? '1' : '');
+  }
+  reg.poco = reg.poco || {};
+  if (reg.poco.sinalizado === undefined) reg.poco.sinalizado = '';
+  if (reg.poco.identificacaoAdequada === undefined) reg.poco.identificacaoAdequada = '';
+  reg.csao = reg.csao || {};
+  if (reg.csao.identificada === undefined) reg.csao.identificada = '';
+  return reg;
 }
 
 /* -- Status da licença calculado a partir do vencimento (mesmo critério do
@@ -29959,10 +30003,15 @@ function meaAbrirDetalhe(id) {
   set('mea-municipio', reg.municipio);
   set('mea-endereco', reg.endereco);
   set('mea-coordenadas', reg.coordenadas);
-  set('mea-qtdtrafo', reg.qtdTrafo);
+  set('mea-classificacao', reg.classificacao);
+  meaClassificacaoToggle(true);
+  set('mea-classificacao-detalhe', reg.classificacaoDetalhe);
+  set('mea-trafo-possui', reg.possuiTrafo);
+  set('mea-trafo-qtd', reg.qtdTrafo);
+  window._meaTrafos = Array.isArray(reg.trafos) ? reg.trafos.map(function(t){ return { bacia: t.bacia||'', sinalizada: t.sinalizada||'' }; }) : [];
+  meaRenderizarTrafos();
+  meaTrafoToggle();
   set('mea-potencia', reg.potencia);
-  set('mea-baciacontencao', reg.baciaContencao);
-  set('mea-baciasinalizada', reg.baciaSinalizada);
   set('mea-processo', reg.processoLicenciamento);
   set('mea-numlicenca', reg.numeroLicenca);
   set('mea-emissao', reg.emissao);
@@ -29985,8 +30034,9 @@ function meaAbrirDetalhe(id) {
   var elRmaHist = document.getElementById('mea-rma-historico'); if (elRmaHist) elRmaHist.innerHTML = meaHtmlHistoricoResumo(r.historico, 'rma', reg.id);
   var ru = reg.ruido || {};
   set('mea-ruido-necessario', ru.necessario);
-  set('mea-ruido-status', ru.status || 'pendente');
-  set('mea-ruido-data', ru.data);
+  set('mea-ruido-qtdpontos', ru.qtdPontos);
+  window._meaPontosRuido = Array.isArray(ru.pontos) ? ru.pontos.map(function(p){ return { data: p.data||'', status: p.status||'pendente' }; }) : [];
+  meaRenderizarPontosRuido();
   set('mea-ruido-tec1', ru.tecnico1);
   set('mea-ruido-tec2', ru.tecnico2);
   set('mea-ruido-obs', ru.obs);
@@ -29995,6 +30045,8 @@ function meaAbrirDetalhe(id) {
   var po = reg.poco || {};
   set('mea-poco-existe', po.existe);
   set('mea-poco-coleta', po.coleta);
+  set('mea-poco-sinalizado', po.sinalizado);
+  set('mea-poco-identificacaoadequada', po.identificacaoAdequada);
   set('mea-poco-status', po.status || 'pendente');
   set('mea-poco-data', po.data);
   set('mea-poco-obs', po.obs);
@@ -30004,6 +30056,7 @@ function meaAbrirDetalhe(id) {
   set('mea-csao-existe', cs.existe);
   set('mea-csao-coleta', cs.coleta);
   set('mea-csao-sinalizada', cs.sinalizada);
+  set('mea-csao-identificada', cs.identificada);
   set('mea-csao-status', cs.status || 'pendente');
   set('mea-csao-data', cs.data);
   set('mea-csao-obs', cs.obs);
@@ -30024,16 +30077,18 @@ function meaRuidoToggle() {
   var nec = document.getElementById('mea-ruido-necessario');
   if (!nec) return;
   var desabilita = nec.value === 'Não';
-  ['mea-ruido-status','mea-ruido-data','mea-ruido-tec1','mea-ruido-tec2','mea-ruido-obs'].forEach(function(elId) {
+  ['mea-ruido-qtdpontos','mea-ruido-tec1','mea-ruido-tec2','mea-ruido-obs'].forEach(function(elId) {
     var e = document.getElementById(elId);
     if (e) e.disabled = desabilita;
   });
+  var pontosBloco = document.getElementById('mea-ruido-pontos-bloco');
+  if (pontosBloco) pontosBloco.style.display = desabilita ? 'none' : '';
 }
 function meaPocoToggle() {
   var ex = document.getElementById('mea-poco-existe');
   if (!ex) return;
   var desabilita = ex.value === 'Não';
-  ['mea-poco-coleta','mea-poco-status','mea-poco-data','mea-poco-obs'].forEach(function(elId) {
+  ['mea-poco-coleta','mea-poco-sinalizado','mea-poco-identificacaoadequada','mea-poco-status','mea-poco-data','mea-poco-obs'].forEach(function(elId) {
     var e = document.getElementById(elId);
     if (e) e.disabled = desabilita;
   });
@@ -30042,7 +30097,7 @@ function meaCsaoToggle() {
   var ex = document.getElementById('mea-csao-existe');
   if (!ex) return;
   var desabilita = ex.value === 'Não';
-  ['mea-csao-coleta','mea-csao-sinalizada','mea-csao-status','mea-csao-data','mea-csao-obs'].forEach(function(elId) {
+  ['mea-csao-coleta','mea-csao-sinalizada','mea-csao-identificada','mea-csao-status','mea-csao-data','mea-csao-obs'].forEach(function(elId) {
     var e = document.getElementById(elId);
     if (e) e.disabled = desabilita;
   });
@@ -30086,8 +30141,17 @@ function meaAbrirHistoricoModal(tipo, id) {
     if (h.tecnico2) partes.push('Téc. 2: ' + h.tecnico2);
     if (h.coleta) partes.push('Coleta: ' + h.coleta);
     if (h.sinalizada) partes.push('Sinalizada: ' + h.sinalizada);
+    if (h.identificada) partes.push('Identificada: ' + h.identificada);
+    if (h.sinalizado) partes.push('Sinalizado: ' + h.sinalizado);
+    if (h.identificacaoAdequada) partes.push('Identificação adequada: ' + h.identificacaoAdequada);
     if (h.obs) partes.push('Obs: ' + h.obs);
-    return '<div style="border-bottom:1px solid var(--border);padding:8px 0;font-size:.78rem"><b>Ciclo ' + (historico.length - i) + '</b><br>' + (partes.join(' · ') || '<span style="color:var(--text-muted)">sem detalhes</span>') + '</div>';
+    var pontosTxt = '';
+    if (Array.isArray(h.pontos) && h.pontos.length) {
+      pontosTxt = '<div style="margin-top:4px;color:var(--text-muted)">' + h.pontos.map(function(p, pi) {
+        return 'Ponto ' + String(pi+1).padStart(2,'0') + ': ' + (p.data ? laFormatarData(p.data) : '—') + ' · ' + (p.status || 'pendente');
+      }).join('<br>') + '</div>';
+    }
+    return '<div style="border-bottom:1px solid var(--border);padding:8px 0;font-size:.78rem"><b>Ciclo ' + (historico.length - i) + '</b><br>' + (partes.join(' · ') || '<span style="color:var(--text-muted)">sem detalhes</span>') + pontosTxt + '</div>';
   }).join('') || '<div style="color:var(--text-muted);font-size:.8rem;padding:12px 0">Nenhum ciclo arquivado ainda.</div>';
 
   var modal = document.createElement('div');
@@ -30134,19 +30198,19 @@ async function meaReiniciarSemestre() {
     var ru = reg.ruido;
     if (ru && ru.status === 'realizado') {
       ru.historico = ru.historico || [];
-      ru.historico.push({ data: ru.data, tecnico1: ru.tecnico1, tecnico2: ru.tecnico2, obs: ru.obs, encerradoEm: agora });
-      ru.status = 'pendente'; ru.data = ''; ru.obs = ''; qtd++;
+      ru.historico.push({ pontos: ru.pontos || [], data: ru.data, tecnico1: ru.tecnico1, tecnico2: ru.tecnico2, obs: ru.obs, encerradoEm: agora });
+      ru.status = 'pendente'; ru.data = ''; ru.qtdPontos = ''; ru.pontos = []; ru.obs = ''; qtd++;
     }
     var po = reg.poco;
     if (po && po.status === 'realizado') {
       po.historico = po.historico || [];
-      po.historico.push({ data: po.data, coleta: po.coleta, obs: po.obs, encerradoEm: agora });
+      po.historico.push({ data: po.data, coleta: po.coleta, sinalizado: po.sinalizado, identificacaoAdequada: po.identificacaoAdequada, obs: po.obs, encerradoEm: agora });
       po.status = 'pendente'; po.data = ''; po.obs = ''; qtd++;
     }
     var cs = reg.csao;
     if (cs && cs.status === 'realizado') {
       cs.historico = cs.historico || [];
-      cs.historico.push({ data: cs.data, coleta: cs.coleta, sinalizada: cs.sinalizada, obs: cs.obs, encerradoEm: agora });
+      cs.historico.push({ data: cs.data, coleta: cs.coleta, sinalizada: cs.sinalizada, identificada: cs.identificada, obs: cs.obs, encerradoEm: agora });
       cs.status = 'pendente'; cs.data = ''; cs.obs = ''; qtd++;
     }
   });
@@ -30175,19 +30239,27 @@ async function meaSalvarDetalhe() {
   reg.municipio = g('mea-municipio');
   reg.endereco = g('mea-endereco');
   reg.coordenadas = g('mea-coordenadas');
-  reg.qtdTrafo = g('mea-qtdtrafo');
+  reg.classificacao = g('mea-classificacao');
+  reg.classificacaoDetalhe = g('mea-classificacao-detalhe');
+  reg.possuiTrafo = g('mea-trafo-possui');
+  reg.qtdTrafo = g('mea-trafo-qtd');
+  reg.trafos = reg.possuiTrafo === 'Sim' ? (window._meaTrafos || []).map(function(t){ return { bacia: t.bacia||'', sinalizada: t.sinalizada||'' }; }) : [];
+  // Mantidos por compatibilidade com telas antigas que ainda leem esses dois campos soltos — espelham o TRAFO 01, se existir.
+  reg.baciaContencao = (reg.trafos[0] || {}).bacia || '';
+  reg.baciaSinalizada = (reg.trafos[0] || {}).sinalizada || '';
   reg.potencia = g('mea-potencia');
-  reg.baciaContencao = g('mea-baciacontencao');
-  reg.baciaSinalizada = g('mea-baciasinalizada');
   reg.processoLicenciamento = g('mea-processo');
   reg.numeroLicenca = g('mea-numlicenca');
   reg.emissao = g('mea-emissao');
   reg.vencimento = g('mea-vencimento');
   reg.vistoria = { status: g('mea-vistoria-status'), statusLinha: (reg.vistoria && reg.vistoria.statusLinha) || '', statusSubestacao: (reg.vistoria && reg.vistoria.statusSubestacao) || '', dataProgramada: g('mea-vistoria-dataprog'), responsavelProgramado: g('mea-vistoria-respprog'), responsavelProgramado2: g('mea-vistoria-respprog2'), data: g('mea-vistoria-data'), tecnico1: g('mea-vistoria-tec1'), tecnico2: g('mea-vistoria-tec2'), motivo: g('mea-vistoria-motivo'), lss: (reg.vistoria && reg.vistoria.lss) || { status: '', obs: '' }, pernoite: (reg.vistoria && reg.vistoria.pernoite) || '', lssNumero: (reg.vistoria && reg.vistoria.lssNumero) || '', observacao: (reg.vistoria && reg.vistoria.observacao) || '', ordemRoteiro: (reg.vistoria && reg.vistoria.ordemRoteiro != null) ? reg.vistoria.ordemRoteiro : null, fotosEnviadas: (reg.vistoria && reg.vistoria.fotosEnviadas) || 0 };
   reg.rma = { necessario: g('mea-rma-necessario'), status: g('mea-rma-status'), art: g('mea-rma-art'), tecnicoArt: g('mea-rma-tecart'), tecnicoRma: g('mea-rma-tecrma'), historico: (reg.rma && reg.rma.historico) || [] };
-  reg.ruido = { necessario: g('mea-ruido-necessario'), status: g('mea-ruido-status'), data: g('mea-ruido-data'), tecnico1: g('mea-ruido-tec1'), tecnico2: g('mea-ruido-tec2'), obs: g('mea-ruido-obs'), historico: (reg.ruido && reg.ruido.historico) || [] };
-  reg.poco = { existe: g('mea-poco-existe'), coleta: g('mea-poco-coleta'), status: g('mea-poco-status'), data: g('mea-poco-data'), obs: g('mea-poco-obs'), historico: (reg.poco && reg.poco.historico) || [] };
-  reg.csao = { existe: g('mea-csao-existe'), coleta: g('mea-csao-coleta'), sinalizada: g('mea-csao-sinalizada'), status: g('mea-csao-status'), data: g('mea-csao-data'), obs: g('mea-csao-obs'), historico: (reg.csao && reg.csao.historico) || [] };
+  var ruidoNecessario = g('mea-ruido-necessario');
+  var ruidoPontos = ruidoNecessario === 'Sim' ? (window._meaPontosRuido || []).map(function(p){ return { data: p.data||'', status: p.status||'pendente' }; }) : [];
+  var ultimoPontoComData = ruidoPontos.filter(function(p){ return p.data; }).sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); }).pop();
+  reg.ruido = { necessario: ruidoNecessario, qtdPontos: g('mea-ruido-qtdpontos'), pontos: ruidoPontos, status: meaAgregarStatusRuido(ruidoPontos), data: ultimoPontoComData ? ultimoPontoComData.data : '', tecnico1: g('mea-ruido-tec1'), tecnico2: g('mea-ruido-tec2'), obs: g('mea-ruido-obs'), historico: (reg.ruido && reg.ruido.historico) || [] };
+  reg.poco = { existe: g('mea-poco-existe'), coleta: g('mea-poco-coleta'), sinalizado: g('mea-poco-sinalizado'), identificacaoAdequada: g('mea-poco-identificacaoadequada'), status: g('mea-poco-status'), data: g('mea-poco-data'), obs: g('mea-poco-obs'), historico: (reg.poco && reg.poco.historico) || [] };
+  reg.csao = { existe: g('mea-csao-existe'), coleta: g('mea-csao-coleta'), sinalizada: g('mea-csao-sinalizada'), identificada: g('mea-csao-identificada'), status: g('mea-csao-status'), data: g('mea-csao-data'), obs: g('mea-csao-obs'), historico: (reg.csao && reg.csao.historico) || [] };
   reg.obs = g('mea-obs');
   if (idx === -1) MEA_DADOS.push(reg);
   await meaSalvar();
@@ -30213,6 +30285,126 @@ function meaOptsTecnicos(selecionado) {
   return '<option value="">Selecione...</option>' + ERO_TECNICOS.map(function(n) {
     return '<option value="'+n+'"'+(selecionado===n?' selected':'')+'>'+n+'</option>';
   }).join('');
+}
+
+/* ===============================
+   CLASSIFICAÇÃO DO EMPREENDIMENTO — Subestação / LD / Rede Rural
+   Pedido 22/09/2026. Só quando Classificação = Subestação a seção de
+   Transformadores/CSAO/Poço aparece no formulário (confirmado com Tiago) —
+   LD e Rede Rural não têm esses itens. Os 91 empreendimentos já cadastrados
+   viram 'subestacao' por padrão na leitura (ver meaMigrarRegistro), então
+   nenhum some do formulário até alguém reclassificar de fato.
+=============================== */
+var MEA_CLASSIFICACAO_DETALHES = {
+  subestacao: [['com_casa_comando','Com casa de comando'], ['sem_casa_comando','Sem casa de comando']],
+  ld: [['69kv','69 kV'], ['138kv','138 kV']],
+  rede_rural: [['13.8kv','13,8 kV'], ['34.5kv','34,5 kV']],
+};
+function meaOptsClassificacaoDetalhe(tipo, selecionado) {
+  var opcoes = MEA_CLASSIFICACAO_DETALHES[tipo] || [];
+  return '<option value="">—</option>' + opcoes.map(function(o) {
+    return '<option value="'+o[0]+'"'+(selecionado===o[0]?' selected':'')+'>'+o[1]+'</option>';
+  }).join('');
+}
+function meaClassificacaoToggle(manterDetalhe) {
+  var tipoSel = document.getElementById('mea-classificacao');
+  var detSel = document.getElementById('mea-classificacao-detalhe');
+  var bloco = document.getElementById('mea-bloco-subestacao');
+  if (!tipoSel || !detSel) return;
+  var tipo = tipoSel.value;
+  var manterValor = manterDetalhe ? detSel.value : '';
+  detSel.innerHTML = meaOptsClassificacaoDetalhe(tipo, manterValor);
+  if (bloco) bloco.style.display = (tipo === 'subestacao') ? '' : 'none';
+}
+
+/* ===============================
+   TRANSFORMADORES — lista dinâmica por Quantidade (antes era um par único
+   de Bacia de Contenção/Sinalizada pro empreendimento inteiro; agora cada
+   TRAFO tem o seu, pedido 22/09/2026). window._meaTrafos é o array de
+   trabalho do modal aberto no momento (só existe enquanto o modal está
+   aberto), igual ao padrão já usado em window._rdParcelas.
+=============================== */
+function meaRenderizarTrafos() {
+  var el = document.getElementById('mea-trafos-lista');
+  if (!el) return;
+  var lista = window._meaTrafos || [];
+  el.innerHTML = lista.map(function(t, i) {
+    var num = String(i+1).padStart(2,'0');
+    return '<div class="form-row" style="align-items:flex-end">' +
+      '<div class="form-group" style="flex:0 0 90px"><label style="font-weight:700">TRAFO ' + num + '</label></div>' +
+      '<div class="form-group"><label>Bacia de contenção?</label>' +
+      '<select onchange="window._meaTrafos['+i+'].bacia=this.value"><option value="">—</option><option value="Sim"'+(t.bacia==='Sim'?' selected':'')+'>Sim</option><option value="Não"'+(t.bacia==='Não'?' selected':'')+'>Não</option></select></div>' +
+      '<div class="form-group"><label>Bacia sinalizada?</label>' +
+      '<select onchange="window._meaTrafos['+i+'].sinalizada=this.value"><option value="">—</option><option value="Sim"'+(t.sinalizada==='Sim'?' selected':'')+'>Sim</option><option value="Não"'+(t.sinalizada==='Não'?' selected':'')+'>Não</option></select></div>' +
+    '</div>';
+  }).join('') || '<div style="color:var(--text-muted);font-size:.78rem">Informe a quantidade acima.</div>';
+}
+function meaTrafoQtdMudou() {
+  var qtdEl = document.getElementById('mea-trafo-qtd');
+  var qtd = Math.max(0, Math.min(50, parseInt(qtdEl.value, 10) || 0));
+  var atual = window._meaTrafos || [];
+  var novo = [];
+  for (var i = 0; i < qtd; i++) novo.push(atual[i] || { bacia: '', sinalizada: '' });
+  window._meaTrafos = novo;
+  meaRenderizarTrafos();
+}
+function meaTrafoToggle() {
+  var possui = document.getElementById('mea-trafo-possui');
+  var bloco = document.getElementById('mea-trafo-bloco');
+  if (!possui || !bloco) return;
+  bloco.style.display = (possui.value === 'Sim') ? '' : 'none';
+}
+
+/* ===============================
+   RUÍDO AMBIENTAL — pontos de medição (antes era 1 status + 1 data pro
+   empreendimento inteiro; agora cada empreendimento define a Quantidade de
+   Pontos e cada ponto tem Data + Status próprios, pedido 22/09/2026). O
+   status/KPI do card (reg.ruido.status, usado em meaKPIs/badges/filtros em
+   todo o painel) passa a ser CALCULADO a partir dos pontos, não mais
+   editado à mão — confirmado com Tiago: Realizado só quando TODOS os
+   pontos estiverem Realizados; Agendado se pelo menos 1 tiver algum
+   progresso (Agendado ou Realizado); senão Pendente.
+=============================== */
+function meaAgregarStatusRuido(pontos) {
+  var lista = Array.isArray(pontos) ? pontos : [];
+  if (!lista.length) return 'pendente';
+  if (lista.every(function(p){ return p.status === 'realizado'; })) return 'realizado';
+  if (lista.some(function(p){ return p.status === 'realizado' || p.status === 'agendado'; })) return 'agendado';
+  return 'pendente';
+}
+function meaRenderizarPontosRuido() {
+  var el = document.getElementById('mea-ruido-pontos-lista');
+  if (!el) return;
+  var lista = window._meaPontosRuido || [];
+  el.innerHTML = lista.map(function(p, i) {
+    var num = String(i+1).padStart(2,'0');
+    return '<div class="form-row" style="align-items:flex-end">' +
+      '<div class="form-group" style="flex:0 0 90px"><label style="font-weight:700">Ponto ' + num + '</label></div>' +
+      '<div class="form-group"><label>Data</label><input type="date" value="'+(p.data||'')+'" onchange="window._meaPontosRuido['+i+'].data=this.value;meaRuidoAtualizarStatusDisplay()"></div>' +
+      '<div class="form-group"><label>Status da programação</label>' +
+      '<select onchange="window._meaPontosRuido['+i+'].status=this.value;meaRuidoAtualizarStatusDisplay()">' +
+      '<option value="pendente"'+(p.status==='pendente'||!p.status?' selected':'')+'>❌ Pendente</option>' +
+      '<option value="agendado"'+(p.status==='agendado'?' selected':'')+'>🔶 Agendado</option>' +
+      '<option value="realizado"'+(p.status==='realizado'?' selected':'')+'>✅ Realizado</option>' +
+      '</select></div>' +
+    '</div>';
+  }).join('') || '<div style="color:var(--text-muted);font-size:.78rem">Informe a quantidade de pontos acima.</div>';
+  meaRuidoAtualizarStatusDisplay();
+}
+function meaRuidoAtualizarStatusDisplay() {
+  var el = document.getElementById('mea-ruido-status-display');
+  if (!el) return;
+  var badge = meaStatusBadge('padrao', meaAgregarStatusRuido(window._meaPontosRuido || []));
+  el.innerHTML = '<span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:700;color:'+badge.cor+';background:'+badge.bg+'">'+badge.label+'</span>';
+}
+function meaRuidoQtdMudou() {
+  var qtdEl = document.getElementById('mea-ruido-qtdpontos');
+  var qtd = Math.max(0, Math.min(30, parseInt(qtdEl.value, 10) || 0));
+  var atual = window._meaPontosRuido || [];
+  var novo = [];
+  for (var i = 0; i < qtd; i++) novo.push(atual[i] || { data: '', status: 'pendente' });
+  window._meaPontosRuido = novo;
+  meaRenderizarPontosRuido();
 }
 
 function pageMonitoramentoAmbientalERO() {
@@ -30290,22 +30482,26 @@ function pageMonitoramentoAmbientalERO() {
         <div class="form-group"><label>Endereço</label><input id="mea-endereco"></div>
         <div class="form-row">
           <div class="form-group"><label>Coordenadas</label><input id="mea-coordenadas" placeholder="Lat/Long"></div>
-          <div class="form-group" style="flex:0 0 100px"><label>Qtd. Trafo</label><input id="mea-qtdtrafo"></div>
           <div class="form-group"><label>Potência</label><input id="mea-potencia"></div>
         </div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Classificação</div>
         <div class="form-row">
-          <div class="form-group"><label>Bacia de Contenção</label>
-            <select id="mea-baciacontencao"><option value="">—</option><option value="SIM">Sim</option><option value="Não">Não</option></select>
+          <div class="form-group"><label>Tipo</label>
+            <select id="mea-classificacao" onchange="meaClassificacaoToggle(false)">
+              <option value="">—</option>
+              <option value="subestacao">Subestação</option>
+              <option value="ld">LD</option>
+              <option value="rede_rural">Rede Rural</option>
+            </select>
           </div>
-          <div class="form-group"><label>Bacia Sinalizada</label>
-            <select id="mea-baciasinalizada"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
-          </div>
+          <div class="form-group"><label>Detalhe</label><select id="mea-classificacao-detalhe"><option value="">—</option></select></div>
         </div>
 
-        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Licenciamento</div>
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Licença Ambiental</div>
         <div class="form-row">
-          <div class="form-group"><label>Nº Processo</label><input id="mea-processo"></div>
           <div class="form-group"><label>Nº Licença</label><input id="mea-numlicenca"></div>
+          <div class="form-group"><label>Nº Processo</label><input id="mea-processo"></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>Emissão</label><input type="date" id="mea-emissao"></div>
@@ -30356,15 +30552,16 @@ function pageMonitoramentoAmbientalERO() {
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">🔊 Ruído Ambiental</div>
         <div class="form-row">
-          <div class="form-group"><label>Necessidade de Realização?</label>
+          <div class="form-group"><label>Necessário neste semestre?</label>
             <select id="mea-ruido-necessario" onchange="meaRuidoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
+          <div class="form-group"><label>Status (calculado)</label><div id="mea-ruido-status-display" style="padding-top:6px"></div></div>
         </div>
-        <div class="form-row">
-          <div class="form-group"><label>Status</label>
-            <select id="mea-ruido-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option></select>
+        <div id="mea-ruido-pontos-bloco">
+          <div class="form-row">
+            <div class="form-group" style="flex:0 0 140px"><label>Quantidade de pontos</label><input type="number" min="0" id="mea-ruido-qtdpontos" oninput="meaRuidoQtdMudou()"></div>
           </div>
-          <div class="form-group"><label>Data de Realização</label><input type="date" id="mea-ruido-data"></div>
+          <div id="mea-ruido-pontos-lista"></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>Equipe 1</label><select id="mea-ruido-tec1">${meaOptsTecnicos()}</select></div>
@@ -30373,16 +30570,36 @@ function pageMonitoramentoAmbientalERO() {
         <div class="form-group"><label>Observação</label><input id="mea-ruido-obs"></div>
         <div id="mea-ruido-historico"></div>
 
-        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">💧 Coleta de Poço</div>
+        <div id="mea-bloco-subestacao">
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">⚡ Transformadores</div>
         <div class="form-row">
-          <div class="form-group"><label>Existe?</label>
+          <div class="form-group"><label>Possui TRAFO?</label>
+            <select id="mea-trafo-possui" onchange="meaTrafoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+          </div>
+        </div>
+        <div id="mea-trafo-bloco">
+          <div class="form-row">
+            <div class="form-group" style="flex:0 0 100px"><label>Quantidade</label><input type="number" min="0" id="mea-trafo-qtd" oninput="meaTrafoQtdMudou()"></div>
+          </div>
+          <div id="mea-trafos-lista"></div>
+        </div>
+
+        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">💧 Poço</div>
+        <div class="form-row">
+          <div class="form-group"><label>Possui?</label>
             <select id="mea-poco-existe" onchange="meaPocoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
-          <div class="form-group"><label>Necessidade de Coleta p/ Análise?</label>
-            <select id="mea-poco-coleta"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+          <div class="form-group"><label>Sinalizado?</label>
+            <select id="mea-poco-sinalizado"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+          </div>
+          <div class="form-group"><label>Identificação adequada?</label>
+            <select id="mea-poco-identificacaoadequada"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
         </div>
         <div class="form-row">
+          <div class="form-group"><label>Necessidade de Coleta p/ Análise?</label>
+            <select id="mea-poco-coleta"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+          </div>
           <div class="form-group"><label>Status</label>
             <select id="mea-poco-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option></select>
           </div>
@@ -30393,17 +30610,20 @@ function pageMonitoramentoAmbientalERO() {
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">🛢️ CSAO (Caixa Separadora de Água e Óleo)</div>
         <div class="form-row">
-          <div class="form-group"><label>Existe?</label>
+          <div class="form-group"><label>Possui?</label>
             <select id="mea-csao-existe" onchange="meaCsaoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
-          <div class="form-group"><label>Necessidade de Coleta p/ Análise?</label>
-            <select id="mea-csao-coleta"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+          <div class="form-group"><label>Identificada?</label>
+            <select id="mea-csao-identificada"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
           <div class="form-group"><label>Sinalizada?</label>
             <select id="mea-csao-sinalizada"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
           </div>
         </div>
         <div class="form-row">
+          <div class="form-group"><label>Houve coleta no semestre?</label>
+            <select id="mea-csao-coleta"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+          </div>
           <div class="form-group"><label>Status da Verificação</label>
             <select id="mea-csao-status"><option value="pendente">❌ Pendente</option><option value="agendado">🔶 Agendado</option><option value="realizado">✅ Realizado</option></select>
           </div>
@@ -30411,6 +30631,7 @@ function pageMonitoramentoAmbientalERO() {
         </div>
         <div class="form-group"><label>Observação</label><input id="mea-csao-obs"></div>
         <div id="mea-csao-historico"></div>
+        </div>
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Observações Gerais</div>
         <div class="form-group"><textarea id="mea-obs" rows="2"></textarea></div>
