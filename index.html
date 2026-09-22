@@ -29371,7 +29371,18 @@ function eroIniciarChecklistDe(id) {
     // tivesse um formato levemente diferente, ex: com hora embutida) — isso
     // fazia o item "sumir" da lista de pendentes de forma pouco confiável.
     meaId: e.id,
+    num: e.num || '',
   };
+  // Pré-preenche "Licença Ambiental está vigente / regular?" (2.4) a partir
+  // do vencimento já cadastrado em Monitoramento Ambiental — pontuação cheia
+  // se válida, zero se vencida/sem data; continua editável no formulário
+  // (pedido 22/09/2026, mesmo critério do q1 da Linha).
+  var licPrefill = meaStatusLicenca(e.vencimento);
+  var item24Prefill = eroGrupos.reduce(function(acc, g) { return acc.concat(g.itens); }, []).find(function(i) { return i.id === '2.4'; });
+  if (item24Prefill) {
+    window._eroData['na_2.4'] = false;
+    window._eroData['pts_2.4'] = licPrefill.label.indexOf('Vencida') === 0 ? 0 : eroPeso(item24Prefill, eroSemCasaAtiva());
+  }
   window._eroRegistroAtualId = null;
   window._eroPickerAberto = false;
   window._eroFormAberto = true;
@@ -32522,7 +32533,8 @@ function pageChecklistEROForm() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
       <div class="form-group" style="grid-column:span 2">
         <label>Nome do Empreendimento</label>
-        <input id="ero_empreendimento" value="${d.empreendimento||''}" oninput="window._eroData.empreendimento=this.value" placeholder="Ex: Subestação Norte – SE 138kV">
+        <input id="ero_empreendimento" value="${d.empreendimento||''}" ${d.meaId ? 'readonly style="background:var(--surface2);cursor:not-allowed"' : ''} oninput="window._eroData.empreendimento=this.value" placeholder="Ex: Subestação Norte – SE 138kV">
+        ${d.meaId ? '<div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">🔗 Vinculado ao cadastro em Monitoramento Ambiental' + (d.num ? ' · Nº ' + d.num : '') + '</div>' : ''}
       </div>
       <div class="form-group">
         <label>Elaboração</label>
@@ -33212,6 +33224,36 @@ function linhaCampo(campo, valor) {
   window._linhaData[campo] = valor;
 }
 
+/* -- Vincula o checklist de Linha ao registro já cadastrado em Monitoramento
+      Ambiental (mesmo padrão do picker da Subestação/ERO) — pedido
+      22/09/2026: nome do empreendimento e nº de sequência vêm de lá, e a
+      pergunta "A Licença de Operação está vigente?" (q1) é pré-preenchida a
+      partir do vencimento já cadastrado, mas continua editável (o técnico
+      pode corrigir/retificar em campo). -- */
+function linhaSelecionarEmpreendimento(val) {
+  const d = window._linhaData;
+  if (!val || val === '__outro__') {
+    d.meaId = null;
+    d.num = '';
+    if (val === '') d.empreendimento = '';
+    navigate('checklist_linha');
+    return;
+  }
+  const reg = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).find(function(x) { return x.id === val; });
+  if (!reg) return;
+  d.meaId = reg.id;
+  d.num = reg.num || '';
+  d.empreendimento = reg.empreendimento || '';
+  const lic = meaStatusLicenca(reg.vencimento);
+  const itemQ1 = linhaTodosItensChecklist().find(function(i) { return i.id === 'q1'; });
+  if (itemQ1) {
+    d['na_q1'] = false;
+    d['pts_q1'] = lic.label.indexOf('Vencida') === 0 ? 0 : linhaPeso(itemQ1);
+  }
+  navigate('checklist_linha');
+  showToast('📋 Vinculado a "' + d.empreendimento + '" — Licença: ' + lic.label);
+}
+
 function linhaAtualizarResponsaveis() {
   window._linhaData.tecnico1 = document.getElementById('linha_tecnico1').value;
   window._linhaData.tecnico2 = document.getElementById('linha_tecnico2').value;
@@ -33671,6 +33713,8 @@ async function salvarLinhaChecklist() {
     Id: meuId,
     Title: 'Linha - ' + (d.empreendimento || 'Sem trecho') + ' - ' + (d.data || new Date().toLocaleDateString('pt-BR')),
     empreendimento: d.empreendimento || '',
+    meaId: d.meaId || null,
+    num: d.num || '',
     responsavel: d.responsavel || (window._currentUser ? window._currentUser.name : ''),
     data: d.data || '',
     tensao: d.tensao || '',
@@ -34061,7 +34105,13 @@ function pageChecklistLinha() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
       <div class="form-group" style="grid-column:span 2">
         <label>Empreendimento / Trecho</label>
-        <input id="linha_empreendimento" value="${d.empreendimento||''}" oninput="linhaCampo('empreendimento',this.value)" placeholder="Ex: LD 34,5 kV Trecho Norte">
+        <select id="linha_empreendimento_select" onchange="linhaSelecionarEmpreendimento(this.value)">
+          <option value="">Selecione...</option>
+          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return x.classificacao === 'ld' || x.classificacao === 'rede_rural'; }).sort(function(a,b){ return (a.empreendimento||'').localeCompare(b.empreendimento||''); }).map(function(e){ return '<option value="'+e.id+'" '+(d.meaId===e.id?'selected':'')+'>'+((e.num?e.num+' — ':'')+(e.empreendimento||'Sem nome'))+'</option>'; }).join('')}
+          <option value="__outro__" ${(!d.meaId && d.empreendimento) ? 'selected' : ''}>Outro (não cadastrado em Monitoramento Ambiental)</option>
+        </select>
+        <input id="linha_empreendimento" style="margin-top:6px;${d.meaId ? 'display:none' : ''}" value="${d.empreendimento||''}" oninput="linhaCampo('empreendimento',this.value)" placeholder="Nome do trecho, se ainda não estiver cadastrado em Monitoramento Ambiental">
+        ${d.meaId ? '<div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">🔗 Vinculado ao cadastro em Monitoramento Ambiental' + (d.num ? ' · Nº ' + d.num : '') + '</div>' : ''}
       </div>
       <div class="form-group">
         <label>Data da Inspeção</label>
@@ -51300,6 +51350,7 @@ async function salvarEROChecklist() {
     // com certeza que essa vistoria já foi coberta. Fica vazio em checklists
     // preenchidos manualmente (sem vistoria vinculada).
     meaId: d.meaId || null,
+    num: d.num || '',
   };
 
   showSyncStatus('Enviando para OneDrive...');
