@@ -29698,9 +29698,34 @@ function meaRegistroVazio() {
    - ruido.pontos: se havia um status/data únicos (formato antigo) e o
      ruído era necessário, vira 1 ponto de partida com esses mesmos dados,
      em vez de descartar o que já estava registrado. -- */
+/* -- Tenta inferir a Classificação a partir do nome do empreendimento
+   (convenção já usada pela própria Energisa/Expedian nos nomes: prefixo
+   "RDR" = Rede Rural, "LD"/"LDAT"/"LT" = Linha de Distribuição/Transmissão),
+   pra não depender de alguém abrir e salvar um por um os 91 já cadastrados
+   pra corrigir o painel. Só chuta quando o prefixo é inequívoco; qualquer
+   outra coisa (inclusive nomes de Subestação, ex: "SE ...") cai no default
+   'subestacao' de sempre — pedido 22/09/2026 (Tiago: "em linhas de
+   distribuição isso não é aplicavel assim como os trafos"). -- */
+function meaInferirClassificacao(nome) {
+  var n = (nome || '').trim();
+  var tipo = '';
+  if (/^RDR\b/i.test(n)) tipo = 'rede_rural';
+  else if (/^(LDAT|LD|LT)\b/i.test(n)) tipo = 'ld';
+  if (!tipo) return null;
+  var m = n.match(/(\d{1,3}(?:[.,]\d)?)\s*k\s*v/i);
+  var kv = m ? m[1].replace(',', '.') : '';
+  var detalhe = '';
+  if (tipo === 'rede_rural') { if (kv === '13.8') detalhe = '13.8kv'; else if (kv === '34.5') detalhe = '34.5kv'; }
+  else { if (kv === '69') detalhe = '69kv'; else if (kv === '138') detalhe = '138kv'; }
+  return { tipo: tipo, detalhe: detalhe };
+}
 function meaMigrarRegistro(reg) {
   if (!reg) return reg;
-  if (!reg.classificacao) { reg.classificacao = 'subestacao'; reg.classificacaoDetalhe = reg.classificacaoDetalhe || ''; }
+  if (!reg.classificacao) {
+    var inferido = meaInferirClassificacao(reg.empreendimento);
+    reg.classificacao = inferido ? inferido.tipo : 'subestacao';
+    reg.classificacaoDetalhe = reg.classificacaoDetalhe || (inferido ? inferido.detalhe : '');
+  }
   if (!Array.isArray(reg.trafos)) {
     var qtd = parseInt(reg.qtdTrafo, 10) || 0;
     reg.trafos = [];
@@ -29742,12 +29767,22 @@ function meaStatusBadge(tipo, status) {
   var map = {
     vistoria: { pendente: ['#dc3545','#fff5f5','❌ Pendente'], programada: ['#0d6efd','#e8f4fd','📅 Programada'], parcial: ['#fd7e14','#fff8f0','🔶 Parcial'], realizada: ['#28a745','#f0fff4','✅ Realizada'], nao_realizada: ['#dc3545','#fff5f5','🚫 Não Realizada'] },
     rma:      { pendente: ['#dc3545','#fff5f5','❌ Pendente'], em_edicao: ['#0d6efd','#e8f4fd','🔷 Em Edição'], aguardando_revisao: ['#fd7e14','#fff8f0','🔶 Ag. Revisão'], pronto: ['#28a745','#f0fff4','✅ Pronto'], enviado_ero: ['#6f42c1','#f3eefc','📤 Enviado a ERO'] },
-    padrao:   { pendente: ['#dc3545','#fff5f5','❌ Pendente'], agendado: ['#fd7e14','#fff8f0','🔶 Agendado'], realizado: ['#28a745','#f0fff4','✅ Realizado'] },
+    padrao:   { pendente: ['#dc3545','#fff5f5','❌ Pendente'], agendado: ['#fd7e14','#fff8f0','🔶 Agendado'], realizado: ['#28a745','#f0fff4','✅ Realizado'], na: ['#999','#f4f4f4','➖ N/A'] },
   };
   var m = (map[tipo] || map.padrao)[status] || map.padrao.pendente;
   return { cor: m[0], bg: m[1], label: m[2] };
 }
 
+/* -- Ruído/Poço/CSAO só valem pra Subestação (pedido 22/09/2026) — um
+   empreendimento é "N/A" pra esses 3 quando a Classificação não é
+   'subestacao' OU quando o campo específico (necessario/existe) já foi
+   explicitamente marcado 'N/A'. Usado pra tirar LD/Rede Rural da contagem
+   de "Pendente" nos cards — eles não estão pendentes, são inaplicáveis. -- */
+function meaNaoAplicavel(x, campo) {
+  if (x.classificacao && x.classificacao !== 'subestacao') return true;
+  var v = campo === 'ruido' ? (x.ruido || {}).necessario : (x[campo] || {}).existe;
+  return v === 'N/A';
+}
 function meaKPIs() {
   var t = MEA_DADOS.length;
   var vRealizada   = MEA_DADOS.filter(function(x){return x.vistoria && x.vistoria.status==='realizada';}).length;
@@ -29757,11 +29792,14 @@ function meaKPIs() {
   var vPendente    = t - vRealizada - vParcial - vProgramada - vNaoRealizada;
   var licVencida = MEA_DADOS.filter(function(x){ return meaStatusLicenca(x.vencimento).label.indexOf('Vencida')===0; }).length;
   var lic90      = MEA_DADOS.filter(function(x){ var l=meaStatusLicenca(x.vencimento).label; return l.indexOf('Vence em')===0; }).length;
-  // Pendente aqui é estrito (não inclui Agendado) pra não somar duas vezes
-  // com os cards próprios de Agendado/Realizado abaixo.
-  var ruidoPend  = MEA_DADOS.filter(function(x){return !x.ruido || !x.ruido.status || x.ruido.status==='pendente';}).length;
-  var pocoPend   = MEA_DADOS.filter(function(x){return !x.poco || !x.poco.status || x.poco.status==='pendente';}).length;
-  var csaoPend   = MEA_DADOS.filter(function(x){return !x.csao || !x.csao.status || x.csao.status==='pendente';}).length;
+  // Pendente aqui é estrito (não inclui Agendado nem N/A) pra não somar
+  // duas vezes com os cards próprios de Agendado/Realizado/N/A abaixo.
+  var ruidoNA = MEA_DADOS.filter(function(x){return meaNaoAplicavel(x,'ruido');}).length;
+  var pocoNA  = MEA_DADOS.filter(function(x){return meaNaoAplicavel(x,'poco');}).length;
+  var csaoNA  = MEA_DADOS.filter(function(x){return meaNaoAplicavel(x,'csao');}).length;
+  var ruidoPend  = MEA_DADOS.filter(function(x){return !meaNaoAplicavel(x,'ruido') && (!x.ruido || !x.ruido.status || x.ruido.status==='pendente');}).length;
+  var pocoPend   = MEA_DADOS.filter(function(x){return !meaNaoAplicavel(x,'poco') && (!x.poco || !x.poco.status || x.poco.status==='pendente');}).length;
+  var csaoPend   = MEA_DADOS.filter(function(x){return !meaNaoAplicavel(x,'csao') && (!x.csao || !x.csao.status || x.csao.status==='pendente');}).length;
   // -- Detalhamento por status (pedido em 12/09/2026: agrupar os cards por
   // "Visão Geral / RMA / Vistorias / Ruído / Teste de Opacidade e outras
   // necessárias") — RMA, Ruído, Poço e CSAO ganham um card por status,
@@ -29781,6 +29819,7 @@ function meaKPIs() {
     t: t, vRealizada: vRealizada, vParcial: vParcial, vProgramada: vProgramada, vNaoRealizada: vNaoRealizada, vPendente: vPendente,
     licVencida: licVencida, lic90: lic90,
     ruidoPend: ruidoPend, pocoPend: pocoPend, csaoPend: csaoPend,
+    ruidoNA: ruidoNA, pocoNA: pocoNA, csaoNA: csaoNA,
     rmaPendente: rmaPendente, rmaEmEdicao: rmaEmEdicao, rmaAguardandoRevisao: rmaAguardandoRevisao, rmaPronto: rmaPronto, rmaEnviadoEro: rmaEnviadoEro,
     ruidoAgendado: ruidoAgendado, ruidoRealizado: ruidoRealizado,
     pocoAgendado: pocoAgendado, pocoRealizado: pocoRealizado,
@@ -29845,18 +29884,21 @@ function meaRenderizarKPIs() {
     miniCard('#dc3545','Pendente', k.ruidoPend, '❌', "meaFiltrarPorCard('ruido_pendente')", cardAtivo==='ruido_pendente'),
     miniCard('#fd7e14','Agendado', k.ruidoAgendado, '🔶', "meaFiltrarPorCard('ruido_agendado')", cardAtivo==='ruido_agendado'),
     miniCard('#28a745','Realizado', k.ruidoRealizado, '✅', "meaFiltrarPorCard('ruido_realizado')", cardAtivo==='ruido_realizado'),
+    miniCard('#999','N/A', k.ruidoNA, '➖', "meaFiltrarPorCard('ruido_na')", cardAtivo==='ruido_na'),
   ].join('');
 
   var mcPoco = [
     miniCard('#dc3545','Pendente', k.pocoPend, '❌', "meaFiltrarPorCard('poco_pendente')", cardAtivo==='poco_pendente'),
     miniCard('#fd7e14','Agendado', k.pocoAgendado, '🔶', "meaFiltrarPorCard('poco_agendado')", cardAtivo==='poco_agendado'),
     miniCard('#28a745','Realizado', k.pocoRealizado, '✅', "meaFiltrarPorCard('poco_realizado')", cardAtivo==='poco_realizado'),
+    miniCard('#999','N/A', k.pocoNA, '➖', "meaFiltrarPorCard('poco_na')", cardAtivo==='poco_na'),
   ].join('');
 
   var mcCsao = [
     miniCard('#dc3545','Pendente', k.csaoPend, '❌', "meaFiltrarPorCard('csao_pendente')", cardAtivo==='csao_pendente'),
     miniCard('#fd7e14','Agendado', k.csaoAgendado, '🔶', "meaFiltrarPorCard('csao_agendado')", cardAtivo==='csao_agendado'),
     miniCard('#28a745','Realizado', k.csaoRealizado, '✅', "meaFiltrarPorCard('csao_realizado')", cardAtivo==='csao_realizado'),
+    miniCard('#999','N/A', k.csaoNA, '➖', "meaFiltrarPorCard('csao_na')", cardAtivo==='csao_na'),
   ].join('');
 
   var mcLicencas = [
@@ -29923,17 +29965,20 @@ function meaAplicarFiltros(lista) {
       var stRma = (x.rma && x.rma.status) || 'pendente';
       if (stRma !== card.slice(4)) return false;
     }
+    if (card === 'ruido_na') return meaNaoAplicavel(x, 'ruido');
+    if (card === 'poco_na') return meaNaoAplicavel(x, 'poco');
+    if (card === 'csao_na') return meaNaoAplicavel(x, 'csao');
     if (card.indexOf('ruido_') === 0) {
       var stRu = (x.ruido && x.ruido.status) || 'pendente';
-      if (stRu !== card.slice(6)) return false;
+      if (meaNaoAplicavel(x, 'ruido') || stRu !== card.slice(6)) return false;
     }
     if (card.indexOf('poco_') === 0) {
       var stPo = (x.poco && x.poco.status) || 'pendente';
-      if (stPo !== card.slice(5)) return false;
+      if (meaNaoAplicavel(x, 'poco') || stPo !== card.slice(5)) return false;
     }
     if (card.indexOf('csao_') === 0) {
       var stCs = (x.csao && x.csao.status) || 'pendente';
-      if (stCs !== card.slice(5)) return false;
+      if (meaNaoAplicavel(x, 'csao') || stCs !== card.slice(5)) return false;
     }
     return true;
   });
@@ -29959,9 +30004,9 @@ function meaRenderizarLista() {
   var rows = lista.map(function(x) {
     var lic = meaStatusLicenca(x.vencimento);
     var vB = meaStatusBadge('vistoria', (x.vistoria||{}).status || 'pendente');
-    var rB = meaStatusBadge('padrao', (x.ruido||{}).status || 'pendente');
-    var pB = meaStatusBadge('padrao', (x.poco||{}).status || 'pendente');
-    var cB = meaStatusBadge('padrao', (x.csao||{}).status || 'pendente');
+    var rB = meaStatusBadge('padrao', meaNaoAplicavel(x,'ruido') ? 'na' : ((x.ruido||{}).status || 'pendente'));
+    var pB = meaStatusBadge('padrao', meaNaoAplicavel(x,'poco') ? 'na' : ((x.poco||{}).status || 'pendente'));
+    var cB = meaStatusBadge('padrao', meaNaoAplicavel(x,'csao') ? 'na' : ((x.csao||{}).status || 'pendente'));
     var tecnicos = [(x.vistoria||{}).tecnico1, (x.vistoria||{}).tecnico2].filter(Boolean).join(' / ') || '—';
     return '<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="meaAbrirDetalhe(\''+x.id+'\')">' +
       '<td style="padding:8px;font-size:.78rem;color:var(--text-muted)">'+(x.num||'—')+'</td>' +
@@ -30062,6 +30107,12 @@ function meaAbrirDetalhe(id) {
   set('mea-csao-obs', cs.obs);
   meaCsaoToggle();
   var elCsaoHist = document.getElementById('mea-csao-historico'); if (elCsaoHist) elCsaoHist.innerHTML = meaHtmlHistoricoResumo(cs.historico, 'csao', reg.id);
+  // Reaplica o toggle de classificação agora que Ruído/Poço/CSAO já foram
+  // preenchidos com o valor real do registro — se não for Subestação, força
+  // os 3 pra 'N/A' (coerente com o bloco escondido), em vez de deixar um
+  // valor vazio/desatualizado por trás que só apareceria certo depois de
+  // reabrir o formulário.
+  meaClassificacaoToggle(true);
   set('mea-obs', reg.obs);
   document.getElementById('mea-btn-excluir').style.display = novo ? 'none' : 'inline-block';
   document.getElementById('mea-detalhe-modal').style.display = 'flex';
@@ -30076,7 +30127,7 @@ function meaAbrirDetalhe(id) {
 function meaRuidoToggle() {
   var nec = document.getElementById('mea-ruido-necessario');
   if (!nec) return;
-  var desabilita = nec.value === 'Não';
+  var desabilita = nec.value === 'Não' || nec.value === 'N/A';
   ['mea-ruido-qtdpontos','mea-ruido-tec1','mea-ruido-tec2','mea-ruido-obs'].forEach(function(elId) {
     var e = document.getElementById(elId);
     if (e) e.disabled = desabilita;
@@ -30087,7 +30138,7 @@ function meaRuidoToggle() {
 function meaPocoToggle() {
   var ex = document.getElementById('mea-poco-existe');
   if (!ex) return;
-  var desabilita = ex.value === 'Não';
+  var desabilita = ex.value === 'Não' || ex.value === 'N/A';
   ['mea-poco-coleta','mea-poco-sinalizado','mea-poco-identificacaoadequada','mea-poco-status','mea-poco-data','mea-poco-obs'].forEach(function(elId) {
     var e = document.getElementById(elId);
     if (e) e.disabled = desabilita;
@@ -30096,7 +30147,7 @@ function meaPocoToggle() {
 function meaCsaoToggle() {
   var ex = document.getElementById('mea-csao-existe');
   if (!ex) return;
-  var desabilita = ex.value === 'Não';
+  var desabilita = ex.value === 'Não' || ex.value === 'N/A';
   ['mea-csao-coleta','mea-csao-sinalizada','mea-csao-identificada','mea-csao-status','mea-csao-data','mea-csao-obs'].forEach(function(elId) {
     var e = document.getElementById(elId);
     if (e) e.disabled = desabilita;
@@ -30306,6 +30357,14 @@ function meaOptsClassificacaoDetalhe(tipo, selecionado) {
     return '<option value="'+o[0]+'"'+(selecionado===o[0]?' selected':'')+'>'+o[1]+'</option>';
   }).join('');
 }
+/* -- Ruído Ambiental / Poço / CSAO / Transformadores só se aplicam a
+   Subestação (pedido 22/09/2026, confirmado por Tiago: "em linhas de
+   distribuição isso não é aplicavel assim como os trafos"). Ao mudar pra
+   LD/Rede Rural, os 3 campos "Necessário?/Possui?" viram 'N/A' automático
+   (opção nova na lista suspensa) em vez de ficarem só escondidos com um
+   valor Sim/Não/vazio "fantasma" por trás — assim o registro salvo já sai
+   coerente com o formulário, sem precisar reabrir depois. Ao voltar pra
+   Subestação, limpa o 'N/A' pra a pessoa responder de novo. -- */
 function meaClassificacaoToggle(manterDetalhe) {
   var tipoSel = document.getElementById('mea-classificacao');
   var detSel = document.getElementById('mea-classificacao-detalhe');
@@ -30314,7 +30373,15 @@ function meaClassificacaoToggle(manterDetalhe) {
   var tipo = tipoSel.value;
   var manterValor = manterDetalhe ? detSel.value : '';
   detSel.innerHTML = meaOptsClassificacaoDetalhe(tipo, manterValor);
-  if (bloco) bloco.style.display = (tipo === 'subestacao') ? '' : 'none';
+  var ehSubestacao = tipo === 'subestacao';
+  if (bloco) bloco.style.display = ehSubestacao ? '' : 'none';
+  [['mea-ruido-necessario', meaRuidoToggle], ['mea-poco-existe', meaPocoToggle], ['mea-csao-existe', meaCsaoToggle]].forEach(function(par) {
+    var el = document.getElementById(par[0]);
+    if (!el) return;
+    if (!ehSubestacao) { if (el.value !== 'N/A') el.value = 'N/A'; }
+    else if (el.value === 'N/A') el.value = '';
+    par[1]();
+  });
 }
 
 /* ===============================
@@ -30550,10 +30617,11 @@ function pageMonitoramentoAmbientalERO() {
         </div>
         <div id="mea-rma-historico"></div>
 
+        <div id="mea-bloco-subestacao">
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">🔊 Ruído Ambiental</div>
         <div class="form-row">
           <div class="form-group"><label>Necessário neste semestre?</label>
-            <select id="mea-ruido-necessario" onchange="meaRuidoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+            <select id="mea-ruido-necessario" onchange="meaRuidoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option><option value="N/A">N/A</option></select>
           </div>
           <div class="form-group"><label>Status (calculado)</label><div id="mea-ruido-status-display" style="padding-top:6px"></div></div>
         </div>
@@ -30570,7 +30638,6 @@ function pageMonitoramentoAmbientalERO() {
         <div class="form-group"><label>Observação</label><input id="mea-ruido-obs"></div>
         <div id="mea-ruido-historico"></div>
 
-        <div id="mea-bloco-subestacao">
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">⚡ Transformadores</div>
         <div class="form-row">
           <div class="form-group"><label>Possui TRAFO?</label>
@@ -30587,7 +30654,7 @@ function pageMonitoramentoAmbientalERO() {
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">💧 Poço</div>
         <div class="form-row">
           <div class="form-group"><label>Possui?</label>
-            <select id="mea-poco-existe" onchange="meaPocoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+            <select id="mea-poco-existe" onchange="meaPocoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option><option value="N/A">N/A</option></select>
           </div>
           <div class="form-group"><label>Sinalizado?</label>
             <select id="mea-poco-sinalizado"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
@@ -30611,7 +30678,7 @@ function pageMonitoramentoAmbientalERO() {
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">🛢️ CSAO (Caixa Separadora de Água e Óleo)</div>
         <div class="form-row">
           <div class="form-group"><label>Possui?</label>
-            <select id="mea-csao-existe" onchange="meaCsaoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+            <select id="mea-csao-existe" onchange="meaCsaoToggle()"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option><option value="N/A">N/A</option></select>
           </div>
           <div class="form-group"><label>Identificada?</label>
             <select id="mea-csao-identificada"><option value="">—</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
