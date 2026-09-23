@@ -29677,6 +29677,43 @@ async function meaSalvar() {
   await dbSalvar('MonitoramentoAmbientalERO', MEA_DADOS);
 }
 
+/* -- Carrega os históricos de Checklist ERO (Subestação) e Checklist Linha
+   só pra alimentar o card "Relatório de Vistoria" deste painel (pedido
+   23/09/2026: "atualizar conforme os check list pronto de subestação e
+   linha") — versão leve dos loaders de cada aba (carregarEROHistorico/
+   carregarLinhaHistorico), sem o navigate() que aquelas têm no final (que
+   serve pra re-renderizar a PÁGINA delas, não esta). Reaproveita as mesmas
+   variáveis globais (window._eroHistorico/_linhaHistorico), então uma vez
+   carregado aqui as próprias abas de Checklist ERO/Linha já abrem com os
+   dados prontos também. Só busca se ainda não tiver sido carregado por
+   nenhuma das duas abas (=== null). -- */
+async function meaChecklistsCarregar() {
+  if (window._eroHistorico === null) {
+    try {
+      const lista = await dbLer('ChecklistERO');
+      if (Array.isArray(lista)) window._eroHistorico = lista;
+    } catch (e) { console.warn('[MEA] Falha ao carregar ChecklistERO p/ card Relatório de Vistoria.', e); }
+  }
+  if (window._linhaHistorico === null) {
+    try {
+      const lista = await dbLer('ChecklistLinha');
+      if (Array.isArray(lista)) window._linhaHistorico = lista;
+    } catch (e) { console.warn('[MEA] Falha ao carregar ChecklistLinha p/ card Relatório de Vistoria.', e); }
+  }
+}
+
+/* -- Um empreendimento está "pronto" no Relatório de Vistoria quando já
+   existe um checklist de inspeção salvo com o mesmo meaId — ChecklistERO
+   se for Subestação, ChecklistLinha se for LD/Rede Rural (cada
+   classificação só tem um tipo de checklist aplicável, ao contrário de
+   Ruído/Poço/CSAO — não existe estado N/A aqui). -- */
+function meaRelatorioPronto(x) {
+  var hist = x.classificacao === 'subestacao'
+    ? (Array.isArray(window._eroHistorico) ? window._eroHistorico : [])
+    : (Array.isArray(window._linhaHistorico) ? window._linhaHistorico : []);
+  return hist.some(function(h) { return h.meaId === x.id; });
+}
+
 function meaRegistroVazio() {
   return {
     id: meaUid(), num: '', empreendimento: '', regional: '', cnpj: '', municipio: '', endereco: '', coordenadas: '',
@@ -29834,6 +29871,10 @@ function meaKPIs() {
   var pocoRealizado  = MEA_DADOS.filter(function(x){return x.poco && x.poco.status==='realizado';}).length;
   var csaoAgendado   = MEA_DADOS.filter(function(x){return x.csao && x.csao.status==='agendado';}).length;
   var csaoRealizado  = MEA_DADOS.filter(function(x){return x.csao && x.csao.status==='realizado';}).length;
+  // Relatório de Vistoria: checklist de inspeção (ERO ou Linha, conforme a
+  // classificação) já salvo pra aquele empreendimento — pedido 23/09/2026.
+  var relPronto   = MEA_DADOS.filter(meaRelatorioPronto).length;
+  var relPendente = t - relPronto;
   return {
     t: t, vRealizada: vRealizada, vParcial: vParcial, vProgramada: vProgramada, vNaoRealizada: vNaoRealizada, vPendente: vPendente,
     licVencida: licVencida, lic90: lic90,
@@ -29843,6 +29884,7 @@ function meaKPIs() {
     ruidoAgendado: ruidoAgendado, ruidoRealizado: ruidoRealizado,
     pocoAgendado: pocoAgendado, pocoRealizado: pocoRealizado,
     csaoAgendado: csaoAgendado, csaoRealizado: csaoRealizado,
+    relPronto: relPronto, relPendente: relPendente,
   };
 }
 
@@ -29876,6 +29918,20 @@ function meaRenderizarKPIs() {
   function miniCard(cor, label, valor, icon, onclickJs, sel) {
     return '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;background:#fff;border-left:3px solid '+cor+';border-radius:8px;padding:6px 8px;cursor:pointer'+(sel?';box-shadow:0 0 0 2px '+cor+' inset':'')+'" onclick="'+onclickJs+'"><span style="font-size:.68rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+icon+' '+label+'</span><span style="font-weight:800;color:'+cor+';font-size:.88rem;flex-shrink:0">'+valor+'</span></div>';
   }
+  // Linha "Total" (topo, não filtrável sozinha — clicar limpa os filtros do
+  // grupo, mesmo efeito de "Ver todos") e linha "%" (fim, só informativa,
+  // sem onclick) — pedido 23/09/2026: "colocar uma linha no card vistoria,
+  // acima de realizadas com total de empreendimentos, e em todos a gente
+  // consegueria colocar o total que nem já tem [Opacidade] e uma coluna de
+  // porcentagem, fazer essa porcentagem no opacidade tbm".
+  function mcTotalLinha(total, onclickJs) {
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;background:#f4f6f8;border-left:3px solid #495057;border-radius:8px;padding:6px 8px;cursor:pointer;font-weight:700" onclick="'+onclickJs+'"><span style="font-size:.68rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📊 Total</span><span style="font-weight:800;color:#495057;font-size:.88rem;flex-shrink:0">'+total+'</span></div>';
+  }
+  function mcPctLinha(label, num, den) {
+    var pct = den > 0 ? Math.round((num/den)*100) : 0;
+    var cor = pct >= 80 ? '#28a745' : (pct >= 50 ? '#fd7e14' : '#dc3545');
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;background:#fff;border-left:3px dashed '+cor+';border-radius:8px;padding:6px 8px"><span style="font-size:.68rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📈 % '+label+'</span><span style="font-weight:800;color:'+cor+';font-size:.88rem;flex-shrink:0">'+pct+'%</span></div>';
+  }
   function cardGrande(titulo, icone, miniHtml) {
     return '<div style="background:var(--surface2);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:6px;min-width:0">'
       + '<div style="font-size:.72rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;text-align:center">'+icone+' '+titulo+'</div>'
@@ -29884,45 +29940,67 @@ function meaRenderizarKPIs() {
   }
 
   var mcVistorias = [
+    mcTotalLinha(k.t, "meaFiltrarPorCard('todos')"),
     miniCard('#28a745','Realizadas', k.vRealizada, '✅', "meaFiltrarPorCard('realizada')", visAtivo==='realizada'),
     miniCard('#fd7e14','Parciais', k.vParcial, '🔶', "meaFiltrarPorCard('parcial')", visAtivo==='parcial'),
     miniCard('#dc3545','Pendentes', k.vPendente, '❌', "meaFiltrarPorCard('pendente')", visAtivo==='pendente'),
     miniCard('#0d6efd','Programadas', k.vProgramada, '📅', "meaFiltrarPorCard('programada')", visAtivo==='programada'),
     miniCard('#dc3545','Não Realizadas', k.vNaoRealizada, '🚫', "meaFiltrarPorCard('nao_realizada')", visAtivo==='nao_realizada'),
+    mcPctLinha('Realizadas', k.vRealizada, k.t),
+  ].join('');
+
+  // Relatório de Vistoria — pedido 23/09/2026: card novo entre Vistorias e
+  // RMA, "atualizar conforme os check list pronto de subestação e linha"
+  // (existe um checklist ERO ou Linha salvo pra esse empreendimento?).
+  var mcRelatorio = [
+    mcTotalLinha(k.t, "meaFiltrarPorCard('todos')"),
+    miniCard('#28a745','Pronto', k.relPronto, '✅', "meaFiltrarPorCard('relatorio_pronto')", cardAtivo==='relatorio_pronto'),
+    miniCard('#dc3545','Pendente', k.relPendente, '❌', "meaFiltrarPorCard('relatorio_pendente')", cardAtivo==='relatorio_pendente'),
+    mcPctLinha('Prontos', k.relPronto, k.t),
   ].join('');
 
   var mcRma = [
+    mcTotalLinha(k.t, "meaFiltrarPorCard('todos')"),
     miniCard('#dc3545','Pendente', k.rmaPendente, '❌', "meaFiltrarPorCard('rma_pendente')", cardAtivo==='rma_pendente'),
     miniCard('#0d6efd','Em Edição', k.rmaEmEdicao, '🔷', "meaFiltrarPorCard('rma_em_edicao')", cardAtivo==='rma_em_edicao'),
     miniCard('#fd7e14','Ag. Revisão', k.rmaAguardandoRevisao, '🔶', "meaFiltrarPorCard('rma_aguardando_revisao')", cardAtivo==='rma_aguardando_revisao'),
     miniCard('#28a745','Pronto', k.rmaPronto, '✅', "meaFiltrarPorCard('rma_pronto')", cardAtivo==='rma_pronto'),
     miniCard('#6f42c1','Enviado a ERO', k.rmaEnviadoEro, '📤', "meaFiltrarPorCard('rma_enviado_ero')", cardAtivo==='rma_enviado_ero'),
+    mcPctLinha('Concluído', k.rmaPronto + k.rmaEnviadoEro, k.t),
   ].join('');
 
   var mcRuido = [
+    mcTotalLinha(k.t, "meaFiltrarPorCard('todos')"),
     miniCard('#dc3545','Pendente', k.ruidoPend, '❌', "meaFiltrarPorCard('ruido_pendente')", cardAtivo==='ruido_pendente'),
     miniCard('#fd7e14','Agendado', k.ruidoAgendado, '🔶', "meaFiltrarPorCard('ruido_agendado')", cardAtivo==='ruido_agendado'),
     miniCard('#28a745','Realizado', k.ruidoRealizado, '✅', "meaFiltrarPorCard('ruido_realizado')", cardAtivo==='ruido_realizado'),
     miniCard('#999','N/A', k.ruidoNA, '➖', "meaFiltrarPorCard('ruido_na')", cardAtivo==='ruido_na'),
+    mcPctLinha('Realizado', k.ruidoRealizado, k.t - k.ruidoNA),
   ].join('');
 
   var mcPoco = [
+    mcTotalLinha(k.t, "meaFiltrarPorCard('todos')"),
     miniCard('#dc3545','Pendente', k.pocoPend, '❌', "meaFiltrarPorCard('poco_pendente')", cardAtivo==='poco_pendente'),
     miniCard('#fd7e14','Agendado', k.pocoAgendado, '🔶', "meaFiltrarPorCard('poco_agendado')", cardAtivo==='poco_agendado'),
     miniCard('#28a745','Realizado', k.pocoRealizado, '✅', "meaFiltrarPorCard('poco_realizado')", cardAtivo==='poco_realizado'),
     miniCard('#999','N/A', k.pocoNA, '➖', "meaFiltrarPorCard('poco_na')", cardAtivo==='poco_na'),
+    mcPctLinha('Realizado', k.pocoRealizado, k.t - k.pocoNA),
   ].join('');
 
   var mcCsao = [
+    mcTotalLinha(k.t, "meaFiltrarPorCard('todos')"),
     miniCard('#dc3545','Pendente', k.csaoPend, '❌', "meaFiltrarPorCard('csao_pendente')", cardAtivo==='csao_pendente'),
     miniCard('#fd7e14','Agendado', k.csaoAgendado, '🔶', "meaFiltrarPorCard('csao_agendado')", cardAtivo==='csao_agendado'),
     miniCard('#28a745','Realizado', k.csaoRealizado, '✅', "meaFiltrarPorCard('csao_realizado')", cardAtivo==='csao_realizado'),
     miniCard('#999','N/A', k.csaoNA, '➖', "meaFiltrarPorCard('csao_na')", cardAtivo==='csao_na'),
+    mcPctLinha('Realizado', k.csaoRealizado, k.t - k.csaoNA),
   ].join('');
 
   var mcLicencas = [
+    mcTotalLinha(k.t, "meaFiltrarPorCard('todos')"),
     miniCard('#dc3545','Vencidas', k.licVencida, '📋', "meaFiltrarPorCard('lic_vencida')", cardAtivo==='lic_vencida'),
     miniCard('#ffc107','Vencendo <90d', k.lic90, '⏰', "meaFiltrarPorCard('lic_90')", cardAtivo==='lic_90'),
+    mcPctLinha('Vigentes', k.t - k.licVencida - k.lic90, k.t),
   ].join('');
 
   // Teste de Opacidade não é por empreendimento (é por veículo), então os
@@ -29932,11 +30010,13 @@ function meaRenderizarKPIs() {
     miniCard('var(--brand-green)','Total de Veículos', opacTotal, '🚚', "meaAbrirOpacidadeFiltrada('')", false),
     miniCard('#28a745','Realizados', opacRealizado, '✅', "meaAbrirOpacidadeFiltrada('realizado')", false),
     miniCard('#dc3545','Pendentes', opacPendente, '❌', "meaAbrirOpacidadeFiltrada('pendente')", false),
+    mcPctLinha('Realizado', opacRealizado, opacTotal),
   ].join('');
 
-  var html7Col = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 8px">Vistorias · RMA · Ruído · Poço · CSAO · Licenças · Opacidade</div>'
+  var html7Col = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 8px">Vistorias · Relatório de Vistoria · RMA · Ruído · Poço · CSAO · Licenças · Opacidade</div>'
     + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">'
     + cardGrande('Vistorias', '📅', mcVistorias)
+    + cardGrande('Relatório de Vistoria', '📝', mcRelatorio)
     + cardGrande('RMA', '📄', mcRma)
     + cardGrande('Ruído Ambiental', '🔊', mcRuido)
     + cardGrande('Coleta de Poço', '💧', mcPoco)
@@ -29999,6 +30079,8 @@ function meaAplicarFiltros(lista) {
       var stCs = (x.csao && x.csao.status) || 'pendente';
       if (meaNaoAplicavel(x, 'csao') || stCs !== card.slice(5)) return false;
     }
+    if (card === 'relatorio_pronto' && !meaRelatorioPronto(x)) return false;
+    if (card === 'relatorio_pendente' && meaRelatorioPronto(x)) return false;
     return true;
   });
 }
@@ -30537,6 +30619,10 @@ function pageMonitoramentoAmbientalERO() {
   // cards "Teste de Opacidade" deste painel (a lista de veículos em si
   // mora na aba própria) — pedido em 12/09/2026.
   opacCarregar().then(function() { meaRenderizarKPIs(); });
+  // Carrega os históricos de Checklist ERO/Linha só pra alimentar o card
+  // "Relatório de Vistoria" (checklist pronto por empreendimento) — pedido
+  // em 23/09/2026.
+  meaChecklistsCarregar().then(function() { meaRenderizarKPIs(); });
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
     <div>
@@ -54153,17 +54239,17 @@ const GD_SEED_EMPRESA = [
   // ─── Programas SST 2026 ───
   {
     tipo: 'PGR',
-    numero: 'PGR-REV04-2026',
-    emissao: '2026-06-25',
-    vencimento: '2027-06-25',
-    obs: 'PGR REV04 | Resp. Técnico: Tarcisio Oliveira Mateus CREA RO 14299 | GHE 01 Adm / GHE 02 Campo | Versão Energisa inclui contratos: 2024.0054.01, 2024.0081.01, 2025.0107.01, 2025.0098.01, 2025.0097.01, 2025.022.101',
+    numero: 'PGR-REV05-2026',
+    emissao: '2026-09-17',
+    vencimento: '2027-09-17',
+    obs: 'PGR REV05 (substitui REV04) | Resp. Técnico: Tarcisio Oliveira Mateus CREA RO 14299 | GHE 01 Adm / GHE 02 Campo | Versão Energisa inclui contratos: 2024.0054.01, 2024.0081.01, 2025.0107.01, 2025.0098.01, 2025.0097.01, 2025.022.101 | Mesmos 14 cargos/GHE da REV04 (nenhum cargo novo). Principal mudança da REV05: incorporou a Avaliação Psicossocial NR-1 2026 (questionário de 14 perguntas, 9 colaboradores) — cada risco psicossocial do inventário (repetido nos 14 cargos) ganhou uma justificativa específica com base nas respostas reais; o risco de assédio moral (11,1% relataram vivenciar de forma recorrente) ganhou plano de ação com prazos (ver ações abaixo). Documento passou de 107 para 145 páginas por causa disso, não por novo cargo ou novo tipo de risco.',
     acoes: [
       // Ações técnicas internas
       { descricao: 'Contratar treinamento NR-10 básico para todos os colaboradores de campo (risco elétrico SUBSTANCIAL)', responsavel: 'SSMA / Diretoria', prazo: '2026-07-31', status: 'pendente', dataRealizacao: '' },
       { descricao: 'Solicitar ao SESMT avaliação quantitativa de ruído e calor para GHE 02', responsavel: 'SSMA', prazo: '2027-03-31', status: 'pendente', dataRealizacao: '' },
       { descricao: 'Revisar probabilidade do risco elétrico na versão Energisa do PGR (atividades em subestações)', responsavel: 'RT Tarcisio Mateus', prazo: '2026-09-30', status: 'pendente', dataRealizacao: '' },
       { descricao: 'Executar avaliação mensal do ciclo PDCA conforme previsto no PGR', responsavel: 'SSMA', prazo: 'Mensal', status: 'em_andamento', dataRealizacao: '' },
-      // Plano de Ação PGR 2026/27 — páginas 84-87
+      // Plano de Ação PGR 2026/27 — páginas 84-87 (REV04)
       { descricao: 'Avaliação anual do inventário de risco do PGR (NR-01)', responsavel: 'Profissional Técnico habilitado (TST/Engenheiro) próprio e/ou terceirizado', prazo: '2027-05-31', status: 'pendente', dataRealizacao: '' },
       { descricao: 'Fornecimento de EPI/EPC conforme NR-06 — manter ficha de EPI física assinada por colaborador', responsavel: 'Responsável Legal e/ou profissional SST', prazo: '2027-05-31', status: 'pendente', dataRealizacao: '' },
       { descricao: 'Implantação da Análise Ergonômica do Trabalho (AET) conforme NR-17', responsavel: 'Profissional Técnico habilitado (TST/Engenheiro)', prazo: '2027-05-31', status: 'pendente', dataRealizacao: '' },
@@ -54174,22 +54260,26 @@ const GD_SEED_EMPRESA = [
       { descricao: 'Treinamento de NR-11 e NR-12 para operadores de máquinas pesadas (anual)', responsavel: 'Responsável Legal e/ou profissional SST', prazo: '2027-05-31', status: 'pendente', dataRealizacao: '' },
       { descricao: 'Treinamento Inicial de Integração e Ordens de Serviço para novos colaboradores', responsavel: 'Responsável Legal e/ou profissional SST', prazo: '2027-05-31', status: 'pendente', dataRealizacao: '' },
       { descricao: 'Treinar lideranças em Gestão Humanizada', responsavel: 'RH', prazo: '2027-05-31', status: 'pendente', dataRealizacao: '' },
-      { descricao: 'Criar e manter canal de denúncias (NR-01 — gestão de riscos psicossociais)', responsavel: 'RH / SST', prazo: '2026-07-31', status: 'pendente', dataRealizacao: '' },
+      // Plano de ação NOVO da REV05 — risco de assédio moral (Avaliação Psicossocial NR-1 2026, 11,1% dos respondentes)
+      { descricao: 'Criar canal confidencial de denúncias (NR-01 — gestão de riscos psicossociais, plano de ação REV05)', responsavel: 'RH / SST', prazo: '2026-10-17', status: 'pendente', dataRealizacao: '' },
+      { descricao: 'Realizar campanhas de prevenção ao assédio moral (plano de ação REV05)', responsavel: 'RH / SST', prazo: '2026-11-16', status: 'pendente', dataRealizacao: '' },
+      { descricao: 'Investigar com sigilo e imparcialidade o relato de assédio moral identificado na Avaliação Psicossocial NR-1; oferecer acompanhamento psicológico à(s) vítima(s) e revisar políticas internas de conduta e código de ética (plano de ação REV05)', responsavel: 'RH / Diretoria', prazo: 'Contínuo', status: 'pendente', dataRealizacao: '' },
+      { descricao: 'Reavaliação semestral dos riscos psicossociais via novo questionário (plano de ação REV05)', responsavel: 'RH / SST', prazo: '2027-03-17', status: 'pendente', dataRealizacao: '' },
     ],
   },
   {
     tipo: 'PCMSO',
-    numero: 'PCMSO-REV04-2026',
-    emissao: '2026-06-25',
-    vencimento: '2027-06-25',
-    obs: 'PCMSO REV04 | Médica: Dra. Francynelle Costa Assis CRM RO 2477 | Exames: clínico, acuidade visual, audiometria, hemograma, Plasmodium (malária), Raio X Lombo Sacra, tipagem sanguínea | GR 3 — demissional em até 10 dias se último exame > 90 dias',
+    numero: 'PCMSO-REV05-2026',
+    emissao: '2026-09-17',
+    vencimento: '2027-09-17',
+    obs: 'PCMSO REV05 (substitui REV04) | Médica: Dra. Francynelle Costa Assis CRM RO 2477 | Exames: clínico, acuidade visual, audiometria, hemograma, Plasmodium (malária), Raio X Lombo Sacra, tipagem sanguínea — sem mudança nos exames/periodicidade da REV04 pra REV05 | GR 3 — demissional em até 10 dias se último exame > 90 dias | REV05 incorporou a Avaliação Psicossocial NR-1 2026 no inventário de riscos (mesma atualização feita no PGR — ver plano de ação de assédio moral lá, pra não duplicar as mesmas ações nos dois documentos).',
     acoes: [
       // Ações de controle interno
-      { descricao: 'Controle de vencimento de ASOs por colaborador — gerenciado na aba Colaboradores do app (PCMSO REV04)', responsavel: 'RH', prazo: '2026-07-31', status: 'em_andamento', dataRealizacao: '' },
+      { descricao: 'Controle de vencimento de ASOs por colaborador — gerenciado na aba Colaboradores do app (PCMSO REV05)', responsavel: 'RH', prazo: '2026-07-31', status: 'em_andamento', dataRealizacao: '' },
       { descricao: 'Garantir exame admissional antes da assinatura do contrato em cada nova contratação', responsavel: 'RH + Médica', prazo: 'A cada admissão', status: 'em_andamento', dataRealizacao: '' },
       { descricao: 'Monitorar vencimento anual da Pesquisa de Plasmodium (malária) para colaboradores de campo', responsavel: 'RH + Médica', prazo: 'Anual', status: 'em_andamento', dataRealizacao: '' },
       { descricao: 'Comunicar médica com antecedência em todo desligamento (demissional GR3)', responsavel: 'RH', prazo: 'A cada desligamento', status: 'em_andamento', dataRealizacao: '' },
-      // Plano de Ação PCMSO 2026/27 — página 75 (Prioridade 1 e 3)
+      // Plano de Ação PCMSO 2026/27 — página 75 (REV04, mantido na REV05)
       { descricao: 'Elaborar Relatório Analítico do PCMSO (NR-07) — por clínica ocupacional terceirizada e/ou profissional técnico habilitado', responsavel: 'Empregador / Médica responsável', prazo: '2027-05-31', status: 'pendente', dataRealizacao: '' },
       { descricao: 'Divulgação do PCMSO para todos os colaboradores (palestra / DDS) conforme NR-07 e NR-01', responsavel: 'Empregador / SST', prazo: '2026-06-30', status: 'pendente', dataRealizacao: '' },
       { descricao: 'Treinamento de Noções Básicas de Primeiros Socorros para colaboradores (NR-07)', responsavel: 'Empregador / Profissional técnico habilitado', prazo: '2026-10-31', status: 'pendente', dataRealizacao: '' },
@@ -54401,7 +54491,7 @@ async function gdCarregarDados(forcar) {
         // Migração: ASO já gerenciado na aba Colaboradores — atualizar descrição e status
         const asoIdx = doc.acoes.findIndex(a => a.descricao && a.descricao.startsWith('Criar planilha de controle de vencimento de ASOs'));
         if (asoIdx >= 0) {
-          doc.acoes[asoIdx].descricao = 'Controle de vencimento de ASOs por colaborador — gerenciado na aba Colaboradores do app (PCMSO REV04)';
+          doc.acoes[asoIdx].descricao = 'Controle de vencimento de ASOs por colaborador — gerenciado na aba Colaboradores do app (PCMSO REV05)';
           if (doc.acoes[asoIdx].status === 'pendente') doc.acoes[asoIdx].status = 'em_andamento';
         }
       }
@@ -54670,14 +54760,14 @@ async function gdExcluirDocEmpresa(idx) {
 
 // ─── Gerador de ASO ───────────────────────────────────────────
 
-// Funções cadastradas no PGR (Programa de Gerenciamento de Riscos) REV04/2026,
+// Funções cadastradas no PGR (Programa de Gerenciamento de Riscos) REV05/2026,
 // com GHE e categorias de risco extraídas do documento oficial.
 // Usado para, ao selecionar "Mudança de Função" no ASO, popular automaticamente
 // os riscos e exames da função de destino em vez de depender só do cargo em texto livre.
 // Observação: os exames por GHE 03 (Motorista / Op. Máquinas Pesadas) ainda usam o
 // mesmo conjunto do GHE 02, pois o PCMSO REV04 não pôde ser lido para confirmar um
 // conjunto próprio — confirmar com o SESMT/PCMSO se houver diferença.
-/* -- Kits-base de EPI por GHE, conforme riscos do PGR REV04 (choque elétrico/subestação
+/* -- Kits-base de EPI por GHE, conforme riscos do PGR REV05 (choque elétrico/subestação
       no GHE02, condução de veículo/máquina no GHE03, escritório no GHE01). Fonte: ficha
       modelo do RH (kit real entregue a Auxiliar de Campo, GHE02) + riscos já mapeados nas
       tabelas riscosGHE01/02/03 usadas no ASO. Cada função pode somar itens extras próprios. -- */
@@ -54748,13 +54838,13 @@ function pgrFuncaoPorNome(nome) {
     || PGR_FUNCOES.find(f => { const fn = _pgrNormalizarGenero(f.nome.toLowerCase()); return n.includes(fn) || fn.includes(n); })
     || null;
 }
-// GHE03 (Motorista/Op. Máquinas Pesadas) tem conjunto de exames PRÓPRIO no PCMSO REV04
+// GHE03 (Motorista/Op. Máquinas Pesadas) tem conjunto de exames PRÓPRIO no PCMSO REV05
 // (confirmado: tem ECG e Glicemia que o GHE02 não tem, e não tem Audiometria nem RX Lombo-Sacra
 // que o GHE02 tem) — cada GHE usa sua própria chave, sem fallback.
 function pgrGheChaveExame(ghe) { return ghe || 'ghe01'; }
 function pgrGheLabel(ghe) { return (ghe || 'ghe01').toUpperCase().replace('GHE', 'GHE '); }
 
-// Exceções por CARGO ao padrão do GHE — o PCMSO REV04 é organizado por cargo, e alguns exames
+// Exceções por CARGO ao padrão do GHE — o PCMSO REV05 é organizado por cargo, e alguns exames
 // não seguem exatamente o padrão do GHE inteiro. Cada entrada aqui é keyed pelo nome do cargo
 // (igual a PGR_FUNCOES[].nome) e pelo id do exame (igual a ASO_EXAMES_TODOS[].id):
 //   - valor `false`           => esse cargo NÃO faz esse exame, mesmo que o GHE dele faça.
@@ -54846,7 +54936,7 @@ const ASO_EXAMES_TODOS = [
   { id:'avpsico',     nome:'Avaliação psicossocial',                  esocial:'',    ghe01:false, ghe02:false, ghe03:false, adm:false, per:false, dem:false, mud:false, ret:false },
   // Antes desligado — PCMSO GHE03: Glicemia em jejum no Admissional+Periódico.
   { id:'glicemia',    nome:'Glicemia em jejum',                       esocial:'',    ghe01:false, ghe02:false, ghe03:true,  adm:true,  per:true,  dem:false, mud:false, ret:false },
-  // Não consta no CONTROLE MÉDICO de nenhum cargo do PCMSO REV04 — mantido desligado (código
+  // Não consta no CONTROLE MÉDICO de nenhum cargo do PCMSO REV05 — mantido desligado (código
   // morto/inerte de propósito; se a empresa exigir toxicológico por outro motivo legal fora do
   // PCMSO, ligar manualmente por cargo em ASO_EXCECOES_CARGO em vez de por GHE).
   { id:'toxico',      nome:'Toxicológico (adm/dem)',                  esocial:'',    ghe01:false, ghe02:false, ghe03:false, adm:true,  per:false, dem:true,  mud:false, ret:false },
@@ -54948,7 +55038,7 @@ function gerarASO(cIdx) {
 
     // Nova Função (visível apenas para Mudança de Função)
     + '<div id="aso-funcao-nova-wrap" style="display:none;margin-bottom:16px;background:#fff8e6;border:1px solid #f0d894;border-radius:8px;padding:12px">'
-    + '<label style="display:block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#8a6d1a;margin-bottom:6px">Nova Função (conforme PGR REV04)</label>'
+    + '<label style="display:block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#8a6d1a;margin-bottom:6px">Nova Função (conforme PGR REV05)</label>'
     + '<select id="aso-funcao-nova" onchange="asoAtualizarExames()" style="height:38px;border:1.5px solid #ddd;border-radius:8px;padding:0 12px;font-size:.85rem;width:100%">'
     + '<option value="">Selecione a função de destino...</option>'
     + PGR_FUNCOES.map(f => '<option value="' + f.nome + '">' + f.nome + ' (' + pgrGheLabel(f.ghe) + ')</option>').join('')
@@ -55025,7 +55115,7 @@ function asoAtualizarExames() {
   const riscosBox = document.getElementById('aso-riscos-funcao');
   if (riscosBox) {
     if (ctx.isMudanca && ctx.funcaoNova) {
-      riscosBox.innerHTML = '⚠️ Riscos da função (PGR REV04): ' + ctx.funcaoNova.riscos.join(', ') + (ctx.funcaoNova.cbo ? ' · CBO ' + ctx.funcaoNova.cbo : '');
+      riscosBox.innerHTML = '⚠️ Riscos da função (PGR REV05): ' + ctx.funcaoNova.riscos.join(', ') + (ctx.funcaoNova.cbo ? ' · CBO ' + ctx.funcaoNova.cbo : '');
     } else if (ctx.isMudanca) {
       riscosBox.textContent = 'Selecione a função de destino para carregar os riscos e exames do PGR.';
     }
@@ -55109,7 +55199,7 @@ async function asoGerarPDF() {
     { cat:'', risco:'Esforço visual', perigo:'Uso contínuo de tela de computador', dano:'Cefaleia, fadiga visual', nivel:'Trivial' },
     { cat:'Psicossocial', risco:'Fatores psicossociais', perigo:'Pressão por resultados, prazos e demandas variáveis', dano:'Estresse, ansiedade, fadiga mental', nivel:'Moderado' },
   ];
-  // GHE 03 — Motorista / Op. Máquinas Pesadas (conforme PGR REV04)
+  // GHE 03 — Motorista / Op. Máquinas Pesadas (conforme PGR REV05)
   const riscosGHE03 = [
     { cat:'X Acidente Mecânicos', risco:'Animais Peçonhentos', perigo:'Deslocamento em vias e áreas de coleta', dano:'Hemorragias; Alergias; Obstrução de traqueia.', nivel:'Tolerável' },
     { cat:'', risco:'Condução de veículos em vias públicas e privadas', perigo:'Condução de veículo/máquina para atividades de campo', dano:'Lesões, fraturas, escoriações.', nivel:'Tolerável' },
@@ -55245,7 +55335,7 @@ async function asoGerarPDF() {
       ).join('')
     + '</div></div>'
 
-    + '<div class="section"><div class="sec-title">Riscos Ocupacionais (Conforme PGR REV04 — GHE ' + ghe + ')</div>'
+    + '<div class="section"><div class="sec-title">Riscos Ocupacionais (Conforme PGR REV05 — GHE ' + ghe + ')</div>'
     + '<table><thead><tr>'
     + '<th style="width:100px">Agentes</th><th>Risco</th><th>Perigos</th><th>Possíveis Danos</th><th style="width:76px;text-align:center">Nível do Risco</th>'
     + '</tr></thead><tbody>' + riscosHtml + '</tbody></table></div>'
@@ -55289,7 +55379,7 @@ async function asoGerarPDF() {
 
     + '<div class="obs-bar">Observação: ' + obs + '</div>'
     + '<div style="text-align:center;font-size:7px;color:#bbb;margin:6px 0 0">'
-    + 'Gerado pelo APP Expedian em ' + hoje + ' · PCMSO REV04 · PGR REV04 · Nº ASO ' + numeroAso
+    + 'Gerado pelo APP Expedian em ' + hoje + ' · PCMSO REV05 · PGR REV05 · Nº ASO ' + numeroAso
     + '</div>'
 
     + '</td></tr></tbody></table>'
@@ -55306,7 +55396,7 @@ async function asoGerarPDF() {
 // ─────────────────────────────────────────────────────────────
 // FICHA DE EPI — Controle de entrega/devolução de Equipamento de Proteção
 // Individual, conforme NR-06 (e NR-10 quando aplicável), com o kit sugerido
-// automaticamente a partir da função do colaborador no PGR REV04.
+// automaticamente a partir da função do colaborador no PGR REV05.
 //
 // Histórico persistido por colaborador (window._gdDados.epiHistorico[colabId]):
 // cada "Nova Entrega" soma um registro novo (nunca apaga os anteriores) e cada
@@ -55435,7 +55525,7 @@ function gerarEPI(cIdx) {
     + '<div style="background:#fff8e6;border:1px solid #f0d894;border-radius:8px;padding:10px 12px;margin-bottom:16px;font-size:.78rem;color:#8a6d1a">'
     + (jaTemEntregaAnterior
         ? 'Esse colaborador já tem entrega(s) registrada(s) — <strong>essa tela começa vazia</strong>, adicione só o(s) item(ns) que estão sendo entregues agora (reposição/complemento). Digite a descrição pra ver sugestões com C.A./validade padrão, ou ajuste na mão.'
-        : 'Kit completo sugerido automaticamente a partir da função (' + (colab.cargo||'—') + ') e dos riscos mapeados no PGR REV04, com C.A. e validade pré-preenchidos pelo lote mais recente usado na empresa. <strong>Confira sempre no item físico entregue</strong> — se for de um lote diferente, ajuste o C.A./validade da linha.')
+        : 'Kit completo sugerido automaticamente a partir da função (' + (colab.cargo||'—') + ') e dos riscos mapeados no PGR REV05, com C.A. e validade pré-preenchidos pelo lote mais recente usado na empresa. <strong>Confira sempre no item físico entregue</strong> — se for de um lote diferente, ajuste o C.A./validade da linha.')
     + ' Ajuste itens, quantidades ou remova/adicione linhas conforme o que for realmente entregue. '
     + '<strong>Isso soma uma nova entrega ao histórico do colaborador — nada do que já foi registrado antes é apagado.</strong> Pra devolução ou troca de um item já entregue, use o botão "🔄 Devolução/Troca" na lista de colaboradores.'
     + '</div>'
@@ -55681,7 +55771,7 @@ function epiConstruirHtml(colab, opts) {
 
     + (obs ? '<div class="obs-bar">Observação: ' + obs + '</div>' : '')
     + '<div style="text-align:center;font-size:7px;color:#bbb;margin:6px 0 0">'
-    + 'Gerado pelo APP Expedian em ' + hoje + ' · PGR REV04 · GHE ' + ghe + ' · Nº Ficha ' + numeroEpi
+    + 'Gerado pelo APP Expedian em ' + hoje + ' · PGR REV05 · GHE ' + ghe + ' · Nº Ficha ' + numeroEpi
     + '</div>'
 
     + '</td></tr></tbody></table>'
@@ -56190,7 +56280,7 @@ function osPgrConstruirHtml(colab, funcao) {
     + '</div></div>'
 
     + '<div style="text-align:center;font-size:7px;color:#bbb;margin:6px 0 0">'
-    + 'Gerado pelo APP Expedian em ' + hoje + ' · PGR REV04 · GHE ' + pgrGheLabel(funcao.ghe)
+    + 'Gerado pelo APP Expedian em ' + hoje + ' · PGR REV05 · GHE ' + pgrGheLabel(funcao.ghe)
     + '</div>'
 
     + '</td></tr></tbody></table>'
