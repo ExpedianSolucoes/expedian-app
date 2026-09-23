@@ -1902,13 +1902,20 @@ async function carregarAPRDashboard() {
           const isRascunho = i.Status === 'Rascunho' || i.Status === 'Em Andamento';
           const isEmAberto = i.Status === 'Em Aberto';
           const podeContinuar = isRascunho || isEmAberto || i.Status === 'Suspensa';
+          // Encerrar não depende mais de aprovação de gestor (pedido
+          // 23/09/2026: "APR não precisa de aprovação quando colaborador
+          // encerrar ela, ela já deve ser finalizada sem necessidade
+          // aprovação para encerramento") — o próprio responsável pela APR
+          // também pode encerrá-la, não só Diretoria/Coordenação. "Suspender"
+          // continua restrito à gestão (é uma devolução/questionamento, não
+          // um encerramento normal).
+          const ehGestaoApr = currentProfile==='diretoria'||currentProfile==='coordenador';
+          const souResponsavelApr = window._currentUser && i.Responsavel === window._currentUser.name;
           const acoes = `
             ${podeContinuar ? `<button class="btn-primary" style="padding:3px 9px;font-size:.68rem;background:var(--amber)" onclick="aprReabrirRascunho(${i.Id})">▶️ ${isRascunho ? 'Continuar' : 'Abrir e Editar'}</button>` : ''}
             ${!isRascunho ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="aprVerPDF(${i.Id})">👁️ Ver PDF</button>` : ''}
-            ${isEmAberto && (currentProfile==='diretoria'||currentProfile==='coordenador') ? `
-              <button class="btn-primary" style="padding:3px 9px;font-size:.68rem" onclick="aprovarAPR(${i.Id})">✅ Encerrar</button>
-              <button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="reprovarAPR(${i.Id})">⏸️ Suspender</button>
-            ` : ''}
+            ${isEmAberto && (ehGestaoApr || souResponsavelApr) ? `<button class="btn-primary" style="padding:3px 9px;font-size:.68rem" onclick="aprovarAPR(${i.Id})">✅ Encerrar</button>` : ''}
+            ${isEmAberto && ehGestaoApr ? `<button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="reprovarAPR(${i.Id})">⏸️ Suspender</button>` : ''}
             ${(i.Status==='Suspensa') && (currentProfile==='diretoria'||currentProfile==='coordenador') ? `
               <button class="btn-primary" style="padding:3px 9px;font-size:.68rem;background:var(--amber)" onclick="aprReabrirSuspensa(${i.Id})">🔄 Reabrir</button>
             ` : ''}
@@ -8799,7 +8806,10 @@ async function pagConfirmarAgendamento(id) {
   const ok = await dbAtualizar('ContasPagar', parseInt(id), patch);
   showToast(ok ? '✅ Confirmado e agendado!' : ('❌ Erro ao confirmar' + syncErrorDetalhe()));
   const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
-  setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); }, 600);
+  // Se aberto a partir da Central de Aprovações (lista embutida lá desde
+  // 23/09/2026), atualiza aquela lista também — carregarContasPagar() é um
+  // no-op fora da aba Contas a Pagar (não acha #lista-pagar).
+  setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); if (document.getElementById('aprov-lista-pagar')) carregarAprovacoes(); }, 600);
 }
 
 async function pagRejeitarConta(id) {
@@ -8813,7 +8823,7 @@ async function pagRejeitarConta(id) {
   });
   showToast(ok ? '↩️ Conta rejeitada.' : ('❌ Erro' + syncErrorDetalhe()));
   const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
-  setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); }, 600);
+  setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); if (document.getElementById('aprov-lista-pagar')) carregarAprovacoes(); }, 600);
 }
 
 async function pagConfirmarPagamento(id) {
@@ -15483,21 +15493,30 @@ function pageAprovacoes() {
   }, 200);
   return `
   <div class="page-header"><h1>Central de Aprovações</h1><p>Solicitações aguardando sua análise</p></div>
+  <!-- Card/KPI de "APRs Em Aberto/Aguardando Aprovação" removido 23/09/2026 —
+       APR não passa mais por aprovação de gestor: o próprio responsável
+       encerra direto na Central de APRs (ver carregarAPRDashboard/
+       aprovarAPR). -->
   <div class="kpi-grid" style="margin-bottom:24px">
-    <div class="kpi-card amber" style="cursor:pointer" onclick="aprovIrPara('aprov-card-apr')" title="Ir para APRs"><div class="kpi-label">APRs Em Aberto</div><div class="kpi-value" id="aprov-kpi-apr">—</div><div class="kpi-icon">📋</div></div>
     <div class="kpi-card amber" style="cursor:pointer" onclick="aprovIrPara('aprov-card-prest')" title="Ir para Prestações"><div class="kpi-label">Prestações Pendentes</div><div class="kpi-value" id="aprov-kpi-prest">—</div><div class="kpi-icon">📑</div></div>
-    <div class="kpi-card amber" style="cursor:pointer" onclick="navigate('pagar')" title="Ir para Contas a Pagar"><div class="kpi-label">C. a Pagar Pendentes</div><div class="kpi-value" id="aprov-kpi-pagar">—</div><div class="kpi-icon">💸</div></div>
+    <div class="kpi-card amber" style="cursor:pointer" onclick="aprovIrPara('aprov-card-pagar')" title="Ir para Contas a Pagar"><div class="kpi-label">C. a Pagar Pendentes</div><div class="kpi-value" id="aprov-kpi-pagar">—</div><div class="kpi-icon">💸</div></div>
     <div class="kpi-card amber" style="cursor:pointer" onclick="aprovIrPara('aprov-card-adiantamento')" title="Ir para Adiantamentos"><div class="kpi-label">Adiantamentos Pendentes</div><div class="kpi-value" id="aprov-kpi-adiantamento">—</div><div class="kpi-icon">💵</div></div>
     <div class="kpi-card amber" style="cursor:pointer" onclick="aprovIrPara('aprov-card-solic')" title="Ir para Outras Solicitações"><div class="kpi-label">Solicitações Pendentes</div><div class="kpi-value" id="aprov-kpi-solic">—</div><div class="kpi-icon">📝</div></div>
     <div class="kpi-card red" style="cursor:pointer" onclick="window._solicFiltroBucket='reprovadas';navigate('solicitacoes')" title="Ir para o histórico de Solicitações"><div class="kpi-label">Solicitações Indeferidas</div><div class="kpi-value" id="aprov-kpi-solic-indef">—</div><div class="kpi-icon">🚫</div></div>
   </div>
-  <div class="card" style="margin-bottom:16px" id="aprov-card-apr">
-    <div class="card-title">APRs Aguardando Aprovação</div>
-    <div id="aprov-lista-apr"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
-  </div>
   <div class="card" style="margin-bottom:16px" id="aprov-card-prest">
     <div class="card-title">Prestações de Contas Aguardando Aprovação</div>
     <div id="aprov-lista-prest"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>
+  <!-- Contas a Pagar embutida na própria Central de Aprovações (pedido
+       23/09/2026: "em central de aprovações deve ter contas a pagar, dando
+       sempre [prioridade] para com vencimentos no dia") — antes era só um
+       card-atalho que levava pra aba própria; agora lista inline, com as
+       que vencem HOJE sempre no topo, e abre o mesmo modal de análise já
+       usado na aba Contas a Pagar (pagAbrirVisualizar). -->
+  <div class="card" style="margin-bottom:16px" id="aprov-card-pagar">
+    <div class="card-title">Contas a Pagar Aguardando Aprovação</div>
+    <div id="aprov-lista-pagar"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>
   <div class="card" style="margin-bottom:16px" id="aprov-card-adiantamento">
     <div class="card-title">Solicitações de Adiantamento Aguardando Aprovação</div>
@@ -15543,39 +15562,50 @@ async function carregarAprovacoes() {
   const usuario = window._currentUser || {};
   const ehGestorGeral = usuario.role === 'Gestor Geral';
 
-  // Carregar KPIs
-  const [aprs, prests, contas, adiantamentos, solicGerais] = await Promise.all([
-    dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Adiantamentos'), dbLer('SolicitacoesGerais')
+  // Carregar KPIs — APR saiu daqui em 23/09/2026 (não passa mais por
+  // aprovação de gestor; ver carregarAPRDashboard/aprovarAPR).
+  const [prests, contas, adiantamentos, solicGerais] = await Promise.all([
+    dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Adiantamentos'), dbLer('SolicitacoesGerais')
   ]);
-  const aprsDoUsuario = r => ehGestorGeral || r.Gestor === usuario.name;
 
   const setPill = (id, n) => { const e = document.getElementById(id); if(e) e.textContent = n; };
-  setPill('aprov-kpi-apr',   aprs.filter(r => r.Status === 'Em Aberto' && aprsDoUsuario(r)).length);
   setPill('aprov-kpi-pagar', contas.filter(r => r.Status === 'Aguardando Aprovação').length);
   setPill('aprov-kpi-prest', prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor').length);
   setPill('aprov-kpi-adiantamento', adiantamentos.filter(r => r.Status === 'Aguardando Aprovação').length);
   setPill('aprov-kpi-solic', (solicGerais || []).filter(r => r.Status === 'Pendente' || (ehGestorGeral && r.Status === 'Aguardando Gestor Geral') || (currentProfile === 'diretoria' && r.Status === 'Aguardando Financeiro')).length);
   setPill('aprov-kpi-solic-indef', (solicGerais || []).filter(r => r.Status === 'Reprovada').length);
 
-  // APRs em aberto (Gestor Geral vê todas; demais gestores só as endereçadas a eles)
-  const elAPR = document.getElementById('aprov-lista-apr');
-  if (elAPR) {
-    const pendentes = aprs.filter(r => r.Status === 'Em Aberto' && aprsDoUsuario(r)).sort((a,b) => b.Id - a.Id);
-    if (!pendentes.length) {
-      elAPR.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma APR pendente. ✅</div>';
+  // Contas a Pagar aguardando aprovação, embutidas na própria Central de
+  // Aprovações (pedido 23/09/2026) — as que vencem HOJE sempre primeiro,
+  // depois por vencimento mais próximo. "👁️ Analisar" abre o mesmo modal
+  // de aprovação já usado na aba Contas a Pagar (pagAbrirVisualizar), então
+  // agendar/rejeitar funciona igual, sem duplicar aquela lógica aqui.
+  const elPagar = document.getElementById('aprov-lista-pagar');
+  if (elPagar) {
+    const hojeStr = new Date().toISOString().split('T')[0];
+    const pendentesPagar = contas.filter(r => r.Status === 'Aguardando Aprovação').sort((a, b) => {
+      const aHoje = a.Vencimento === hojeStr ? 0 : 1;
+      const bHoje = b.Vencimento === hojeStr ? 0 : 1;
+      if (aHoje !== bHoje) return aHoje - bHoje;
+      return (a.Vencimento || '9999-99-99').localeCompare(b.Vencimento || '9999-99-99');
+    });
+    if (!pendentesPagar.length) {
+      elPagar.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma conta a pagar pendente. ✅</div>';
     } else {
-      elAPR.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>APR</th><th>Responsável</th><th>Gestor</th><th>Data</th><th>Ações</th></tr></thead><tbody>' +
-        pendentes.map(i => `<tr>
-          <td><strong>${i.NumeroAPR || i.Title || '—'}</strong></td>
-          <td>${i.Responsavel || '—'}</td>
-          <td style="font-size:.75rem;color:var(--text-muted)">${i.Gestor || '—'}</td>
-          <td style="font-size:.75rem">${i.Created ? new Date(i.Created).toLocaleDateString('pt-BR') : '—'}</td>
+      elPagar.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Empresa</th><th>Fornecedor</th><th>Descrição</th><th>Vencimento</th><th>Valor</th><th>Ações</th></tr></thead><tbody>' +
+        pendentesPagar.map(i => {
+          const venceHoje = i.Vencimento === hojeStr;
+          return `<tr${venceHoje ? ' style="background:#fff8e8"' : ''}>
+          <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa) || '—'}</td>
+          <td><strong>${i.Fornecedor || '—'}</strong></td>
+          <td style="font-size:.78rem">${i.Descricao || '—'}</td>
+          <td style="font-size:.8rem">${i.Vencimento ? new Date(i.Vencimento + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}${venceHoje ? ' <span class="status-pill amber" style="font-size:.6rem">⏰ Vence hoje</span>' : ''}</td>
+          <td><strong>R$ ${(i.Valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
-            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="aprVerPDF(${i.Id})">👁️ Visualizar</button>
-            <button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarAPR(${i.Id})">✅ Aprovar</button>
-            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarAPR(${i.Id})">↩️ Reprovar</button>
+            <button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="pagAbrirVisualizar(${i.Id})">👁️ Analisar</button>
           </td>
-        </tr>`).join('') + '</tbody></table></div>';
+        </tr>`;
+        }).join('') + '</tbody></table></div>';
     }
   }
 
@@ -50045,12 +50075,13 @@ async function atualizarBadgeNotificacoes() {
   const ehGestorGeral = usuario.role === 'Gestor Geral';
   const ehDiretoria = perfil === 'diretoria';
   try {
-    const [aprs, prests, contasPagar, despesas, adiantamentos, flashReports, solicitacoesGerais, equipamentos, faunaFichas, faunaFlash] = await Promise.all([
-      dbLer('APRs'), dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos'), dbLer('FlashReportsEnergisa'), dbLer('SolicitacoesGerais'), dbLer('Equipamentos'), dbLer('ChecklistFauna'), dbLer('FlashReportsFauna')
+    // APR não entra mais aqui — pedido 23/09/2026: "APR não precisa de
+    // aprovação quando colaborador encerrar ela, ela já deve ser finalizada
+    // sem necessidade aprovação para encerramento" (ver aprovarAPR/
+    // carregarAPRDashboard, que agora deixam o próprio responsável encerrar).
+    const [prests, contasPagar, despesas, adiantamentos, flashReports, solicitacoesGerais, equipamentos, faunaFichas, faunaFlash] = await Promise.all([
+      dbLer('PrestacaoContas'), dbLer('ContasPagar'), dbLer('Despesas'), dbLer('Adiantamentos'), dbLer('FlashReportsEnergisa'), dbLer('SolicitacoesGerais'), dbLer('Equipamentos'), dbLer('ChecklistFauna'), dbLer('FlashReportsFauna')
     ]);
-    const aprsPendentes = aprs.filter(r =>
-      r.Status === 'Em Aberto' && (ehGestorGeral || r.Gestor === usuario.name)
-    );
     const despesasVencendo = despesasVencendoEmBreve(despesas);
     const flashPendentes = (flashReports || []).filter(f => f.Visualizado === false);
     const solicGeraisPendentes = (solicitacoesGerais || []).filter(r => r.Status === 'Pendente' || (ehGestorGeral && r.Status === 'Aguardando Gestor Geral') || (ehDiretoria && r.Status === 'Aguardando Financeiro'));
@@ -50074,7 +50105,6 @@ async function atualizarBadgeNotificacoes() {
     const adiantamentosAprovacao = adiantamentos.filter(r => r.Status === 'Aguardando Aprovação');
     const chat = await chatChecarParaSino();
     const totalAprovacoesPuras =
-      aprsPendentes.length +
       prestsAbertas.length +
       contasPagarAprovacao.length +
       adiantamentosAprovacao.length +
@@ -50086,11 +50116,6 @@ async function atualizarBadgeNotificacoes() {
     // Lista detalhada exibida no dropdown do sino (clique em cada item abre a pendência).
     window._notifItens = [];
     chat.itens.forEach(it => window._notifItens.push(it));
-    aprsPendentes.forEach(r => window._notifItens.push({
-      icone: '📋', titulo: 'APR em aberto — ' + (r.Local || r.Frente || ''),
-      subtitulo: 'Gestor: ' + (r.Gestor || '—'),
-      acao: () => navigate('aprovacoes'),
-    }));
     prestsAbertas.forEach(r => window._notifItens.push({
       icone: '📑', titulo: 'Prestação de contas aguardando aprovação',
       subtitulo: r.Responsavel || r.Descricao || ('Prestação #' + (r.Id || '')),
