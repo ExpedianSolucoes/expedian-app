@@ -29800,6 +29800,26 @@ function meaUid() {
   return 'mea-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 }
 
+/* -- Um empreendimento pode ter mais de uma Classificação simultânea (ex:
+   mesmo processo/licença cobrindo Subestação + Linha, tipo "LDAT 138 KV
+   JARU/THEOBROMA E SED THEOBROMA") — pedido 25/09/2026: "quando o
+   empreendimento contemplar linha e subestação no mesmo processo, temos
+   que ajustar as duas classificações no mesmo formulário para preencher as
+   questões da subestação e da linha". A fonte de verdade passa a ser
+   reg.classificacoes (array); reg.classificacao (string) fica como espelho
+   do 1º tipo, só por compatibilidade com qualquer leitura antiga que não
+   tenha sido migrada pra usar os helpers abaixo. -- */
+function meaTipos(x) {
+  if (x && Array.isArray(x.classificacoes) && x.classificacoes.length) return x.classificacoes;
+  return (x && x.classificacao) ? [x.classificacao] : [];
+}
+function meaTemTipo(x, tipo) {
+  return meaTipos(x).indexOf(tipo) !== -1;
+}
+function meaEhMisto(x) {
+  return meaTipos(x).length > 1;
+}
+
 async function meaCarregar() {
   const remoto = await dbLer('MonitoramentoAmbientalERO');
   MEA_DADOS = Array.isArray(remoto) ? remoto : [];
@@ -29835,13 +29855,14 @@ async function meaChecklistsCarregar() {
   }
 }
 
-/* -- Um empreendimento está "pronto" no Relatório de Vistoria quando já
-   existe um checklist de inspeção salvo com o mesmo meaId — ChecklistERO
-   se for Subestação, ChecklistLinha se for LD/Rede Rural (cada
-   classificação só tem um tipo de checklist aplicável, ao contrário de
-   Ruído/Poço/CSAO — não existe estado N/A aqui). -- */
-function meaRelatorioPronto(x) {
-  var hist = x.classificacao === 'subestacao'
+/* -- Um empreendimento está "pronto" pra um TIPO específico (Subestação ou
+   Linha) quando já existe um checklist de inspeção salvo com o mesmo meaId
+   — ChecklistERO se o tipo for Subestação, ChecklistLinha se for LD/Rede
+   Rural. Extraído em função própria (25/09/2026) pra suportar empreendimento
+   com MAIS DE UMA classificação (Subestação + Linha no mesmo processo) —
+   cada tipo precisa do seu próprio checklist preenchido separadamente. -- */
+function meaChecklistProntoParaTipo(x, tipo) {
+  var hist = tipo === 'subestacao'
     ? (Array.isArray(window._eroHistorico) ? window._eroHistorico : [])
     : (Array.isArray(window._linhaHistorico) ? window._linhaHistorico : []);
   var nome = (x.empreendimento || '').trim().toLowerCase();
@@ -29851,11 +29872,20 @@ function meaRelatorioPronto(x) {
     return !!nome && (h.empreendimento || '').trim().toLowerCase() === nome;
   });
 }
+/* -- "Totalmente pronto" (usado no % geral do topo do card) = todo TIPO
+   aplicável àquele empreendimento já tem seu checklist — pra um empreendimento
+   só-Subestação ou só-Linha isso é idêntico ao critério antigo; pra um misto
+   (Subestação+Linha) só fica pronto quando os DOIS checklists existirem. -- */
+function meaRelatorioPronto(x) {
+  var tipos = meaTipos(x);
+  if (!tipos.length) return false;
+  return tipos.every(function(t) { return meaChecklistProntoParaTipo(x, t); });
+}
 
 function meaRegistroVazio() {
   return {
     id: meaUid(), num: '', empreendimento: '', regional: '', cnpj: '', municipio: '', endereco: '', coordenadas: '',
-    classificacao: '', classificacaoDetalhe: '',
+    classificacao: '', classificacaoDetalhe: '', classificacoes: [], classificacaoDetalhes: {},
     processoLicenciamento: '', numeroLicenca: '', emissao: '', vencimento: '', areaLicenciada: '',
     possuiTrafo: '', qtdTrafo: '', potencia: '', trafos: [], baciaContencao: '', baciaSinalizada: '',
     vistoria: { status: 'pendente', statusLinha: '', statusSubestacao: '', dataProgramada: '', responsavelProgramado: '', responsavelProgramado2: '', data: '', tecnico1: '', tecnico2: '', motivo: '', lss: { status: '', obs: '' }, pernoite: '', lssNumero: '', observacao: '', ordemRoteiro: null, fotosEnviadas: 0 },
@@ -29907,10 +29937,25 @@ function meaInferirClassificacao(nome) {
 }
 function meaMigrarRegistro(reg) {
   if (!reg) return reg;
-  if (!reg.classificacao) {
-    var inferido = meaInferirClassificacao(reg.empreendimento);
-    reg.classificacao = inferido ? inferido.tipo : 'subestacao';
-    reg.classificacaoDetalhe = reg.classificacaoDetalhe || (inferido ? inferido.detalhe : '');
+  // classificacoes (array) é a fonte de verdade a partir de 25/09/2026 —
+  // suporta mais de um Tipo por empreendimento (Subestação + Linha no mesmo
+  // processo). Registros antigos, com só o campo singular classificacao (ou
+  // nenhum dos dois, nos 91 pré-22/09/2026), migram em memória sem reescrever
+  // nada no OneDrive até serem reabertos e salvos de novo — mesmo padrão já
+  // usado pro resto desta função.
+  if (!Array.isArray(reg.classificacoes) || !reg.classificacoes.length) {
+    if (reg.classificacao) {
+      reg.classificacoes = [reg.classificacao];
+    } else {
+      var inferido = meaInferirClassificacao(reg.empreendimento);
+      reg.classificacoes = [inferido ? inferido.tipo : 'subestacao'];
+      reg.classificacaoDetalhe = reg.classificacaoDetalhe || (inferido ? inferido.detalhe : '');
+    }
+  }
+  reg.classificacao = reg.classificacoes[0]; // espelho legado (compat)
+  if (!reg.classificacaoDetalhes || typeof reg.classificacaoDetalhes !== 'object') {
+    reg.classificacaoDetalhes = {};
+    if (reg.classificacaoDetalhe && reg.classificacao) reg.classificacaoDetalhes[reg.classificacao] = reg.classificacaoDetalhe;
   }
   if (!Array.isArray(reg.trafos)) {
     var qtd = parseInt(reg.qtdTrafo, 10) || 0;
@@ -29965,7 +30010,10 @@ function meaStatusBadge(tipo, status) {
    explicitamente marcado 'N/A'. Usado pra tirar LD/Rede Rural da contagem
    de "Pendente" nos cards — eles não estão pendentes, são inaplicáveis. -- */
 function meaNaoAplicavel(x, campo) {
-  if (x.classificacao && x.classificacao !== 'subestacao') return true;
+  // "Tem classificação definida mas Subestação não está entre elas" — vale
+  // pro caso de 1 tipo só (LD/Rede Rural puro) e também pro misto que NÃO
+  // inclui Subestação (não deveria existir hoje, mas por segurança).
+  if (meaTipos(x).length && !meaTemTipo(x, 'subestacao')) return true;
   var obj = (campo === 'ruido' ? x.ruido : x[campo]) || {};
   var v = campo === 'ruido' ? obj.necessario : obj.existe;
   // N/A explícito, "Não" (não possui/não necessário), status já calculado
@@ -30016,12 +30064,16 @@ function meaKPIs() {
   // Relatório de Vistoria por classificação: Subestação / RDR (rede rural) /
   // Linha (LD) — pedido 23/09/2026 ("embaixo de total deve ser Subestação,
   // depois RDR, depois Linha, e o total é somatoria destes").
-  var relSubTotal = MEA_DADOS.filter(function(x){return x.classificacao==='subestacao';}).length;
-  var relSubPronto = MEA_DADOS.filter(function(x){return x.classificacao==='subestacao' && meaRelatorioPronto(x);}).length;
-  var relRdrTotal = MEA_DADOS.filter(function(x){return x.classificacao==='rede_rural';}).length;
-  var relRdrPronto = MEA_DADOS.filter(function(x){return x.classificacao==='rede_rural' && meaRelatorioPronto(x);}).length;
-  var relLdTotal = MEA_DADOS.filter(function(x){return x.classificacao==='ld';}).length;
-  var relLdPronto = MEA_DADOS.filter(function(x){return x.classificacao==='ld' && meaRelatorioPronto(x);}).length;
+  // Um empreendimento misto (ex: Subestação + Linha no mesmo processo)
+  // entra nos DOIS totais abaixo — pedido 25/09/2026 ("conta nos dois
+  // grupos"): fica pendente em cada grupo até o checklist daquele tipo
+  // específico ser preenchido, mesmo já tendo o outro pronto.
+  var relSubTotal = MEA_DADOS.filter(function(x){return meaTemTipo(x,'subestacao');}).length;
+  var relSubPronto = MEA_DADOS.filter(function(x){return meaTemTipo(x,'subestacao') && meaChecklistProntoParaTipo(x,'subestacao');}).length;
+  var relRdrTotal = MEA_DADOS.filter(function(x){return meaTemTipo(x,'rede_rural');}).length;
+  var relRdrPronto = MEA_DADOS.filter(function(x){return meaTemTipo(x,'rede_rural') && meaChecklistProntoParaTipo(x,'rede_rural');}).length;
+  var relLdTotal = MEA_DADOS.filter(function(x){return meaTemTipo(x,'ld');}).length;
+  var relLdPronto = MEA_DADOS.filter(function(x){return meaTemTipo(x,'ld') && meaChecklistProntoParaTipo(x,'ld');}).length;
   return {
     t: t, vRealizada: vRealizada, vParcial: vParcial, vProgramada: vProgramada, vNaoRealizada: vNaoRealizada, vPendente: vPendente,
     licVencida: licVencida, lic90: lic90,
@@ -30295,7 +30347,7 @@ function meaRenderizarLista() {
     var tecnicos = [(x.vistoria||{}).tecnico1, (x.vistoria||{}).tecnico2].filter(Boolean).join(' / ') || '—';
     return '<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="meaAbrirDetalhe(\''+x.id+'\')">' +
       '<td style="padding:8px;font-size:.78rem;color:var(--text-muted)">'+(x.num||'—')+'</td>' +
-      '<td style="padding:8px;font-size:.8rem;font-weight:600;max-width:260px">'+x.empreendimento+'<div style="font-size:.68rem;color:var(--text-muted);font-weight:400">'+(x.regional||'—')+(x.municipio?' · '+x.municipio:'')+'</div></td>' +
+      '<td style="padding:8px;font-size:.8rem;font-weight:600;max-width:260px">'+x.empreendimento+(meaEhMisto(x) ? ' <span style="display:inline-block;padding:1px 7px;border-radius:20px;background:#f3eefc;color:#6f42c1;font-size:.6rem;font-weight:700;vertical-align:middle" title="Subestação + Linha no mesmo processo">🔀 Misto</span>' : '')+'<div style="font-size:.68rem;color:var(--text-muted);font-weight:400">'+(x.regional||'—')+(x.municipio?' · '+x.municipio:'')+'</div></td>' +
       '<td style="padding:8px;font-size:.72rem"><span style="padding:2px 8px;border-radius:20px;background:'+vB.bg+';color:'+vB.cor+';font-weight:700;white-space:nowrap">'+vB.label+'</span><div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">'+((x.vistoria||{}).data ? laFormatarData(x.vistoria.data) : '—')+' · '+tecnicos+'</div></td>' +
       '<td style="padding:8px;font-size:.72rem"><span style="font-weight:700;color:'+lic.cor+'">'+lic.label+'</span><div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">'+(x.numeroLicenca||'—')+'</div></td>' +
       '<td style="padding:8px;font-size:.72rem;text-align:center"><span style="padding:2px 8px;border-radius:20px;background:'+rB.bg+';color:'+rB.cor+';font-weight:700;white-space:nowrap">'+rB.label+'</span></td>' +
@@ -30333,9 +30385,7 @@ function meaAbrirDetalhe(id) {
   set('mea-municipio', reg.municipio);
   set('mea-endereco', reg.endereco);
   set('mea-coordenadas', reg.coordenadas);
-  set('mea-classificacao', reg.classificacao);
-  meaClassificacaoToggle(true);
-  set('mea-classificacao-detalhe', reg.classificacaoDetalhe);
+  meaSetClassificacaoForm(reg);
   set('mea-trafo-possui', reg.possuiTrafo);
   set('mea-trafo-qtd', reg.qtdTrafo);
   window._meaTrafos = Array.isArray(reg.trafos) ? reg.trafos.map(function(t){ return { bacia: t.bacia||'', sinalizada: t.sinalizada||'' }; }) : [];
@@ -30606,8 +30656,12 @@ async function meaSalvarDetalhe() {
   reg.municipio = g('mea-municipio');
   reg.endereco = g('mea-endereco');
   reg.coordenadas = g('mea-coordenadas');
-  reg.classificacao = g('mea-classificacao');
-  reg.classificacaoDetalhe = g('mea-classificacao-detalhe');
+  var tiposSelecionados = meaTiposMarcadosForm();
+  reg.classificacoes = tiposSelecionados;
+  reg.classificacao = tiposSelecionados[0] || ''; // espelho legado (compat)
+  reg.classificacaoDetalhes = {};
+  tiposSelecionados.forEach(function(t) { reg.classificacaoDetalhes[t] = (window._meaDetalhesAtuais || {})[t] || ''; });
+  reg.classificacaoDetalhe = reg.classificacaoDetalhes[reg.classificacao] || ''; // espelho legado (compat)
   reg.possuiTrafo = g('mea-trafo-possui');
   reg.qtdTrafo = g('mea-trafo-qtd');
   reg.trafos = reg.possuiTrafo === 'Sim' ? (window._meaTrafos || []).map(function(t){ return { bacia: t.bacia||'', sinalizada: t.sinalizada||'' }; }) : [];
@@ -30656,40 +30710,86 @@ function meaOptsTecnicos(selecionado) {
 
 /* ===============================
    CLASSIFICAÇÃO DO EMPREENDIMENTO — Subestação / LD / Rede Rural
-   Pedido 22/09/2026. Só quando Classificação = Subestação a seção de
+   Pedido 22/09/2026. Só quando Classificação inclui Subestação a seção de
    Transformadores/CSAO/Poço aparece no formulário (confirmado com Tiago) —
-   LD e Rede Rural não têm esses itens. Os 91 empreendimentos já cadastrados
-   viram 'subestacao' por padrão na leitura (ver meaMigrarRegistro), então
-   nenhum some do formulário até alguém reclassificar de fato.
+   LD e Rede Rural puros não têm esses itens. Os 91 empreendimentos já
+   cadastrados viram 'subestacao' por padrão na leitura (ver
+   meaMigrarRegistro), então nenhum some do formulário até alguém
+   reclassificar de fato.
+   Pedido 25/09/2026: o Tipo virou seleção MÚLTIPLA (checkboxes, não mais um
+   único <select>) — cobre o caso de um empreendimento reunir Subestação e
+   Linha no mesmo processo/licença ambiental (ex: "LDAT 138 KV
+   JARU/THEOBROMA E SED THEOBROMA"), precisando responder as perguntas dos
+   DOIS checklists (ERO/Subestação e Linha) separadamente. Cada tipo
+   marcado ganha seu próprio campo Detalhe (window._meaDetalhesAtuais,
+   objeto tipo→valor, mesmo padrão de window._meaTrafos/_meaPontosRuido).
 =============================== */
 var MEA_CLASSIFICACAO_DETALHES = {
   subestacao: [['com_casa_comando','Com casa de comando'], ['sem_casa_comando','Sem casa de comando']],
   ld: [['69kv','69 kV'], ['138kv','138 kV']],
   rede_rural: [['13.8kv','13,8 kV'], ['34.5kv','34,5 kV']],
 };
+var MEA_TIPOS_ROTULOS = { subestacao: 'Subestação', ld: 'LD', rede_rural: 'Rede Rural' };
 function meaOptsClassificacaoDetalhe(tipo, selecionado) {
   var opcoes = MEA_CLASSIFICACAO_DETALHES[tipo] || [];
   return '<option value="">—</option>' + opcoes.map(function(o) {
     return '<option value="'+o[0]+'"'+(selecionado===o[0]?' selected':'')+'>'+o[1]+'</option>';
   }).join('');
 }
-/* -- Ruído Ambiental / Poço / CSAO / Transformadores só se aplicam a
-   Subestação (pedido 22/09/2026, confirmado por Tiago: "em linhas de
-   distribuição isso não é aplicavel assim como os trafos"). Ao mudar pra
-   LD/Rede Rural, os 3 campos "Necessário?/Possui?" viram 'N/A' automático
-   (opção nova na lista suspensa) em vez de ficarem só escondidos com um
-   valor Sim/Não/vazio "fantasma" por trás — assim o registro salvo já sai
-   coerente com o formulário, sem precisar reabrir depois. Ao voltar pra
-   Subestação, limpa o 'N/A' pra a pessoa responder de novo. -- */
+function meaTiposMarcadosForm() {
+  return ['subestacao','ld','rede_rural'].filter(function(t) {
+    var cb = document.getElementById('mea-tipo-' + t);
+    return cb && cb.checked;
+  });
+}
+function meaRenderizarDetalhes(tipos) {
+  var wrap = document.getElementById('mea-detalhes-wrap');
+  if (!wrap) return;
+  window._meaDetalhesAtuais = window._meaDetalhesAtuais || {};
+  if (!tipos.length) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = tipos.map(function(t) {
+    var sel = window._meaDetalhesAtuais[t] || '';
+    return '<div class="form-group"><label>Detalhe — ' + MEA_TIPOS_ROTULOS[t] + '</label>' +
+      '<select onchange="window._meaDetalhesAtuais[\'' + t + '\']=this.value">' +
+      meaOptsClassificacaoDetalhe(t, sel) +
+      '</select></div>';
+  }).join('');
+}
+/* -- Popula os checkboxes de Tipo + window._meaDetalhesAtuais a partir de
+   um registro (abertura do modal) e dispara o toggle pra renderizar tudo
+   coerente. -- */
+function meaSetClassificacaoForm(reg) {
+  var tipos = meaTipos(reg);
+  ['subestacao','ld','rede_rural'].forEach(function(t) {
+    var cb = document.getElementById('mea-tipo-' + t);
+    if (cb) cb.checked = tipos.indexOf(t) !== -1;
+  });
+  window._meaDetalhesAtuais = {};
+  var detalhes = (reg.classificacaoDetalhes && typeof reg.classificacaoDetalhes === 'object') ? reg.classificacaoDetalhes : {};
+  tipos.forEach(function(t) { window._meaDetalhesAtuais[t] = detalhes[t] || (t === reg.classificacao ? (reg.classificacaoDetalhe || '') : ''); });
+  meaClassificacaoToggle(true);
+}
+/* -- Ruído Ambiental / Poço / CSAO / Transformadores só se aplicam quando
+   Subestação está entre os tipos marcados (pedido 22/09/2026, confirmado
+   por Tiago: "em linhas de distribuição isso não é aplicavel assim como os
+   trafos"). Ao desmarcar Subestação, os 3 campos "Necessário?/Possui?"
+   viram 'N/A' automático em vez de ficarem só escondidos com um valor
+   Sim/Não/vazio "fantasma" por trás — assim o registro salvo já sai
+   coerente com o formulário, sem precisar reabrir depois. Ao marcar
+   Subestação de novo, limpa o 'N/A' pra a pessoa responder de novo. -- */
 function meaClassificacaoToggle(manterDetalhe) {
-  var tipoSel = document.getElementById('mea-classificacao');
-  var detSel = document.getElementById('mea-classificacao-detalhe');
+  var tipos = meaTiposMarcadosForm();
   var bloco = document.getElementById('mea-bloco-subestacao');
-  if (!tipoSel || !detSel) return;
-  var tipo = tipoSel.value;
-  var manterValor = manterDetalhe ? detSel.value : '';
-  detSel.innerHTML = meaOptsClassificacaoDetalhe(tipo, manterValor);
-  var ehSubestacao = tipo === 'subestacao';
+  window._meaDetalhesAtuais = window._meaDetalhesAtuais || {};
+  if (!manterDetalhe) {
+    // Descarta o Detalhe de tipos que acabaram de ser desmarcados; preserva
+    // o que já estava preenchido pros tipos que continuam marcados.
+    Object.keys(window._meaDetalhesAtuais).forEach(function(t) {
+      if (tipos.indexOf(t) === -1) delete window._meaDetalhesAtuais[t];
+    });
+  }
+  meaRenderizarDetalhes(tipos);
+  var ehSubestacao = tipos.indexOf('subestacao') !== -1;
   if (bloco) bloco.style.display = ehSubestacao ? '' : 'none';
   [['mea-ruido-necessario', meaRuidoToggle], ['mea-poco-existe', meaPocoToggle], ['mea-csao-existe', meaCsaoToggle]].forEach(function(par) {
     var el = document.getElementById(par[0]);
@@ -30880,17 +30980,13 @@ function pageMonitoramentoAmbientalERO() {
         </div>
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Classificação</div>
-        <div class="form-row">
-          <div class="form-group"><label>Tipo</label>
-            <select id="mea-classificacao" onchange="meaClassificacaoToggle(false)">
-              <option value="">—</option>
-              <option value="subestacao">Subestação</option>
-              <option value="ld">LD</option>
-              <option value="rede_rural">Rede Rural</option>
-            </select>
-          </div>
-          <div class="form-group"><label>Detalhe</label><select id="mea-classificacao-detalhe"><option value="">—</option></select></div>
+        <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:8px">Marque mais de um Tipo quando o empreendimento reunir Subestação e Linha no mesmo processo/licença (ex: LDAT + SED) — o Checklist Inspeção passa a cobrar um checklist de cada tipo marcado.</div>
+        <div class="form-row" style="flex-wrap:wrap;gap:16px;margin-bottom:4px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;font-weight:600;cursor:pointer"><input type="checkbox" id="mea-tipo-subestacao" onchange="meaClassificacaoToggle(false)"> Subestação</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;font-weight:600;cursor:pointer"><input type="checkbox" id="mea-tipo-ld" onchange="meaClassificacaoToggle(false)"> LD</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;font-weight:600;cursor:pointer"><input type="checkbox" id="mea-tipo-rede_rural" onchange="meaClassificacaoToggle(false)"> Rede Rural</label>
         </div>
+        <div class="form-row" id="mea-detalhes-wrap" style="flex-wrap:wrap"></div>
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Licença Ambiental</div>
         <div class="form-row">
@@ -33919,21 +34015,24 @@ async function carregarLinhaHistorico(forcar) {
   navigate('checklist_linha');
 }
 
-/* -- Classificação (Subestação/RDR/Linha) de um registro de Checklist Linha
-   — usada só pra filtrar o histórico pelo deep-link do card "Checklist
-   Inspeção" do painel principal. Igual ao critério de meaRelatorioPronto:
-   por meaId quando existir, senão por nome do empreendimento (fallback pra
-   checklists antigos). -- */
+/* -- Classificação(ões) (Subestação/RDR/Linha) de um registro de Checklist
+   Linha — usada só pra filtrar o histórico pelo deep-link do card
+   "Checklist Inspeção" do painel principal. Igual ao critério de
+   meaRelatorioPronto: por meaId quando existir, senão por nome do
+   empreendimento (fallback pra checklists antigos). Retorna um ARRAY (não
+   mais 1 tipo só) desde 25/09/2026, pra um empreendimento misto
+   (Subestação+Linha) continuar aparecendo no filtro RDR/Linha mesmo tendo
+   Subestação também. -- */
 function linhaRegistroClassificacao(r) {
   var dados = typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : [];
   if (r.meaId != null) {
     var porId = dados.find(function(e) { return e.id === r.meaId; });
-    if (porId) return porId.classificacao;
+    if (porId) return meaTipos(porId);
   }
   var nome = (r.empreendimento || '').trim().toLowerCase();
-  if (!nome) return null;
+  if (!nome) return [];
   var porNome = dados.find(function(e) { return (e.empreendimento || '').trim().toLowerCase() === nome; });
-  return porNome ? porNome.classificacao : null;
+  return porNome ? meaTipos(porNome) : [];
 }
 function linhaDashLimparFiltroClass() { window._linhaDashFiltroClass = ''; navigate('checklist_linha'); }
 
@@ -33943,7 +34042,7 @@ function renderLinhaMiniDashboard() {
   const filtroClass = window._linhaDashFiltroClass || '';
   const rotuloFiltro = filtroClass === 'rede_rural' ? 'RDR' : filtroClass === 'ld' ? 'Linha' : '';
   const ordenado = [...historico]
-    .filter(r => !filtroClass || linhaRegistroClassificacao(r) === filtroClass)
+    .filter(r => !filtroClass || linhaRegistroClassificacao(r).indexOf(filtroClass) !== -1)
     .sort((a, b) => (b.data || '').localeCompare(a.data || ''));
   return `
   <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
@@ -34468,7 +34567,7 @@ function pageChecklistLinha() {
         <label>Empreendimento / Trecho</label>
         <select id="linha_empreendimento_select" onchange="linhaSelecionarEmpreendimento(this.value)">
           <option value="">Selecione...</option>
-          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return x.classificacao === 'ld' || x.classificacao === 'rede_rural'; }).sort(function(a,b){ return (a.empreendimento||'').localeCompare(b.empreendimento||''); }).map(function(e){ return '<option value="'+e.id+'" '+(d.meaId===e.id?'selected':'')+'>'+((e.num?e.num+' — ':'')+(e.empreendimento||'Sem nome'))+'</option>'; }).join('')}
+          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return meaTemTipo(x,'ld') || meaTemTipo(x,'rede_rural'); }).sort(function(a,b){ return (a.empreendimento||'').localeCompare(b.empreendimento||''); }).map(function(e){ return '<option value="'+e.id+'" '+(d.meaId===e.id?'selected':'')+'>'+((e.num?e.num+' — ':'')+(e.empreendimento||'Sem nome'))+(meaEhMisto(e)?' 🔀':'')+'</option>'; }).join('')}
           <option value="__outro__" ${(!d.meaId && d.empreendimento) ? 'selected' : ''}>Outro (não cadastrado em Monitoramento Ambiental)</option>
         </select>
         <input id="linha_empreendimento" style="margin-top:6px;${d.meaId ? 'display:none' : ''}" value="${d.empreendimento||''}" oninput="linhaCampo('empreendimento',this.value)" placeholder="Nome do trecho, se ainda não estiver cadastrado em Monitoramento Ambiental">
