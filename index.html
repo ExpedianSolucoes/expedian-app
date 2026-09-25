@@ -29461,26 +29461,56 @@ function eroToggleHistorico() { window._eroHistoricoAberto = !window._eroHistori
    sincronizar o "Novo Checklist" com as vistorias concluídas, e sumir da
    lista assim que o checklist daquela vistoria for salvo. Considera "já tem
    checklist" quando existe um registro de histórico com o MESMO nome de
-   empreendimento e data >= data da vistoria (assim, se uma vistoria nova for
-   refeita depois, o empreendimento volta a aparecer como pendente). -- */
+   empreendimento e data "perto o suficiente" da data da vistoria (assim, se
+   uma vistoria nova for refeita bem depois, o empreendimento volta a
+   aparecer como pendente).
+   Fix 25/09/2026 ("machadinho, cujubim, bom futuro... ja foram realizados
+   os checklist e ainda continua aparecendo"): investigando os dados reais
+   (ChecklistERO.json x MonitoramentoAmbientalERO.json), 2 causas concretas:
+   (1) a comparação de data exigia `h.data >= dataVist` (checklist na mesma
+   data ou DEPOIS da vistoria) — mas checklists preenchidos manualmente
+   (sem meaId, "Preencher manualmente, sem vistoria vinculada") têm sua
+   própria "Data da Inspeção" digitada em campo, que na prática pode ficar
+   1-3 dias ANTES da data que depois foi registrada em Vistoria no MEA (ex:
+   SED Alto Paraíso: checklist 12/09, vistoria 14/09; SED Machadinho
+   D'Oeste: checklist 10/09, vistoria 13/09) — mesmo empreendimento/rodada,
+   só uma pequena divergência de digitação entre os 2 registros, mas a
+   comparação estrita excluía esses casos válidos da lista de "já feito".
+   Trocado por uma janela de tolerância (±21 dias, qualquer direção) —
+   ampla o suficiente pra essa divergência de poucos dias, mas ainda exclui
+   checklists de uma rodada claramente anterior (ex: SED CGH Rio Vermelho
+   tem um checklist de abril, ~4 meses antes da vistoria de agosto — isso
+   continua aparecendo como pendente, corretamente, pois é doutro semestre).
+   (2) o picker não filtrava por Classificação — um empreendimento só-LD/só-
+   Rede Rural (que usa Checklist LINHA, não ERO) aparecia aqui também (ex:
+   "LDAT 138 KV Machadinho/Cujubim", classificacao='ld' — é isso que o
+   Tiago via como "Cujubim" na lista, mesmo nunca precisando de checklist
+   ERO). Restrito agora a quem tem Subestação entre os tipos
+   (`meaTemTipo(e,'subestacao')` — cobre também o misto Subestação+Linha). -- */
 function eroPendentesChecklist() {
   const hist = Array.isArray(window._eroHistorico) ? window._eroHistorico : [];
+  const TOLERANCIA_DIAS = 21;
+  const normNome = function(s) { return (s || '').trim().toLowerCase().replace(/\s+/g, ' '); };
   return (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(e) {
+    if (!meaTemTipo(e, 'subestacao')) return false;
     const v = e.vistoria || {};
     if (v.status !== 'realizada') return false;
-    const nome = (e.empreendimento || '').trim().toLowerCase();
+    const nome = normNome(e.empreendimento);
     if (!nome) return false;
     const dataVist = v.data || v.dataProgramada || '';
+    const tsVist = dataVist ? new Date(dataVist + 'T00:00:00').getTime() : null;
     // Pedido em 15/09/2026: o item não estava sumindo da lista depois de
-    // salvo o checklist. Causa provável — comparação de nome+data (string)
-    // é frágil (formatos de data levemente diferentes já quebram a
-    // comparação ">="). Agora checklists salvos a partir daqui gravam o
-    // meaId de origem, e essa é a checagem PRINCIPAL (exata, sem ambiguidade).
-    // O nome+data continua como fallback só pra checklists antigos, salvos
-    // antes dessa mudança, que não têm meaId gravado.
+    // salvo o checklist. Checklists salvos a partir daqui (via "Usar" no
+    // picker) gravam o meaId de origem, e essa é a checagem PRINCIPAL
+    // (exata, sem ambiguidade, sem depender de nome/data). O nome+data
+    // continua como fallback pra checklists antigos/manuais, sem meaId.
     const jaTemChecklist = hist.some(function(h) {
       if (h.meaId != null) return h.meaId === e.id;
-      return (h.empreendimento || '').trim().toLowerCase() === nome && (!dataVist || (h.data || '') >= dataVist);
+      if (normNome(h.empreendimento) !== nome) return false;
+      if (!tsVist || !h.data) return true; // sem data pra comparar, confia só no nome
+      const tsChecklist = new Date(h.data + 'T00:00:00').getTime();
+      if (isNaN(tsChecklist)) return true;
+      return Math.abs(tsChecklist - tsVist) / 86400000 <= TOLERANCIA_DIAS;
     });
     return !jaTemChecklist;
   });
