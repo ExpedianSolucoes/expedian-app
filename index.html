@@ -11171,6 +11171,7 @@ function renderReceitasTab() {
       <option value="">Todos os status</option>
       ${RC_STATUS.map(s => `<option value="${s}">${rcStatusLabel(s)}</option>`).join('')}
     </select>
+    <input type="text" inputmode="decimal" id="rc_filtro_valor_exato" placeholder="Valor exato" title="Buscar por valor exato" oninput="rdFormatarMoedaInput(this);dbDebounce('carregarReceitas')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);width:100px">
     <input type="text" inputmode="decimal" id="rc_filtro_valor_min" placeholder="Valor mín." oninput="rdFormatarMoedaInput(this);dbDebounce('carregarReceitas')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);width:100px">
     <input type="text" inputmode="decimal" id="rc_filtro_valor_max" placeholder="Valor máx." oninput="rdFormatarMoedaInput(this);dbDebounce('carregarReceitas')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);width:100px">
     <button onclick="rcLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
@@ -11385,7 +11386,7 @@ function rcFiltrarKpi(tipo) {
 }
 
 function rcLimparFiltros() {
-  ['rc_filtro_mes','rc_filtro_mes_receb','rc_filtro_categoria','rc_filtro_busca','rc_filtro_nf','rc_filtro_status','rc_filtro_valor_min','rc_filtro_valor_max'].forEach(id => { const e=document.getElementById(id); if(e) e.value=''; });
+  ['rc_filtro_mes','rc_filtro_mes_receb','rc_filtro_categoria','rc_filtro_busca','rc_filtro_nf','rc_filtro_status','rc_filtro_valor_exato','rc_filtro_valor_min','rc_filtro_valor_max'].forEach(id => { const e=document.getElementById(id); if(e) e.value=''; });
   RC_FILTRO_KPI = '';
   carregarReceitas();
 }
@@ -11717,6 +11718,7 @@ async function carregarReceitas() {
     const fBusca = ((document.getElementById('rc_filtro_busca')||{}).value || '').trim().toLowerCase();
     const fNF = ((document.getElementById('rc_filtro_nf')||{}).value || '').trim().toLowerCase();
     const fStatus = (document.getElementById('rc_filtro_status')||{}).value || '';
+    const fValorExato = rdMoedaParaNumero((document.getElementById('rc_filtro_valor_exato')||{}).value);
     const fValorMin = rdMoedaParaNumero((document.getElementById('rc_filtro_valor_min')||{}).value);
     const fValorMax = rdMoedaParaNumero((document.getElementById('rc_filtro_valor_max')||{}).value);
 
@@ -11726,8 +11728,11 @@ async function carregarReceitas() {
     if (fBusca) items = items.filter(r => (r.Cliente||'').toLowerCase().includes(fBusca) || (r.Descricao||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca));
     if (fNF) items = items.filter(r => (r.NumeroNF||'').toLowerCase().includes(fNF));
     if (fStatus) items = items.filter(r => r.Status === fStatus);
-    if (fValorMin > 0) items = items.filter(r => (r.Valor||0) >= fValorMin);
-    if (fValorMax > 0) items = items.filter(r => (r.Valor||0) <= fValorMax);
+    if (fValorExato > 0) items = items.filter(r => Math.abs((r.Valor||0) - fValorExato) < 0.01);
+    else {
+      if (fValorMin > 0) items = items.filter(r => (r.Valor||0) >= fValorMin);
+      if (fValorMax > 0) items = items.filter(r => (r.Valor||0) <= fValorMax);
+    }
     if (RC_FILTRO_KPI === 'avencer') items = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje');
     else if (RC_FILTRO_KPI === 'recebido') items = items.filter(r=>r.Status==='Recebido');
     else if (RC_FILTRO_KPI === 'vencido') items = items.filter(r=>r.Status==='Em atraso');
@@ -38190,6 +38195,111 @@ function pageCadastroEmpresas() {
    conta, descontando Resgates já feitos na mesma conta (Receitas > Receitas
    Financeiras > Resgate...) — mostra quanto dessa conta está hoje "fora",
    investido, sem precisar abrir um relatório à parte. -- */
+/* -- Saldo Real por conta bancária (pedido em 25/09/2026: "saldo inicial de
+   cada conta bancária e visualização de contas mês a mês, com a sincronização
+   de saldo bancários"). Diferente do "Saldo (mov.)" que já existia (soma TODO
+   lançamento de Receitas/Despesas daquele Banco, mesmo os ainda não pagos/
+   recebidos) — o Saldo Real só conta o que de fato já entrou/saiu da conta:
+   Despesas com Status='Pago' (pela DataPagamento) e Receitas com
+   Status='Recebido' (pela DataRecebimento, e usando o valor LÍQUIDO — descontando
+   ISS/outras retenções, que nunca chegam a cair na conta), somado ao Saldo
+   Inicial cadastrado (fixo em 01/01/2026, mesma data pra todas as contas —
+   decisão do Tiago). "Sincronização" aqui significa que esse saldo se
+   recalcula sozinho toda vez que a função roda — não há integração com banco
+   real (Open Finance), só o que já está lançado no app. -- */
+function bancosValorLiquidoReceita(r) {
+  if (r.ValorLiquido != null && r.ValorLiquido !== '') return Number(r.ValorLiquido) || 0;
+  return Math.max((Number(r.Valor) || 0) - (Number(r.ISSValorRetido) || 0) - (Number(r.OutrasRetencoesValor) || 0), 0);
+}
+const BANCOS_DATA_REFERENCIA_SALDO_INICIAL = '2026-01-01';
+function bancosCalcularSaldoReal(banco, empresa, despesas, receitas, saldoInicial, dataLimiteISO) {
+  let saldo = Number(saldoInicial) || 0;
+  (despesas || []).forEach(d => {
+    if (normalizarEmpresa(d.Empresa) !== normalizarEmpresa(empresa)) return;
+    if ((d.Banco || '').trim() !== banco) return;
+    if (d.Status !== 'Pago') return;
+    const data = d.DataPagamento || '';
+    if (!data || data < BANCOS_DATA_REFERENCIA_SALDO_INICIAL || (dataLimiteISO && data > dataLimiteISO)) return;
+    saldo -= Number(d.Valor) || 0;
+  });
+  (receitas || []).forEach(r => {
+    if (normalizarEmpresa(r.Empresa) !== normalizarEmpresa(empresa)) return;
+    if ((r.Banco || '').trim() !== banco) return;
+    if (r.Status !== 'Recebido') return;
+    const data = r.DataRecebimento || '';
+    if (!data || data < BANCOS_DATA_REFERENCIA_SALDO_INICIAL || (dataLimiteISO && data > dataLimiteISO)) return;
+    saldo += bancosValorLiquidoReceita(r);
+  });
+  return saldo;
+}
+/* -- Histórico mês a mês: um balde por mês (01/2026 até o mês atual), com
+   saldo inicial do mês (= saldo final do mês anterior), entradas, saídas e
+   saldo final — mesmo critério de "realizado" (Pago/Recebido) do Saldo Real. -- */
+function bancosCalcularHistoricoMensal(banco, empresa, despesas, receitas, saldoInicial) {
+  const hoje = new Date();
+  const mesAtualStr = hoje.toISOString().slice(0, 7);
+  const meses = [];
+  let cursor = BANCOS_DATA_REFERENCIA_SALDO_INICIAL.slice(0, 7);
+  while (cursor <= mesAtualStr) {
+    meses.push(cursor);
+    const [ano, mes] = cursor.split('-').map(Number);
+    const prox = new Date(ano, mes, 1); // mes é 1-based aqui, então isso já é o mês seguinte em índice 0-based
+    cursor = prox.toISOString().slice(0, 7);
+  }
+  const despesasPagas = (despesas || []).filter(d => normalizarEmpresa(d.Empresa) === normalizarEmpresa(empresa) && (d.Banco || '').trim() === banco && d.Status === 'Pago' && d.DataPagamento);
+  const receitasRecebidas = (receitas || []).filter(r => normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa) && (r.Banco || '').trim() === banco && r.Status === 'Recebido' && r.DataRecebimento);
+  let saldoCorrente = Number(saldoInicial) || 0;
+  return meses.map(mes => {
+    const entradas = receitasRecebidas.filter(r => (r.DataRecebimento || '').slice(0, 7) === mes).reduce((s, r) => s + bancosValorLiquidoReceita(r), 0);
+    const saidas = despesasPagas.filter(d => (d.DataPagamento || '').slice(0, 7) === mes).reduce((s, d) => s + (Number(d.Valor) || 0), 0);
+    const saldoInicialMes = saldoCorrente;
+    saldoCorrente = saldoCorrente + entradas - saidas;
+    return { mes, saldoInicialMes, entradas, saidas, saldoFinalMes: saldoCorrente };
+  });
+}
+async function bancosVerMesAMes(banco, empresa) {
+  showSyncStatus('Carregando mês a mês...');
+  const [despesas, receitas] = await Promise.all([
+    dbLer('Despesas').catch(() => []),
+    dbLer('Receitas').catch(() => []),
+  ]);
+  const b = (_bancosCache || []).find(x => x.Title === banco && normalizarEmpresa(x.Empresa) === normalizarEmpresa(empresa));
+  const saldoInicial = b ? (Number(b.SaldoInicial) || 0) : 0;
+  const historico = bancosCalcularHistoricoMensal(banco, empresa, despesas, receitas, saldoInicial);
+  showSyncStatus('', 'ok', 1);
+
+  const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const fmtMes = (m) => { const [a, mm] = m.split('-'); return new Date(Number(a), Number(mm) - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }); };
+
+  const existente = document.getElementById('bancosMesAMesModal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'bancosMesAMesModal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:760px">
+      <div class="modal-header">
+        <h2>📅 Mês a mês — 🏦 ${banco}</h2>
+        <div class="modal-close" onclick="document.getElementById('bancosMesAMesModal').remove()">✕</div>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:12px">
+          Saldo Inicial cadastrado (em 01/01/2026): <strong>${fmt(saldoInicial)}</strong>. Só entram aqui Despesas já Pagas e Receitas já Recebidas (pela data de pagamento/recebimento) — lançamentos ainda pendentes não afetam o saldo real.
+        </div>
+        <div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr>
+          <th>Mês</th><th style="text-align:right">Saldo Inicial</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo Final</th>
+        </tr></thead><tbody>
+          ${historico.map(h => `<tr>
+            <td style="text-transform:capitalize">${fmtMes(h.mes)}</td>
+            <td style="text-align:right">${fmt(h.saldoInicialMes)}</td>
+            <td style="text-align:right;color:var(--green-main)">${h.entradas > 0 ? fmt(h.entradas) : '—'}</td>
+            <td style="text-align:right;color:#dc3545">${h.saidas > 0 ? fmt(h.saidas) : '—'}</td>
+            <td style="text-align:right;font-weight:700;color:${h.saldoFinalMes >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(h.saldoFinalMes)}</td>
+          </tr>`).join('')}
+        </tbody></table></div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
 async function bancosResumoCarregar() {
   const container = document.getElementById('bancosResumoContainer');
   if (!container) return;
@@ -38223,12 +38333,14 @@ async function bancosResumoCarregar() {
       if (r.Categoria === 'Receitas Financeiras' && /^Resgate/.test(r.Subcategoria || '')) resumo[b].aplicado -= Number(r.Valor) || 0;
     });
     const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const hojeISO = new Date().toISOString().slice(0, 10);
     container.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:.85rem">
       <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
         <th style="padding:8px">Banco</th>
         <th style="padding:8px;text-align:right">Receitas</th>
         <th style="padding:8px;text-align:right">Despesas</th>
         <th style="padding:8px;text-align:right">Saldo (mov.)</th>
+        <th style="padding:8px;text-align:right">💰 Saldo Real</th>
         <th style="padding:8px;text-align:right">🟣 Aplicado</th>
         <th style="padding:8px;text-align:center">Ações</th>
       </tr></thead>
@@ -38236,11 +38348,16 @@ async function bancosResumoCarregar() {
         ${bancosDaLista.map(b => {
           const v = resumo[b.Title] || { receita: 0, despesa: 0, aplicado: 0 };
           const saldo = v.receita - v.despesa;
+          const saldoReal = bancosCalcularSaldoReal(b.Title, empresa, despesas, receitas, b.SaldoInicial, hojeISO);
           return `<tr style="border-bottom:1px solid var(--border)">
             <td style="padding:8px;font-weight:600">🏦 ${b.Title}</td>
             <td style="padding:8px;text-align:right;color:var(--green-main)">${fmt(v.receita)}</td>
             <td style="padding:8px;text-align:right;color:#dc3545">${fmt(v.despesa)}</td>
             <td style="padding:8px;text-align:right;font-weight:700;color:${saldo >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(saldo)}</td>
+            <td style="padding:8px;text-align:right;white-space:nowrap">
+              <span style="font-weight:700;color:${saldoReal >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(saldoReal)}</span>
+              <button class="btn-secondary" style="padding:2px 6px;font-size:.68rem;margin-left:6px" title="Ver evolução mês a mês dessa conta" onclick="bancosVerMesAMes('${b.Title.replace(/'/g, "\\'")}','${empresa}')">📅</button>
+            </td>
             <td style="padding:8px;text-align:right;white-space:nowrap;${v.aplicado > 0 ? 'font-weight:700;color:#6f42c1' : 'color:var(--text-muted)'}">
               ${v.aplicado > 0 ? fmt(v.aplicado) : '—'}
               <button class="btn-secondary" style="padding:2px 6px;font-size:.68rem;margin-left:6px" title="Ver histórico de Aplicações/Resgates dessa conta" onclick="bancosVerHistoricoAplicacoes('${b.Title.replace(/'/g, "\\'")}','${empresa}')">📜</button>
@@ -38254,7 +38371,8 @@ async function bancosResumoCarregar() {
       </tbody>
     </table>
     <div style="font-size:.7rem;color:var(--text-muted);margin-top:10px">
-      Saldo = movimentação líquida (Receitas − Despesas) dentro do que o app registra, não é o saldo real da conta (não há saldo inicial cadastrado). Inclui Transferências entre Contas.
+      Saldo (mov.) = movimentação líquida (Receitas − Despesas) de TODOS os lançamentos daquele Banco, mesmo os ainda pendentes — inclui Transferências entre Contas.
+      Saldo Real = Saldo Inicial (em 01/01/2026) + só o que já foi de fato Pago/Recebido até hoje (usa o valor líquido das Receitas, descontando retenções) — clique no 📅 pra ver a evolução mês a mês.
       Aplicado = total em Aplicações Financeiras lançadas nessa conta, descontando Resgates já feitos.
     </div>`;
   } catch (e) {
@@ -38346,12 +38464,15 @@ function bancosAbrirForm(id) {
     if (btn) btn.textContent = '💾 Salvar Alterações';
     const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
     set('bancos_nome', b.Title); set('bancos_empresa', b.Empresa);
+    const saldoEl = document.getElementById('bancos_saldo_inicial');
+    if (saldoEl) saldoEl.value = b.SaldoInicial ? Number(b.SaldoInicial).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '';
   } else {
     if (titulo) titulo.textContent = '➕ Novo Banco';
     if (btn) btn.textContent = '✅ Cadastrar';
     const setSel = document.getElementById('bancos_empresa');
     if (setSel) setSel.value = window._bancosResumoEmpresa || RD_EMPRESAS[0];
     const nomeEl = document.getElementById('bancos_nome'); if (nomeEl) nomeEl.value = '';
+    const saldoEl = document.getElementById('bancos_saldo_inicial'); if (saldoEl) saldoEl.value = '';
   }
   if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -38368,7 +38489,8 @@ async function bancosSalvar() {
   await carregarBancosLista();
   const jaExiste = _bancosCache.some(b => b.Id !== editandoId && normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa) && (b.Title||'').toLowerCase() === nome.toLowerCase());
   if (jaExiste) { showToast('⚠️ Já existe esse banco cadastrado para essa empresa!'); return; }
-  const dados = { Title: nome, Empresa: empresa };
+  const saldoInicial = rdMoedaParaNumero((document.getElementById('bancos_saldo_inicial')||{}).value);
+  const dados = { Title: nome, Empresa: empresa, SaldoInicial: saldoInicial };
   let ok;
   if (editandoId) {
     ok = await dbAtualizar('Bancos', editandoId, dados);
@@ -38425,6 +38547,7 @@ function pageCadastroBancos() {
         <div class="form-group"><label>Empresa</label>
           <select id="bancos_empresa">${RD_EMPRESAS.map(emp => `<option value="${emp}">${emp}</option>`).join('')}</select>
         </div>
+        <div class="form-group"><label>Saldo Inicial (em 01/01/2026)</label><input type="text" inputmode="decimal" id="bancos_saldo_inicial" placeholder="R$ 0,00" title="Quanto tinha nessa conta em 01/01/2026 — usado como base pro Saldo Real e a visão mês a mês" oninput="rdFormatarMoedaInput(this)"></div>
       </div>
       <div style="display:flex;gap:10px;margin-top:6px">
         <button class="btn-primary" id="bancos-btn-salvar" onclick="bancosSalvar()">✅ Cadastrar</button>
