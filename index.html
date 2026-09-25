@@ -1565,6 +1565,32 @@ function showSyncStatus(msg, state, duration) {
   if (duration) setTimeout(() => { el.className = ''; }, duration);
 }
 
+/* Desabilita um botão e mostra spinner+texto enquanto uma ação assíncrona
+   roda — pedido em 25/09/2026 pra estender esse feedback (que já existia só
+   nos botões de aprovar/pagar de Contas a Pagar, desde 21/09/2026 via
+   _pagvBloquearBotoes) pra TODOS os botões de salvar/enviar de Despesas,
+   Receitas e Prestação de Contas: "no celular a gente clica e fica um
+   tempão sem aparecer nada, não dá pra saber se está carregando ou não".
+   Aceita um id (string, pra botões únicos de formulário) OU o próprio
+   elemento (`this` no onclick — pra botões dentro de listas geradas
+   dinamicamente, onde não dá pra usar um id fixo). Se o botão já estiver
+   desabilitado (clique duplo em voo), retorna null — quem chamar deve
+   checar isso e abortar a ação nova. */
+function _btnCarregando(btnOuId, textoProcessando) {
+  const b = typeof btnOuId === 'string' ? document.getElementById(btnOuId) : btnOuId;
+  if (!b || b.disabled) return null;
+  b.dataset.textoOriginal = b.innerHTML;
+  b.disabled = true;
+  b.innerHTML = '<span class="btn-spinner"></span>' + textoProcessando;
+  return b;
+}
+function _btnRestaurar(btnOuId) {
+  const b = typeof btnOuId === 'string' ? document.getElementById(btnOuId) : btnOuId;
+  if (!b) return;
+  b.disabled = false;
+  if (b.dataset.textoOriginal !== undefined) { b.innerHTML = b.dataset.textoOriginal; delete b.dataset.textoOriginal; }
+}
+
 /* Auto-refresh do dashboard a cada 30s */
 let _dashRefreshTimer = null;
 function iniciarDashRefresh() {
@@ -4027,8 +4053,8 @@ function pagePrestacao() {
 
     <!-- Ações -->
     <div class="form-actions" style="gap:10px;flex-wrap:wrap">
-      <button class="btn-secondary" onclick="salvarRascunhoPrestacao()">💾 Salvar Rascunho</button>
-      <button class="btn-primary" onclick="enviarPrestacaoFinanceiro()">📤 Salvar e Enviar ao Financeiro</button>
+      <button class="btn-secondary" id="pc-btn-rascunho" onclick="salvarRascunhoPrestacao()">💾 Salvar Rascunho</button>
+      <button class="btn-primary" id="pc-btn-enviar" onclick="enviarPrestacaoFinanceiro()">📤 Salvar e Enviar ao Financeiro</button>
     </div>
     </div>
     </div>
@@ -4377,20 +4403,44 @@ async function _prestacaoDuplicada(dados) {
   } catch(e) { return false; }
 }
 
+/* Desabilita os dois botões de ação da Prestação de Contas (Rascunho e
+   Enviar) enquanto qualquer um dos dois está processando — evita clique
+   duplo/nos dois ao mesmo tempo, mesmo padrão de _pagvBloquearBotoes. */
+function _pcBloquearBotoes(idAtivo, textoProcessando) {
+  const ativo = _btnCarregando(idAtivo, textoProcessando);
+  ['pc-btn-rascunho', 'pc-btn-enviar'].forEach(bid => {
+    if (bid === idAtivo) return;
+    const b = document.getElementById(bid); if (b) b.disabled = true;
+  });
+  return ativo;
+}
+function _pcDesbloquearBotoes(btnAtivo) {
+  _btnRestaurar(btnAtivo);
+  ['pc-btn-rascunho', 'pc-btn-enviar'].forEach(bid => {
+    const b = document.getElementById(bid); if (b) b.disabled = false;
+  });
+}
+
 async function salvarRascunhoPrestacao() {
+  if (document.getElementById('pc-btn-rascunho')?.disabled) return; // clique duplo — já processando
   const dados = coletarDadosPrestacao(); if(!dados)return;
   const editandoId = window._pcEditandoId;
   if (!editandoId && await _prestacaoDuplicada(dados)) {
     if (!confirm('⚠️ Já existe uma prestação de contas cadastrada com o mesmo fornecedor, data, valor e NF/Recibo.\n\nDeseja cadastrar mesmo assim?')) return;
   }
+  const btnPc = _pcBloquearBotoes('pc-btn-rascunho', ' Salvando...');
   _limparSyncError();
   let novo;
-  if (editandoId) {
-    const ok = await dbAtualizar('PrestacaoContas', editandoId, dados);
-    novo = ok ? { Id: editandoId } : null;
-  } else {
-    dados.Status='Rascunho';
-    novo = await dbInserir('PrestacaoContas', dados);
+  try {
+    if (editandoId) {
+      const ok = await dbAtualizar('PrestacaoContas', editandoId, dados);
+      novo = ok ? { Id: editandoId } : null;
+    } else {
+      dados.Status='Rascunho';
+      novo = await dbInserir('PrestacaoContas', dados);
+    }
+  } finally {
+    _pcDesbloquearBotoes(btnPc);
   }
   window._pcEditandoId = null;
   showToast(novo ? '💾 Rascunho salvo!' : ('❌ Erro ao salvar rascunho.' + syncErrorDetalhe()));
@@ -4400,12 +4450,15 @@ async function salvarRascunhoPrestacao() {
 
 /* -- Envia direto ao Financeiro (sem etapa de gestor) -- */
 async function enviarPrestacaoFinanceiro() {
+  if (document.getElementById('pc-btn-enviar')?.disabled) return; // clique duplo — já processando
   const dados = coletarDadosPrestacao(true); if(!dados) return;
   const editandoId = window._pcEditandoId;
   if (!editandoId && await _prestacaoDuplicada(dados)) {
     if (!confirm('⚠️ Já existe uma prestação de contas cadastrada com o mesmo fornecedor, data, valor e NF/Recibo.\n\nDeseja cadastrar mesmo assim?')) return;
   }
 
+  const btnPc = _pcBloquearBotoes('pc-btn-enviar', ' Enviando...');
+  try {
   // Fazer upload do comprovante agora (se houver arquivo selecionado)
   const anexoInput = document.getElementById('prest_anexo');
   const file = anexoInput && anexoInput.files[0];
@@ -4435,6 +4488,9 @@ async function enviarPrestacaoFinanceiro() {
     const novo = await dbInserir('PrestacaoContas', dados);
     ok = !!novo;
     showToast(novo ? '✅ Enviado ao Financeiro!' : ('❌ Erro ao salvar. Tente novamente.' + syncErrorDetalhe()));
+  }
+  } finally {
+    _pcDesbloquearBotoes(btnPc);
   }
   window._pcEditandoId = null;
   limparFormPrestacao();
@@ -4907,6 +4963,7 @@ async function reprovarPrestacaoGestor(id) {
 
 /* -- Colaborador corrige e reenvia uma prestação devolvida (direto ao Financeiro) -- */
 async function reenviarPrestacaoDevolvida(id) {
+  showSyncStatus('Carregando...');
   const lista = await dbLer('PrestacaoContas');
   const original = lista.find(r => r.Id === id);
   if (!original) { showToast('❌ Registro não encontrado.'); return; }
@@ -4945,6 +5002,7 @@ async function reenviarPrestacaoDevolvida(id) {
 }
 
 async function _finalizarReenvio(id, comprovanteUrl, comprovanteNome) {
+  showSyncStatus('Reenviando...');
   _limparSyncError();
   const ok = await dbAtualizar('PrestacaoContas', id, {
     Status: 'Ag. Financeiro',
@@ -4957,6 +5015,7 @@ async function _finalizarReenvio(id, comprovanteUrl, comprovanteNome) {
     Conferido: false, ConferidoPor: '', DataConferencia: '',
   });
   showToast(ok ? '🔄 Reenviado ao Financeiro!' : ('❌ Erro ao reenviar.' + syncErrorDetalhe()));
+  showSyncStatus(ok ? 'Reenviado!' : 'Falha ao reenviar', ok ? 'ok' : 'err', ok?3000:5000);
   setTimeout(() => carregarPrestacoes(), 600);
 }
 
@@ -11051,7 +11110,7 @@ function renderReceitasTab() {
     </div>
 
     <div class="form-actions" style="gap:10px">
-      <button class="btn-primary" onclick="salvarReceita()">💾 Salvar Receita</button>
+      <button class="btn-primary" id="rc-btn-salvar" onclick="salvarReceita()">💾 Salvar Receita</button>
     </div>
     </div><!-- /rc-form-campos -->
   </div>
@@ -11513,6 +11572,7 @@ function rcAtualizarNaturezaHint() {
 }
 
 async function salvarReceita() {
+  if (document.getElementById('rc-btn-salvar')?.disabled) return; // clique duplo — já processando
   const dataEmissao = document.getElementById('rc_data_emissao').value;
   const categoria = document.getElementById('rc_categoria').value;
   const subcategoria = (document.getElementById('rc_subcategoria')||{}).value || '';
@@ -11566,8 +11626,14 @@ async function salvarReceita() {
     LancadoPor: window._currentUser ? window._currentUser.name : '',
   };
 
+  const btnSalvarRc = _btnCarregando('rc-btn-salvar', ' Salvando...');
   showSyncStatus('Salvando receita...');
-  const ok = await dbInserir('Receitas', dados);
+  let ok;
+  try {
+    ok = await dbInserir('Receitas', dados);
+  } finally {
+    _btnRestaurar(btnSalvarRc);
+  }
   showToast(ok ? '✅ Receita salva!' : ('❌ Erro ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
   showSyncStatus(ok ? 'Receita salva!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
 
@@ -11911,8 +11977,8 @@ function rcAbrirEdicaoReceita(id) {
       <div id="rce_comprovante_status" style="font-size:.72rem;color:var(--text-muted);margin-bottom:16px"></div>
 
       <div style="display:flex;gap:8px">
-        <button class="btn-primary" style="flex:1" onclick="rcSalvarEdicaoReceita(${id})">💾 Salvar</button>
-        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('rc-edit-modal').remove()">Cancelar</button>
+        <button class="btn-primary" id="rce-btn-salvar" style="flex:1" onclick="rcSalvarEdicaoReceita(${id})">💾 Salvar</button>
+        <button class="btn-secondary" id="rce-btn-cancelar" style="flex:1" onclick="document.getElementById('rc-edit-modal').remove()">Cancelar</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -11941,6 +12007,7 @@ async function rceAnexarComprovante(inputEl) {
 }
 
 async function rcSalvarEdicaoReceita(id) {
+  if (document.getElementById('rce-btn-salvar')?.disabled) return; // clique duplo — já processando
   const status = document.getElementById('rce_status').value;
   const dataRecebimento = document.getElementById('rce_data_recebimento').value;
   const banco = document.getElementById('rce_banco').value.trim();
@@ -11984,8 +12051,15 @@ async function rcSalvarEdicaoReceita(id) {
     ComprovanteNome: comprovanteNome,
   };
 
-  showToast('💾 Salvando...');
-  const ok = await dbAtualizar('Receitas', id, campos);
+  const btnSalvarRce = _btnCarregando('rce-btn-salvar', ' Salvando...');
+  const btnCancelarRce = document.getElementById('rce-btn-cancelar'); if (btnCancelarRce) btnCancelarRce.disabled = true;
+  let ok;
+  try {
+    ok = await dbAtualizar('Receitas', id, campos);
+  } finally {
+    _btnRestaurar(btnSalvarRce);
+    if (btnCancelarRce) btnCancelarRce.disabled = false;
+  }
   showToast(ok ? '✅ Lançamento atualizado!' : '❌ Erro ao salvar.');
   if (ok) {
     const modal = document.getElementById('rc-edit-modal'); if (modal) modal.remove();
@@ -12903,7 +12977,7 @@ function renderDespesasTab() {
     </div>
 
     <div class="form-actions" style="gap:10px">
-      <button class="btn-primary" onclick="salvarDespesa()">💾 Salvar Despesa</button>
+      <button class="btn-primary" id="rd-btn-salvar" onclick="salvarDespesa()">💾 Salvar Despesa</button>
     </div>
     </div><!-- /rd-form-campos -->
   </div>
@@ -13953,6 +14027,7 @@ async function rdAnexarComprovante(inputEl) {
 }
 
 async function salvarDespesa() {
+  if (document.getElementById('rd-btn-salvar')?.disabled) return; // clique duplo — já processando
   const dataLancamento = document.getElementById('rd_data_lancamento').value;
   const categoria = document.getElementById('rd_categoria').value;
   const subcategoria = (document.getElementById('rd_subcategoria')||{}).value || '';
@@ -14048,8 +14123,10 @@ async function salvarDespesa() {
     DivisaoCC: temDivisaoCC ? divisaoCC : [],
   };
 
+  const btnSalvarRd = _btnCarregando('rd-btn-salvar', editandoId ? ' Atualizando...' : ' Salvando...');
   showSyncStatus(editandoId ? 'Atualizando despesa...' : 'Salvando despesa...');
   let ok = true;
+  try {
   if (editandoId) {
     // Edição de um lançamento já existente (mesmo padrão de Contas a Pagar —
     // pedido em 31/08/2026). Atualiza só esse registro; se ele tiver nascido
@@ -14093,6 +14170,9 @@ async function salvarDespesa() {
       Distribuicoes: distribuicoes,
     };
     ok = await dbInserir('Despesas', dados);
+  }
+  } finally {
+    _btnRestaurar(btnSalvarRd);
   }
 
   showToast(ok ? (editandoId ? '✅ Despesa atualizada!' : '✅ Despesa salva!') : ('❌ Erro ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
@@ -27878,46 +27958,55 @@ const centrosCustoData = [
   // Frota (Serviços Internos) passou a identificar os veículos pelo prefixo
   // "Frota -" no nome do contrato, não mais pela categoria. A Subcategoria foi
   // atribuída pelo tipo real de serviço de cada contrato — conferir e ajustar
-  // os que não tiverem certeza (ex: CC-002, CC-008, CC-010, CC-013, CC-022,
-  // CC-028, CC-031, CC-035, CC-040).
-  { id:'CC-001', contrato:'Consolidado - Expedian',                      cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
-  { id:'CC-002', contrato:'ERO - Gestão de Obras',                        cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental', contratoChave:'obras2025022101' },
+  // os que não tiverem certeza.
+  // Renumerados 25/09/2026 (pedido: "renumerar os centros de custos da
+  // Expedian... e da TL3 tbm, reiniciando, semelhante a exp brasil") — de
+  // CC-001..044 (contador global antigo, com buracos em 003/007/009 e a
+  // faixa 026-036 ocupada por TL3/EXP Brasil) pra CC-EXP-001..030 em ordem
+  // (mesma ordem numérica antiga, buracos fechados). Inclui os 2 CCs criados
+  // pela própria tela (CC-043/044, só existiam em CentrosCusto.json,
+  // não hardcoded aqui) — viraram CC-EXP-029/030. Todos os 4040 registros
+  // de Despesas/Receitas/ContasPagar/BPO/Lançamentos/PrestaçãoContas/Medições/
+  // CentrosCustoValores (nas duas árvores de dados, central e Dados
+  // Operacionais) migrados junto, com backup — ver current-state na memória.
+  { id:'CC-EXP-001', contrato:'Consolidado - Expedian',                      cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
+  { id:'CC-EXP-002', contrato:'ERO - Gestão de Obras',                        cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental', contratoChave:'obras2025022101' },
 
-  { id:'CC-004', contrato:'ERO - Resíduos Norte - 25/26',                 cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
-  { id:'CC-005', contrato:'ERO - Resíduos Centro - 25/26',                cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
-  { id:'CC-006', contrato:'ERO - Resíduos Sul - 25/26',                   cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
+  { id:'CC-EXP-003', contrato:'ERO - Resíduos Norte - 25/26',                 cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
+  { id:'CC-EXP-004', contrato:'ERO - Resíduos Centro - 25/26',                cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
+  { id:'CC-EXP-005', contrato:'ERO - Resíduos Sul - 25/26',                   cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
 
-  { id:'CC-008', contrato:'Energy Assets - Baixa Processos',              cliente:'Energy Assets',        empresa:'Expedian',       status:'ativo',      gestor:'Luiz',               categoria:'Prestação de Serviços', subcategoria:'Licenciamento Ambiental' },
+  { id:'CC-EXP-006', contrato:'Energy Assets - Baixa Processos',              cliente:'Energy Assets',        empresa:'Expedian',       status:'ativo',      gestor:'Luiz',               categoria:'Prestação de Serviços', subcategoria:'Licenciamento Ambiental' },
 
-  { id:'CC-010', contrato:'Santo Antônio Energia - RMAs',                 cliente:'Santo Antônio Energia',empresa:'Expedian',       status:'ativo',      gestor:'Luiz',               categoria:'Prestação de Serviços', subcategoria:'Monitoramento Ambiental' },
-  { id:'CC-011', contrato:'Neomax - ASV Ipiranga',                        cliente:'Neomax',               empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Supressão Vegetal' },
-  { id:'CC-012', contrato:'ERSA - Estanho - Coleta Efluentes',            cliente:'ERSA',                 empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Coleta de Resíduos - Classe I' },
-  { id:'CC-013', contrato:'Porto Velho Shopping',                         cliente:'Porto Shopping',       empresa:'Expedian',       status:'ativo',      gestor:'Luiz',               categoria:'Prestação de Serviços', subcategoria:'Consultoria Ambiental' },
-  { id:'CC-014', contrato:'Reserva para Rescisões Trabalhistas',          cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
-  { id:'CC-015', contrato:'Frota - Strada - UAO4H80',                     cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
-  { id:'CC-016', contrato:'Frota - Saveiro - RSX7A36',                    cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
-  { id:'CC-017', contrato:'Frota - Caminhão Tanque - RKS3C14',            cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
-  { id:'CC-018', contrato:'Frota - Caminhão Baú - BDB3G34',               cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
-  { id:'CC-019', contrato:'Frota - Carretinha - SLK9A54',                 cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
-  { id:'CC-020', contrato:'Frota - Mobi Like',                            cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
-  { id:'CC-021', contrato:'Jirau - Resgate de Fauna',                     cliente:'Jirau',                empresa:'Expedian',       status:'ativo',      gestor:'Luiz / Cassiane',    categoria:'Prestação de Serviços', subcategoria:'Afugentamento de Fauna' },
-  { id:'CC-022', contrato:'CGH Rio Vermelho - Energisa Geração',          cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo / Tiago',    categoria:'Prestação de Serviços', subcategoria:'Consultoria Ambiental' },
-  { id:'CC-023', contrato:'ERO - Lic Ambiental - WS108437',               cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Licenciamento Ambiental', contratoChave:'ws108437' },
-  { id:'CC-024', contrato:'ERO - Gest Ambiental - WS 108438',             cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental', contratoChave:'ws108438' },
-  { id:'CC-025', contrato:'Nova 364 - Fauna Porto PVH',                   cliente:'Nova 364',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago / Cassiane',   categoria:'Prestação de Serviços', subcategoria:'Afugentamento de Fauna' },
-  { id:'CC-037', contrato:'Nova 364 - Resíduos - Gestor',                   cliente:'Nova 364',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
-  { id:'CC-038', contrato:'ERO - Gestão Ambiental - CONT. 2024.0054.01',    cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental' },
-  { id:'CC-039', contrato:'ERO - Estudos Ambientais - 2024.0081.01',       cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Consultoria Ambiental' },
-  { id:'CC-040', contrato:'COOP RO Jirau',                                 cliente:'Jirau',                empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Prestação de Serviços', subcategoria:'Outros (Prestação de Serviços)' },
-  // CC-041/042 criados em 02/09/2026 — contratos CLM 108942/108943 (Coleta de
+  { id:'CC-EXP-007', contrato:'Santo Antônio Energia - RMAs',                 cliente:'Santo Antônio Energia',empresa:'Expedian',       status:'ativo',      gestor:'Luiz',               categoria:'Prestação de Serviços', subcategoria:'Monitoramento Ambiental' },
+  { id:'CC-EXP-008', contrato:'Neomax - ASV Ipiranga',                        cliente:'Neomax',               empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Supressão Vegetal' },
+  { id:'CC-EXP-009', contrato:'ERSA - Estanho - Coleta Efluentes',            cliente:'ERSA',                 empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Coleta de Resíduos - Classe I' },
+  { id:'CC-EXP-010', contrato:'Porto Velho Shopping',                         cliente:'Porto Shopping',       empresa:'Expedian',       status:'ativo',      gestor:'Luiz',               categoria:'Prestação de Serviços', subcategoria:'Consultoria Ambiental' },
+  { id:'CC-EXP-011', contrato:'Reserva para Rescisões Trabalhistas',          cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
+  { id:'CC-EXP-012', contrato:'Frota - Strada - UAO4H80',                     cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
+  { id:'CC-EXP-013', contrato:'Frota - Saveiro - RSX7A36',                    cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
+  { id:'CC-EXP-014', contrato:'Frota - Caminhão Tanque - RKS3C14',            cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
+  { id:'CC-EXP-015', contrato:'Frota - Caminhão Baú - BDB3G34',               cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
+  { id:'CC-EXP-016', contrato:'Frota - Carretinha - SLK9A54',                 cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
+  { id:'CC-EXP-017', contrato:'Frota - Mobi Like',                            cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
+  { id:'CC-EXP-018', contrato:'Jirau - Resgate de Fauna',                     cliente:'Jirau',                empresa:'Expedian',       status:'ativo',      gestor:'Luiz / Cassiane',    categoria:'Prestação de Serviços', subcategoria:'Afugentamento de Fauna' },
+  { id:'CC-EXP-019', contrato:'CGH Rio Vermelho - Energisa Geração',          cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo / Tiago',    categoria:'Prestação de Serviços', subcategoria:'Consultoria Ambiental' },
+  { id:'CC-EXP-020', contrato:'ERO - Lic Ambiental - WS108437',               cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Licenciamento Ambiental', contratoChave:'ws108437' },
+  { id:'CC-EXP-021', contrato:'ERO - Gest Ambiental - WS 108438',             cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental', contratoChave:'ws108438' },
+  { id:'CC-EXP-022', contrato:'Nova 364 - Fauna Porto PVH',                   cliente:'Nova 364',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago / Cassiane',   categoria:'Prestação de Serviços', subcategoria:'Afugentamento de Fauna' },
+  { id:'CC-EXP-023', contrato:'Nova 364 - Resíduos - Gestor',                   cliente:'Nova 364',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
+  { id:'CC-EXP-024', contrato:'ERO - Gestão Ambiental - CONT. 2024.0054.01',    cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental' },
+  { id:'CC-EXP-025', contrato:'ERO - Estudos Ambientais - 2024.0081.01',       cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Consultoria Ambiental' },
+  { id:'CC-EXP-026', contrato:'COOP RO Jirau',                                 cliente:'Jirau',                empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Prestação de Serviços', subcategoria:'Outros (Prestação de Serviços)' },
+  // CC-EXP-027/028 criados em 02/09/2026 — contratos CLM 108942/108943 (Coleta de
   // Resíduos, iniciados em 03/08/2026) ainda não tinham Centro de Custo próprio.
-  { id:'CC-041', contrato:'ERO - Coleta de Resíduos - CLM 108942 (Regional Sul)',    cliente:'Energisa', empresa:'Expedian', status:'ativo', gestor:'Marcelo', categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos', contratoChave:'clm108942' },
-  { id:'CC-042', contrato:'ERO - Coleta de Resíduos - CLM 108943 (Regional Centro)', cliente:'Energisa', empresa:'Expedian', status:'ativo', gestor:'Marcelo', categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos', contratoChave:'clm108943' },
+  { id:'CC-EXP-027', contrato:'ERO - Coleta de Resíduos - CLM 108942 (Regional Sul)',    cliente:'Energisa', empresa:'Expedian', status:'ativo', gestor:'Marcelo', categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos', contratoChave:'clm108942' },
+  { id:'CC-EXP-028', contrato:'ERO - Coleta de Resíduos - CLM 108943 (Regional Centro)', cliente:'Energisa', empresa:'Expedian', status:'ativo', gestor:'Marcelo', categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos', contratoChave:'clm108943' },
   // -- TL3 --
-  { id:'CC-026', contrato:'Neomax - Inventário Jirau',                    cliente:'Neomax',               empresa:'TL3', status:'finalizado', gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Inventário Florestal' },
-  { id:'CC-027', contrato:'Consolidado - TL3',                            cliente:'—',                    empresa:'TL3', status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
-  { id:'CC-028', contrato:'Santo Antônio Energia - Eletrônicos',          cliente:'Santo Antônio Energia',empresa:'TL3', status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
-  { id:'CC-029', contrato:'C. Bravin - Outorga',                          cliente:'C. Bravin',            empresa:'TL3', status:'ativo',      gestor:'Luiz / Tiago',       categoria:'Prestação de Serviços', subcategoria:'Outorga Recursos Hidricos' },
+  { id:'CC-TL3-001', contrato:'Neomax - Inventário Jirau',                    cliente:'Neomax',               empresa:'TL3', status:'finalizado', gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Inventário Florestal' },
+  { id:'CC-TL3-002', contrato:'Consolidado - TL3',                            cliente:'—',                    empresa:'TL3', status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
+  { id:'CC-TL3-003', contrato:'Santo Antônio Energia - Eletrônicos',          cliente:'Santo Antônio Energia',empresa:'TL3', status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
+  { id:'CC-TL3-004', contrato:'C. Bravin - Outorga',                          cliente:'C. Bravin',            empresa:'TL3', status:'ativo',      gestor:'Luiz / Tiago',       categoria:'Prestação de Serviços', subcategoria:'Outorga Recursos Hidricos' },
   // -- EXP BRASIL --
   // Renumerados 24/09/2026 (pedido: "numerar os centros da EXP Brasil em
   // ordem... tem que começar do 01, para cada empresa") — de CC-030..036
