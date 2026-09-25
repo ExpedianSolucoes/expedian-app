@@ -38301,14 +38301,25 @@ async function bancosVerMesAMes(banco, empresa) {
   document.body.appendChild(modal);
 }
 /* -- Gráfico de Movimentação Bancária, por empresa (pedido em 25/09/2026: "em
-   cada empresa um gráfico de movimentação bancária"). Um gráfico só por
-   empresa (a tela já é filtrada por empresa via as abas 🏢), somando o
-   histórico mês a mês (bancosCalcularHistoricoMensal, já usado no modal de
-   Mês a Mês) de TODAS as contas daquela empresa — barras de Entradas/Saídas
-   realizadas + linha de Saldo Consolidado. Mesmo padrão de Chart.js (lib
-   carregada sob demanda, cores literais #28a745/#dc3545/#0d6efd, destrói o
-   chart anterior antes de recriar) já usado em Fluxo de Caixa/Dashboard
-   Financeiro — ver fluxoCaixaCarregar(). -- */
+   cada empresa um gráfico de movimentação bancária"). Um gráfico por empresa
+   (a tela já é filtrada por empresa via as abas 🏢), com um seletor
+   Consolidado/por conta (pedido logo em seguida, no mesmo dia: "queria a
+   opção de ver além do consolidado ver conta bancária conforme mudar a
+   conta muda o gráfico") — Consolidado soma o histórico mês a mês
+   (bancosCalcularHistoricoMensal, já usado no modal de Mês a Mês) de TODAS
+   as contas da empresa; escolhendo uma conta, mostra só o histórico dela.
+   Seleção lembrada por empresa (window._bancosGraficoContaPorEmpresa), volta
+   pra Consolidado se a conta escolhida não existir mais (ex.: trocou de
+   empresa) nessa lista. Mesmo padrão de Chart.js (lib carregada sob demanda,
+   cores literais #28a745/#dc3545/#0d6efd, destrói o chart anterior antes de
+   recriar) já usado em Fluxo de Caixa/Dashboard Financeiro — ver
+   fluxoCaixaCarregar(). -- */
+function bancosGraficoMudarConta(banco) {
+  const empresa = window._bancosResumoEmpresa || RD_EMPRESAS[0];
+  window._bancosGraficoContaPorEmpresa = window._bancosGraficoContaPorEmpresa || {};
+  window._bancosGraficoContaPorEmpresa[empresa] = banco || '';
+  bancosGraficoCarregar();
+}
 async function bancosGraficoCarregar() {
   const canvasEl = document.getElementById('bancosMovChart');
   if (!canvasEl) return;
@@ -38322,11 +38333,25 @@ async function bancosGraficoCarregar() {
   }
   if (!_bancosCache || !_bancosCache.length) await carregarBancosLista();
   const empresa = window._bancosResumoEmpresa || RD_EMPRESAS[0];
-  const bancosDaLista = (_bancosCache || []).filter(b => normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa));
+  const bancosDaLista = (_bancosCache || []).filter(b => normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa)).slice().sort((a, b) => (a.Title || '').localeCompare(b.Title || '', 'pt-BR'));
+
+  window._bancosGraficoContaPorEmpresa = window._bancosGraficoContaPorEmpresa || {};
+  let contaSelecionada = window._bancosGraficoContaPorEmpresa[empresa] || '';
+  if (contaSelecionada && !bancosDaLista.some(b => b.Title === contaSelecionada)) contaSelecionada = '';
+  const seletorEl = document.getElementById('bancosGraficoContaSelContainer');
+  if (seletorEl) {
+    seletorEl.innerHTML = `<select id="bancosGraficoContaSel" onchange="bancosGraficoMudarConta(this.value)" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
+      <option value="">🏦 Consolidado (todas as contas)</option>
+      ${bancosDaLista.map(b => `<option value="${b.Title.replace(/"/g, '&quot;')}" ${b.Title === contaSelecionada ? 'selected' : ''}>${b.Title}</option>`).join('')}
+    </select>`;
+  }
+
   if (window._bancosMovChartObj) { try { window._bancosMovChartObj.destroy(); } catch (e) {} window._bancosMovChartObj = null; }
+  const notaEl = document.getElementById('bancosGraficoNota');
   if (!bancosDaLista.length) {
     const ctxVazio = canvasEl.getContext && canvasEl.getContext('2d');
     if (ctxVazio) ctxVazio.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    if (notaEl) notaEl.textContent = '';
     return;
   }
   const [despesas, receitas] = await Promise.all([
@@ -38334,7 +38359,8 @@ async function bancosGraficoCarregar() {
     dbLer('Receitas').catch(() => []),
   ]);
   let meses = null, entradasPorMes = null, saidasPorMes = null, saldoPorMes = null;
-  bancosDaLista.forEach(b => {
+  const contasParaSomar = contaSelecionada ? bancosDaLista.filter(b => b.Title === contaSelecionada) : bancosDaLista;
+  contasParaSomar.forEach(b => {
     const hist = bancosCalcularHistoricoMensal(b.Title, empresa, despesas, receitas, b.SaldoInicial);
     if (!meses) {
       meses = hist.map(h => h.mes);
@@ -38348,6 +38374,12 @@ async function bancosGraficoCarregar() {
   const labels = meses.map(m => { const [a, mm] = m.split('-'); return NOMES_MES[Number(mm) - 1] + '/' + a.slice(2); });
   const corVerde = '#28a745', corVermelho = '#dc3545', corAzul = '#0d6efd';
   const fmtEixo = (v) => Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
+  const labelSaldo = contaSelecionada ? 'Saldo' : 'Saldo Consolidado';
+  if (notaEl) {
+    notaEl.textContent = contaSelecionada
+      ? `Entradas/Saídas realizadas (Pago/Recebido) e Saldo, mês a mês desde 01/2026 — conta ${contaSelecionada}.`
+      : `Entradas/Saídas realizadas (Pago/Recebido) e Saldo Consolidado, somando todas as contas de ${empresa}, mês a mês desde 01/2026.`;
+  }
   window._bancosMovChartObj = new Chart(canvasEl, {
     type: 'bar',
     data: {
@@ -38355,7 +38387,7 @@ async function bancosGraficoCarregar() {
       datasets: [
         { type: 'bar', label: 'Entradas', data: entradasPorMes, backgroundColor: corVerde },
         { type: 'bar', label: 'Saídas', data: saidasPorMes, backgroundColor: corVermelho },
-        { type: 'line', label: 'Saldo Consolidado', data: saldoPorMes, borderColor: corAzul, backgroundColor: corAzul, tension: .25, yAxisID: 'y1', pointRadius: 4 },
+        { type: 'line', label: labelSaldo, data: saldoPorMes, borderColor: corAzul, backgroundColor: corAzul, tension: .25, yAxisID: 'y1', pointRadius: 4 },
       ],
     },
     options: {
@@ -38611,9 +38643,12 @@ function pageCadastroBancos() {
     </button>`).join('')}
   </div>
   <div class="card" style="padding:16px;margin-bottom:14px">
-    <div class="card-title" style="margin-bottom:10px">📈 Movimentação Bancária — ${empresa}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+      <div class="card-title" style="margin:0">📈 Movimentação Bancária</div>
+      <div id="bancosGraficoContaSelContainer"></div>
+    </div>
     <div style="position:relative;height:300px"><canvas id="bancosMovChart"></canvas></div>
-    <div style="font-size:.7rem;color:var(--text-muted);margin-top:8px">Entradas/Saídas realizadas (Pago/Recebido) e Saldo Consolidado, somando todas as contas de ${empresa}, mês a mês desde 01/2026.</div>
+    <div id="bancosGraficoNota" style="font-size:.7rem;color:var(--text-muted);margin-top:8px"></div>
   </div>
   <div id="bancos-form-container" style="display:none;margin-bottom:16px">
     <div class="form-card">
