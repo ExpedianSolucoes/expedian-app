@@ -4838,7 +4838,7 @@ async function carregarPrestacoes() {
     _migrarPrestacoesParceladasParaContasPagar();
   }
   try {
-    let items = await dbLer('PrestacaoContas');
+    let items = await dbLerSeguro('PrestacaoContas');
     if(!isGestor&&window._currentUser) items=items.filter(r=>r.EnviadoPor===window._currentUser.name||r.Responsavel===window._currentUser.name);
 
     // Popular opções dos filtros dinâmicos (colaborador, município), preservando seleção atual
@@ -9595,7 +9595,7 @@ async function carregarContasPagar() {
   const token=await getSharePointToken();
   if(!token){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>';return;}
   try {
-    let items = await dbLer('ContasPagar');
+    let items = await dbLerSeguro('ContasPagar');
     // Filtro por empresa — estrutural (igual Receitas/Despesas e Centros de
     // Custo), aplicado logo após buscar os dados e antes de qualquer KPI, pra
     // que os totais mostrados já reflitam só a empresa selecionada (pedido em
@@ -12094,7 +12094,7 @@ async function carregarReceitas() {
   const token = await getSharePointToken();
   if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>'; return; }
   try {
-    let items = await dbLer('Receitas');
+    let items = await dbLerSeguro('Receitas');
     const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
     items = items.filter(i => i.Empresa === empresaAtiva);
     items.forEach(i => {
@@ -14684,7 +14684,7 @@ async function carregarDespesas() {
   const token = await getSharePointToken();
   if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>'; return; }
   try {
-    let items = await dbLer('Despesas');
+    let items = await dbLerSeguro('Despesas');
     // Escopo pela empresa ativa no submenu — cada empresa vê só seus próprios lançamentos.
     const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
     items = items.filter(i => i.Empresa === empresaAtiva);
@@ -54388,7 +54388,10 @@ async function _backupUmaTabela(tabela, token, pastaDataStr) {
     const { driveId, itemId } = pasta;
     const bkId = await garantirPastaOneDrive(token, driveId, itemId, 'db_backups/' + pastaDataStr);
     if (!bkId) return false;
-    const json = JSON.stringify(dados, null, 2);
+    // Compacto (sem indentação) — pedido em 26/09/2026 (peso do Despesas.json):
+    // a indentação bonita custava ~18% de tamanho extra à toa, tanto na tabela
+    // "de verdade" (ver dbSalvar abaixo) quanto em cada cópia de backup diário.
+    const json = JSON.stringify(dados);
     const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${bkId}:/${tabela}.json:/content`;
     const r = await fetch(url, {
       method: 'PUT',
@@ -59174,6 +59177,31 @@ async function dbLer(tabela) {
   return lista;
 }
 
+/* -- Pedido em 26/09/2026: "quase todos os lançamentos financeiros zeram
+   tanto em Receita como em Despesas, ficam tudo zerado e não voltam, tenho
+   que atualizar F5". Causa: dbLer() acima joga fora o "sucesso" de
+   dbLerComEtag — se a leitura falhar (rede instável, token expirando, ou o
+   arquivo grande demais pra baixar dentro do timeout, ver
+   `_fetchComTimeout`/25s), ele devolve [] igualzinho a "a tabela está
+   realmente vazia", e quem chama (carregarDespesas/carregarReceitas/etc.)
+   não tem como distinguir os dois casos — acaba renderizando a lista/KPIs
+   vazios mesmo com os dados intactos no OneDrive. F5 "resolve" só porque a
+   releitura seguinte tem a sorte de dar certo. Mesma causa raiz de um bug já
+   corrigido em 21/08/2026 pra Flash Report/Mitigação/NC/Fornecedores (ver
+   flashCarregarHistorico) — generalizada aqui pras telas de lista
+   financeiras: em caso de falha, mantém a última lista boa já carregada em
+   memória (nada é apagado/sobrescrito por engano) em vez de mostrar zerado. -- */
+window._dbListaCache = window._dbListaCache || {};
+async function dbLerSeguro(tabela) {
+  const { lista, sucesso } = await dbLerComEtag(tabela);
+  if (sucesso) { window._dbListaCache[tabela] = lista; return lista; }
+  console.warn('[DB] Falha ao buscar', tabela, '— mantendo a última lista carregada nesta tela, nada foi apagado.');
+  if (typeof showSyncStatus === 'function' && window._dbListaCache[tabela]) {
+    showSyncStatus('⚠️ Falha ao atualizar ' + tabela + ' — mostrando a última versão carregada', 'err', 4000);
+  }
+  return window._dbListaCache[tabela] || [];
+}
+
 /* -- Igual a dbLer, mas também devolve o eTag atual do arquivo no OneDrive.
    Usado por dbInserir/dbAtualizar para escrita otimista: grava só se
    ninguém mais mexeu no arquivo entre a leitura e a escrita (se mexeu, o
@@ -59201,7 +59229,11 @@ async function dbLerComEtag(tabela, forcar) {
     const dbId = await garantirPastaOneDrive(token, driveId, itemId, 'db');
     if (!dbId) { console.warn('[DB] Pasta "db" não resolvida, abortando leitura de', tabela); return { lista: [], etag: null, sucesso: false }; }
     const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${dbId}:/${tabela}.json:/content`;
-    const r = await _fetchComTimeout(url, { headers: { 'Authorization': 'Bearer ' + token } });
+    // Timeout maior que o default (25s) — pedido em 26/09/2026: tabelas grandes
+    // (Despesas.json passou de 4MB) podiam estourar o default numa conexão mais
+    // lenta antes de terminar de baixar, o que dbLerSeguro já não deixa mais
+    // "zerar" a tela, mas ainda vale dar mais margem pra reduzir a frequência.
+    const r = await _fetchComTimeout(url, { headers: { 'Authorization': 'Bearer ' + token } }, 45000);
     if (r.status === 404) { window._dbCache[tabela] = { lista: [], etag: null, ts: Date.now() }; return { lista: [], etag: null, sucesso: true }; } // tabela ainda nao existe — isso É sucesso, não falha
     if (!r.ok) {
       console.warn('[DB] Erro ao ler', tabela, r.status);
@@ -59264,7 +59296,11 @@ async function dbSalvar(tabela, dados, etagEsperado) {
     const dbId = await garantirPastaOneDrive(token, driveId, itemId, 'db');
     if (!dbId) { console.warn('[DB] Pasta "db" não resolvida, abortando gravação de', tabela); return false; }
 
-    const json = JSON.stringify(dados, null, 2);
+    // Compacto (sem indentação) — pedido em 26/09/2026 (peso do Despesas.json,
+    // que já ia ficando grande demais pra baixar dentro do timeout de leitura,
+    // ver dbLerSeguro): a indentação bonita custava ~18% de tamanho à toa em
+    // TODA gravação de QUALQUER tabela — sem indent, mesmo conteúdo, tabela menor.
+    const json = JSON.stringify(dados);
     const url  = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${dbId}:/${tabela}.json:/content`;
     const headers = {
       'Authorization': 'Bearer ' + token,
