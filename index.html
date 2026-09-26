@@ -10476,6 +10476,19 @@ function rcPresetResgate() {
   if (subSel) { subSel.value = 'Resgate de CDB'; rcSubcategoriaEscolhida(); }
 }
 
+// Opções de Centro de Custo pro seletor (origem/destino) do modal de
+// Transferência — mesmo padrão usado no modal de "Locação de veículo
+// próprio" (servConfirmarPagamento). Primeira opção sempre em branco
+// ("Nenhum") porque o CC é opcional — pedido 26/09/2026, inspirado na aba
+// "🔄 Transferências" da planilha FINANCEIRO 2026, que já trata Banco e
+// Centro de Custo/Contrato como duas dimensões independentes por lado.
+function _trfOpcoesCC(empresa) {
+  const ccs = (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && c.status === 'ativo');
+  return '<option value="">— Nenhum —</option>' + ccs.map(c => {
+    const label = (c.id + ' · ' + c.contrato).replace(/"/g, '&quot;');
+    return `<option value="${label}">${label}</option>`;
+  }).join('');
+}
 function transferenciaAbrirModal() {
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   const modal = document.createElement('div');
@@ -10484,11 +10497,11 @@ function transferenciaAbrirModal() {
   modal.innerHTML = `
     <div class="modal-box" style="max-width:520px">
       <div class="modal-header">
-        <h2>🔁 Transferência entre Contas</h2>
+        <h2>🔁 Transferência / Movimentação</h2>
         <div class="modal-close" onclick="document.getElementById('transferenciaModal').remove()">✕</div>
       </div>
       <div class="modal-body">
-        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Lança automaticamente uma Despesa (saída) na conta de origem e uma Receita (entrada) na conta de destino, mesma categoria "Transferências entre contas", mesmo valor e data — não afeta o cálculo Operacional x Não Operacional.</div>
+        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Lança automaticamente uma Despesa (saída) na origem e uma Receita (entrada) no destino, mesma categoria "Transferências entre contas", mesmo valor e data — não afeta o cálculo Operacional x Não Operacional. Serve tanto pra mover dinheiro entre contas bancárias quanto pra realocar valor entre Centros de Custo (pode combinar as duas coisas, ou fazer só uma — igual na planilha Financeiro).</div>
         <div class="form-group" style="margin-bottom:12px">
           <label>Empresa</label>
           <select id="trf_empresa" onchange="transferenciaEmpresaAlterada()">
@@ -10506,6 +10519,17 @@ function transferenciaAbrirModal() {
           </div>
         </div>
         <div class="form-row">
+          <div class="form-group">
+            <label>Centro de Custo de Origem (opcional)</label>
+            <select id="trf_cc_origem">${_trfOpcoesCC(empresa)}</select>
+          </div>
+          <div class="form-group">
+            <label>Centro de Custo de Destino (opcional)</label>
+            <select id="trf_cc_destino">${_trfOpcoesCC(empresa)}</select>
+          </div>
+        </div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin:-8px 0 12px">☝️ Deixe os dois Centros de Custo em branco pra uma transferência bancária comum. Se a conta de origem e a de destino forem a mesma, escolha Centros de Custo diferentes — é o que caracteriza a movimentação.</div>
+        <div class="form-row">
           <div class="form-group"><label>Valor</label><input type="text" id="trf_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)"></div>
           <div class="form-group"><label>Data</label><input type="date" id="trf_data" value="${new Date().toISOString().slice(0,10)}"></div>
         </div>
@@ -10518,7 +10542,7 @@ function transferenciaAbrirModal() {
         </div>
         <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="trf_obs" placeholder="Ex: reforço de caixa, pagamento de fornecedor..."></div>
         <div style="display:flex;gap:10px">
-          <button class="btn-primary" onclick="transferenciaSalvar()">✅ Registrar Transferência</button>
+          <button class="btn-primary" onclick="transferenciaSalvar()">✅ Registrar</button>
           <button class="btn-secondary" onclick="document.getElementById('transferenciaModal').remove()">Cancelar</button>
         </div>
       </div>
@@ -10531,12 +10555,17 @@ function transferenciaEmpresaAlterada() {
   const opts = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
   const origSel = document.getElementById('trf_origem'); if (origSel) origSel.innerHTML = opts;
   const destSel = document.getElementById('trf_destino'); if (destSel) destSel.innerHTML = opts;
+  const ccOpts = _trfOpcoesCC(empresa);
+  const ccOrigSel = document.getElementById('trf_cc_origem'); if (ccOrigSel) ccOrigSel.innerHTML = ccOpts;
+  const ccDestSel = document.getElementById('trf_cc_destino'); if (ccDestSel) ccDestSel.innerHTML = ccOpts;
 }
 
 async function transferenciaSalvar() {
   const empresa = (document.getElementById('trf_empresa')||{}).value || '';
   const contaOrigem = (document.getElementById('trf_origem')||{}).value || '';
   const contaDestino = (document.getElementById('trf_destino')||{}).value || '';
+  const ccOrigem = (document.getElementById('trf_cc_origem')||{}).value || '';
+  const ccDestino = (document.getElementById('trf_cc_destino')||{}).value || '';
   const valor = rdMoedaParaNumero((document.getElementById('trf_valor')||{}).value);
   const data = (document.getElementById('trf_data')||{}).value || '';
   const responsavel = (document.getElementById('trf_responsavel')||{}).value || '';
@@ -10544,14 +10573,23 @@ async function transferenciaSalvar() {
 
   if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
   if (!contaOrigem || !contaDestino) { showToast('⚠️ Selecione as duas contas.'); return; }
-  if (contaOrigem === contaDestino) { showToast('⚠️ A conta de origem e a de destino precisam ser diferentes.'); return; }
+  // A conta pode ser a mesma dos dois lados (ex: só realocando entre Centros
+  // de Custo, sem movimentação bancária real) — nesse caso os CCs precisam
+  // ser diferentes, senão a "transferência" não muda nada. Pedido 26/09/2026,
+  // igual à aba "🔄 Transferências" da planilha Financeiro, que trata Banco e
+  // Centro de Custo como duas dimensões independentes por lado.
+  if (contaOrigem === contaDestino && ccOrigem === ccDestino) {
+    showToast(contaOrigem ? '⚠️ A conta de origem e a de destino são iguais — escolha Centros de Custo diferentes pra caracterizar a movimentação, ou contas diferentes.' : '⚠️ A conta de origem e a de destino precisam ser diferentes.');
+    return;
+  }
   if (!valor) { showToast('⚠️ Informe o valor da transferência.'); return; }
   if (!data) { showToast('⚠️ Informe a data.'); return; }
   if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
 
   const lancadoPor = window._currentUser ? window._currentUser.name : '';
   const transferenciaId = 'TRF-' + Date.now();
-  const descricaoBase = obs || ('Transferência de ' + contaOrigem + ' para ' + contaDestino);
+  const movimentaCC = !!(ccOrigem || ccDestino);
+  const descricaoBase = obs || ('Transferência de ' + contaOrigem + ' para ' + contaDestino + (movimentaCC ? ' (CC: ' + (ccOrigem || '—') + ' → ' + (ccDestino || '—') + ')' : ''));
 
   showSyncStatus('Registrando transferência...');
 
@@ -10560,7 +10598,7 @@ async function transferenciaSalvar() {
     DataLancamento: data, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
     Modalidade: 'fornecedor', NaturezaEconomica: 'Não Operacional',
     ServicoId: '', ServicoDesc: '', Fornecedor: 'Transferência Interna', Beneficiario: '', Veiculo: '',
-    CentroCusto: '', Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
+    CentroCusto: ccOrigem, Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: data, Banco: contaOrigem,
     NumMedicao: '', Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
     Vencimento: data, Valor: valor, ValorTotal: valor, Status: 'Pago',
@@ -10572,7 +10610,7 @@ async function transferenciaSalvar() {
     Title: 'Transferência de ' + contaOrigem + ' · ' + data,
     DataEmissao: data, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
     NaturezaEconomica: 'Não Operacional', Cliente: 'Transferência Interna', Descricao: descricaoBase,
-    CentroCusto: '', Valor: valor, DataPrevista: data, FormaRecebimento: 'Transferência',
+    CentroCusto: ccDestino, Valor: valor, DataPrevista: data, FormaRecebimento: 'Transferência',
     ResponsavelLancamento: responsavel, DataRecebimento: data, Banco: contaDestino,
     Status: 'Recebido', NumMedicao: '', NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
     OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
@@ -10894,9 +10932,15 @@ function transferenciasFiltrar() {
         ? `${p.saida.Banco || '—'} → ${p.entrada.Banco || '—'}`
         : p.saida ? `Saída: ${p.saida.Banco || '—'}` : `Entrada: ${p.entrada.Banco || '—'}`;
       const avisoOrfa = (temTransferenciaId && (!p.saida || !p.entrada)) ? '<div style="color:var(--red);font-size:.65rem">Falta a contrapartida desta transferência</div>' : '';
+      // Quando a transferência também move Centro de Custo (campo novo, opcional,
+      // pedido 26/09/2026), mostra numa linha secundária — sobretudo importante
+      // quando a conta é a mesma dos dois lados e só o CC muda.
+      const ccOrig = p.saida ? (p.saida.CentroCusto || '') : '';
+      const ccDest = p.entrada ? (p.entrada.CentroCusto || '') : '';
+      const ccInfo = (ccOrig || ccDest) ? `<div style="font-size:.65rem;color:var(--text-muted)">CC: ${ccOrig || '—'} → ${ccDest || '—'}</div>` : '';
       return `<tr>
         <td style="font-size:.78rem;white-space:nowrap">${dataFmt}</td>
-        <td style="font-size:.78rem">${origemDestino}${avisoOrfa}</td>
+        <td style="font-size:.78rem">${origemDestino}${ccInfo}${avisoOrfa}</td>
         <td style="font-size:.78rem;font-weight:700;white-space:nowrap">${fmtR(base.Valor)}</td>
         <td style="font-size:.75rem;color:var(--text-muted)">${base.ResponsavelLancamento || '—'}</td>
         <td style="font-size:.75rem;color:var(--text-muted)">${base.Descricao || '—'}</td>
