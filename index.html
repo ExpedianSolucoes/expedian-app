@@ -4020,7 +4020,7 @@ function pagePrestacao() {
     <div class="form-row" id="prest_parcelas_row" style="display:none">
       <div class="form-group">
         <label>Quantas vezes?</label>
-        <input type="number" id="prest_num_parcelas" min="2" step="1" placeholder="Ex: 3">
+        <input type="number" id="prest_num_parcelas" min="2" step="1" placeholder="Ex: 3" oninput="prestGerarParcelas()">
       </div>
       <div class="form-group">
         <label>Tipo de parcelamento</label>
@@ -4030,6 +4030,19 @@ function pagePrestacao() {
         </select>
       </div>
     </div>
+    <!-- Vencimento da 1ª parcela + editor de parcelas (vencimento/valor de cada
+         uma) — mesma mecânica de Contas a Pagar (pagGerarParcelas), só que
+         aqui fica tudo dentro do MESMO lançamento de Prestação de Contas (não
+         gera N registros separados, porque é 1 despesa só, já paga, sendo
+         prestada de contas — diferente de Contas a Pagar que ainda vai pagar
+         cada parcela). Pedido em 26/09/2026. -->
+    <div class="form-row" id="prest_parcelas_row2" style="display:none">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Vencimento da 1ª parcela</label>
+        <input type="date" id="prest_venc_1parcela" onchange="prestGerarParcelas()">
+      </div>
+    </div>
+    <div id="prest_parcelas_editor" style="display:none;margin-bottom:16px"></div>
 
     <!-- Linha 5: Observação -->
     <div class="form-row">
@@ -4220,7 +4233,70 @@ function pcNovoFornecedorComNome(nomeSugerido) {
 function pcToggleParcelas() {
   const v = document.getElementById('prest_parcelamento').value;
   const row = document.getElementById('prest_parcelas_row');
+  const row2 = document.getElementById('prest_parcelas_row2');
   if (row) row.style.display = v === 'parcelado' ? 'flex' : 'none';
+  if (row2) row2.style.display = v === 'parcelado' ? 'flex' : 'none';
+  if (v !== 'parcelado') {
+    const ed = document.getElementById('prest_parcelas_editor');
+    if (ed) { ed.style.display = 'none'; ed.innerHTML = ''; }
+    window._prestParcelas = null;
+  } else {
+    prestGerarParcelas();
+  }
+}
+
+/* -- Gera automaticamente vencimento (mensal a partir da 1ª parcela) + valor
+      (total dividido igualmente, com ajuste de centavos na última) de cada
+      parcela — mesmo mecanismo de pagGerarParcelas() em Contas a Pagar, pedido
+      pelo Tiago em 26/09/2026 pra funcionar igual aqui em Prestação de Contas.
+      Cada parcela fica editável (vencimento e valor) antes de salvar. -- */
+function prestGerarParcelas() {
+  const parcelamento = (document.getElementById('prest_parcelamento')||{}).value;
+  if (parcelamento !== 'parcelado') return;
+  const qtd = parseInt(document.getElementById('prest_num_parcelas').value) || 0;
+  const dataBase = document.getElementById('prest_venc_1parcela').value;
+  const total = parseFloat(document.getElementById('prest_valor').value) || 0;
+  const editor = document.getElementById('prest_parcelas_editor');
+  if (!qtd || qtd < 2 || !dataBase || !total) {
+    if (editor) { editor.style.display = 'none'; editor.innerHTML = ''; }
+    window._prestParcelas = null;
+    return;
+  }
+  const valorParcela = Math.round((total / qtd) * 100) / 100;
+  const parcelas = [];
+  const base = new Date(dataBase + 'T00:00:00');
+  for (let i = 0; i < qtd; i++) {
+    const d = new Date(base);
+    d.setMonth(d.getMonth() + i);
+    parcelas.push({ numero: i + 1, vencimento: d.toISOString().split('T')[0], valor: valorParcela });
+  }
+  const soma = parcelas.reduce((s, p) => s + p.valor, 0);
+  const dif = Math.round((total - soma) * 100) / 100;
+  if (dif !== 0) parcelas[parcelas.length - 1].valor = Math.round((parcelas[parcelas.length - 1].valor + dif) * 100) / 100;
+  window._prestParcelas = parcelas;
+  prestRenderizarParcelas();
+}
+
+function prestRenderizarParcelas() {
+  const editor = document.getElementById('prest_parcelas_editor');
+  if (!editor) return;
+  const parcelas = window._prestParcelas || [];
+  if (!parcelas.length) { editor.style.display = 'none'; editor.innerHTML = ''; return; }
+  editor.style.display = 'block';
+  editor.innerHTML = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Parcelas geradas automaticamente — ajuste vencimento e valor se precisar:</div>' +
+    '<div style="display:flex;flex-direction:column;gap:6px">' +
+    parcelas.map((p, i) => `
+      <div style="display:flex;gap:8px;align-items:center;background:var(--surface2);padding:6px 10px;border-radius:8px">
+        <span style="font-size:.78rem;font-weight:700;width:44px">${p.numero}/${parcelas.length}</span>
+        <input type="date" value="${p.vencimento}" onchange="prestAtualizarParcela(${i},'vencimento',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
+        <input type="number" step="0.01" value="${p.valor}" onchange="prestAtualizarParcela(${i},'valor',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px">
+      </div>`).join('') +
+    '</div>';
+}
+
+function prestAtualizarParcela(i, campo, valor) {
+  if (!window._prestParcelas || !window._prestParcelas[i]) return;
+  window._prestParcelas[i][campo] = campo === 'valor' ? (parseFloat(valor) || 0) : valor;
 }
 
 function abrirCadastroFornecedorPrest() {
@@ -4436,6 +4512,14 @@ async function salvarRascunhoPrestacao() {
     if (editandoId) {
       const ok = await dbAtualizar('PrestacaoContas', editandoId, dados);
       novo = ok ? { Id: editandoId } : null;
+    } else if (dados.Parcelamento === 'parcelado' && window._prestParcelas && window._prestParcelas.length) {
+      // Parcelado, lançamento novo — cada parcela vira seu próprio registro
+      // (mesmo padrão de Contas a Pagar), pra poder ser conferida/aprovada
+      // uma a uma pelo Financeiro. Ver prestMontarRegistrosParcelados().
+      const registros = prestMontarRegistrosParcelados(dados, 'Rascunho');
+      let ok = true;
+      for (const r of registros) { const okR = await dbInserir('PrestacaoContas', r); ok = ok && !!okR; }
+      novo = ok ? { ok: true } : null;
     } else {
       dados.Status='Rascunho';
       novo = await dbInserir('PrestacaoContas', dados);
@@ -4479,13 +4563,23 @@ async function enviarPrestacaoFinanceiro() {
     }
   }
 
-  dados.Status = 'Ag. Financeiro';
   _limparSyncError();
   let ok;
   if (editandoId) {
+    dados.Status = 'Ag. Financeiro';
     ok = await dbAtualizar('PrestacaoContas', editandoId, dados);
     showToast(ok ? '✅ Alterações salvas e enviadas ao Financeiro!' : ('❌ Erro ao salvar. Tente novamente.' + syncErrorDetalhe()));
+  } else if (dados.Parcelamento === 'parcelado' && window._prestParcelas && window._prestParcelas.length) {
+    // Parcelado, lançamento novo — cada parcela vira seu próprio registro,
+    // já direto pro Financeiro, exatamente como Contas a Pagar (ver
+    // prestMontarRegistrosParcelados()) — o Financeiro confere/aprova cada
+    // parcela na sua própria linha da lista, uma a uma.
+    const registros = prestMontarRegistrosParcelados(dados, 'Ag. Financeiro');
+    ok = true;
+    for (const r of registros) { const okR = await dbInserir('PrestacaoContas', r); ok = ok && !!okR; }
+    showToast(ok ? '✅ Enviado ao Financeiro (' + registros.length + ' parcelas)!' : ('❌ Erro ao salvar. Tente novamente.' + syncErrorDetalhe()));
   } else {
+    dados.Status = 'Ag. Financeiro';
     const novo = await dbInserir('PrestacaoContas', dados);
     ok = !!novo;
     showToast(novo ? '✅ Enviado ao Financeiro!' : ('❌ Erro ao salvar. Tente novamente.' + syncErrorDetalhe()));
@@ -4611,7 +4705,23 @@ function prestAtualizarCategoriaPorSubcategoria() {
   if (cat) { catHid.value = cat; if (catInp) catInp.value = cat; }
 }
 
+/* -- Monta o objeto "base" comum a Rascunho/Enviar/Salvar Correção. Quando é
+      um lançamento NOVO (sem editandoId), quem chamar essa função ainda
+      precisa decidir o Parcelamento antes de salvar: se for "parcelado", o
+      objeto retornado aqui NÃO deve ir direto pro banco — quem chama (
+      salvarRascunhoPrestacao/enviarPrestacaoFinanceiro) precisa fazer o
+      split em N registros (um por parcela, igual Contas a Pagar) usando
+      window._prestParcelas; use prestDadosParcelamentoNovo() pra isso.
+      Quando é EDIÇÃO de um lançamento já existente (editandoId setado, aqui
+      ou em ParcelaContas já dividida), o objeto NUNCA inclui Parcelamento/
+      TipoParcelamento/NumParcelas/NumParcela — cada parcela já é seu próprio
+      registro (assim como em Contas a Pagar), então editar aqui edita só
+      essa parcela específica; omitir essas chaves faz dbAtualizar (PATCH
+      parcial) preservar o que já estava salvo, sem risco de corromper o
+      parcelamento original com o que aparece no formulário (que é forçado
+      pra "À vista" durante edição, ver pcEditarPrestacao). -- */
 function coletarDadosPrestacao(validar=false) {
+  const editandoId = window._pcEditandoId;
   const data=(document.getElementById('prest_data').value||'');
   const valor=parseFloat(document.getElementById('prest_valor').value)||0;
   const empresa=(document.getElementById('prest_empresa').value||'').trim();
@@ -4634,23 +4744,58 @@ function coletarDadosPrestacao(validar=false) {
     if(!empresa){showToast('⚠️ Selecione a empresa.');return null;}
     if(!fornecedor){showToast('⚠️ Selecione o fornecedor/estabelecimento (digite e escolha na lista).');return null;}
     if(!formaPgto){showToast('⚠️ Selecione a forma de pagamento.');return null;}
-    if(parcelamento==='parcelado'&&!numParcelas){showToast('⚠️ Informe em quantas vezes foi parcelado.');return null;}
+    if(!editandoId&&parcelamento==='parcelado'&&!numParcelas){showToast('⚠️ Informe em quantas vezes foi parcelado.');return null;}
+    if(!editandoId&&parcelamento==='parcelado'&&(!window._prestParcelas||!window._prestParcelas.length)){showToast('⚠️ Informe o vencimento da 1ª parcela pra gerar as parcelas (vencimento e valor de cada uma).');return null;}
   }
-  return {
+  const base = {
     Title: (fornecedor||'Despesa')+' · '+(data||new Date().toLocaleDateString('pt-BR')),
     DataDespesa: data, Valor: valor, Empresa: empresa, CentroCusto: cc,
     Fornecedor: fornecedor, Municipio: municipio, NumeroNF: nf, Observacoes: obs,
     Categoria: categoria, Subcategoria: subcategoria, NaturezaEconomica: rdNaturezaDeSubcategoria(subcategoria),
-    FormaPagamento: formaPgto, Parcelamento: parcelamento, NumParcelas: numParcelas, TipoParcelamento: tipoParcelamento,
+    FormaPagamento: formaPgto,
     Responsavel: window._currentUser?window._currentUser.name:'',
     EnviadoPor: window._currentUser?window._currentUser.name:'Desconhecido',
     LancadoPor: lancadoPor,
     DataLancamento: new Date().toISOString(),
   };
+  if (!editandoId) {
+    // Só em lançamento NOVO o Parcelamento/Tipo/quantidade vêm daqui — ver
+    // nota acima sobre por que edição nunca inclui esses campos.
+    base.Parcelamento = parcelamento;
+    base.TipoParcelamento = tipoParcelamento;
+    base.NumParcelas = numParcelas;
+  }
+  return base;
+}
+
+/* -- A partir do objeto "base" (sem Parcelamento definitivo) e de
+      window._prestParcelas (gerado por prestGerarParcelas/ajustado à mão),
+      monta um array com N objetos prontos pra inserir — um por parcela,
+      cada um seu próprio registro de PrestacaoContas, exatamente como
+      Contas a Pagar faz em salvarContaPagar(). DataDespesa de cada um vira
+      o VENCIMENTO daquela parcela (não a data da compra original) — mesma
+      lógica de Contas a Pagar, que só conhece "Vencimento", não "quando foi
+      comprado"; isso é o que faz cada parcela aparecer no mês certo pros
+      filtros/KPIs existentes (que já filtram por DataDespesa) sem precisar
+      de nenhum campo novo. -- */
+function prestMontarRegistrosParcelados(base, status) {
+  const parcelas = window._prestParcelas || [];
+  return parcelas.map(p => ({
+    ...base,
+    Title: (base.Fornecedor||'Despesa') + ' · parcela ' + p.numero + '/' + parcelas.length + ' · ' + p.vencimento,
+    DataDespesa: p.vencimento,
+    Valor: p.valor,
+    Parcelamento: 'parcelado',
+    TipoParcelamento: (document.getElementById('prest_tipo_parcelamento')||{}).value || '',
+    NumParcelas: parcelas.length, // total — mesmo campo/sentido dos lançamentos parcelados antigos (compat com pgtoTxt)
+    TotalParcelas: parcelas.length, // total — mesmo nome usado em Contas a Pagar/Despesas/Receitas parcelados
+    NumParcela: p.numero, // qual parcela é esta (mesma convenção das outras tabelas)
+    Status: status,
+  }));
 }
 
 function limparFormPrestacao() {
-  ['prest_data','prest_valor','prest_nf','prest_obs','prest_num_parcelas'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['prest_data','prest_valor','prest_nf','prest_obs','prest_num_parcelas','prest_venc_1parcela'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const emp=document.getElementById('prest_empresa');if(emp)emp.selectedIndex=0;
   const cc=document.getElementById('prest_cc');if(cc)cc.innerHTML='<option value="">Selecione a empresa primeiro...</option>';
   const forn=document.getElementById('prest_fornecedor_input');if(forn)forn.value='';
@@ -4833,7 +4978,7 @@ async function carregarPrestacoes() {
         const atrasado = (i.Status === 'Ag. Financeiro' || i.Status === 'Ag. Aprovação Gestor') && dias !== null && dias > 3;
         const podeAgirFinanceiro = i.Status==='Ag. Financeiro' && isGestor;
         const podeAgirGestorLegado = i.Status==='Ag. Aprovação Gestor' && isGestor;
-        const pgtoTxt = (i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcelas||'?'}x (${i.TipoParcelamento||''})` : i.Parcelamento==='faturado' ? `${i.FormaPagamento||''} · Faturado` : (i.FormaPagamento||'—')) + (i.Status==='Paga'&&i.DataPagamento ? `<div style="font-size:.68rem;color:var(--green-main)">✅ Pago em ${new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR')}</div>` : '');
+        const pgtoTxt = (i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcela?('parcela '+i.NumParcela+'/'+(i.TotalParcelas||i.NumParcelas||'?')):((i.NumParcelas||'?')+'x')} (${i.TipoParcelamento||''})` : i.Parcelamento==='faturado' ? `${i.FormaPagamento||''} · Faturado` : (i.FormaPagamento||'—')) + (i.Status==='Paga'&&i.DataPagamento ? `<div style="font-size:.68rem;color:var(--green-main)">✅ Pago em ${new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR')}</div>` : '');
         return `<tr${atrasado?' style="background:#fffbeb"':''}>
         <td style="font-size:.78rem">${i.DataDespesa?new Date(i.DataDespesa+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
         <td style="font-size:.75rem;color:var(--text-muted)">${i.DataLancamento?new Date(i.DataLancamento).toLocaleDateString('pt-BR'):'—'}</td>
@@ -4906,12 +5051,20 @@ async function pcEditarPrestacao(id) {
   set('prest_obs', r.Observacoes);
   set('prest_forma_pgto', r.FormaPagamento);
   set('prest_lancadopor', r.LancadoPor || r.EnviadoPor || r.Responsavel || '');
-  set('prest_parcelamento', r.Parcelamento || 'avista');
-  pcToggleParcelas();
-  if (r.Parcelamento === 'parcelado') {
-    set('prest_num_parcelas', r.NumParcelas);
-    set('prest_tipo_parcelamento', r.TipoParcelamento);
-  }
+  // Cada parcela já é seu próprio registro em PrestacaoContas (mesmo padrão
+  // de Contas a Pagar, ver pagEditarLancamento) — editar aqui edita só essa
+  // parcela específica, então força "À vista" no formulário (esconde a UI de
+  // gerar novas parcelas) independente do r.Parcelamento original. O
+  // Parcelamento/TipoParcelamento/NumParcelas/NumParcela verdadeiros do
+  // registro NÃO são tocados ao salvar — coletarDadosPrestacao() omite esses
+  // campos durante edição, então o dbAtualizar (PATCH parcial) preserva o
+  // que já estava salvo.
+  const parcSelPrest = document.getElementById('prest_parcelamento');
+  if (parcSelPrest) { parcSelPrest.value = 'avista'; pcToggleParcelas(); }
+  window._prestParcelas = null;
+  const infoParcela = (r.Parcelamento === 'parcelado' && r.NumParcela)
+    ? ` (parcela ${r.NumParcela}/${r.NumParcelas||'?'} — ${r.TipoParcelamento||''})`
+    : '';
   window._pcEditandoStatusOriginal = r.Status;
   const btnRascunho = document.getElementById('pc-btn-rascunho');
   const btnEnviar = document.getElementById('pc-btn-enviar');
@@ -4928,7 +5081,7 @@ async function pcEditarPrestacao(id) {
     if (btnEnviar) btnEnviar.style.display = 'none';
     if (btnSalvarAprovada) btnSalvarAprovada.style.display = '';
     if (banner) banner.innerHTML = `<div style="background:#dbeafe;border:1px solid #3b82f6;border-radius:8px;padding:8px 12px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;font-size:.78rem;color:#1e40af">
-      <span>✏️ Corrigindo lançamento já aprovado — o status "Aprovada" é mantido. Ajuste os campos e clique em "Salvar Correção".</span>
+      <span>✏️ Corrigindo lançamento já aprovado${infoParcela} — o status "Aprovada" é mantido. Ajuste os campos e clique em "Salvar Correção".</span>
       <button onclick="pcCancelarEdicaoPrestacao()" style="border:none;background:none;cursor:pointer;font-size:.78rem;font-weight:700;color:#1e40af;text-decoration:underline">Cancelar edição</button>
     </div>`;
     showToast('✏️ Editando lançamento já aprovado — clique em "Salvar Correção" ao terminar.');
@@ -4937,7 +5090,7 @@ async function pcEditarPrestacao(id) {
     if (btnEnviar) btnEnviar.style.display = '';
     if (btnSalvarAprovada) btnSalvarAprovada.style.display = 'none';
     if (banner) banner.innerHTML = `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;font-size:.78rem;color:#92400e">
-      <span>✏️ Editando lançamento existente — corrija os campos e clique em "Enviar ao Financeiro" ou "Salvar Rascunho".</span>
+      <span>✏️ Editando lançamento existente${infoParcela} — corrija os campos e clique em "Enviar ao Financeiro" ou "Salvar Rascunho".</span>
       <button onclick="pcCancelarEdicaoPrestacao()" style="border:none;background:none;cursor:pointer;font-size:.78rem;font-weight:700;color:#92400e;text-decoration:underline">Cancelar edição</button>
     </div>`;
     showToast('✏️ Editando lançamento — corrija os campos e clique em "Enviar ao Financeiro" ou "Salvar Rascunho" de novo.');
@@ -5005,7 +5158,7 @@ async function exportarPrestacaoExcel() {
     'NF/Recibo': i.NumeroNF || '',
     'Valor': i.Valor || 0,
     'Forma de Pagamento': i.FormaPagamento || '',
-    'Parcelamento': i.Parcelamento === 'parcelado' ? ((i.NumParcelas||'')+'x — '+(i.TipoParcelamento||'')) : i.Parcelamento === 'faturado' ? 'Faturado' : 'À vista',
+    'Parcelamento': i.Parcelamento === 'parcelado' ? (i.NumParcela ? ('parcela '+i.NumParcela+'/'+(i.TotalParcelas||i.NumParcelas||'')+' — '+(i.TipoParcelamento||'')) : ((i.NumParcelas||'')+'x — '+(i.TipoParcelamento||''))) : i.Parcelamento === 'faturado' ? 'Faturado' : 'À vista',
     'Status': i.Status || '',
     'Data de Pagamento': (i.Status==='Paga'&&i.DataPagamento) ? new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Motivo Devolução': i.MotivoReprovacao || '',
@@ -5153,7 +5306,16 @@ async function _criarSaidaBPOApartirDePrestacao(pc) {
   if (arr.some(s => s.origemPrestacaoId === pc.Id)) return; // já gerada antes
   const maxNum = arr.reduce((m, s) => Math.max(m, parseInt(String(s.id||'').replace(/\D/g,''))||0), 0);
   const tipoPgtoMap = { avista: 'À Vista', parcelado: 'Parcelado', faturado: 'Faturado' };
-  const qtd = pc.Parcelamento === 'parcelado' ? (Number(pc.NumParcelas) || 1) : 1;
+  // Desde 26/09/2026, um lançamento parcelado vira N registros de
+  // PrestacaoContas independentes (um por parcela, ver
+  // prestMontarRegistrosParcelados) — cada um já chega aqui com pc.Valor
+  // sendo o valor DAQUELA parcela específica (não mais o total). Se
+  // dividíssemos de novo por pc.NumParcelas (a contagem total), o valor
+  // ficaria errado (dividido 2x). Só divide o total antigo quando o
+  // registro NÃO tem NumParcela (lançamento antigo, de antes dessa mudança,
+  // salvo como um único registro parcelado com o valor total).
+  const ehParcelaIndividual = pc.Parcelamento === 'parcelado' && !!pc.NumParcela;
+  const qtd = ehParcelaIndividual ? 1 : (pc.Parcelamento === 'parcelado' ? (Number(pc.NumParcelas) || 1) : 1);
   const valor = Number(pc.Valor) || 0;
   const novaSaida = {
     id: 's' + (maxNum + 1),
@@ -5164,7 +5326,7 @@ async function _criarSaidaBPOApartirDePrestacao(pc) {
     fornecedor: pc.Fornecedor || '',
     contrato: pc.CentroCusto || '',
     total: valor,
-    tipoPgto: tipoPgtoMap[pc.Parcelamento] || 'À Vista',
+    tipoPgto: ehParcelaIndividual ? 'À Vista' : (tipoPgtoMap[pc.Parcelamento] || 'À Vista'),
     qtdParcelas: qtd,
     valorParcela: qtd ? Math.round((valor / qtd) * 100) / 100 : valor,
     dataVencimento: pc.DataDespesa || '',
@@ -5343,6 +5505,7 @@ async function pcAbrirVisualizar(id) {
       ${linha('Valor', 'R$ '+(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}))}
       ${linha('Data da Despesa', fmtData(i.DataDespesa))}
       ${linha('Forma de Pagamento', i.FormaPagamento||'—')}
+      ${i.Parcelamento==='parcelado' ? linha('Parcelamento', i.NumParcela ? ('Parcela '+i.NumParcela+'/'+(i.TotalParcelas||i.NumParcelas||'?')+' — '+(i.TipoParcelamento||'')) : ((i.NumParcelas||'?')+'x — '+(i.TipoParcelamento||''))) : ''}
       ${linha('NF/Recibo', i.NumeroNF||'—')}
       ${linha('Responsável', i.Responsavel||i.EnviadoPor||'—')}
       ${i.LancadoPor && i.LancadoPor !== i.Responsavel ? linha('Lançado por', i.LancadoPor) : ''}
@@ -5506,24 +5669,16 @@ function normalizarEmpresa(valor) {
 
 // Empresas e centros de custo vinculados
 const EMPRESAS_CC = {
-  'Expedian': [
-    'CC-EXP-001 · Operações Campo',
-    'CC-EXP-002 · Administrativo',
-    'CC-EXP-003 · Veículos e Logística',
-    'CC-EXP-004 · Equipamentos',
-    'CC-EXP-005 · Treinamentos e NRs',
-    'CC-EXP-006 · Geral',
-  ],
-  'TL3': [
-    'CC-TL3-001 · Operações',
-    'CC-TL3-002 · Administrativo',
-    'CC-TL3-003 · Geral',
-  ],
-  'EXP Brasil': [
-    'CC-EXPBR-001 · Projetos',
-    'CC-EXPBR-002 · Administrativo',
-    'CC-EXPBR-003 · Geral',
-  ],
+  // Listas genéricas antigas removidas a pedido do Tiago (26/09/2026) — esses
+  // "CC-EXP-001..006 · Operações Campo/...", "CC-TL3-001..003 · Operações/..."
+  // e "CC-EXPBR-001..003 · Projetos/..." eram placeholders fixos, sem relação
+  // com os Centros de Custo reais cadastrados em centrosCustoData (que já usam
+  // os códigos CC-EXP-001..030 / CC-TL3-001..004 / CC-EXPBR-001..008 de
+  // verdade, renumerados em 24-25/09/2026). Com os 3 vazios aqui, o dropdown
+  // de Centro de Custo em Prestação de Contas passa a mostrar só os CCs reais.
+  'Expedian': [],
+  'TL3': [],
+  'EXP Brasil': [],
 };
 
 // Status automático baseado em vencimento
