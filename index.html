@@ -4833,6 +4833,10 @@ function pcFiltrarKpi(tipo) {
 async function carregarPrestacoes() {
   const el=document.getElementById('lista-prestacoes');if(!el)return;
   const isGestor=currentProfile==='diretoria'||currentProfile==='coordenador';
+  if (currentProfile === 'diretoria' && !window._migPrestCPFeita) {
+    window._migPrestCPFeita = true;
+    _migrarPrestacoesParceladasParaContasPagar();
+  }
   try {
     let items = await dbLer('PrestacaoContas');
     if(!isGestor&&window._currentUser) items=items.filter(r=>r.EnviadoPor===window._currentUser.name||r.Responsavel===window._currentUser.name);
@@ -5003,7 +5007,7 @@ async function carregarPrestacoes() {
             <button class="btn-primary" style="padding:2px 6px;font-size:.65rem" onclick="pcAbrirVisualizar(${i.Id})">✅ Aprovar</button>
             <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`:''}
           ${i.Status==='Aprovada'&&currentProfile==='diretoria'?`
-            <button class="btn-primary" style="padding:2px 6px;font-size:.65rem;background:var(--green-main)" onclick="pcAbrirVisualizar(${i.Id})">💳 Registrar Pagamento</button>
+            ${(i.Parcelamento==='parcelado'&&i.EnviadoContasPagar)?`<button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="navigate('pagar')">💳 Ver em Contas a Pagar</button>`:`<button class="btn-primary" style="padding:2px 6px;font-size:.65rem;background:var(--green-main)" onclick="pcAbrirVisualizar(${i.Id})">💳 Registrar Pagamento</button>`}
             <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="pcEditarPrestacao(${i.Id})">✏️ Editar</button>`:''}
           ${podeAgirGestorLegado?`
             <button class="btn-primary" style="padding:2px 6px;font-size:.65rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar (fluxo antigo)</button>
@@ -5259,6 +5263,15 @@ async function aprovarPrestacaoFinanceiro(id, ajustes) {
       const lista = await dbLer('PrestacaoContas');
       const registro = lista.find(r => Number(r.Id) === Number(id));
       if (registro) await _criarSaidaBPOApartirDePrestacao(registro);
+      // Pedido em 26/09/2026: "depois que aprovar contas parceladas, ela já ir
+      // direto para contas a pagar. E lá vou dando baixa conforme as parcelas,
+      // como já ocorre em contas a pagar" — o "Registrar Pagamento" de dentro
+      // da Prestação de Contas só sabia confirmar o Valor do registro inteiro,
+      // o que quebrava pra parcelado (não dava pra pagar só 1 parcela). Ver
+      // _enviarPrestacaoParaContasPagar().
+      if (registro && registro.Parcelamento === 'parcelado' && !registro.EnviadoContasPagar) {
+        await _enviarPrestacaoParaContasPagar(registro);
+      }
     } catch(e) { console.warn('[BPO] Falha ao gerar Saída a partir da Prestação de Contas', e); }
   }
   showToast(ok ? '✅ Aprovado pelo financeiro!' : ('❌ Erro' + syncErrorDetalhe()));
@@ -5343,6 +5356,98 @@ async function _criarSaidaBPOApartirDePrestacao(pc) {
   };
   arr.push(novaSaida);
   await dbSalvar('bpo_saidas_v4', arr);
+}
+
+/* -- Divide um valor total em N parcelas mensais (mesma matemática de
+      prestGerarParcelas/pagGerarParcelas, só que sem depender do formulário —
+      usada pra converter um lançamento LEGADO de Prestação de Contas parcelado
+      antes da separação por registro (um só registro com o Valor TOTAL e
+      TipoParcelamento tipo "2x"), quando ele precisa virar N lançamentos de
+      Contas a Pagar. -- */
+function _prestSplitParcelasAuto(total, qtd, dataBaseStr) {
+  const n = Math.max(1, parseInt(qtd) || 1);
+  const valorParcela = Math.round((total / n) * 100) / 100;
+  const parcelas = [];
+  const base = new Date((dataBaseStr || new Date().toISOString().split('T')[0]) + 'T00:00:00');
+  for (let i = 0; i < n; i++) {
+    const d = new Date(base);
+    d.setMonth(d.getMonth() + i);
+    parcelas.push({ numero: i + 1, total: n, vencimento: d.toISOString().split('T')[0], valor: valorParcela });
+  }
+  const soma = parcelas.reduce((s, p) => s + p.valor, 0);
+  const dif = Math.round((total - soma) * 100) / 100;
+  if (dif !== 0) parcelas[parcelas.length - 1].valor = Math.round((parcelas[parcelas.length - 1].valor + dif) * 100) / 100;
+  return parcelas;
+}
+
+/* -- Pedido em 26/09/2026: uma Prestação de Contas parcelada, ao ser aprovada,
+      passa a virar lançamento(s) em Contas a Pagar — o pagamento/baixa de cada
+      parcela passa a ser feito lá (fluxo já maduro, por parcela), em vez do
+      "Registrar Pagamento" da própria Prestação de Contas (que só sabia
+      confirmar o Valor do registro inteiro).
+      - Registro NOVO (já nasceu como 1 parcela = 1 registro, ver
+        prestMontarRegistrosParcelados): gera 1 lançamento em ContasPagar com
+        o Valor/vencimento daquela parcela específica.
+      - Registro LEGADO (de antes da separação por registro — um só registro
+        com o Valor TOTAL e TipoParcelamento tipo "2x", sem NumParcela): as
+        parcelas nunca foram individualizadas, então divide automaticamente
+        (mesma lógica de prestGerarParcelas: valor total ÷ qtd, vencimentos
+        mensais a partir da Data da Despesa, ajuste de centavo na última).
+      Idempotente: marca EnviadoContasPagar no registro de origem, então nunca
+      duplica mesmo se chamada de novo (ver _migrarPrestacoesParceladasParaContasPagar). -- */
+async function _enviarPrestacaoParaContasPagar(pc) {
+  if (!pc || pc.Parcelamento !== 'parcelado' || pc.EnviadoContasPagar) return;
+  const ehParcelaIndividual = !!pc.NumParcela;
+  const parcelas = ehParcelaIndividual
+    ? [{ numero: pc.NumParcela, total: pc.TotalParcelas || pc.NumParcelas || 1, vencimento: pc.DataDespesa, valor: Number(pc.Valor) || 0 }]
+    : _prestSplitParcelasAuto(Number(pc.Valor) || 0, pc.NumParcelas || 2, pc.DataDespesa);
+  const idsGerados = [];
+  for (const p of parcelas) {
+    const novoCP = await dbInserir('ContasPagar', {
+      Fornecedor: pc.Fornecedor || '', Descricao: pc.Observacoes || '', Empresa: pc.Empresa || '',
+      CentroCusto: pc.CentroCusto || '', Categoria: pc.Categoria || '', Subcategoria: pc.Subcategoria || '',
+      NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(pc.Subcategoria || '') : ''),
+      FormaPagamento: pc.FormaPagamento || '',
+      Observacao: `Convertido de Prestação de Contas${pc.Fornecedor ? (' — ' + pc.Fornecedor) : ''} (parcela ${p.numero}/${p.total})`,
+      NumeroBoleto: '', EnviadoFinanceiro: true, LancadoPor: pc.LancadoPor || pc.EnviadoPor || '',
+      NumMedicao: (pc.DivisaoCC && pc.DivisaoCC.length) ? '' : (pc.NumMedicao || ''),
+      ComprovanteUrl: pc.ComprovanteUrl || '', ComprovanteNome: pc.ComprovanteNome || '',
+      DivisaoCC: pc.DivisaoCC || [],
+      Title: (pc.Fornecedor || 'Prestação de Contas') + ' · parcela ' + p.numero + '/' + p.total + ' · ' + p.vencimento,
+      Vencimento: p.vencimento, Valor: p.valor,
+      // Já veio aprovado pela Prestação de Contas — não passa de novo pelo
+      // "Aguardando Aprovação" de Contas a Pagar, nasce direto com o status
+      // por vencimento (mesmo caminho de um lançamento direto não enviado ao
+      // financeiro).
+      Status: calcularStatusVencimento(p.vencimento),
+      Parcelamento: 'parcelado', NumParcela: p.numero, TotalParcelas: p.total,
+      PrestacaoContasId: pc.Id, OrigemPrestacaoContas: true,
+    });
+    if (novoCP && novoCP.Id) idsGerados.push(novoCP.Id);
+  }
+  if (idsGerados.length) {
+    await dbAtualizar('PrestacaoContas', pc.Id, { EnviadoContasPagar: true, ContasPagarIds: idsGerados });
+  }
+}
+
+/* -- Roda uma vez (por sessão, guardado em window._migPrestCPFeita) quando a
+      Diretoria abre Prestação de Contas: converte pra Contas a Pagar qualquer
+      prestação parcelada que já esteja "Aprovada" e ainda não tenha sido
+      enviada (cobre os lançamentos aprovados ANTES desta mudança de
+      26/09/2026, ex: o de R$ 249,01/2x). Segura de rodar toda vez — só age
+      sobre o que ainda não tem EnviadoContasPagar. -- */
+async function _migrarPrestacoesParceladasParaContasPagar() {
+  try {
+    const todos = await dbLer('PrestacaoContas');
+    const pendentes = todos.filter(r => r.Status === 'Aprovada' && r.Parcelamento === 'parcelado' && !r.EnviadoContasPagar);
+    if (!pendentes.length) return;
+    let count = 0;
+    for (const pc of pendentes) { await _enviarPrestacaoParaContasPagar(pc); count++; }
+    if (count) {
+      showToast(`🔁 ${count} prestação(ões) parcelada(s) já aprovada(s) foram enviadas para Contas a Pagar.`);
+      setTimeout(() => { carregarPrestacoes(); carregarContasPagar(); }, 700);
+    }
+  } catch (e) { console.warn('[Migração] Falha ao converter prestações parceladas em Contas a Pagar', e); }
 }
 
 /* -- Financeiro indefere: volta direto ao colaborador (com motivo) para corrigir e reenviar -- */
@@ -5454,6 +5559,15 @@ async function pcAbrirVisualizar(id) {
           <button class="btn-secondary" style="flex:1" onclick="document.getElementById('pc-view-modal').remove();devolverPrestacaoFinanceiro(${id})">↩️ Indeferir</button>
         </div>`}
       </div>`;
+  } else if (i.Status === 'Aprovada' && i.Parcelamento === 'parcelado' && i.EnviadoContasPagar) {
+    // Pedido em 26/09/2026: parcelado aprovado vai direto pra Contas a Pagar —
+    // o pagamento/baixa de cada parcela é feito por lá (fluxo já existente,
+    // por parcela), não mais aqui (aqui só dava pra confirmar o Valor do
+    // registro inteiro, o que quebrava quando era só o valor de 1 parcela).
+    acoesHtml = `<div style="margin-top:16px;padding:12px 14px;background:var(--surface2);border-radius:10px;font-size:.82rem">
+      📤 Aprovada e enviada para Contas a Pagar — o pagamento desta parcela é feito por lá.
+      ${isDir ? `<div style="margin-top:8px"><button class="btn-secondary" style="padding:5px 10px;font-size:.72rem" onclick="document.getElementById('pc-view-modal').remove();navigate('pagar')">💳 Ir para Contas a Pagar</button></div>` : ''}
+    </div>`;
   } else if (i.Status === 'Aprovada' && isDir) {
     acoesHtml = `
       <div style="margin-top:16px;padding:14px;background:var(--surface2);border-radius:10px">
@@ -9159,7 +9273,29 @@ async function pagSincronizarDespesa(id, dataPag, banco) {
       DivisaoCC: i.DivisaoCC || [],
     });
     if (despesa && despesa.Id) await dbAtualizar('ContasPagar', id, { DespesaId: despesa.Id });
+    // Se este lançamento de Contas a Pagar veio de uma Prestação de Contas
+    // parcelada aprovada (ver _enviarPrestacaoParaContasPagar, 26/09/2026),
+    // reflete o pagamento de volta pra Prestação de Contas — mas só marca o
+    // registro de origem como "Paga" quando TODAS as parcelas-irmãs (mesmo
+    // PrestacaoContasId) já estiverem pagas, já que um lançamento legado
+    // (de antes da separação por registro) pode ter virado mais de 1
+    // lançamento aqui em Contas a Pagar.
+    if (i.PrestacaoContasId) await _prestSincronizarStatusAposPagamentoCP(i.PrestacaoContasId, despesa);
   } catch (e) { console.warn('[ContasPagar] Falha ao sincronizar com Despesas', e); }
+}
+
+async function _prestSincronizarStatusAposPagamentoCP(prestacaoContasId, ultimaDespesa) {
+  try {
+    const todosCP = await dbLer('ContasPagar');
+    const irmas = todosCP.filter(r => r.PrestacaoContasId === prestacaoContasId);
+    if (!irmas.length) return;
+    if (!irmas.every(r => r.Status === 'Pago')) return; // ainda faltam parcelas
+    const ultima = irmas.reduce((a, b) => (new Date(a.DataPagamento || 0) > new Date(b.DataPagamento || 0) ? a : b));
+    await dbAtualizar('PrestacaoContas', prestacaoContasId, {
+      Status: 'Paga', DataPagamento: ultima.DataPagamento || '', BancoPagamento: ultima.BancoPagamento || '',
+      DespesaId: (ultimaDespesa && ultimaDespesa.Id) || ultima.DespesaId || '',
+    });
+  } catch (e) { console.warn('[PrestacaoContas] Falha ao sincronizar status pós-pagamento em Contas a Pagar', e); }
 }
 
 /* -- Botão manual "Enviar para Despesas" — cobre lançamentos que já ficaram
@@ -11193,11 +11329,15 @@ async function transferenciaExcluir(transferenciaId) {
 function renderReceitasTab() {
   const responsaveis = _servicosResponsaveisDiretoria();
   return `
-  <!-- Formulário de lançamento (recolhido por padrão — o botão "➕ Nova Receita"
-       que abre/fecha isso agora mora só na linha de botões lá em cima, junto com
-       Financeiro/Conciliação/Notas Fiscais/Empresa — pedido em 30/08/2026 pra não
-       ter dois botões "Nova Receita" na tela. -->
-  <div id="rc-form-container" class="form-card" style="margin-bottom:24px;display:${window._rcFormAberto ? 'block' : 'none'}">
+  <!-- Formulário de lançamento — agora abre como janela (modal), responsiva
+       pra celular e computador, maior que os modais pequenos do app (pedido
+       em 26/09/2026). O botão "➕ Nova Receita" que abre/fecha isso agora mora
+       só na linha de botões lá em cima, junto com Financeiro/Conciliação/
+       Notas Fiscais/Empresa — pedido em 30/08/2026 pra não ter dois botões
+       "Nova Receita" na tela. Backdrop escuro é uma div irmã (mesmo padrão
+       usado em Despesas) — clicar nele fecha o formulário. -->
+  <div id="rc-form-backdrop" style="display:${window._rcFormAberto ? 'block' : 'none'};position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="rcToggleFormNovaReceita(false)"></div>
+  <div id="rc-form-container" class="form-card" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(960px,95vw);max-width:none;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);z-index:10000;display:${window._rcFormAberto ? 'block' : 'none'}">
     <div id="rc-form-campos">
     <div class="form-row">
       <div class="form-group" style="grid-column:span 2;padding:12px 14px;background:var(--surface2);border:1px dashed var(--border);border-radius:10px">
@@ -11463,6 +11603,8 @@ function rcToggleFormNovaReceita(forcar) {
   window._rcFormAberto = typeof forcar === 'boolean' ? forcar : !atual;
   const container = document.getElementById('rc-form-container');
   if (container) container.style.display = window._rcFormAberto ? 'block' : 'none';
+  const backdrop = document.getElementById('rc-form-backdrop');
+  if (backdrop) backdrop.style.display = window._rcFormAberto ? 'block' : 'none';
 }
 
 function rcFiltrarCCs(texto) {
@@ -12898,10 +13040,15 @@ function renderDespesasTab() {
   const frota = _servicosFrotaVeiculos();
 
   return `
-  <!-- Formulário de lançamento (recolhido por padrão — o botão "➕ Nova Despesa"
-       que abre/fecha isso mora na linha de botões lá em cima, junto com
-       Financeiro/Conciliação/Empresa (mesmo padrão de Receitas, 30/08/2026). -->
-  <div id="rd-form-container" class="form-card" style="margin-bottom:24px;display:${window._rdFormAberto ? 'block' : 'none'}">
+  <!-- Formulário de lançamento — agora abre como janela (modal), responsiva
+       pra celular e computador, maior que os modais pequenos do app (pedido
+       em 26/09/2026). O botão "➕ Nova Despesa" que abre/fecha isso mora na
+       linha de botões lá em cima, junto com Financeiro/Conciliação/Empresa
+       (mesmo padrão de Receitas, 30/08/2026). Backdrop escuro é uma div irmã
+       (não precisa envolver o form-card todo, evita mexer no fechamento dele
+       lá embaixo) — clicar nele fecha o formulário. -->
+  <div id="rd-form-backdrop" style="display:${window._rdFormAberto ? 'block' : 'none'};position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="rdToggleFormNovaDespesa(false)"></div>
+  <div id="rd-form-container" class="form-card" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(960px,95vw);max-width:none;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);z-index:10000;display:${window._rdFormAberto ? 'block' : 'none'}">
     <!-- Título do formulário (mesmo padrão de Contas a Pagar/Prestação de Contas —
          pedido em 31/08/2026: Despesas não tinha essa barra de título). -->
     <div id="rd-form-titulo" style="font-family:'Mont',sans-serif;font-size:.82rem;font-weight:700;color:var(--green-main);margin-bottom:16px;text-transform:uppercase;letter-spacing:.07em">${window._rdEditandoId ? '✏️ Editar Despesa' : '➕ Nova Despesa'}</div>
@@ -13383,6 +13530,8 @@ function rdToggleFormNovaDespesa(forcar) {
   window._rdFormAberto = abrir;
   const container = document.getElementById('rd-form-container');
   if (container) container.style.display = abrir ? 'block' : 'none';
+  const backdrop = document.getElementById('rd-form-backdrop');
+  if (backdrop) backdrop.style.display = abrir ? 'block' : 'none';
   // Fechar o formulário (Cancelar/depois de salvar) sempre sai do modo edição
   // e devolve o título padrão "Nova Despesa" pra próxima vez que abrir — mesmo
   // padrão de pagToggleFormNovo em Contas a Pagar (pedido em 31/08/2026).
