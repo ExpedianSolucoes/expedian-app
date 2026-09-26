@@ -29894,6 +29894,91 @@ function eroSelecionarTipoSE(v) {
 // State
 if (!window._eroData) window._eroData = {};
 if (typeof window._eroHistorico === 'undefined') window._eroHistorico = null; // null = ainda não carregado
+
+/* ============================================================
+   PRÉ-COLETA DE CAMPO (pedido 26/09/2026): formulário curto, sem peso/
+   pontuação, com um subconjunto de itens do checklist ERO — fatos simples
+   de observar em campo (ar-condicionado/temperatura, extintores dentro da
+   validade, resíduos/limpeza etc.) — pensado pra ser preenchido ANTES ou
+   durante a ida a campo, e depois reaproveitado pra pré-preencher o
+   Checklist de Inspeção Ambiental formal daquela mesma subestação (mesmo
+   mecanismo já usado pra pré-preencher o item 2.4 a partir do vencimento da
+   licença — ver eroIniciarChecklistDe). Ficam de fora: Grupo 2 (Documentos
+   Legais — depende de vencimento de documento, não de observação em campo)
+   e Grupo 5 (Risco Ambiental — vazamento/estado de transformador e bacia de
+   contenção exigem o olhar mais técnico da vistoria formal). -- */
+const PRECOLETA_GRUPOS = [1, 3, 4];
+function eroItensPreColeta(semCasa) {
+  return eroGrupos
+    .filter(function(g) { return PRECOLETA_GRUPOS.indexOf(g.num) !== -1; })
+    .flatMap(function(g) { return g.itens; })
+    .filter(function(i) { return eroItemAplica(i, semCasa); });
+}
+if (typeof window._eroPreColetaLista === 'undefined') window._eroPreColetaLista = null; // null = ainda não carregado
+if (typeof window._eroPreColetaData === 'undefined') window._eroPreColetaData = {}; // form em edição
+if (typeof window._eroPreColetaMeaId === 'undefined') window._eroPreColetaMeaId = null;
+
+async function eroPreColetaCarregar(forcar) {
+  if (window._eroPreColetaLista !== null && !forcar) return;
+  window._eroPreColetaLista = await dbLerSeguro('EROPreColeta');
+  navigate('checklist_ero');
+}
+// Pega a pré-coleta mais recente ainda não aproveitada para um empreendimento (MeaId).
+function eroPreColetaDe(meaId) {
+  const lista = (Array.isArray(window._eroPreColetaLista) ? window._eroPreColetaLista : [])
+    .filter(function(p) { return p.MeaId === meaId && p.Status !== 'aproveitada'; });
+  if (!lista.length) return null;
+  return lista.reduce(function(a, b) {
+    return (new Date(a.CriadoEm || 0) > new Date(b.CriadoEm || 0)) ? a : b;
+  });
+}
+function eroPreColetaAbrirForm(meaId) {
+  const e = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).find(function(x) { return x.id === meaId; });
+  if (!e) return;
+  const existente = eroPreColetaDe(meaId);
+  window._eroPreColetaMeaId = meaId;
+  window._eroPreColetaData = existente ? { ...existente } : {
+    MeaId: meaId,
+    Empreendimento: e.empreendimento || '',
+    TemCasaComando: '',
+    TecnicoColeta: '',
+    DataColeta: rotHojeISO ? rotHojeISO(0) : new Date().toISOString().slice(0, 10),
+  };
+  window._meaAba = 'precoleta_form';
+  navigate('checklist_ero');
+}
+function eroPreColetaVoltar() { window._meaAba = 'precoleta_lista'; navigate('checklist_ero'); }
+function eroPreColetaSelecionarTipoSE(v) { window._eroPreColetaData.TemCasaComando = v; navigate('checklist_ero'); }
+function eroPreColetaSetResposta(itemId, valor) {
+  if (valor === 'na') { window._eroPreColetaData['na_' + itemId] = true; window._eroPreColetaData['pts_' + itemId] = ''; }
+  else if (valor === 'conforme') { window._eroPreColetaData['na_' + itemId] = false; window._eroPreColetaData['pts_' + itemId] = 'conforme'; }
+  else if (valor === 'nconforme') { window._eroPreColetaData['na_' + itemId] = false; window._eroPreColetaData['pts_' + itemId] = 0; }
+  else { window._eroPreColetaData['na_' + itemId] = false; window._eroPreColetaData['pts_' + itemId] = ''; }
+  navigate('checklist_ero');
+}
+async function eroPreColetaSalvar() {
+  const d = window._eroPreColetaData;
+  if (!d.TemCasaComando) { showToast('⚠️ Selecione se a subestação tem Casa de Comando antes de salvar.'); return; }
+  const btn = document.getElementById('precol-btn-salvar');
+  if (btn) { btn.disabled = true; btn.dataset.txtOriginal = btn.innerHTML; btn.innerHTML = '⏳ Salvando...'; }
+  const existente = eroPreColetaDe(d.MeaId);
+  const campos = { ...d, Status: 'pendente' };
+  let ok;
+  if (existente && existente.Id) {
+    ok = await dbAtualizar('EROPreColeta', existente.Id, campos);
+  } else {
+    const novo = await dbInserir('EROPreColeta', campos);
+    ok = !!novo;
+  }
+  if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.txtOriginal; }
+  if (ok) {
+    showToast('✅ Pré-coleta salva! Vai aparecer pré-preenchida quando o Checklist de Inspeção formal desta subestação for aberto.');
+    await eroPreColetaCarregar(true);
+    eroPreColetaVoltar();
+  } else {
+    showToast('⚠️ Não consegui salvar a pré-coleta — verifique a conexão e tente de novo.');
+  }
+}
 if (typeof window._eroDashFiltroMes === 'undefined') window._eroDashFiltroMes = '';
 if (typeof window._eroDashFiltroAno === 'undefined') window._eroDashFiltroAno = '';
 if (typeof window._eroDashFiltroSemestre === 'undefined') window._eroDashFiltroSemestre = '';
@@ -29973,6 +30058,18 @@ function eroPendentesChecklist() {
     return !jaTemChecklist;
   });
 }
+/* -- Lista de subestações elegíveis pra Pré-Coleta de Campo: vistoria já
+   AGENDADA (status 'programada' — pedido 26/09/2026, decisão do Tiago de
+   vincular a pré-coleta a uma vistoria agendada, pra manter rastreabilidade),
+   diferente de eroPendentesChecklist() acima (que exige vistoria JÁ
+   realizada, pra fechar o checklist formal). -- */
+function eroPendentesColetaCampo() {
+  return (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(e) {
+    if (!meaTemTipo(e, 'subestacao')) return false;
+    const v = e.vistoria || {};
+    return v.status === 'programada';
+  });
+}
 function eroAbrirNovoChecklist() { window._eroPickerAberto = true; navigate('checklist_ero'); }
 function eroFecharPicker() { window._eroPickerAberto = false; navigate('checklist_ero'); }
 function eroIniciarChecklistDe(id) {
@@ -30004,11 +30101,45 @@ function eroIniciarChecklistDe(id) {
     window._eroData['na_2.4'] = false;
     window._eroData['pts_2.4'] = licPrefill.label.indexOf('Vencida') === 0 ? 0 : eroPeso(item24Prefill, eroSemCasaAtiva());
   }
+  // Pré-preenche itens simples de observação (ar-condicionado, extintores,
+  // resíduos etc.) a partir de uma Pré-Coleta de Campo já enviada para esta
+  // subestação (pedido 26/09/2026) — mesmo princípio do item 2.4 acima:
+  // vem preenchido, mas continua 100% editável; _precolIds marca quais
+  // vieram de lá pra exibir o aviso "pré-coletado em campo, confira" no
+  // formulário, sem travar nada.
+  var precol = eroPreColetaDe(e.id);
+  if (precol) {
+    if (!window._eroData.temCasaComando && precol.TemCasaComando) window._eroData.temCasaComando = precol.TemCasaComando;
+    var semCasaAtual = eroSemCasaAtiva();
+    var idsPreenchidos = [];
+    eroItensPreColeta(semCasaAtual).forEach(function(item) {
+      var temResposta = precol['na_' + item.id] || (precol['pts_' + item.id] !== '' && precol['pts_' + item.id] !== undefined && precol['pts_' + item.id] !== null);
+      if (!temResposta) return;
+      idsPreenchidos.push(item.id);
+      window._eroData['na_' + item.id] = !!precol['na_' + item.id];
+      if (precol['na_' + item.id]) window._eroData['pts_' + item.id] = '';
+      else if (precol['pts_' + item.id] === 'conforme') window._eroData['pts_' + item.id] = eroPeso(item, semCasaAtual);
+      else window._eroData['pts_' + item.id] = precol['pts_' + item.id];
+      if (precol['obs_' + item.id]) window._eroData['obs_' + item.id] = precol['obs_' + item.id];
+    });
+    if (idsPreenchidos.length) {
+      window._eroData._precolIds = idsPreenchidos;
+      window._eroData._precolInfo = { data: precol.DataColeta || '', tecnico: precol.TecnicoColeta || '' };
+      // Marca a pré-coleta como aproveitada (não bloqueia reuso em caso de erro —
+      // se a gravação falhar, ela só continua aparecendo como pendente na lista).
+      dbAtualizar('EROPreColeta', precol.Id, { Status: 'aproveitada' }).then(function(ok) {
+        if (ok && Array.isArray(window._eroPreColetaLista)) {
+          var idx = window._eroPreColetaLista.findIndex(function(p) { return p.Id === precol.Id; });
+          if (idx >= 0) window._eroPreColetaLista[idx].Status = 'aproveitada';
+        }
+      });
+    }
+  }
   window._eroRegistroAtualId = null;
   window._eroPickerAberto = false;
   window._eroFormAberto = true;
   navigate('checklist_ero');
-  showToast('📋 Checklist iniciado para ' + (e.empreendimento || '') + ' — dados da vistoria já preenchidos.');
+  showToast('📋 Checklist iniciado para ' + (e.empreendimento || '') + ' — dados da vistoria já preenchidos.' + (precol ? ' Pré-coleta de campo aplicada — confira os itens marcados.' : ''));
 }
 // Começar um checklist em branco (empreendimento sem vistoria MEA rastreada).
 function eroIniciarChecklistManual() {
@@ -31412,6 +31543,9 @@ function pageMonitoramentoAmbientalERO() {
   // "Relatório de Vistoria" (checklist pronto por empreendimento) — pedido
   // em 23/09/2026.
   meaChecklistsCarregar().then(function() { meaRenderizarKPIs(); });
+  // Pré-Coleta de Campo (pedido 26/09/2026) — carrega em paralelo pra já
+  // deixar pronta a checagem de "tem pré-coleta pendente?" nos badges/picker.
+  if (window._eroPreColetaLista === null) eroPreColetaCarregar();
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
     <div>
@@ -31421,6 +31555,7 @@ function pageMonitoramentoAmbientalERO() {
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-secondary" onclick="window._meaAba='vistorias';navigate('checklist_ero')">📅 Vistorias</button>
       <button class="btn-secondary" onclick="window._opacFiltroStatus='';window._meaAba='opacidade';navigate('checklist_ero')">🚚 Teste de Opacidade</button>
+      <button class="btn-secondary" onclick="window._meaAba='precoleta_lista';navigate('checklist_ero')">🧾 Pré-Coleta de Campo</button>
       <button class="btn-secondary" onclick="window._meaAba='form';navigate('checklist_ero')">📋 Checklist Inspeção Ambiental (Subestação)</button>
       <button class="btn-secondary" onclick="navigate('checklist_linha')">⚡ Checklist Linha de Distribuição</button>
       ${(currentProfile === 'diretoria' || currentProfile === 'coordenador') ? `<button class="btn-secondary" onclick="meaReiniciarSemestre()">🔄 Reiniciar Semestre</button>` : ''}
@@ -33325,7 +33460,119 @@ function pageChecklistERO() {
   if (aba === 'vistorias') return pageVistoriasERO();
   if (aba === 'roteiro') return pageRoteiroERO();
   if (aba === 'opacidade') return pageOpacidadeVeiculos();
+  if (aba === 'precoleta_lista') return pageEroPreColetaLista();
+  if (aba === 'precoleta_form') return pageEroPreColetaForm();
   return pageMonitoramentoAmbientalERO();
+}
+
+/* ============================================================
+   PRÉ-COLETA DE CAMPO — telas (pedido 26/09/2026, ver bloco de funções
+   PRECOLETA_GRUPOS/eroPreColeta* logo após a definição de eroGrupos). -- */
+function pageEroPreColetaLista() {
+  if (window._eroPreColetaLista === null) eroPreColetaCarregar();
+  const candidatas = eroPendentesColetaCampo();
+  return `
+  <div class="page-header">
+    <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="window._meaAba='dashboard';navigate('checklist_ero')">← Voltar ao Monitoramento Ambiental</button>
+    <h1>🧾 Pré-Coleta de Campo</h1>
+    <p>Perguntas simples de observação (ar-condicionado, extintores, resíduos, limpeza...) pra preencher já em campo, antes da vistoria formal. Quando o Checklist de Inspeção Ambiental desta subestação for aberto depois, essas respostas entram pré-preenchidas — mas continuam editáveis, dá pra confirmar ou corrigir na hora.</p>
+  </div>
+  <div class="card">
+    <div class="card-title">Subestações com vistoria agendada</div>
+    ${candidatas.length === 0
+      ? `<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:.82rem">Nenhuma subestação com vistoria programada no momento (a pré-coleta usa a mesma agenda do Monitoramento Ambiental).</div>`
+      : candidatas.map((e, idx) => {
+        const p = eroPreColetaDe(e.id);
+        const jaUsada = (window._eroPreColetaLista || []).some(function(x) { return x.MeaId === e.id && x.Status === 'aproveitada'; });
+        return `
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;${idx%2===0?'background:var(--surface)':'background:var(--surface2)'};${idx<candidatas.length-1?'border-bottom:1px solid var(--border)':''}">
+          <div style="flex:1;min-width:160px">
+            <div style="font-size:.85rem;font-weight:700">${e.empreendimento || 'Sem nome'}</div>
+            <div style="font-size:.68rem;color:var(--text-muted)">${e.regional || e.municipio || ''} ${(e.vistoria && e.vistoria.dataProgramada) ? '· Vistoria em ' + new Date(e.vistoria.dataProgramada + 'T00:00:00').toLocaleDateString('pt-BR') : ''}</div>
+          </div>
+          <div style="font-size:.72rem;font-weight:700;color:${p ? 'var(--green-main)' : jaUsada ? 'var(--text-muted)' : 'var(--amber)'};min-width:150px;text-align:right">
+            ${p ? '✅ Pré-coleta salva' : jaUsada ? '📋 Já usada no checklist' : '⏳ Sem pré-coleta ainda'}
+          </div>
+          <button class="btn-primary" style="padding:6px 14px;font-size:.75rem;flex-shrink:0" onclick="eroPreColetaAbrirForm('${e.id}')">${p ? '✏️ Editar' : '+ Preencher'}</button>
+        </div>`;
+      }).join('')
+    }
+  </div>
+  `;
+}
+
+function pageEroPreColetaForm() {
+  const d = window._eroPreColetaData || {};
+  const semCasa = d.TemCasaComando === 'nao';
+  const itens = d.TemCasaComando ? eroItensPreColeta(semCasa) : [];
+  const gruposComItens = eroGrupos.filter(function(g) { return PRECOLETA_GRUPOS.indexOf(g.num) !== -1; });
+  return `
+  <div class="page-header">
+    <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="eroPreColetaVoltar()">← Voltar à lista de Pré-Coleta</button>
+    <h1>🧾 Pré-Coleta de Campo — ${d.Empreendimento || ''}</h1>
+    <p>Preenchimento rápido, sem pontuação — só marque o que observar em campo. Fica salvo pra pré-preencher o checklist formal depois.</p>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div class="form-group">
+        <label>Técnico que coletou</label>
+        <input value="${d.TecnicoColeta||''}" oninput="window._eroPreColetaData.TecnicoColeta=this.value" placeholder="Nome de quem foi a campo">
+      </div>
+      <div class="form-group">
+        <label>Data da coleta</label>
+        <input type="date" value="${d.DataColeta||''}" oninput="window._eroPreColetaData.DataColeta=this.value">
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap">
+    ${[{v:'sim',icon:'🏢',label:'Com Casa de Comando'},{v:'nao',icon:'🌳',label:'Sem Casa de Comando'}].map(t => {
+      const ativa = t.v === d.TemCasaComando;
+      return `<button onclick="eroPreColetaSelecionarTipoSE('${t.v}')"
+        style="display:flex;align-items:center;gap:7px;padding:9px 18px;border-radius:10px;
+          border:${ativa?'2px solid var(--green-main)':'1px solid var(--border)'};
+          background:${ativa?'var(--green-pale)':'var(--surface2)'};
+          color:${ativa?'var(--green-main)':'var(--text)'};
+          font-family:'Mont',sans-serif;font-size:.82rem;font-weight:${ativa?'700':'500'};cursor:pointer">
+        ${t.icon} ${t.label}
+      </button>`;
+    }).join('')}
+  </div>
+  ${!d.TemCasaComando ? `<div class="card" style="text-align:center;padding:30px;color:var(--text-muted);font-size:.85rem">☝️ Selecione acima se a subestação tem Casa de Comando pra ver as perguntas.</div>` : gruposComItens.map(g => {
+    const itensG = g.itens.filter(function(i) { return eroItemAplica(i, semCasa); });
+    if (!itensG.length) return '';
+    return `
+    <div class="card" style="margin-bottom:16px;border-top:3px solid var(--green-main)">
+      <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800;margin-bottom:14px">${g.titulo}</div>
+      ${itensG.map(item => `
+      <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:${d['na_'+item.id]?'rgba(200,200,200,.06)':'var(--surface2)'}">
+        <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
+          <div style="flex:1;font-size:.83rem;padding-top:4px;min-width:200px">${item.texto}</div>
+          <select onchange="eroPreColetaSetResposta('${item.id}', this.value)"
+            style="min-width:130px;padding:6px 10px;border-radius:8px;border:1.5px solid var(--border);font-size:.8rem;font-weight:700;background:var(--surface);outline:none;cursor:pointer">
+            <option value="" ${(!d['na_'+item.id] && (d['pts_'+item.id]===undefined||d['pts_'+item.id]===''))?'selected':''}>Selecione</option>
+            <option value="conforme" ${d['pts_'+item.id]==='conforme'?'selected':''}>✅ Conforme</option>
+            <option value="nconforme" ${(d['pts_'+item.id]===0)?'selected':''}>❌ Não Conforme</option>
+            <option value="na" ${d['na_'+item.id]?'selected':''}>➖ N/A</option>
+          </select>
+        </div>
+        <textarea rows="2" oninput="window._eroPreColetaData['obs_${item.id}']=this.value"
+          placeholder="Observação (ex: quantidade de centrais de ar e temperatura, validade do extintor...)"
+          style="width:100%;margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:.8rem;font-family:'Mont',sans-serif;outline:none;resize:vertical"
+        >${d['obs_'+item.id]||''}</textarea>
+      </div>
+      `).join('')}
+    </div>
+    `;
+  }).join('')}
+
+  ${d.TemCasaComando ? `
+  <div style="margin-bottom:40px">
+    <button class="btn-primary" id="precol-btn-salvar" onclick="eroPreColetaSalvar()">💾 Salvar Pré-Coleta</button>
+  </div>
+  ` : ''}
+  `;
 }
 
 function pageChecklistEROForm() {
@@ -33334,6 +33581,7 @@ function pageChecklistEROForm() {
   const numExib = eroNumeracaoExibicao(semCasa);
 
   if (window._eroHistorico === null) carregarEROHistorico(); // dispara carregamento assíncrono (re-renderiza ao concluir)
+  if (window._eroPreColetaLista === null) eroPreColetaCarregar(); // pra 'Novo Checklist' já achar pré-coletas prontas
 
   // Calcular pontuação em tempo real (ignorando itens que não valem pra essa
   // sub-aba, N/A, e itens sem resposta)
@@ -33619,6 +33867,15 @@ function pageChecklistEROForm() {
           </div>
         </div>
       </div>
+
+      <!-- Aviso de Pré-Coleta de Campo (pedido 26/09/2026): resposta veio de
+           uma pré-coleta preenchida antes da vistoria — só um lembrete pra
+           confirmar/corrigir, não trava nem esconde os controles acima. -- -->
+      ${(d._precolIds || []).indexOf(item.id) !== -1 ? `
+      <div style="font-size:.68rem;font-weight:700;color:var(--amber);background:#fff8e8;border:1px solid var(--amber);border-radius:8px;padding:6px 10px;margin-bottom:10px">
+        🧾 Pré-coletado em campo${d._precolInfo && d._precolInfo.data ? ' em ' + new Date(d._precolInfo.data + 'T00:00:00').toLocaleDateString('pt-BR') : ''}${d._precolInfo && d._precolInfo.tecnico ? ' por ' + d._precolInfo.tecnico : ''} — confira e confirme.
+      </div>
+      ` : ''}
 
       <!-- Observação -->
       <div style="margin-bottom:12px">
@@ -54371,7 +54628,7 @@ const BACKUP_TABELAS = [
   // a exclusão acidental/condição de corrida que apagou "SED CUJUBIM" (registro nº65, sumido em
   // 10/09/2026) não teve nenhuma cópia de segurança pra recuperar automaticamente; reconstruí o
   // registro manualmente com os dados que ainda tinha em mãos. Adicionado aqui pra não repetir.
-  'MonitoramentoAmbientalERO','MonitoramentoAmbientalERO_Adicionais','VeiculosOpacidade',
+  'MonitoramentoAmbientalERO','MonitoramentoAmbientalERO_Adicionais','VeiculosOpacidade','EROPreColeta',
   // Controle de Orçamentos/Concorrências comerciais (pedido em 15/09/2026)
   'Concorrencias','CatalogoCustosOrcamento',
 ];
