@@ -4055,6 +4055,7 @@ function pagePrestacao() {
     <div class="form-actions" style="gap:10px;flex-wrap:wrap">
       <button class="btn-secondary" id="pc-btn-rascunho" onclick="salvarRascunhoPrestacao()">💾 Salvar Rascunho</button>
       <button class="btn-primary" id="pc-btn-enviar" onclick="enviarPrestacaoFinanceiro()">📤 Salvar e Enviar ao Financeiro</button>
+      <button class="btn-primary" id="pc-btn-salvar-aprovada" style="display:none;background:var(--blue)" onclick="pcSalvarEdicaoAprovada()">💾 Salvar Correção</button>
     </div>
     </div>
     </div>
@@ -4408,7 +4409,7 @@ async function _prestacaoDuplicada(dados) {
    duplo/nos dois ao mesmo tempo, mesmo padrão de _pagvBloquearBotoes. */
 function _pcBloquearBotoes(idAtivo, textoProcessando) {
   const ativo = _btnCarregando(idAtivo, textoProcessando);
-  ['pc-btn-rascunho', 'pc-btn-enviar'].forEach(bid => {
+  ['pc-btn-rascunho', 'pc-btn-enviar', 'pc-btn-salvar-aprovada'].forEach(bid => {
     if (bid === idAtivo) return;
     const b = document.getElementById(bid); if (b) b.disabled = true;
   });
@@ -4416,7 +4417,7 @@ function _pcBloquearBotoes(idAtivo, textoProcessando) {
 }
 function _pcDesbloquearBotoes(btnAtivo) {
   _btnRestaurar(btnAtivo);
-  ['pc-btn-rascunho', 'pc-btn-enviar'].forEach(bid => {
+  ['pc-btn-rascunho', 'pc-btn-enviar', 'pc-btn-salvar-aprovada'].forEach(bid => {
     const b = document.getElementById(bid); if (b) b.disabled = false;
   });
 }
@@ -4493,6 +4494,48 @@ async function enviarPrestacaoFinanceiro() {
     _pcDesbloquearBotoes(btnPc);
   }
   window._pcEditandoId = null;
+  limparFormPrestacao();
+  setTimeout(()=>carregarPrestacoes(),800);
+}
+
+/* -- Diretoria (gestor geral) corrige um lançamento que já está "Aprovada"
+      (ex.: valor, categoria ou fornecedor errados percebidos depois da
+      conferência do Financeiro) sem reabrir o fluxo de aprovação — ao
+      contrário de enviarPrestacaoFinanceiro(), NUNCA grava Status: o objeto
+      de coletarDadosPrestacao() já não inclui esse campo, então dbAtualizar
+      faz um PATCH parcial e o Status "Aprovada" original é preservado. -- */
+async function pcSalvarEdicaoAprovada() {
+  if (document.getElementById('pc-btn-salvar-aprovada')?.disabled) return; // clique duplo — já processando
+  const editandoId = window._pcEditandoId;
+  if (!editandoId) { showToast('❌ Nenhum lançamento em edição.'); return; }
+  const dados = coletarDadosPrestacao(true); if (!dados) return;
+
+  const btnPc = _pcBloquearBotoes('pc-btn-salvar-aprovada', ' Salvando...');
+  try {
+    // Comprovante novo (se o usuário trocou o anexo durante a correção)
+    const anexoInput = document.getElementById('prest_anexo');
+    const file = anexoInput && anexoInput.files[0];
+    if (file) {
+      showSyncStatus('Enviando comprovante ao OneDrive...');
+      const nomeDesejado = financeiroGerarNomeComprovante(dados.DataDespesa, dados.Valor, dados.Fornecedor, file.name);
+      const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.prestacao, nomeDesejado);
+      if (resultado) {
+        showSyncStatus('Comprovante enviado!', 'ok', 3000);
+        dados.ComprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
+        dados.ComprovanteNome = resultado.nome;
+      } else {
+        showSyncStatus('Falha ao enviar comprovante', 'err', 5000);
+        showToast('⚠️ Não foi possível enviar o novo comprovante. A correção será salva com o comprovante anterior.');
+      }
+    }
+    _limparSyncError();
+    const ok = await dbAtualizar('PrestacaoContas', editandoId, dados);
+    showToast(ok ? '✅ Correção salva — status "Aprovada" mantido!' : ('❌ Erro ao salvar. Tente novamente.' + syncErrorDetalhe()));
+  } finally {
+    _pcDesbloquearBotoes(btnPc);
+  }
+  window._pcEditandoId = null;
+  window._pcEditandoStatusOriginal = null;
   limparFormPrestacao();
   setTimeout(()=>carregarPrestacoes(),800);
 }
@@ -4623,6 +4666,10 @@ function limparFormPrestacao() {
   window._prestComprovanteUrl = null;
   window._prestComprovanteNome = null;
   window._pcEditandoId = null;
+  window._pcEditandoStatusOriginal = null;
+  const btnRascunho = document.getElementById('pc-btn-rascunho'); if (btnRascunho) btnRascunho.style.display = '';
+  const btnEnviar = document.getElementById('pc-btn-enviar'); if (btnEnviar) btnEnviar.style.display = '';
+  const btnSalvarAprovada = document.getElementById('pc-btn-salvar-aprovada'); if (btnSalvarAprovada) btnSalvarAprovada.style.display = 'none';
   const banner = document.getElementById('prest-edit-banner');
   if (banner) banner.innerHTML = '';
   pcToggleFormNovo(false);
@@ -4811,7 +4858,8 @@ async function carregarPrestacoes() {
             <button class="btn-primary" style="padding:2px 6px;font-size:.65rem" onclick="pcAbrirVisualizar(${i.Id})">✅ Aprovar</button>
             <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`:''}
           ${i.Status==='Aprovada'&&currentProfile==='diretoria'?`
-            <button class="btn-primary" style="padding:2px 6px;font-size:.65rem;background:var(--green-main)" onclick="pcAbrirVisualizar(${i.Id})">💳 Registrar Pagamento</button>`:''}
+            <button class="btn-primary" style="padding:2px 6px;font-size:.65rem;background:var(--green-main)" onclick="pcAbrirVisualizar(${i.Id})">💳 Registrar Pagamento</button>
+            <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="pcEditarPrestacao(${i.Id})">✏️ Editar</button>`:''}
           ${podeAgirGestorLegado?`
             <button class="btn-primary" style="padding:2px 6px;font-size:.65rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar (fluxo antigo)</button>
             <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Devolver</button>`:''}
@@ -4864,12 +4912,36 @@ async function pcEditarPrestacao(id) {
     set('prest_num_parcelas', r.NumParcelas);
     set('prest_tipo_parcelamento', r.TipoParcelamento);
   }
+  window._pcEditandoStatusOriginal = r.Status;
+  const btnRascunho = document.getElementById('pc-btn-rascunho');
+  const btnEnviar = document.getElementById('pc-btn-enviar');
+  const btnSalvarAprovada = document.getElementById('pc-btn-salvar-aprovada');
   const banner = document.getElementById('prest-edit-banner');
-  if (banner) banner.innerHTML = `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;font-size:.78rem;color:#92400e">
-    <span>✏️ Editando lançamento existente — corrija os campos e clique em "Enviar ao Financeiro" ou "Salvar Rascunho".</span>
-    <button onclick="pcCancelarEdicaoPrestacao()" style="border:none;background:none;cursor:pointer;font-size:.78rem;font-weight:700;color:#92400e;text-decoration:underline">Cancelar edição</button>
-  </div>`;
-  showToast('✏️ Editando lançamento — corrija os campos e clique em "Enviar ao Financeiro" ou "Salvar Rascunho" de novo.');
+  if (r.Status === 'Aprovada') {
+    // Diretoria corrigindo um lançamento já aprovado (e possivelmente já
+    // conferido pelo Financeiro) — o Status precisa continuar "Aprovada"
+    // depois de salvar, então aqui aparece um botão/função próprios
+    // (pcSalvarEdicaoAprovada) em vez de "Enviar ao Financeiro" (que
+    // reabriria o fluxo de aprovação) ou "Salvar Rascunho" (rótulo errado —
+    // o lançamento não é um rascunho).
+    if (btnRascunho) btnRascunho.style.display = 'none';
+    if (btnEnviar) btnEnviar.style.display = 'none';
+    if (btnSalvarAprovada) btnSalvarAprovada.style.display = '';
+    if (banner) banner.innerHTML = `<div style="background:#dbeafe;border:1px solid #3b82f6;border-radius:8px;padding:8px 12px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;font-size:.78rem;color:#1e40af">
+      <span>✏️ Corrigindo lançamento já aprovado — o status "Aprovada" é mantido. Ajuste os campos e clique em "Salvar Correção".</span>
+      <button onclick="pcCancelarEdicaoPrestacao()" style="border:none;background:none;cursor:pointer;font-size:.78rem;font-weight:700;color:#1e40af;text-decoration:underline">Cancelar edição</button>
+    </div>`;
+    showToast('✏️ Editando lançamento já aprovado — clique em "Salvar Correção" ao terminar.');
+  } else {
+    if (btnRascunho) btnRascunho.style.display = '';
+    if (btnEnviar) btnEnviar.style.display = '';
+    if (btnSalvarAprovada) btnSalvarAprovada.style.display = 'none';
+    if (banner) banner.innerHTML = `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;font-size:.78rem;color:#92400e">
+      <span>✏️ Editando lançamento existente — corrija os campos e clique em "Enviar ao Financeiro" ou "Salvar Rascunho".</span>
+      <button onclick="pcCancelarEdicaoPrestacao()" style="border:none;background:none;cursor:pointer;font-size:.78rem;font-weight:700;color:#92400e;text-decoration:underline">Cancelar edição</button>
+    </div>`;
+    showToast('✏️ Editando lançamento — corrija os campos e clique em "Enviar ao Financeiro" ou "Salvar Rascunho" de novo.');
+  }
   const campo = document.getElementById('prest_data');
   if (campo) campo.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
