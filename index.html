@@ -1378,7 +1378,11 @@ function navigate(pageId) {
   const headerEmpresaSel = document.getElementById('header_rc_empresa');
   if (headerEmpresaSel) {
     const rdTabAtual = window._rdTab || 'despesas';
-    if (pageId === 'receitas_despesas' && (rdTabAtual === 'receitas' || rdTabAtual === 'despesas')) {
+    // Pedido em 27/09/2026: Transferência entre Contas também ganha a mesma
+    // lista suspensa de empresa (com Consolidado) que Receitas/Despesas já
+    // têm — Conciliação Bancária não entrou nesse pedido, continua com os
+    // botões-pílula de empresa próprios de sempre.
+    if (pageId === 'receitas_despesas' && (rdTabAtual === 'receitas' || rdTabAtual === 'despesas' || rdTabAtual === 'transferencias')) {
       headerEmpresaSel.style.display = '';
       headerEmpresaSel.innerHTML = '<option value="__consolidado__">🌐 Consolidado</option>' +
         RD_EMPRESAS.map(emp => `<option value="${emp}">🏢 ${emp}</option>`).join('');
@@ -10761,14 +10765,16 @@ function pageReceitasDespesas() {
   ].filter(Boolean).join('');
 
   // A partir daqui só Conciliação/Transferências chegam (Receitas/Despesas
-  // retornam mais acima) — título + botões-pílula de empresa + grade de
-  // navegação continuam como sempre, sem o pedido de 27/09/2026 acima.
+  // retornam mais acima) — título + grade de navegação continuam como
+  // sempre. Os botões-pílula de empresa (empresaBotoesHtml) só aparecem mais
+  // pra Conciliação — em Transferências saíram (pedido 27/09/2026), já que a
+  // lista suspensa do cabeçalho global cobre o mesmo papel, com Consolidado.
   return `
   <div style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:8px">
     <div style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:8px">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:nowrap;gap:12px">
         <div style="min-width:0;flex:1;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><h1 style="white-space:nowrap;font-size:${tab === 'transferencias' ? '1.3rem' : ''};margin:0">${tituloTab}</h1>${subtituloTab ? `<p style="font-size:.74rem;color:var(--text-muted)">${subtituloTab}</p>` : ''}</div>
-        <div style="display:flex;gap:6px;flex-wrap:nowrap;flex-shrink:0;align-items:center;padding-top:2px">${empresaBotoesHtml}</div>
+        <div style="display:flex;gap:6px;flex-wrap:nowrap;flex-shrink:0;align-items:center;padding-top:2px">${tab === 'transferencias' ? '' : empresaBotoesHtml}</div>
       </div>
     </div>
     <div style="display:flex;flex-direction:column;gap:10px;min-width:260px">
@@ -11384,6 +11390,20 @@ function renderTransferenciasTab() {
       <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:.9rem;pointer-events:none">🔍</span>
       <input type="text" id="trf_busca" placeholder="Buscar por conta, valor, responsável ou observação..." autocomplete="off" oninput="transferenciasFiltrar()" style="width:100%;padding:9px 14px 9px 34px;border-radius:20px;border:1px solid var(--border);font-size:.85rem;background:var(--surface);box-sizing:border-box">
     </div>
+    <!-- Pedido em 27/09/2026: lista suspensa pra escolher o mês de visualização
+         (além do intervalo De/Até já existente, que continua útil pra um
+         período livre) — só filtra por mês quando algo diferente de "Todos os
+         meses" é escolhido; o ano ao lado (‹ › ) segue o mesmo padrão do
+         Calendário Mensal de Despesas/Receitas. -->
+    <div style="display:flex;align-items:center;gap:6px">
+      <button onclick="transferenciasMudarAno(-1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">‹</button>
+      <span id="trf-ano-label" style="font-weight:800;font-size:.85rem;min-width:36px;text-align:center">${window._trfAnoFiltro || new Date().getFullYear()}</span>
+      <button onclick="transferenciasMudarAno(1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">›</button>
+    </div>
+    <select id="trf_filtro_mes" onchange="transferenciasFiltrar()" title="Mês de visualização" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);cursor:pointer">
+      <option value="">Todos os meses</option>
+      ${['01 · Jan','02 · Fev','03 · Mar','04 · Abr','05 · Mai','06 · Jun','07 · Jul','08 · Ago','09 · Set','10 · Out','11 · Nov','12 · Dez'].map(m => `<option value="${m.slice(0,2)}">${m}</option>`).join('')}
+    </select>
     <input type="date" id="trf_filtro_de" onchange="transferenciasFiltrar()" title="De" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem">
     <span style="font-size:.78rem;color:var(--text-muted)">até</span>
     <input type="date" id="trf_filtro_ate" onchange="transferenciasFiltrar()" title="Até" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem">
@@ -11406,8 +11426,11 @@ async function carregarTransferencias() {
     // como "Transferências entre contas" mas são de mão única (ex: consórcio, CDB) —
     // esses não têm TransferenciaId e aparecem como uma linha só (pedido em 06-07/09/2026,
     // depois de descobrir que a categoria tava sumindo de vista nos dois casos).
-    const saidas = (despesas || []).filter(d => d.Categoria === 'Transferencias entre contas' && d.Empresa === empresaAtiva);
-    const entradas = (receitas || []).filter(r => r.Categoria === 'Transferencias entre contas' && r.Empresa === empresaAtiva);
+    // "🌐 Consolidado" (pedido 27/09/2026, mesmo suporte que Despesas/Receitas já
+    // têm) pula o filtro de Empresa e soma as 3 — ver empresaCol em
+    // transferenciasFiltrar(), que mostra de qual empresa é cada linha nesse modo.
+    const saidas = (despesas || []).filter(d => d.Categoria === 'Transferencias entre contas' && (window._rdConsolidado || d.Empresa === empresaAtiva));
+    const entradas = (receitas || []).filter(r => r.Categoria === 'Transferencias entre contas' && (window._rdConsolidado || r.Empresa === empresaAtiva));
     const porId = {};
     saidas.forEach(d => { const chave = d.TransferenciaId || ('__d' + d.Id); porId[chave] = porId[chave] || {}; porId[chave].saida = d; });
     entradas.forEach(r => { const chave = r.TransferenciaId || ('__r' + r.Id); porId[chave] = porId[chave] || {}; porId[chave].entrada = r; });
@@ -11418,18 +11441,27 @@ async function carregarTransferencias() {
   }
 }
 
+function transferenciasMudarAno(delta) {
+  window._trfAnoFiltro = (window._trfAnoFiltro || new Date().getFullYear()) + delta;
+  const label = document.getElementById('trf-ano-label'); if (label) label.textContent = window._trfAnoFiltro;
+  transferenciasFiltrar();
+}
+
 function transferenciasFiltrar() {
   const el = document.getElementById('trf-lista');
   if (!el) return;
   const busca = ((document.getElementById('trf_busca')||{}).value || '').trim().toLowerCase();
   const de = (document.getElementById('trf_filtro_de')||{}).value || '';
   const ate = (document.getElementById('trf_filtro_ate')||{}).value || '';
+  const mesFiltro = (document.getElementById('trf_filtro_mes')||{}).value || '';
+  const anoFiltro = window._trfAnoFiltro || new Date().getFullYear();
   const fmtR = v => 'R$ ' + (Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 
   let pares = (window._trfPares || []).slice();
   pares = pares.filter(p => {
     const base = p.saida || p.entrada || {};
     const data = base.DataLancamento || base.DataEmissao || '';
+    if (mesFiltro && data.slice(0,7) !== (anoFiltro + '-' + mesFiltro)) return false;
     if (de && data < de) return false;
     if (ate && data > ate) return false;
     if (!busca) return true;
@@ -11453,11 +11485,17 @@ function transferenciasFiltrar() {
 
   if (!pares.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:16px">Nenhuma transferência encontrada.</div>'; return; }
 
-  el.innerHTML = '<table class="data-table"><thead><tr><th>Data</th><th>Origem → Destino</th><th>Valor</th><th>Responsável</th><th>Observação</th><th>Lançado por</th><th>Ações</th></tr></thead><tbody>' +
+  // Coluna "Empresa" só aparece no modo Consolidado (pedido 27/09/2026) — com
+  // as 3 empresas misturadas na mesma lista, precisa de como distinguir de
+  // quem é cada transferência; fora do Consolidado é redundante (é sempre a
+  // mesma empresa ativa) e some, igual já era antes.
+  const colEmpresa = window._rdConsolidado ? '<th>Empresa</th>' : '';
+  el.innerHTML = '<table class="data-table"><thead><tr><th>Data</th>' + colEmpresa + '<th>Origem → Destino</th><th>Valor</th><th>Responsável</th><th>Observação</th><th>Lançado por</th><th>Ações</th></tr></thead><tbody>' +
     pares.map(p => {
       const base = p.saida || p.entrada || {};
       const data = base.DataLancamento || base.DataEmissao || '';
       const dataFmt = data ? new Date(data + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+      const celEmpresa = window._rdConsolidado ? `<td style="font-size:.72rem;color:var(--text-muted);white-space:nowrap">🏢 ${base.Empresa || '—'}</td>` : '';
       const temTransferenciaId = (p.saida && p.saida.TransferenciaId) || (p.entrada && p.entrada.TransferenciaId);
       const origemDestino = (p.saida && p.entrada)
         ? `${p.saida.Banco || '—'} → ${p.entrada.Banco || '—'}`
@@ -11471,6 +11509,7 @@ function transferenciasFiltrar() {
       const ccInfo = (ccOrig || ccDest) ? `<div style="font-size:.65rem;color:var(--text-muted)">CC: ${ccOrig || '—'} → ${ccDest || '—'}</div>` : '';
       return `<tr>
         <td style="font-size:.78rem;white-space:nowrap">${dataFmt}</td>
+        ${celEmpresa}
         <td style="font-size:.78rem">${origemDestino}${ccInfo}${avisoOrfa}</td>
         <td style="font-size:.78rem;font-weight:700;white-space:nowrap">${fmtR(base.Valor)}</td>
         <td style="font-size:.75rem;color:var(--text-muted)">${base.ResponsavelLancamento || '—'}</td>
