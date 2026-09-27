@@ -1111,7 +1111,7 @@
          mostrar/preencher (ver logo abaixo). -->
     <div style="flex:1;min-width:0;display:flex;align-items:center;gap:8px">
       <div class="header-title" id="headerTitle" style="flex:none">Dashboard Geral</div>
-      <select id="header_rc_empresa" onchange="rcEmpresaOuConsolidadoMudou(this.value)" title="Empresa" style="display:none;padding:6px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);cursor:pointer"></select>
+      <select id="header_rc_empresa" onchange="headerRcEmpresaMudou(this.value)" title="Empresa" style="display:none;padding:6px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);cursor:pointer"></select>
     </div>
     <img id="_headerLogoImg" src="" alt="EXPEDIAN" style="height:28px;opacity:.7;display:none" class="header-logo-desk"><script>(function(){var s=document.getElementById('_appLogoSrc');if(!s)return;var src=s.getAttribute('src');['_sidebarLogoImg','_headerLogoImg'].forEach(function(id){var el=document.getElementById(id);if(el)el.setAttribute('src',src);});})();</script>
     <!-- Pedido em 18/09/2026: botão "Painel" na barra do topo (perto da logo)
@@ -1370,15 +1370,23 @@ function navigate(pageId) {
   }
   document.getElementById('headerTitle').textContent = title;
   // Lista suspensa de empresa (topo, ao lado do título — pedido 27/09/2026) só
-  // aparece na aba Receitas; nas demais telas fica escondida. "🌐 Consolidado"
-  // sempre no topo — ver rcEmpresaOuConsolidadoMudou/window._rdConsolidado.
+  // aparece nas abas Receitas e Despesas; nas demais telas fica escondida.
+  // Em Receitas tem "🌐 Consolidado" no topo (ver rcEmpresaOuConsolidadoMudou/
+  // window._rdConsolidado); em Despesas não (carregarDespesas() não suporta
+  // consolidado) — só as 3 empresas reais, trocando via rdSelecionarEmpresa
+  // (ver headerRcEmpresaMudou, que decide qual das duas usar).
   const headerEmpresaSel = document.getElementById('header_rc_empresa');
   if (headerEmpresaSel) {
-    if (pageId === 'receitas_despesas' && (window._rdTab || 'despesas') === 'receitas') {
+    const rdTabAtual = window._rdTab || 'despesas';
+    if (pageId === 'receitas_despesas' && rdTabAtual === 'receitas') {
       headerEmpresaSel.style.display = '';
       headerEmpresaSel.innerHTML = '<option value="__consolidado__">🌐 Consolidado</option>' +
         RD_EMPRESAS.map(emp => `<option value="${emp}">🏢 ${emp}</option>`).join('');
       headerEmpresaSel.value = window._rdConsolidado ? '__consolidado__' : (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
+    } else if (pageId === 'receitas_despesas' && rdTabAtual === 'despesas') {
+      headerEmpresaSel.style.display = '';
+      headerEmpresaSel.innerHTML = RD_EMPRESAS.map(emp => `<option value="${emp}">🏢 ${emp}</option>`).join('');
+      headerEmpresaSel.value = window._rdEmpresaAtiva || RD_EMPRESAS[0];
     } else {
       headerEmpresaSel.style.display = 'none';
     }
@@ -10668,6 +10676,20 @@ function rcEmpresaOuConsolidadoMudou(v) {
   navigate('receitas_despesas');
 }
 
+// Dispatcher da lista suspensa de Empresa no cabeçalho global (pedido em
+// 27/09/2026: mesma lista de Receitas, agora também em Despesas) — a lista é
+// uma só (#header_rc_empresa), mas o comportamento ao trocar depende da aba
+// ativa: em Receitas passa por rcEmpresaOuConsolidadoMudou (tem "🌐
+// Consolidado"); em Despesas não tem Consolidado (carregarDespesas() só lê
+// window._rdEmpresaAtiva), então troca direto com rdSelecionarEmpresa.
+function headerRcEmpresaMudou(v) {
+  if ((window._rdTab || 'despesas') === 'receitas') {
+    rcEmpresaOuConsolidadoMudou(v);
+  } else {
+    rdSelecionarEmpresa(v, 'receitas_despesas');
+  }
+}
+
 function pageReceitasDespesas() {
   if (currentProfile !== 'diretoria') {
     return `<div class="page-header"><h1>Receitas e Despesas</h1></div>
@@ -10744,14 +10766,13 @@ function pageReceitasDespesas() {
     <div style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:8px">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:nowrap;gap:12px">
         <div style="min-width:0;flex:1;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><h1 style="white-space:nowrap;font-size:${tab === 'transferencias' ? '1.3rem' : ''};margin:0">${tituloTab}</h1>${subtituloTab ? `<p style="font-size:.74rem;color:var(--text-muted)">${subtituloTab}</p>` : ''}</div>
-        <div style="display:flex;gap:6px;flex-wrap:nowrap;flex-shrink:0;align-items:center;padding-top:2px">${empresaBotoesHtml}</div>
+        <!-- Pedido em 27/09/2026: em Despesas os botões-pílula de empresa saíram
+             daqui — a mesma lista suspensa de Empresa do cabeçalho global
+             (usada em Receitas) agora também aparece em Despesas, ver
+             navigate()/headerRcEmpresaMudou. Conciliação/Transferências não
+             passaram por esse pedido, mantêm os botões-pílula como sempre. -->
+        ${tab === 'despesas' ? '' : `<div style="display:flex;gap:6px;flex-wrap:nowrap;flex-shrink:0;align-items:center;padding-top:2px">${empresaBotoesHtml}</div>`}
       </div>
-      ${tab === 'despesas' ? `
-      <div style="background:var(--surface2);border-radius:10px;padding:10px 12px;font-size:.7rem;line-height:1.5;color:var(--text-muted)">
-        <div><b>Contas a Pagar</b>: lançamentos aprovados aguardando pagamento.</div>
-        <div><b>Prestação de Contas</b>: reembolsos/adiantamentos enviados para aprovação.</div>
-        <div>Ao pagar/aprovar, o registro migra automaticamente para <b>Despesas</b>, o histórico consolidado do que já saiu do caixa.</div>
-      </div>` : ''}
     </div>
     <div style="display:flex;flex-direction:column;gap:10px;min-width:260px">
       <!-- Pedido em 27/09/2026 (mesma estrutura de Receitas): em Despesas, os
