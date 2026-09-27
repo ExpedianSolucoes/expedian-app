@@ -10583,6 +10583,7 @@ function rcRecalcularValorLiquido(prefixo) {
 
 let _rdFornecedores = [];
 let _rdColaboradores = [];
+let _rdSocios = [];
 let _rcClientes = [];
 
 /* -- Descrição-padrão de uma Despesa conforme a Modalidade — usada em toda
@@ -10592,6 +10593,7 @@ let _rcClientes = [];
 function rdDescricaoModalidade(i) {
   if (i.Modalidade === 'servicos') return '🛠️ ' + (i.ServicoDesc || '—');
   if (i.Modalidade === 'colaborador') return '👤 ' + (i.Colaborador || '—');
+  if (i.Modalidade === 'socio') return '🤝 ' + (i.Fornecedor || '—');
   return '🏭 ' + (i.Fornecedor || '—');
 }
 let RD_FILTRO_KPI = '';
@@ -10669,7 +10671,7 @@ function pageReceitasDespesas() {
   }
   const tab = window._rdTab || 'despesas';
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarDespesas(); carregarMunicipiosLista(); carregarBancosLista(); lancamentoRetomarPendente(); }, 200);
+  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarSociosListaRd(); carregarDespesas(); carregarMunicipiosLista(); carregarBancosLista(); lancamentoRetomarPendente(); }, 200);
   if (tab === 'receitas') setTimeout(() => { carregarClientesListaRc(); carregarReceitas(); carregarMunicipiosLista(); carregarBancosLista(); lancamentoRetomarPendente(); }, 200);
   if (tab === 'transferencias') setTimeout(() => { carregarTransferencias(); carregarBancosLista(); }, 200);
 
@@ -13329,6 +13331,11 @@ function renderDespesasTab() {
           <option value="servicos">Serviços (Catálogo de Serviços)</option>
           <option value="fornecedor">Fornecedor</option>
           <option value="colaborador">Colaborador (Pagamento/Folha)</option>
+          <!-- Modalidade "Sócio" (pedido em 27/09/2026) — pra pagamento a sócio
+               (retirada, distribuição de lucro, pró-labore etc.) não precisar
+               mais passar por "Fornecedor" (que abre cadastro de fornecedor
+               de verdade, com CNPJ) só pra dar nome ao lançamento. -->
+          <option value="socio">Sócio</option>
         </select>
       </div>
       <div class="form-group" id="rd_cc_top_group" style="position:relative">
@@ -13419,6 +13426,26 @@ function renderDespesasTab() {
           </div>
           <button onclick="rdAbrirCadastroFornecedor()" class="btn-secondary" style="padding:6px 12px;font-size:.78rem;white-space:nowrap">+ Novo</button>
         </div>
+      </div>
+      <!-- Modalidade "Sócio" (pedido em 27/09/2026) — mesmo padrão de busca do
+           Fornecedor/Colaborador, mas a lista vem dos nomes já cadastrados em
+           Gestão de Contratos > Remuneração dos Sócios (_rdSocios, carregado
+           por carregarSociosListaRd()), sem cadastro de fornecedor nenhum. A
+           Categoria/Subcategoria continuam escolhidas normalmente ali em cima
+           (ex.: Patrimônio/Sócios > Distribuição de Lucros/Retirada de
+           Sócios/Pró-labore/etc.) — este campo só identifica QUAL sócio. Sem
+           botão "+ Novo": a lista de sócios é gerenciada em Remuneração dos
+           Sócios, não aqui.
+      -->
+      <div class="form-group" id="rd_socio_row" style="display:none;position:relative;grid-column:span 2">
+        <label>Sócio</label>
+        <input type="text" id="rd_socio_input" placeholder="Digite para buscar..." autocomplete="off"
+          oninput="rdFiltrarSocios(this.value)" onfocus="rdFiltrarSocios(this.value)"
+          onblur="setTimeout(()=>rdFecharDropdownSocio(),150)"
+          style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;outline:none;box-sizing:border-box">
+        <input type="hidden" id="rd_socio_sel">
+        <div id="rd_socio_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:3px">Não achou o nome? Cadastre em Gestão de Contratos → Remuneração dos Sócios.</div>
       </div>
       <div class="form-group" id="rd_colaborador_row" style="display:none;position:relative;grid-column:span 2">
         <label>Colaborador</label>
@@ -13800,6 +13827,7 @@ function rdToggleModalidade() {
   const servRow = document.getElementById('rd_servico_row');
   const fornRow = document.getElementById('rd_fornecedor_row');
   const colabRow = document.getElementById('rd_colaborador_row');
+  const socioRow = document.getElementById('rd_socio_row');
   const benefRow = document.getElementById('rd_beneficiario_row');
   // Importante: usar 'flex' (não 'block') — .form-group depende de display:flex para
   // esticar label/select na largura da coluna do grid; 'block' fazia o campo encolher
@@ -13808,6 +13836,7 @@ function rdToggleModalidade() {
   if (servRow) { servRow.style.display = v === 'servicos' ? 'flex' : 'none'; servRow.style.gridColumn = v === 'servicos' ? '1 / -1' : ''; }
   if (fornRow) fornRow.style.display = v === 'fornecedor' ? 'flex' : 'none';
   if (colabRow) colabRow.style.display = v === 'colaborador' ? 'flex' : 'none';
+  if (socioRow) socioRow.style.display = v === 'socio' ? 'flex' : 'none';
   if (benefRow) benefRow.style.display = v === 'servicos' ? 'flex' : 'none';
   if (v === 'servicos') {
     rdSelecionarGrupoServico(window._rdGrupoServico || 'diarias');
@@ -14128,6 +14157,48 @@ function rdSelecionarColaborador(nome) {
   const c = _rdColaboradores.find(x => (x.nome||'').toLowerCase() === nome.toLowerCase());
   const hint = document.getElementById('rd_colaborador_funcao_hint');
   if (hint) hint.textContent = (c && c.cargo) ? ('Função: ' + c.cargo) : '';
+}
+
+/* -- Combobox de Sócio (Modalidade "Sócio", pedido 27/09/2026) — mesmo padrão
+   de busca do Fornecedor/Colaborador, mas SEM cadastro próprio: a lista vem
+   de ctSociosConfigAtual().Socios (Gestão de Contratos > Remuneração dos
+   Sócios), gerenciada só lá. Se o nome não estiver na lista, o dropdown só
+   avisa pra cadastrar lá — não abre modal de cadastro aqui. -- */
+async function carregarSociosListaRd() {
+  try { await ctSociosCarregarConfig(); } catch (e) { /* segue com o que já tiver em memória */ }
+  _rdSocios = (ctSociosConfigAtual().Socios || []).filter(s => s.nome);
+}
+
+function rdFiltrarSocios(texto) {
+  const dd = document.getElementById('rd_socio_dropdown');
+  if (!dd) return;
+  const t = (texto||'').trim().toLowerCase();
+  let matches = t ? _rdSocios.filter(s => (s.nome||'').toLowerCase().includes(t)) : _rdSocios;
+  matches = matches.slice(0, 30);
+  let html = matches.map(s => {
+    const esc = String(s.nome).replace(/'/g,"\\'");
+    return '<div onclick="rdSelecionarSocio(\''+esc+'\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>'+s.nome+'</strong>' +
+    '</div>';
+  }).join('');
+  if (t && !_rdSocios.some(s => (s.nome||'').toLowerCase() === t)) {
+    html += '<div style="padding:8px 12px;font-size:.78rem;color:var(--text-muted)">Nenhum sócio com esse nome — cadastre em Gestão de Contratos → Remuneração dos Sócios.</div>';
+  }
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum sócio cadastrado ainda. Cadastre em Gestão de Contratos → Remuneração dos Sócios.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+
+function rdFecharDropdownSocio() {
+  const dd = document.getElementById('rd_socio_dropdown');
+  if (dd) dd.style.display = 'none';
+}
+
+function rdSelecionarSocio(nome) {
+  const inp = document.getElementById('rd_socio_input'); if (inp) inp.value = nome;
+  const hid = document.getElementById('rd_socio_sel'); if (hid) hid.value = nome;
+  rdFecharDropdownSocio();
 }
 
 function rdNovoColaboradorComNome(nomeSugerido) {
@@ -14688,6 +14759,7 @@ async function salvarDespesa() {
   const ehServicoVeiculo = !!(servicoOpt && servicoOpt.grupo === 'veiculos');
   const fornecedor = (document.getElementById('rd_fornecedor_sel')||{}).value || '';
   const colaboradorPagto = (document.getElementById('rd_colaborador_sel')||{}).value || '';
+  const socioSel = (document.getElementById('rd_socio_sel')||{}).value || '';
   const beneficiario = (document.getElementById('rd_beneficiario')||{}).value || '';
   const veiculo = (document.getElementById('rd_veiculo')||{}).value || '';
   const diariaTeveVeiculo = (document.getElementById('rd_diaria_teve_veiculo')||{}).checked || false;
@@ -14718,13 +14790,14 @@ async function salvarDespesa() {
 
   if (!dataLancamento) { showToast('⚠️ Informe a data de lançamento.'); return; }
   if (!categoria) { showToast('⚠️ Selecione a categoria.'); return; }
-  if (!modalidade) { showToast('⚠️ Selecione a modalidade (Serviços, Fornecedor ou Colaborador).'); return; }
+  if (!modalidade) { showToast('⚠️ Selecione a modalidade (Serviços, Fornecedor, Colaborador ou Sócio).'); return; }
   if (modalidade === 'servicos' && !servicoId) { showToast('⚠️ Selecione o serviço.'); return; }
   if (modalidade === 'servicos' && !beneficiario) { showToast('⚠️ Selecione o beneficiário.'); return; }
   if (modalidade === 'servicos' && ehServicoVeiculo && !veiculo) { showToast('⚠️ Selecione o veículo da empresa usado nessa diária.'); return; }
   if (modalidade === 'servicos' && window._rdGrupoServico === 'diarias' && diariaTeveVeiculo && !diariaVeiculoId) { showToast('⚠️ Selecione o veículo usado nessa diária, ou desmarque a opção.'); return; }
   if (modalidade === 'fornecedor' && !fornecedor) { showToast('⚠️ Selecione o fornecedor.'); return; }
   if (modalidade === 'colaborador' && !colaboradorPagto) { showToast('⚠️ Selecione o colaborador.'); return; }
+  if (modalidade === 'socio' && !socioSel) { showToast('⚠️ Selecione o sócio.'); return; }
   // No parcelado o Contrato é escolhido por parcela (campo do topo fica oculto),
   // então só exige o campo do topo fora do parcelado. Com divisão de CC marcada,
   // o contrato é escolhido linha a linha no editor de divisão, não no campo do topo.
@@ -14746,11 +14819,11 @@ async function salvarDespesa() {
     if (Math.abs(diffDivisao) > 0.01) { showToast(`⚠️ A soma da divisão de Centro de Custo (R$ ${rdNumeroParaMoeda(somaDivisao)}) não bate com o valor total (R$ ${rdNumeroParaMoeda(valorTotal)}).`); return; }
   }
 
-  const descricao = modalidade === 'servicos' ? (servicoOpt ? servicoOpt.id+' · '+servicoOpt.desc : '') : modalidade === 'colaborador' ? colaboradorPagto : fornecedor;
+  const descricao = modalidade === 'servicos' ? (servicoOpt ? servicoOpt.id+' · '+servicoOpt.desc : '') : modalidade === 'colaborador' ? colaboradorPagto : modalidade === 'socio' ? socioSel : fornecedor;
 
   // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/fornecedor definitivos
   if (window._rdComprovanteId && window._rdComprovanteDriveId) {
-    const nomeDesejado = financeiroGerarNomeComprovante(dataLancamento, valorTotal, fornecedor || colaboradorPagto || beneficiario || descricao, comprovanteNome);
+    const nomeDesejado = financeiroGerarNomeComprovante(dataLancamento, valorTotal, fornecedor || colaboradorPagto || socioSel || beneficiario || descricao, comprovanteNome);
     const renomeado = await renomearArquivoOneDrive(window._rdComprovanteDriveId, window._rdComprovanteId, nomeDesejado);
     if (renomeado) { comprovanteUrl = renomeado.url || comprovanteUrl; comprovanteNome = renomeado.nome || comprovanteNome; }
   }
@@ -14760,7 +14833,12 @@ async function salvarDespesa() {
     NaturezaEconomica: rdNaturezaDeSubcategoriaDespesas(subcategoria),
     TipoMovimentacao: rdTipoMovimentacao(categoria, subcategoria),
     ServicoId: modalidade==='servicos' ? servicoId : '', ServicoDesc: modalidade==='servicos' ? (servicoOpt?servicoOpt.desc:'') : '',
-    Fornecedor: modalidade==='fornecedor' ? fornecedor : '', Colaborador: modalidade==='colaborador' ? colaboradorPagto : '',
+    // Sócio (pedido 27/09/2026) mora no mesmo campo Fornecedor — mesma
+    // convenção já usada em ctSociosConfirmarPagamento() (Remuneração dos
+    // Sócios): não é um fornecedor de verdade, mas mantém o nome do sócio
+    // pesquisável/exportável nos mesmos lugares que já leem `Fornecedor`
+    // (busca da lista, exclusão, Excel), sem duplicar essa lógica em cada um.
+    Fornecedor: modalidade==='fornecedor' ? fornecedor : modalidade==='socio' ? socioSel : '', Colaborador: modalidade==='colaborador' ? colaboradorPagto : '',
     Beneficiario: modalidade==='servicos' ? beneficiario : '',
     Veiculo: (modalidade==='servicos' && ehServicoVeiculo) ? veiculo : '',
     DiariaVeiculoId: diariaVeiculoId, DiariaVeiculoDesc: diariaVeiculoDesc, DiariaVeiculoValor: diariaVeiculoValor,
@@ -15612,6 +15690,8 @@ async function rdAbrirEdicaoDespesa(id) {
     const colab = _rdColaboradores.find(x => (x.nome||'').toLowerCase() === (i.Colaborador||'').toLowerCase());
     const hint = document.getElementById('rd_colaborador_funcao_hint');
     if (hint) hint.textContent = (colab && colab.cargo) ? ('Função: ' + colab.cargo) : '';
+  } else if (i.Modalidade === 'socio') {
+    set('rd_socio_sel', i.Fornecedor); set('rd_socio_input', i.Fornecedor);
   }
 
   set('rd_desc', i.Descricao);
@@ -15683,7 +15763,7 @@ async function exportarDespesasExcel() {
     'Categoria': i.Categoria || '',
     'Subcategoria': i.Subcategoria || '',
     'Natureza Econômica': i.NaturezaEconomica || '',
-    'Modalidade': i.Modalidade === 'servicos' ? 'Serviços' : i.Modalidade === 'colaborador' ? 'Colaborador' : 'Fornecedor',
+    'Modalidade': i.Modalidade === 'servicos' ? 'Serviços' : i.Modalidade === 'colaborador' ? 'Colaborador' : i.Modalidade === 'socio' ? 'Sócio' : 'Fornecedor',
     'Serviço/Fornecedor/Colaborador': i.Modalidade === 'servicos' ? (i.ServicoDesc||'') : i.Modalidade === 'colaborador' ? (i.Colaborador||'') : (i.Fornecedor||''),
     'Beneficiário': i.Beneficiario || '',
     'Veículo': i.Veiculo || '',
@@ -24982,12 +25062,15 @@ async function ctSociosConfirmarPagamento() {
       // taxonomia atual (rdNaturezaDeSubcategoriaDespesas/rdTipoMovimentacao), não
       // mais da tabela legada (rdNaturezaDeSubcategoria, usada só por Contas a
       // Pagar/Prestação de Contas).
+      // Modalidade 'fornecedor'→'socio' (pedido 27/09/2026): a Despesa automática
+      // agora usa a mesma modalidade "Sócio" nova em Despesas, em vez de emprestar
+      // "Fornecedor" — mantém consistente com um lançamento manual do mesmo tipo.
       const categoria = 'Patrimônio/Sócios';
       const subcategoria = 'Distribuição de Lucros';
       const divisaoCC = ctSociosDivisaoCCDoSocio(nome, valor);
       const despesa = await dbInserir('Despesas', {
         DataLancamento: dataPag, Semana: (typeof _rdSemanaDoAno === 'function' ? _rdSemanaDoAno(dataPag) : ''),
-        Categoria: categoria, Subcategoria: subcategoria, Modalidade: 'fornecedor',
+        Categoria: categoria, Subcategoria: subcategoria, Modalidade: 'socio',
         NaturezaEconomica: rdNaturezaDeSubcategoriaDespesas(subcategoria),
         TipoMovimentacao: rdTipoMovimentacao(categoria, subcategoria),
         Fornecedor: nome, Beneficiario: nome, Veiculo: '',
