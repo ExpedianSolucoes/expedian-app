@@ -1347,6 +1347,13 @@ function navigate(pageId) {
       if (child) { title = child.label; break; }
     }
   }
+  // 'receitas_despesas' é uma rota única compartilhada por 4 sub-abas (Despesas/
+  // Receitas/Conciliação/Transferências, ver window._rdTab) e não existe como item
+  // de `menus[]` — o topo mostrava o id literal da rota ("receitas_despesas", tipo
+  // "receita x despesas") em vez do título da aba ativa. Corrigido em 27/09/2026.
+  if (pageId === 'receitas_despesas') {
+    title = { despesas: 'Despesas', receitas: 'Receitas', conciliacao: 'Conciliação Bancária', transferencias: 'Transferências entre Contas' }[window._rdTab || 'despesas'] || 'Receitas e Despesas';
+  }
   document.getElementById('headerTitle').textContent = title;
   renderPage(pageId);
   if (window.innerWidth <= 768) closeSidebar();
@@ -10658,6 +10665,11 @@ function pageReceitasDespesas() {
     tab === 'despesas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="window._prestVindoDeDespesas=true;navigate('prestacao')">📑 Prestação de Contas</button>` : '',
     tab === 'receitas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="navigate('receber')">🧾 Ir para Notas Fiscais</button>` : '',
     tab === 'receitas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="window._clientesOrigin='receitas';navigate('clientes')">🧑‍💼 Clientes</button>` : '',
+    // Pedido em 27/09/2026: acesso direto a Despesas e ao modal de Aplicação
+    // Financeira a partir da tela de Receitas, sem precisar voltar pro hub
+    // Financeiro — "caso queira já ir direto pra despesas".
+    tab === 'receitas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="window._rdTab='despesas';navigate('receitas_despesas')">💸 Ir para Despesas</button>` : '',
+    tab === 'receitas' ? `<button class="btn-secondary" style="width:100%;box-sizing:border-box" onclick="aplicacaoAbrirModal()">💰 Aplicação Financeira</button>` : '',
     (tab === 'despesas' || tab === 'receitas' || tab === 'transferencias') ? `<button style="width:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px 14px;border-radius:10px;
         border:${tab==='transferencias'?'2px solid var(--green-main)':'1px solid var(--border)'};
         background:${tab==='transferencias'?'var(--green-pale)':'var(--surface2)'};
@@ -10667,12 +10679,18 @@ function pageReceitasDespesas() {
     `<button class="btn-primary" style="width:100%;box-sizing:border-box" onclick="lancamentoAbrirSeletor()">➕ Novo Lançamento</button>`,
   ].filter(Boolean).join('');
 
+  // Pedido em 27/09/2026: na aba Receitas, os botões de empresa daqui de cima
+  // saem — a seleção de empresa (junto com o mês) passa a morar na lista
+  // suspensa dentro do card do gráfico "Recebido x A Receber x Vencido" logo
+  // abaixo (ver renderReceitasTab/rcGraficoMudarMes). Isso também é o que
+  // "libera" os cards de KPI pra subir, mais perto do título. Despesas/
+  // Conciliação/Transferências continuam com os botões aqui, sem mudança.
   return `
-  <div style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:14px">
-    <div style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:12px">
+  <div style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:8px">
+    <div style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:8px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:nowrap;gap:12px">
         <div style="min-width:0;flex:1"><h1 style="white-space:nowrap;font-size:${tab === 'transferencias' ? '1.3rem' : ''}">${tituloTab}</h1>${subtituloTab ? `<p style="font-size:.74rem;color:var(--text-muted);margin-top:4px">${subtituloTab}</p>` : ''}</div>
-        <div style="display:flex;gap:6px;flex-wrap:nowrap;flex-shrink:0;align-items:center;padding-top:2px">${empresaBotoesHtml}</div>
+        ${tab === 'receitas' ? '' : `<div style="display:flex;gap:6px;flex-wrap:nowrap;flex-shrink:0;align-items:center;padding-top:2px">${empresaBotoesHtml}</div>`}
       </div>
       ${tab === 'despesas' ? `
       <div style="background:var(--surface2);border-radius:10px;padding:10px 12px;font-size:.7rem;line-height:1.5;color:var(--text-muted)">
@@ -11560,7 +11578,24 @@ function renderReceitasTab() {
         <div class="kpi-card amber" id="rc-kpi-card-avencer" onclick="rcFiltrarKpi('avencer')" style="cursor:pointer" title="Filtrar: a receber"><div class="kpi-label">A Receber</div><div class="kpi-value" id="rc-kpi-avencer" style="font-size:1.05rem">—</div><div class="kpi-icon">⏳</div></div>
       </div>
       <div class="card" style="margin-bottom:0;flex:1;min-height:110px;display:flex;flex-direction:column">
-        <div class="card-title" style="margin-bottom:6px;font-size:.8rem">📈 Recebido x A Receber x Vencido</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+          <div class="card-title" style="margin-bottom:0;font-size:.8rem">📈 Recebido x A Receber x Vencido</div>
+          <!-- Pedido em 27/09/2026: empresa e mês do gráfico agora escolhidos aqui,
+               por lista suspensa — substitui os botões de empresa que ficavam lá em
+               cima na aba Receitas. Trocar a empresa reaproveita rdSelecionarEmpresa
+               (mesma função dos botões, recarrega a página inteira já filtrada);
+               trocar o mês só troca a visão deste gráfico (ano inteiro x detalhe
+               diário do mês escolhido — ver rcGraficoMudarMes/rcRenderGraficoDiario). -->
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <select onchange="rdSelecionarEmpresa(this.value,'receitas_despesas')" title="Empresa" style="padding:4px 8px;border-radius:7px;border:1px solid var(--border);font-size:.72rem;background:var(--surface);cursor:pointer">
+              ${RD_EMPRESAS.map(emp => `<option value="${emp}" ${emp===(window._rdEmpresaAtiva||RD_EMPRESAS[0])?'selected':''}>🏢 ${emp}</option>`).join('')}
+            </select>
+            <select onchange="rcGraficoMudarMes(this.value)" title="Mês (detalhe do gráfico)" style="padding:4px 8px;border-radius:7px;border:1px solid var(--border);font-size:.72rem;background:var(--surface);cursor:pointer">
+              <option value="">Ano todo</option>
+              ${['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'].map((n,idx) => `<option value="${idx+1}" ${String(window._rcGraficoMesDetalhe||'')===String(idx+1)?'selected':''}>${n}</option>`).join('')}
+            </select>
+          </div>
+        </div>
         <div style="position:relative;flex:1;min-height:90px"><canvas id="rc-grafico-mensal"></canvas></div>
       </div>
     </div>
@@ -12245,7 +12280,19 @@ function rcRenderResumoMensal(items) {
       ${fMesAtivo ? `<button onclick="document.getElementById('rc_filtro_mes').value='';carregarReceitas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
     </div>`;
 
-  rcRenderGraficoMensal(porMes, ano, nomesMes);
+  // Pedido em 27/09/2026: lista suspensa de mês no card do gráfico (acima) troca
+  // entre a visão anual (Jan-Dez, como sempre foi) e o detalhe diário do mês
+  // escolhido — window._rcGraficoMesDetalhe guarda essa escolha entre re-renders.
+  if (window._rcGraficoMesDetalhe) rcRenderGraficoDiario(items, ano, window._rcGraficoMesDetalhe);
+  else rcRenderGraficoMensal(porMes, ano, nomesMes);
+}
+
+// Troca a visão do gráfico "Recebido x A Receber x Vencido" (lista suspensa de
+// mês no card, pedido 27/09/2026) — não mexe nos outros filtros da tela, só
+// reusa carregarReceitas() pra recalcular com o mês novo.
+function rcGraficoMudarMes(v) {
+  window._rcGraficoMesDetalhe = v ? parseInt(v, 10) : null;
+  carregarReceitas();
 }
 
 /* -- Gráfico de linha Recebido x A Receber x Vencido, mesmo ano do Calendário Mensal
@@ -12284,6 +12331,65 @@ async function rcRenderGraficoMensal(porMes, ano, nomesMes) {
         plugins: { legend: { position: 'top', labels: { boxWidth: 8, font: { size: 9 }, padding: 6 } } },
         scales: {
           x: { ticks: { font: { size: 8 } } },
+          y: { ticks: { font: { size: 8 }, callback: (v) => (v/1000).toLocaleString('pt-BR',{maximumFractionDigits:0})+'k' } }
+        }
+      }
+    });
+  } catch (e) { /* Chart.js indisponível (offline) — gráfico só não aparece, resto da página segue normal */ }
+}
+
+// -- Detalhe diário do mês escolhido na lista suspensa do gráfico (pedido
+// 27/09/2026) — mesmas 3 séries (Recebido/A Receber/Vencido), só que em
+// barras por dia do mês em vez de uma linha por mês do ano. `items` é a
+// lista completa (todos os anos) já filtrada por empresa, igual recebida
+// por rcRenderResumoMensal — aqui filtra só o ano+mês ativos.
+async function rcRenderGraficoDiario(items, ano, mes) {
+  const canvas = document.getElementById('rc-grafico-mensal');
+  if (!canvas) return;
+  try {
+    if (typeof Chart === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const canvasAtual = document.getElementById('rc-grafico-mensal');
+    if (!canvasAtual) return;
+    if (window._rcGraficoMensal) { window._rcGraficoMensal.destroy(); window._rcGraficoMensal = null; }
+    const diasNoMes = new Date(ano, mes, 0).getDate();
+    const porDia = {};
+    for (let d = 1; d <= diasNoMes; d++) porDia[d] = { total: 0, recebido: 0, vencido: 0 };
+    items.forEach(i => {
+      const chave = i.DataPrevista || i.DataEmissao || '';
+      if (chave.slice(0,4) !== String(ano) || parseInt(chave.slice(5,7),10) !== mes) return;
+      const d = parseInt(chave.slice(8,10), 10);
+      if (!d || !porDia[d]) return;
+      porDia[d].total += (i.Valor || 0);
+      if (i.Status === 'Recebido') porDia[d].recebido += (i.Valor || 0);
+      else if (i.Status === 'Em atraso') porDia[d].vencido += (i.Valor || 0);
+    });
+    const labels = Object.keys(porDia).map(d => d.padStart(2,'0'));
+    const recebido = Object.values(porDia).map(d => d.recebido);
+    const aReceber = Object.values(porDia).map(d => Math.max(d.total - d.recebido - d.vencido, 0));
+    const vencido = Object.values(porDia).map(d => d.vencido);
+    window._rcGraficoMensal = new Chart(canvasAtual.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Recebido', data: recebido, backgroundColor: '#28a745' },
+          { label: 'A Receber', data: aReceber, backgroundColor: '#e0a800' },
+          { label: 'Vencido', data: vencido, backgroundColor: '#dc3545' },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'top', labels: { boxWidth: 8, font: { size: 9 }, padding: 6 } } },
+        scales: {
+          x: { ticks: { font: { size: 7 } } },
           y: { ticks: { font: { size: 8 }, callback: (v) => (v/1000).toLocaleString('pt-BR',{maximumFractionDigits:0})+'k' } }
         }
       }
