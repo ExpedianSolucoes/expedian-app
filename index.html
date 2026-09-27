@@ -1371,22 +1371,18 @@ function navigate(pageId) {
   document.getElementById('headerTitle').textContent = title;
   // Lista suspensa de empresa (topo, ao lado do título — pedido 27/09/2026) só
   // aparece nas abas Receitas e Despesas; nas demais telas fica escondida.
-  // Em Receitas tem "🌐 Consolidado" no topo (ver rcEmpresaOuConsolidadoMudou/
-  // window._rdConsolidado); em Despesas não (carregarDespesas() não suporta
-  // consolidado) — só as 3 empresas reais, trocando via rdSelecionarEmpresa
-  // (ver headerRcEmpresaMudou, que decide qual das duas usar).
+  // As duas têm "🌐 Consolidado" no topo (Despesas ganhou em 27/09/2026,
+  // mesmo pedido de Receitas — ver rcEmpresaOuConsolidadoMudou/
+  // window._rdConsolidado, único flag compartilhado pelas duas abas, e
+  // carregarDespesas(), que passou a suportá-lo igual carregarReceitas()).
   const headerEmpresaSel = document.getElementById('header_rc_empresa');
   if (headerEmpresaSel) {
     const rdTabAtual = window._rdTab || 'despesas';
-    if (pageId === 'receitas_despesas' && rdTabAtual === 'receitas') {
+    if (pageId === 'receitas_despesas' && (rdTabAtual === 'receitas' || rdTabAtual === 'despesas')) {
       headerEmpresaSel.style.display = '';
       headerEmpresaSel.innerHTML = '<option value="__consolidado__">🌐 Consolidado</option>' +
         RD_EMPRESAS.map(emp => `<option value="${emp}">🏢 ${emp}</option>`).join('');
       headerEmpresaSel.value = window._rdConsolidado ? '__consolidado__' : (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
-    } else if (pageId === 'receitas_despesas' && rdTabAtual === 'despesas') {
-      headerEmpresaSel.style.display = '';
-      headerEmpresaSel.innerHTML = RD_EMPRESAS.map(emp => `<option value="${emp}">🏢 ${emp}</option>`).join('');
-      headerEmpresaSel.value = window._rdEmpresaAtiva || RD_EMPRESAS[0];
     } else {
       headerEmpresaSel.style.display = 'none';
     }
@@ -10651,15 +10647,19 @@ function rdSelecionarEmpresa(emp, destino) {
   navigate(destino || 'receitas_despesas');
 }
 
-// Lista suspensa de empresa do gráfico de Receitas (pedido 27/09/2026) — igual
-// rdSelecionarEmpresa, mas com uma 3ª opção "🌐 Consolidado" que soma as 3
+// Lista suspensa de empresa no cabeçalho global (pedido 27/09/2026) — igual
+// rdSelecionarEmpresa, mas com uma opção extra "🌐 Consolidado" que soma as 3
 // empresas em vez de trocar pra uma só. window._rdEmpresaAtiva NUNCA vira
 // 'Consolidado' (continua sempre sendo uma empresa real — usada em "Novo
 // Lançamento", listas de banco, etc.); só window._rdConsolidado liga/desliga
-// o modo consolidado, lido em carregarReceitas(). Não reaproveita
-// rdSelecionarEmpresa 1:1 porque o guard dela (`if empresaAtiva===emp return`)
-// impediria sair do Consolidado de volta pra uma empresa que já estava ativa
-// antes de entrar nele.
+// o modo consolidado — um único flag compartilhado por Receitas
+// (carregarReceitas) e Despesas (carregarDespesas), a mesma aba ativa
+// (window._rdTab) continua a mesma, não força mais trocar pra Receitas
+// (bug corrigido em 27/09/2026: Despesas ganhou Consolidado também, então
+// forçar a troca de aba aqui faria o usuário "pular" de Despesas pra
+// Receitas só por marcar Consolidado). Não reaproveita rdSelecionarEmpresa
+// 1:1 porque o guard dela (`if empresaAtiva===emp return`) impediria sair do
+// Consolidado de volta pra uma empresa que já estava ativa antes dele.
 function rcEmpresaOuConsolidadoMudou(v) {
   if (v === '__consolidado__') {
     if (window._rdConsolidado) return;
@@ -10672,22 +10672,15 @@ function rcEmpresaOuConsolidadoMudou(v) {
     window._concilReceitasCache = null;
     (window._concilTransacoes||[]).forEach(t => { t.status = null; t.despesaId = null; t.receitaId = null; t.candidatos = null; });
   }
-  window._rdTab = 'receitas';
   navigate('receitas_despesas');
 }
 
-// Dispatcher da lista suspensa de Empresa no cabeçalho global (pedido em
-// 27/09/2026: mesma lista de Receitas, agora também em Despesas) — a lista é
-// uma só (#header_rc_empresa), mas o comportamento ao trocar depende da aba
-// ativa: em Receitas passa por rcEmpresaOuConsolidadoMudou (tem "🌐
-// Consolidado"); em Despesas não tem Consolidado (carregarDespesas() só lê
-// window._rdEmpresaAtiva), então troca direto com rdSelecionarEmpresa.
+// Dispatcher da lista suspensa de Empresa no cabeçalho global — a lista é uma
+// só (#header_rc_empresa), usada tanto em Receitas quanto em Despesas; ambas
+// já têm "🌐 Consolidado" (pedido 27/09/2026), então sempre passa por
+// rcEmpresaOuConsolidadoMudou, que preserva a aba ativa.
 function headerRcEmpresaMudou(v) {
-  if ((window._rdTab || 'despesas') === 'receitas') {
-    rcEmpresaOuConsolidadoMudou(v);
-  } else {
-    rdSelecionarEmpresa(v, 'receitas_despesas');
-  }
+  rcEmpresaOuConsolidadoMudou(v);
 }
 
 function pageReceitasDespesas() {
@@ -13745,6 +13738,10 @@ function renderDespesasTab() {
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._pagVindoDeDespesas=true;navigate('pagar')">💸 Contas a Pagar</button>
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._prestVindoDeDespesas=true;navigate('prestacao')">📑 Prestação de Contas</button>
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._rdTab='transferencias';navigate('receitas_despesas')">🔁 Transferência entre Contas</button>
+        <!-- Pedido em 27/09/2026: espelha o botão "💸 Despesas" que já existe na
+             grade de Receitas — agora Despesas também tem um atalho direto de
+             volta pra Receitas. -->
+        <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._rdTab='receitas';navigate('receitas_despesas')">📈 Receitas</button>
         <button class="btn-primary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="lancamentoAbrirSeletor()">➕ Novo Lançamento</button>
       </div>
       <div id="rd-resumo-mensal"></div>
@@ -15010,9 +15007,13 @@ async function carregarDespesas() {
   if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>'; return; }
   try {
     let items = await dbLerSeguro('Despesas');
-    // Escopo pela empresa ativa no submenu — cada empresa vê só seus próprios lançamentos.
+    // Escopo pela empresa ativa no submenu — cada empresa vê só seus próprios
+    // lançamentos. "🌐 Consolidado" (pedido 27/09/2026, mesmo suporte que
+    // Receitas já tinha) soma as 3 empresas — pula o filtro de Empresa, então
+    // KPIs/gráfico/Calendário Mensal/lista abaixo (todos calculados a partir
+    // deste mesmo `items`) já saem consolidados sem precisar tocar em mais nada.
     const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-    items = items.filter(i => i.Empresa === empresaAtiva);
+    if (!window._rdConsolidado) items = items.filter(i => i.Empresa === empresaAtiva);
     window._rdSubTab = window._rdSubTab || 'aberto';
     items.forEach(i => {
       if (i.Status !== 'Pago' && i.Status !== 'Cancelado' && i.Vencimento) {
