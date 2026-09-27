@@ -11089,87 +11089,52 @@ async function transferenciaSalvar() {
    Aplicação grava como Despesa (Categoria "Aplicações Financeiras") e Resgate
    como Receita (Categoria "Receitas Financeiras", só as subcategorias de
    Resgate) — mesmas tabelas de sempre, só o formulário que muda. -- */
+// Pedido em 27/09/2026 (2ª rodada): virou um fluxo de duas telas — clicar em
+// "💰 Aplicação Financeira" abre esta tela (histórico completo + botão "Novo
+// Lançamento"), e só clicar em "Novo Lançamento" (ou no ✏️ de um item) abre o
+// formulário de verdade (aplicacaoAbrirForm), numa segunda janela por cima
+// desta; depois de preencher e salvar, o formulário fecha sozinho e volta pra
+// esta tela, que já aparece com a lista atualizada.
 function aplicacaoAbrirModal() {
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  const subs = RD_SUBCATEGORIAS_DESPESAS['Aplicações Financeiras'] || [];
-  // Pedido em 27/09/2026: além de registrar uma aplicação nova, o modal agora
-  // também mostra o histórico das já lançadas (com lápis pra editar) — não
-  // precisa mais ir procurar o lançamento na lista geral de Despesas pra
-  // corrigir algo (ex.: valor errado, conta errada).
-  window._aplEditandoId = null;
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'aplicacaoModal';
   modal.innerHTML = `
-    <div class="modal-box" style="max-width:620px;max-height:88vh;overflow-y:auto">
+    <div class="modal-box" style="max-width:720px;max-height:88vh;overflow-y:auto">
       <div class="modal-header">
-        <h2 id="apl-modal-titulo">🟣 Aplicação Financeira</h2>
+        <h2>🟣 Aplicações Financeiras</h2>
         <div class="modal-close" onclick="document.getElementById('aplicacaoModal').remove()">✕</div>
       </div>
       <div class="modal-body">
-        <div id="apl-modal-aviso" style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Lança automaticamente uma Despesa (saída) na conta escolhida, categoria "Aplicações Financeiras".</div>
-        <div class="form-group" style="margin-bottom:12px">
-          <label>Empresa</label>
-          <select id="apl_empresa" onchange="aplicacaoEmpresaAlterada()">
-            ${RD_EMPRESAS.map(e => `<option value="${e}" ${e===empresa?'selected':''}>${e}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Tipo de Aplicação</label>
-            <select id="apl_subcategoria">${subs.map(s => `<option>${s}</option>`).join('')}</select>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:180px">
+            <label>Empresa</label>
+            <select id="apl_hist_empresa" onchange="aplicacaoCarregarHistorico()">
+              ${RD_EMPRESAS.map(e => `<option value="${e}" ${e===empresa?'selected':''}>${e}</option>`).join('')}
+            </select>
           </div>
-          <div class="form-group">
-            <label>Conta (sai o dinheiro)</label>
-            <select id="apl_banco">${bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('')}</select>
-          </div>
+          <button class="btn-primary" style="white-space:nowrap" onclick="aplicacaoAbrirForm()">➕ Novo Lançamento</button>
         </div>
-        <div class="form-row">
-          <div class="form-group"><label>Valor</label><input type="text" id="apl_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)"></div>
-          <div class="form-group"><label>Data</label><input type="date" id="apl_data" value="${new Date().toISOString().slice(0,10)}"></div>
-        </div>
-        <div class="form-group" style="margin-bottom:12px">
-          <label>Responsável pelo Lançamento</label>
-          <select id="apl_responsavel">
-            <option value="">Selecione...</option>
-            ${_servicosResponsaveisDiretoria().map(r => `<option>${r}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="apl_obs" placeholder="Ex: aplicação de excedente de caixa..."></div>
-        <div style="display:flex;gap:10px;margin-bottom:20px">
-          <button class="btn-primary" id="apl-btn-salvar" onclick="aplicacaoSalvar()">✅ Registrar Aplicação</button>
-          <button class="btn-secondary" onclick="document.getElementById('aplicacaoModal').remove()">Cancelar</button>
-        </div>
-        <div style="border-top:1px solid var(--border);padding-top:14px">
-          <div style="font-weight:700;font-size:.82rem;margin-bottom:8px">📜 Histórico de Aplicações — <span id="apl-historico-empresa">${empresa}</span></div>
-          <div id="apl-historico"><div style="color:var(--text-muted);font-size:.8rem;padding:8px 0">Carregando...</div></div>
-        </div>
+        <div id="apl-historico"><div style="color:var(--text-muted);font-size:.8rem;padding:8px 0">Carregando...</div></div>
       </div>
     </div>`;
   document.body.appendChild(modal);
   aplicacaoCarregarHistorico();
 }
-function aplicacaoEmpresaAlterada() {
-  const empresa = (document.getElementById('apl_empresa')||{}).value || RD_EMPRESAS[0];
-  const sel = document.getElementById('apl_banco');
-  if (sel) sel.innerHTML = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
-  aplicacaoCarregarHistorico();
-}
 // Histórico das aplicações já registradas (Despesas, Categoria "Aplicações
-// Financeiras"), filtrado pela empresa escolhida no formulário acima — muda
-// junto quando o select de Empresa do modal muda. Cada linha tem um ✏️ que
-// recarrega o formulário acima em modo edição (aplicacaoAbrirEdicao).
+// Financeiras"), filtrado pela empresa escolhida no select desta tela. Cada
+// linha tem um ✏️ que abre o formulário (aplicacaoAbrirForm) já preenchido.
 async function aplicacaoCarregarHistorico() {
   const el = document.getElementById('apl-historico');
   if (!el) return;
-  const empresa = (document.getElementById('apl_empresa')||{}).value || window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  const tagEmpresa = document.getElementById('apl-historico-empresa'); if (tagEmpresa) tagEmpresa.textContent = empresa;
+  const empresa = (document.getElementById('apl_hist_empresa')||{}).value || window._rdEmpresaAtiva || RD_EMPRESAS[0];
   const fmtR = v => 'R$ ' + (Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
   try {
     const todas = await dbLerSeguro('Despesas');
     let itens = todas.filter(r => r.Categoria === 'Aplicações Financeiras' && r.Empresa === empresa);
     itens.sort((a,b) => (b.DataLancamento||'').localeCompare(a.DataLancamento||''));
-    itens = itens.slice(0, 30);
+    itens = itens.slice(0, 60);
     window._aplHistoricoPorId = {}; itens.forEach(i => { window._aplHistoricoPorId[i.Id] = i; });
     if (!itens.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:8px 0">Nenhuma aplicação registrada ainda para essa empresa.</div>'; return; }
     el.innerHTML = '<table class="data-table" style="font-size:.76rem"><thead><tr><th>Data</th><th>Tipo</th><th>Conta</th><th>Valor</th><th>Responsável</th><th></th></tr></thead><tbody>' +
@@ -11181,38 +11146,81 @@ async function aplicacaoCarregarHistorico() {
           <td>${i.Banco||'—'}</td>
           <td style="font-weight:700;white-space:nowrap">${fmtR(i.Valor)}</td>
           <td style="color:var(--text-muted)">${i.ResponsavelLancamento||'—'}</td>
-          <td><button type="button" style="border:none;background:transparent;cursor:pointer;font-size:.85rem" title="Editar" onclick="aplicacaoAbrirEdicao(${i.Id})">✏️</button></td>
+          <td><button type="button" style="border:none;background:transparent;cursor:pointer;font-size:.85rem" title="Editar" onclick="aplicacaoAbrirForm(${i.Id})">✏️</button></td>
         </tr>`;
       }).join('') + '</tbody></table>';
   } catch(e) {
     el.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:8px 0">Não foi possível carregar o histórico agora.</div>';
   }
 }
-// Carrega um lançamento já existente de volta no formulário, em modo edição
-// (lápis ✏️ do histórico acima) — mesmo modal simplificado de sempre, só que
-// salvando por cima do registro (dbAtualizar) em vez de criar um novo.
-async function aplicacaoAbrirEdicao(id) {
-  let i = (window._aplHistoricoPorId || {})[id];
-  if (!i) { try { const todos = await dbLer('Despesas'); i = todos.find(r => r.Id === id); } catch(e) {} }
-  if (!i) { showToast('⚠️ Aplicação não encontrada (recarregue).'); return; }
-
-  window._aplEditandoId = id;
-  const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
-  set('apl_empresa', i.Empresa);
-  const bancoSel = document.getElementById('apl_banco');
-  if (bancoSel) bancoSel.innerHTML = bancosDaEmpresa(i.Empresa).map(b => `<option>${b}</option>`).join('');
-  set('apl_subcategoria', i.Subcategoria);
-  set('apl_banco', i.Banco);
-  set('apl_valor', rdNumeroParaMoeda(i.Valor||0));
-  set('apl_data', i.DataLancamento);
-  set('apl_responsavel', i.ResponsavelLancamento);
-  set('apl_obs', (i.Descricao||'').startsWith('Aplicação Financeira · ') ? '' : (i.Descricao||''));
-
-  const titulo = document.getElementById('apl-modal-titulo'); if (titulo) titulo.textContent = '✏️ Editar Aplicação';
-  const aviso = document.getElementById('apl-modal-aviso'); if (aviso) aviso.textContent = 'Corrigindo um lançamento já registrado — ajuste os campos e clique em "Salvar Alteração".';
-  const btn = document.getElementById('apl-btn-salvar'); if (btn) btn.textContent = '💾 Salvar Alteração';
-  aplicacaoCarregarHistorico();
-  const modalBox = document.querySelector('#aplicacaoModal .modal-box'); if (modalBox) modalBox.scrollTop = 0;
+function aplicacaoEmpresaAlterada() {
+  const empresa = (document.getElementById('apl_empresa')||{}).value || RD_EMPRESAS[0];
+  const sel = document.getElementById('apl_banco');
+  if (sel) sel.innerHTML = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
+}
+// Formulário de Nova Aplicação (sem id) ou Editar Aplicação (com id) — abre
+// como uma segunda janela por cima da tela de histórico (aplicacaoAbrirModal),
+// que continua ali atrás. Salvar ou Cancelar só fecha esta janela; a tela de
+// histórico atrás é quem recebe a lista atualizada (aplicacaoSalvar chama
+// aplicacaoCarregarHistorico() de novo antes de fechar).
+async function aplicacaoAbrirForm(id) {
+  const subs = RD_SUBCATEGORIAS_DESPESAS['Aplicações Financeiras'] || [];
+  window._aplEditandoId = id || null;
+  let registro = null;
+  if (id) {
+    registro = (window._aplHistoricoPorId || {})[id];
+    if (!registro) { try { const todos = await dbLer('Despesas'); registro = todos.find(r => r.Id === id); } catch(e) {} }
+    if (!registro) { showToast('⚠️ Aplicação não encontrada (recarregue).'); return; }
+  }
+  const empresa = registro ? registro.Empresa : ((document.getElementById('apl_hist_empresa')||{}).value || window._rdEmpresaAtiva || RD_EMPRESAS[0]);
+  const existente = document.getElementById('aplicacaoFormModal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'aplicacaoFormModal';
+  modal.style.zIndex = '600';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:520px">
+      <div class="modal-header">
+        <h2>${registro ? '✏️ Editar Aplicação' : '🟣 Nova Aplicação Financeira'}</h2>
+        <div class="modal-close" onclick="document.getElementById('aplicacaoFormModal').remove()">✕</div>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">${registro ? 'Corrigindo um lançamento já registrado — ajuste os campos e clique em "Salvar Alteração".' : 'Lança automaticamente uma Despesa (saída) na conta escolhida, categoria "Aplicações Financeiras".'}</div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Empresa</label>
+          <select id="apl_empresa" onchange="aplicacaoEmpresaAlterada()">
+            ${RD_EMPRESAS.map(e => `<option value="${e}" ${e===empresa?'selected':''}>${e}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tipo de Aplicação</label>
+            <select id="apl_subcategoria">${subs.map(s => `<option ${registro && registro.Subcategoria===s?'selected':''}>${s}</option>`).join('')}</select>
+          </div>
+          <div class="form-group">
+            <label>Conta (sai o dinheiro)</label>
+            <select id="apl_banco">${bancosDaEmpresa(empresa).map(b => `<option ${registro && registro.Banco===b?'selected':''}>${b}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Valor</label><input type="text" id="apl_valor" placeholder="R$ 0,00" value="${registro ? rdNumeroParaMoeda(registro.Valor||0) : ''}" oninput="rdFormatarMoedaInput(this)"></div>
+          <div class="form-group"><label>Data</label><input type="date" id="apl_data" value="${registro ? registro.DataLancamento : new Date().toISOString().slice(0,10)}"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Responsável pelo Lançamento</label>
+          <select id="apl_responsavel">
+            <option value="">Selecione...</option>
+            ${_servicosResponsaveisDiretoria().map(r => `<option ${registro && registro.ResponsavelLancamento===r?'selected':''}>${r}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="apl_obs" placeholder="Ex: aplicação de excedente de caixa..." value="${(registro && !(registro.Descricao||'').startsWith('Aplicação Financeira · ')) ? (registro.Descricao||'') : ''}"></div>
+        <div style="display:flex;gap:10px">
+          <button class="btn-primary" onclick="aplicacaoSalvar()">${registro ? '💾 Salvar Alteração' : '✅ Registrar Aplicação'}</button>
+          <button class="btn-secondary" onclick="document.getElementById('aplicacaoFormModal').remove()">Cancelar</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
 }
 async function aplicacaoSalvar() {
   const empresa = (document.getElementById('apl_empresa')||{}).value || '';
@@ -11253,21 +11261,13 @@ async function aplicacaoSalvar() {
   showToast(ok ? (editandoId ? '✅ Aplicação atualizada!' : '✅ Aplicação registrada!') : ('❌ Falha ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
   showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
   if (ok) {
+    window._aplEditandoId = null;
     if (typeof carregarDespesas === 'function') carregarDespesas();
-    if (editandoId) {
-      // Mantém o modal aberto (veio do histórico) — só volta pro modo "nova
-      // aplicação" e atualiza a lista, pra continuar revisando/editando outras.
-      window._aplEditandoId = null;
-      const titulo = document.getElementById('apl-modal-titulo'); if (titulo) titulo.textContent = '🟣 Aplicação Financeira';
-      const aviso = document.getElementById('apl-modal-aviso'); if (aviso) aviso.textContent = 'Lança automaticamente uma Despesa (saída) na conta escolhida, categoria "Aplicações Financeiras".';
-      const btn = document.getElementById('apl-btn-salvar'); if (btn) btn.textContent = '✅ Registrar Aplicação';
-      const setCampo = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
-      setCampo('apl_valor',''); setCampo('apl_obs','');
-      setCampo('apl_data', new Date().toISOString().slice(0,10));
-      aplicacaoCarregarHistorico();
-    } else {
-      const modalEl = document.getElementById('aplicacaoModal'); if (modalEl) modalEl.remove();
-    }
+    const formEl = document.getElementById('aplicacaoFormModal'); if (formEl) formEl.remove();
+    // Volta pra tela de histórico (se ainda estiver aberta atrás) já filtrada
+    // pela empresa do lançamento salvo, e com a lista atualizada.
+    const histEmpresaSel = document.getElementById('apl_hist_empresa');
+    if (histEmpresaSel) { histEmpresaSel.value = empresa; aplicacaoCarregarHistorico(); }
   }
 }
 
