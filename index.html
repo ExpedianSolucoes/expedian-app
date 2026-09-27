@@ -10613,6 +10613,31 @@ function rdSelecionarEmpresa(emp, destino) {
   navigate(destino || 'receitas_despesas');
 }
 
+// Lista suspensa de empresa do gráfico de Receitas (pedido 27/09/2026) — igual
+// rdSelecionarEmpresa, mas com uma 3ª opção "🌐 Consolidado" que soma as 3
+// empresas em vez de trocar pra uma só. window._rdEmpresaAtiva NUNCA vira
+// 'Consolidado' (continua sempre sendo uma empresa real — usada em "Novo
+// Lançamento", listas de banco, etc.); só window._rdConsolidado liga/desliga
+// o modo consolidado, lido em carregarReceitas(). Não reaproveita
+// rdSelecionarEmpresa 1:1 porque o guard dela (`if empresaAtiva===emp return`)
+// impediria sair do Consolidado de volta pra uma empresa que já estava ativa
+// antes de entrar nele.
+function rcEmpresaOuConsolidadoMudou(v) {
+  if (v === '__consolidado__') {
+    if (window._rdConsolidado) return;
+    window._rdConsolidado = true;
+  } else {
+    window._rdConsolidado = false;
+    window._rdEmpresaAtiva = v;
+    window._rdParcelas = null;
+    window._concilDespesasCache = null;
+    window._concilReceitasCache = null;
+    (window._concilTransacoes||[]).forEach(t => { t.status = null; t.despesaId = null; t.receitaId = null; t.candidatos = null; });
+  }
+  window._rdTab = 'receitas';
+  navigate('receitas_despesas');
+}
+
 function pageReceitasDespesas() {
   if (currentProfile !== 'diretoria') {
     return `<div class="page-header"><h1>Receitas e Despesas</h1></div>
@@ -11585,10 +11610,14 @@ function renderReceitasTab() {
                cima na aba Receitas. Trocar a empresa reaproveita rdSelecionarEmpresa
                (mesma função dos botões, recarrega a página inteira já filtrada);
                trocar o mês só troca a visão deste gráfico (ano inteiro x detalhe
-               diário do mês escolhido — ver rcGraficoMudarMes/rcRenderGraficoDiario). -->
+               diário do mês escolhido — ver rcGraficoMudarMes/rcRenderGraficoDiario).
+               "🌐 Consolidado" (pedido em 27/09/2026) soma as 3 empresas — ver
+               rcEmpresaOuConsolidadoMudou/window._rdConsolidado, aplicado em
+               carregarReceitas(). Fica sempre no topo da lista. -->
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <select onchange="rdSelecionarEmpresa(this.value,'receitas_despesas')" title="Empresa" style="padding:4px 8px;border-radius:7px;border:1px solid var(--border);font-size:.72rem;background:var(--surface);cursor:pointer">
-              ${RD_EMPRESAS.map(emp => `<option value="${emp}" ${emp===(window._rdEmpresaAtiva||RD_EMPRESAS[0])?'selected':''}>🏢 ${emp}</option>`).join('')}
+            <select onchange="rcEmpresaOuConsolidadoMudou(this.value)" title="Empresa" style="padding:4px 8px;border-radius:7px;border:1px solid var(--border);font-size:.72rem;background:var(--surface);cursor:pointer">
+              <option value="__consolidado__" ${window._rdConsolidado?'selected':''}>🌐 Consolidado</option>
+              ${RD_EMPRESAS.map(emp => `<option value="${emp}" ${(!window._rdConsolidado && emp===(window._rdEmpresaAtiva||RD_EMPRESAS[0]))?'selected':''}>🏢 ${emp}</option>`).join('')}
             </select>
             <select onchange="rcGraficoMudarMes(this.value)" title="Mês (detalhe do gráfico)" style="padding:4px 8px;border-radius:7px;border:1px solid var(--border);font-size:.72rem;background:var(--surface);cursor:pointer">
               <option value="">Ano todo</option>
@@ -12131,7 +12160,13 @@ async function carregarReceitas() {
   try {
     let items = await dbLerSeguro('Receitas');
     const empresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-    items = items.filter(i => i.Empresa === empresaAtiva);
+    // Pedido em 27/09/2026: opção "Consolidado" na lista suspensa de empresa
+    // (ver rcEmpresaOuConsolidadoMudou) — soma as 3 empresas em vez de filtrar
+    // por uma só. Só existe aqui na aba Receitas (KPIs/calendário/gráfico/
+    // tabela abaixo usam todos o mesmo `items`, então o consolidado propaga
+    // sozinho pra tudo). window._rdEmpresaAtiva NÃO muda nesse modo — continua
+    // com a última empresa real, usada normalmente por "Novo Lançamento".
+    if (!window._rdConsolidado) items = items.filter(i => i.Empresa === empresaAtiva);
     items.forEach(i => {
       if (i.Status !== 'Recebido' && i.Status !== 'Cancelado' && i.DataPrevista) {
         i.Status = calcularStatusVencimento(i.DataPrevista);
