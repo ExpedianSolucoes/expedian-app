@@ -13811,7 +13811,7 @@ function renderDespesasTab() {
         <div class="kpi-card amber" id="rd-kpi-card-pendente" onclick="rdFiltrarKpi('pendente')" style="cursor:pointer" title="Filtrar: a vencer"><div class="kpi-label">A Vencer</div><div class="kpi-value" id="rd-kpi-pendente" style="font-size:1.05rem">—</div><div class="kpi-icon">⏳</div></div>
       </div>
       <div class="card" style="margin-bottom:0;flex:1;min-height:110px;display:flex;flex-direction:column">
-        <div class="card-title" style="margin-bottom:6px;font-size:.8rem">📈 Pago x A Pagar x Vencido</div>
+        <div class="card-title" style="margin-bottom:6px;font-size:.8rem" id="rd-grafico-titulo">${window._rdConsolidado ? '📈 Comparativo entre Empresas' : '📈 Pago x A Pagar x Vencido'}</div>
         <div style="position:relative;flex:1;min-height:90px"><canvas id="rd-grafico-mensal"></canvas></div>
       </div>
     </div>
@@ -15538,7 +15538,18 @@ function rdRenderResumoMensal(items) {
       ${fMesAtivo ? `<button onclick="document.getElementById('rd_filtro_mes').value='';carregarDespesas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
     </div>`;
 
-  rdRenderGraficoMensal(porMes, ano, nomesMes);
+  // Título do card do gráfico muda conforme o modo (mesmo padrão de Receitas,
+  // 3ª rodada em 27/09/2026).
+  const elTitulo = document.getElementById('rd-grafico-titulo');
+  if (elTitulo) elTitulo.textContent = window._rdConsolidado ? '📈 Comparativo entre Empresas' : '📈 Pago x A Pagar x Vencido';
+
+  // Pedido em 27/09/2026: com "🌐 Consolidado" ativo, o gráfico vira uma
+  // comparação das 3 empresas (valor total lançado por mês por empresa) em vez
+  // do detalhamento Pago x A Pagar x Vencido somado — mesmo tratamento que
+  // Receitas já tinha (rcRenderGraficoComparativoEmpresas). `items` aqui já
+  // vem com as 3 empresas juntas quando consolidado (ver carregarDespesas).
+  if (window._rdConsolidado) rdRenderGraficoComparativoEmpresas(items, ano);
+  else rdRenderGraficoMensal(porMes, ano, nomesMes);
 }
 
 /* -- Gráfico de linha Pago x A Pagar x Vencido, mesmo ano do Calendário Mensal acima
@@ -15571,6 +15582,57 @@ async function rdRenderGraficoMensal(porMes, ano, nomesMes) {
           { label: 'Vencido', data: vencido, borderColor: '#dc3545', backgroundColor: '#dc354522', borderWidth: 1.5, pointRadius: 0, tension: .3, fill: true },
         ]
       },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'top', labels: { boxWidth: 8, font: { size: 9 }, padding: 6 } } },
+        scales: {
+          x: { ticks: { font: { size: 8 } } },
+          y: { ticks: { font: { size: 8 }, callback: (v) => (v/1000).toLocaleString('pt-BR',{maximumFractionDigits:0})+'k' } }
+        }
+      }
+    });
+  } catch (e) { /* Chart.js indisponível (offline) — gráfico só não aparece, resto da página segue normal */ }
+}
+
+// -- Comparativo entre as 3 empresas quando "🌐 Consolidado" está ativo
+// (pedido em 27/09/2026, mesmo tratamento que Receitas já tinha desde a 3ª
+// rodada) — substitui o detalhamento Pago x A Pagar x Vencido de uma empresa
+// só por uma linha por empresa (valor total lançado por mês), pra comparar
+// Expedian x TL3 x EXP Brasil em vez de só somar as 3 num total único.
+// `items` já vem com as 3 empresas juntas (ver carregarDespesas, que só
+// filtra por Empresa quando NÃO é consolidado).
+async function rdRenderGraficoComparativoEmpresas(items, ano) {
+  const canvas = document.getElementById('rd-grafico-mensal');
+  if (!canvas) return;
+  try {
+    if (typeof Chart === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const canvasAtual = document.getElementById('rd-grafico-mensal');
+    if (!canvasAtual) return;
+    if (window._rdGraficoMensal) { window._rdGraficoMensal.destroy(); window._rdGraficoMensal = null; }
+    const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    const CORES_EMPRESA = { 'Expedian': '#80C476', 'TL3': '#3a7bd5', 'EXP Brasil': '#f0a500' };
+    const datasets = RD_EMPRESAS.map(emp => {
+      const porMesEmp = Array(12).fill(0);
+      items.filter(i => i.Empresa === emp).forEach(i => {
+        const chave = i.Vencimento || i.DataLancamento || '';
+        if (chave.slice(0,4) !== String(ano)) return;
+        const m = parseInt(chave.slice(5,7), 10);
+        if (m >= 1 && m <= 12) porMesEmp[m-1] += (i.Valor || 0);
+      });
+      const cor = CORES_EMPRESA[emp] || '#888';
+      return { label: emp, data: porMesEmp, borderColor: cor, backgroundColor: cor + '22', borderWidth: 2, pointRadius: 0, tension: .3, fill: false };
+    });
+    window._rdGraficoMensal = new Chart(canvasAtual.getContext('2d'), {
+      type: 'line',
+      data: { labels: nomesMes, datasets },
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
