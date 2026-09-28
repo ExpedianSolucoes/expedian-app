@@ -30488,11 +30488,18 @@ function eroPreColetaDe(meaId) {
     return (new Date(a.CriadoEm || 0) > new Date(b.CriadoEm || 0)) ? a : b;
   });
 }
-function eroPreColetaAbrirForm(meaId) {
+/* -- Chamada tanto pelo picker antigo (lista pageEroPreColetaLista, hoje só
+   alcançável internamente) quanto pelo Roteiro de Campo (pedido 28/09/2026:
+   o acesso principal à Pré-Coleta virou o botão em cada parada programada do
+   Roteiro, vinculado direto ao empreendimento daquela parada — não precisa
+   mais passar por uma lista separada). `origem` guarda de onde veio pra
+   'Voltar' retornar pro lugar certo ('roteiro' ou 'lista', padrão 'lista'). -- */
+function eroPreColetaAbrirForm(meaId, origem) {
   const e = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).find(function(x) { return x.id === meaId; });
   if (!e) return;
   const existente = eroPreColetaDe(meaId);
   window._eroPreColetaMeaId = meaId;
+  window._eroPreColetaOrigem = origem || 'lista';
   window._eroPreColetaData = existente ? { ...existente } : {
     MeaId: meaId,
     Empreendimento: e.empreendimento || '',
@@ -30503,7 +30510,10 @@ function eroPreColetaAbrirForm(meaId) {
   window._meaAba = 'precoleta_form';
   navigate('checklist_ero');
 }
-function eroPreColetaVoltar() { window._meaAba = 'precoleta_lista'; navigate('checklist_ero'); }
+function eroPreColetaVoltar() {
+  window._meaAba = (window._eroPreColetaOrigem === 'roteiro') ? 'roteiro' : 'precoleta_lista';
+  navigate('checklist_ero');
+}
 function eroPreColetaSelecionarTipoSE(v) { window._eroPreColetaData.TemCasaComando = v; navigate('checklist_ero'); }
 function eroPreColetaSetResposta(itemId, valor) {
   if (valor === 'na') { window._eroPreColetaData['na_' + itemId] = true; window._eroPreColetaData['pts_' + itemId] = ''; }
@@ -32111,7 +32121,6 @@ function pageMonitoramentoAmbientalERO() {
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-secondary" onclick="window._meaAba='vistorias';navigate('checklist_ero')">📅 Vistorias</button>
       <button class="btn-secondary" onclick="window._opacFiltroStatus='';window._meaAba='opacidade';navigate('checklist_ero')">🚚 Teste de Opacidade</button>
-      <button class="btn-secondary" onclick="window._meaAba='precoleta_lista';navigate('checklist_ero')">🧾 Pré-Coleta de Campo</button>
       <button class="btn-secondary" onclick="window._meaAba='form';navigate('checklist_ero')">📋 Checklist Inspeção Ambiental (Subestação)</button>
       <button class="btn-secondary" onclick="navigate('checklist_linha')">⚡ Checklist Linha de Distribuição</button>
       ${(currentProfile === 'diretoria' || currentProfile === 'coordenador') ? `<button class="btn-secondary" onclick="meaReiniciarSemestre()">🔄 Reiniciar Semestre</button>` : ''}
@@ -33356,6 +33365,14 @@ function rotRenderStopHtml(x, dia, seqIdx) {
     : (v.data ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">🗓️ Realizado em '+laFormatarData(v.data)+'</div>' : '');
   var mapsQuery = (eroEhSubestacao(x.empreendimento) && x.coordenadas) ? x.coordenadas : '';
   var mapsLink = mapsQuery ? '<a href="https://www.google.com/maps?q='+encodeURIComponent(mapsQuery)+'" target="_blank" style="font-size:.7rem;color:var(--brand-green);font-weight:600;text-decoration:none;white-space:nowrap">📍 Abrir no Maps</a>' : '';
+  /* -- Pré-Coleta de Campo (pedido 28/09/2026): botão passou a viver aqui,
+     na própria parada do Roteiro, em vez de numa lista separada — só faz
+     sentido pra vistoria ainda PROGRAMADA (a mesma condição de
+     eroPendentesColetaCampo()) e pra subestação (a pré-coleta usa o
+     checklist de subestação como destino do prefill, não o de linha). -- */
+  var precolBtn = (st === 'programada' && meaTemTipo(x, 'subestacao'))
+    ? '<button onclick="eroPreColetaAbrirForm(\''+x.id+'\',\'roteiro\')" style="background:none;border:1px solid var(--brand-green);color:var(--brand-green);border-radius:6px;padding:3px 8px;font-size:.68rem;font-weight:700;cursor:pointer;white-space:nowrap">🧾 '+(eroPreColetaDe(x.id)?'Editar Pré-Coleta':'Pré-Coleta')+'</button>'
+    : '';
   var extraHtml = (v.pernoite ? '<div style="font-size:.72rem;color:#8a5a00;margin-top:2px">🛏️ Pernoite: '+v.pernoite+'</div>' : '') +
     (v.lssNumero ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">🔑 LSS nº '+v.lssNumero+'</div>' : '') +
     (v.observacao ? '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">📝 '+v.observacao+'</div>' : '');
@@ -33377,6 +33394,7 @@ function rotRenderStopHtml(x, dia, seqIdx) {
     '</div>' +
     '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px">' +
     (mapsLink ? mapsLink : '') +
+    precolBtn +
     '<label style="font-size:.68rem;color:var(--brand-green);font-weight:700;cursor:pointer;white-space:nowrap">📷 Fotos'+(v.fotosEnviadas?(' ('+v.fotosEnviadas+')'):'')+
       '<input type="file" accept="image/*" multiple style="display:none" onchange="rotUploadFotosStop(\''+x.id+'\', event)"></label>' +
     '<button onclick="rotAbrirObsModal(\''+x.id+'\')" style="background:none;border:none;cursor:pointer;font-size:.85rem;padding:0">✏️</button>' +
@@ -33886,6 +33904,12 @@ function pageRoteiroERO() {
   if (!window._rotDataIni) { window._rotDataIni = rotHojeISO(0); window._rotDataFim = rotHojeISO(6); }
   Promise.all([meaCarregar(), adcCarregar(), opacCarregar()]).then(function() { rotRenderizar(); rotPreencherDatalistEmpreendimentos(); rotPreencherDatalistVeiculos(); });
   carregarMunicipiosLista();
+  // Pré-Coleta de Campo (botão movido pra cá em 28/09/2026) — carrega em
+  // paralelo pra já deixar pronto o rótulo "Pré-Coleta"/"Editar Pré-Coleta"
+  // de cada parada; se ainda não tiver carregado, dispara e a própria
+  // eroPreColetaCarregar() re-navega quando terminar (mesmo padrão já usado
+  // no dashboard de Monitoramento Ambiental).
+  if (window._eroPreColetaLista === null) eroPreColetaCarregar();
   return `
   <div style="background:var(--brand-brown);color:#fff;border-radius:16px;padding:20px 20px 18px;margin-bottom:16px">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
@@ -34064,7 +34088,7 @@ function pageEroPreColetaForm() {
   const gruposComItens = eroGrupos.filter(function(g) { return PRECOLETA_GRUPOS.indexOf(g.num) !== -1; });
   return `
   <div class="page-header">
-    <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="eroPreColetaVoltar()">← Voltar à lista de Pré-Coleta</button>
+    <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="eroPreColetaVoltar()">${window._eroPreColetaOrigem === 'roteiro' ? '← Voltar ao Roteiro de Campo' : '← Voltar à lista de Pré-Coleta'}</button>
     <h1>🧾 Pré-Coleta de Campo — ${d.Empreendimento || ''}</h1>
     <p>Preenchimento rápido, sem pontuação — só marque o que observar em campo. Fica salvo pra pré-preencher o checklist formal depois.</p>
   </div>
