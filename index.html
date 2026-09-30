@@ -5452,6 +5452,13 @@ async function _enviarPrestacaoParaContasPagar(pc) {
     : _prestSplitParcelasAuto(Number(pc.Valor) || 0, pc.NumParcelas || 2, pc.DataDespesa);
   const idsGerados = [];
   for (const p of parcelas) {
+    // Outlook (pedido 30/09/2026): essas parcelas nascem direto aqui (sem
+    // passar pelo formulário de _salvarContaPagarInterno), então precisam do
+    // mesmo tratamento — 1 evento de dia inteiro por parcela, na Vencimento dela.
+    const rOutlookPC = await cpCriarEventoOutlook(
+      { Fornecedor: pc.Fornecedor || '', Valor: p.valor, Vencimento: p.vencimento, Empresa: pc.Empresa || '', CentroCusto: pc.CentroCusto || '', Categoria: pc.Categoria || '', NumeroBoleto: '', Observacao: `Convertido de Prestação de Contas (parcela ${p.numero}/${p.total})` },
+      null
+    );
     const novoCP = await dbInserir('ContasPagar', {
       Fornecedor: pc.Fornecedor || '', Descricao: pc.Observacoes || '', Empresa: pc.Empresa || '',
       CentroCusto: pc.CentroCusto || '', Categoria: pc.Categoria || '', Subcategoria: pc.Subcategoria || '',
@@ -5471,6 +5478,7 @@ async function _enviarPrestacaoParaContasPagar(pc) {
       Status: calcularStatusVencimento(p.vencimento),
       Parcelamento: 'parcelado', NumParcela: p.numero, TotalParcelas: p.total,
       PrestacaoContasId: pc.Id, OrigemPrestacaoContas: true,
+      OutlookEventId: rOutlookPC.id,
     });
     if (novoCP && novoCP.Id) idsGerados.push(novoCP.Id);
   }
@@ -7007,6 +7015,7 @@ function pagToggleFormNovo(forcar) {
   // e devolve o título padrão "Novo Lançamento" pra próxima vez que abrir.
   if (!abrir) {
     window._pagEditandoId = null;
+    window._pagEditandoOutlookId = null;
     const titulo = document.getElementById('pag-form-titulo'); if (titulo) titulo.textContent = '➕ Novo Lançamento';
   }
 }
@@ -8488,6 +8497,14 @@ async function _recSincronizarContasPagar(dados) {
   }
   camposCP.Status = 'Aguardando Aprovação';
   camposCP.Parcelamento = 'avista';
+  // Outlook (pedido 30/09/2026): essa conta nasce direto aqui (Recibo → Contas
+  // a Pagar), sem passar pelo formulário — mesmo tratamento dos outros pontos
+  // de criação, senão essas ficariam de fora do calendário sem motivo.
+  const rOutlookRec = await cpCriarEventoOutlook(
+    { Fornecedor: camposCP.Fornecedor, Valor: camposCP.Valor, Vencimento: camposCP.Vencimento, Empresa: camposCP.Empresa, CentroCusto: camposCP.CentroCusto, Categoria: camposCP.Categoria, Observacao: camposCP.Observacao },
+    null
+  );
+  camposCP.OutlookEventId = rOutlookRec.id;
   const novo = await dbInserir('ContasPagar', camposCP);
   return novo ? { id: novo.Id, status: 'Aguardando Aprovação' } : null;
 }
@@ -9019,20 +9036,35 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
     // edita só essa parcela específica (cada parcela já é seu próprio registro).
     if(!vencimento){showToast('⚠️ Informe o vencimento.');return;}
     const statusP = statusFinal || calcularStatusVencimento(vencimento);
-    const dados = { ...base, Title: fornecedor + ' · ' + (vencimento||''), Vencimento: vencimento, Valor: valor, Status: statusP };
+    // Outlook (pedido 30/09/2026): atualiza o evento já existente (se já
+    // tinha, vindo de pagEditarLancamento) em vez de criar outro.
+    const rOutlookEdit = await cpCriarEventoOutlook(
+      { Fornecedor: fornecedor, Valor: valor, Vencimento: vencimento, Empresa: empresa, CentroCusto: base.CentroCusto, Categoria: categoria, NumeroBoleto: numeroBoleto, Observacao: obs },
+      window._pagEditandoOutlookId || null
+    );
+    const dados = { ...base, Title: fornecedor + ' · ' + (vencimento||''), Vencimento: vencimento, Valor: valor, Status: statusP, OutlookEventId: rOutlookEdit.id };
     ok = await dbAtualizar('ContasPagar', editandoId, dados);
   } else if (parcelamento === 'parcelado') {
     const parcelas = window._pagParcelas || [];
     if (!parcelas.length) { showToast('⚠️ Configure a quantidade de parcelas e o vencimento da 1ª parcela.'); return; }
+    if (parcelas.length > 1) showToast('📆 Salvando parcelas e criando lembretes no Outlook...');
     for (const p of parcelas) {
       const statusP = statusFinal || calcularStatusVencimento(p.vencimento);
       const compParcela = (comprovantesPorParcela && comprovantesPorParcela[p.numero]) || { url: comprovanteUrlFinal, nome: comprovanteNomeFinal };
+      // Outlook (pedido 30/09/2026): cada parcela tem seu próprio vencimento/valor,
+      // então cada uma ganha seu próprio evento de dia inteiro (não dá pra
+      // representar isso como 1 evento recorrente do Graph, já que o valor muda).
+      const rOutlookParc = await cpCriarEventoOutlook(
+        { Fornecedor: fornecedor, Valor: p.valor, Vencimento: p.vencimento, Empresa: empresa, CentroCusto: base.CentroCusto, Categoria: categoria, NumeroBoleto: numeroBoleto, Observacao: obs },
+        null
+      );
       const dados = {
         ...base,
         Title: fornecedor + ' · parcela ' + p.numero + '/' + parcelas.length + ' · ' + p.vencimento,
         Vencimento: p.vencimento, Valor: p.valor, Status: statusP,
         Parcelamento: 'parcelado', NumParcela: p.numero, TotalParcelas: parcelas.length,
         ComprovanteUrl: compParcela.url, ComprovanteNome: compParcela.nome,
+        OutlookEventId: rOutlookParc.id,
       };
       const okP = await salvarNoSharePoint('ContasPagar', dados);
       ok = ok && okP;
@@ -9040,16 +9072,22 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   } else {
     if(!vencimento){showToast('⚠️ Informe o vencimento.');return;}
     const statusP = statusFinal || calcularStatusVencimento(vencimento);
+    const rOutlookNovo = await cpCriarEventoOutlook(
+      { Fornecedor: fornecedor, Valor: valor, Vencimento: vencimento, Empresa: empresa, CentroCusto: base.CentroCusto, Categoria: categoria, NumeroBoleto: numeroBoleto, Observacao: obs },
+      null
+    );
     const dados = {
       ...base,
       Title: fornecedor + ' · ' + (vencimento||''),
       Vencimento: vencimento, Valor: valor, Status: statusP, Parcelamento: 'avista',
+      OutlookEventId: rOutlookNovo.id,
     };
     ok = await salvarNoSharePoint('ContasPagar', dados);
   }
 
   showToast(ok ? (editandoId ? '✅ Lançamento atualizado!' : (enviarFinanceiro?'📤 Enviado ao Financeiro!':'✅ Lançamento salvo!')) : (editandoId ? ('❌ Erro ao atualizar.'+syncErrorDetalhe()) : '✅ Salvo localmente!'));
   window._pagEditandoId = null;
+  window._pagEditandoOutlookId = null;
   ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_vencimento','pag_valor','pag_obs','pag_numero_boleto','pag_num_parcelas','pag_venc_1parcela','pag_medicao'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const pagMedDlReset=document.getElementById('pag_medicao_dl');if(pagMedDlReset)pagMedDlReset.innerHTML='';
   const pagMedHintReset=document.getElementById('pag_medicao_hint');if(pagMedHintReset)pagMedHintReset.textContent='';
@@ -9270,6 +9308,9 @@ async function pagRejeitarConta(id) {
   const ok = await dbAtualizar('ContasPagar', parseInt(id), {
     Status: 'Rejeitada', MotivoRejeicao: motivo, RejeitadoPor: window._currentUser ? window._currentUser.name : '',
   });
+  // Outlook (pedido 30/09/2026): rejeitada não vai mais ser paga — remove o
+  // lembrete de vencimento do calendário. Não bloqueia o fluxo se falhar.
+  if (ok) { const reg = (window._pagFiltradas||[]).find(r=>r.Id===id); if (reg && reg.OutlookEventId) cpExcluirEventoOutlook(reg.OutlookEventId); }
   showToast(ok ? '↩️ Conta rejeitada.' : ('❌ Erro' + syncErrorDetalhe()));
   const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
   setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); if (document.getElementById('aprov-lista-pagar')) carregarAprovacoes(); }, 600);
@@ -9286,6 +9327,9 @@ async function pagConfirmarPagamento(id) {
   _limparSyncError();
   const ok = await dbAtualizar('ContasPagar', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco, PagoPor: window._currentUser ? window._currentUser.name : '' });
   if (ok) await pagSincronizarDespesa(id, dataPag, banco);
+  // Outlook (pedido 30/09/2026): já foi pago, não precisa mais do lembrete
+  // de vencimento no calendário — remove o evento. Não bloqueia o fluxo se falhar.
+  if (ok) { const reg = (window._pagFiltradas||[]).find(r=>r.Id===id); if (reg && reg.OutlookEventId) cpExcluirEventoOutlook(reg.OutlookEventId); }
   showToast(ok ? '✅ Pagamento registrado!' : ('❌ Erro' + syncErrorDetalhe()));
   const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
   setTimeout(() => carregarContasPagar(), 600);
@@ -9860,6 +9904,9 @@ async function pagExcluirLancamento(id) {
   const avisoDespesa = (i && i.DespesaId) ? '\n\n⚠️ Esse lançamento já foi pago e gerou uma Despesa vinculada — excluir aqui NÃO remove a Despesa. Se for duplicidade real, exclua também a Despesa correspondente.' : '';
   if (!confirm(`Excluir o lançamento "${desc}"? Essa ação não pode ser desfeita.${avisoDespesa}`)) return;
   const { ok } = await dbRemover('ContasPagar', id);
+  // Outlook (pedido 30/09/2026): lançamento excluído não deve deixar lembrete
+  // órfão no calendário. Não bloqueia o fluxo se falhar.
+  if (ok && i && i.OutlookEventId) cpExcluirEventoOutlook(i.OutlookEventId);
   showToast(ok ? '🗑️ Lançamento excluído.' : '❌ Erro ao excluir.');
   if (ok) carregarContasPagar();
 }
@@ -9876,6 +9923,9 @@ async function pagEditarLancamento(id) {
   if (!i) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
   const m = document.getElementById('pag-view-modal'); if (m) m.remove();
   window._pagEditandoId = id;
+  // Outlook (pedido 30/09/2026): guarda o evento já existente desse lançamento
+  // (se tiver) pra _salvarContaPagarInterno ATUALIZAR em vez de criar outro.
+  window._pagEditandoOutlookId = i.OutlookEventId || null;
   pagToggleFormNovo(true);
   const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
   set('pag_empresa', normalizarEmpresa(i.Empresa) || i.Empresa);
@@ -17630,18 +17680,43 @@ async function agendaExcluirSerie(serieId) {
    gerar uma reunião online do Microsoft Teams junto (isOnlineMeeting +
    onlineMeetingProvider) — o link fica em criado.onlineMeeting.joinUrl.
    Retorna sempre { id, teamsLink }; em caso de falha, id vem do que já
-   existia (ou null) e teamsLink null (o evento continua salvo no app). -- */
-async function agendaCriarEventoOutlook(dados, outlookEventIdExistente, recorrenciaInfo) {
+   existia (ou null) e teamsLink null (o evento continua salvo no app).
+   `opts.allDay` (pedido 30/09/2026, Contas a Pagar → Outlook): evento de dia
+   inteiro em vez de um horário de reunião — start é o próprio dados.Data,
+   end é o dia seguinte (Graph trata o end de um evento allDay como
+   exclusivo), sem participantes/Teams (não se aplica a um lembrete de
+   vencimento). -- */
+async function agendaCriarEventoOutlook(dados, outlookEventIdExistente, recorrenciaInfo, opts) {
+  opts = opts || {};
   try {
     const token = await getCalendarToken();
     if (!token) { console.warn('[Agenda] Sem token Microsoft (Calendário) — Outlook não sincronizado.'); return { id: null, teamsLink: null }; }
+    let body;
+    if (opts.allDay) {
+      const dataFim = new Date(dados.Data + 'T00:00:00'); dataFim.setDate(dataFim.getDate() + 1);
+      const dataFimISO = dataFim.toISOString().slice(0, 10);
+      body = {
+        subject: dados.Titulo,
+        body: { contentType: 'HTML', content: (dados.Descricao || '').replace(/\n/g, '<br>') },
+        isAllDay: true,
+        start: { dateTime: dados.Data + 'T00:00:00', timeZone: 'America/Porto_Velho' },
+        end:   { dateTime: dataFimISO + 'T00:00:00', timeZone: 'America/Porto_Velho' },
+      };
+      const resp = await fetch(
+        outlookEventIdExistente ? 'https://graph.microsoft.com/v1.0/me/events/' + outlookEventIdExistente : 'https://graph.microsoft.com/v1.0/me/events',
+        { method: outlookEventIdExistente ? 'PATCH' : 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      );
+      if (!resp.ok) { console.warn('[Outlook] Falha ao criar/atualizar evento allDay:', resp.status, await resp.text()); return { id: outlookEventIdExistente || null, teamsLink: null }; }
+      const criado = await resp.json();
+      return { id: criado.id || outlookEventIdExistente || null, teamsLink: null };
+    }
     const horaIni = dados.HoraIni || '09:00';
     const horaFim = dados.HoraFim || (function() {
       const [h, m] = horaIni.split(':').map(Number);
       const d = new Date(2000, 0, 1, (h || 9) + 1, m || 0);
       return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
     })();
-    const body = {
+    body = {
       subject: dados.Titulo,
       body: { contentType: 'HTML', content: (dados.Descricao || '').replace(/\n/g, '<br>') },
       start: { dateTime: dados.Data + 'T' + horaIni + ':00', timeZone: 'America/Porto_Velho' },
@@ -17686,6 +17761,47 @@ async function agendaCriarEventoOutlook(dados, outlookEventIdExistente, recorren
     console.warn('[Agenda] Erro ao sincronizar com Outlook:', e);
     return { id: outlookEventIdExistente || null, teamsLink: null };
   }
+}
+
+/* -- Contas a Pagar → Calendário Outlook (pedido 30/09/2026: "em contas a
+   pagar a gente consegue vincular algo que a ser lançado já aparecer tbm no
+   meu calendário outlook?"). Automático pra TODO lançamento (sem checkbox
+   por lançamento — decisão confirmada com o Tiago), um evento de dia
+   inteiro na data de VENCIMENTO, reaproveitando o mesmo
+   agendaCriarEventoOutlook()/getCalendarToken() já usados pela Agenda (esse
+   token pede escopo Calendars.ReadWrite, já concedido por quem usa Agenda —
+   se ainda não tiver sido concedido, getCalendarToken() pede consentimento
+   na hora, mesma UX de sempre). Cada parcela de um parcelamento tem seu
+   próprio Vencimento/registro em ContasPagar, então também tem seu próprio
+   evento (não dá pra representar N parcelas num evento recorrente do Graph,
+   já que os valores mudam por parcela). Nunca bloqueia o salvamento do
+   lançamento em si — se o Outlook falhar (sem login Microsoft, etc.), a
+   conta salva normalmente com OutlookEventId null, igual o padrão já usado
+   na Agenda. -- */
+async function cpCriarEventoOutlook(cp, outlookEventIdExistente) {
+  if (!cp || !cp.Vencimento) return { id: outlookEventIdExistente || null, teamsLink: null };
+  const valorFmt = 'R$ ' + (cp.Valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const dadosEvento = {
+    Titulo: '💳 Pagar: ' + (cp.Fornecedor || '—') + ' — ' + valorFmt,
+    Descricao: [cp.Empresa, cp.CentroCusto, cp.Categoria, cp.NumeroBoleto ? ('Boleto: ' + cp.NumeroBoleto) : '', cp.Observacao].filter(Boolean).join('<br>'),
+    Data: cp.Vencimento,
+  };
+  return agendaCriarEventoOutlook(dadosEvento, outlookEventIdExistente || null, null, { allDay: true });
+}
+
+/* -- Remove o evento do Outlook de uma Conta a Pagar que não precisa mais de
+   lembrete (paga, rejeitada ou excluída). Silenciosa — se falhar, só loga;
+   nunca impede a ação principal (pagar/rejeitar/excluir) de completar. -- */
+async function cpExcluirEventoOutlook(outlookEventId) {
+  if (!outlookEventId) return;
+  try {
+    const token = await getCalendarToken();
+    if (!token) return;
+    const resp = await fetch('https://graph.microsoft.com/v1.0/me/events/' + outlookEventId, {
+      method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token },
+    });
+    if (!resp.ok && resp.status !== 404) console.warn('[ContasPagar] Falha ao excluir evento do Outlook:', resp.status, await resp.text());
+  } catch (e) { console.warn('[ContasPagar] Erro ao excluir evento do Outlook:', e); }
 }
 
 /* ===============================
