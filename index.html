@@ -30612,23 +30612,32 @@ if (!window._eroData) window._eroData = {};
 if (typeof window._eroHistorico === 'undefined') window._eroHistorico = null; // null = ainda não carregado
 
 /* ============================================================
-   PRÉ-COLETA DE CAMPO (pedido 26/09/2026): formulário curto, sem peso/
-   pontuação, com um subconjunto de itens do checklist ERO — fatos simples
-   de observar em campo (ar-condicionado/temperatura, extintores dentro da
-   validade, resíduos/limpeza etc.) — pensado pra ser preenchido ANTES ou
-   durante a ida a campo, e depois reaproveitado pra pré-preencher o
-   Checklist de Inspeção Ambiental formal daquela mesma subestação (mesmo
-   mecanismo já usado pra pré-preencher o item 2.4 a partir do vencimento da
-   licença — ver eroIniciarChecklistDe). Ficam de fora: Grupo 2 (Documentos
-   Legais — depende de vencimento de documento, não de observação em campo)
-   e Grupo 5 (Risco Ambiental — vazamento/estado de transformador e bacia de
-   contenção exigem o olhar mais técnico da vistoria formal). -- */
-const PRECOLETA_GRUPOS = [1, 3, 4];
+   PRÉ COLETA DADOS VISTORIA (pedido 26/09/2026, lista própria desde
+   30/09/2026): formulário curto, sem peso/pontuação, pensado pra ser
+   preenchido ANTES ou durante a ida a campo — fatos simples de observar
+   (ar-condicionado/temperatura, extintores, resíduos/limpeza, vazamento,
+   origem da água etc.). Lista de perguntas PRÓPRIA (PRECOLETA_ITENS),
+   DESACOPLADA do banco de itens do Checklist de Inspeção Ambiental formal
+   (eroGrupos) — decisão do Tiago em 30/09/2026 pra poder ajustar o texto
+   destas perguntas (ou adicionar novas) sem mexer no Checklist formal nem
+   na pontuação dele. Por isso as respostas daqui NÃO pré-preenchem mais o
+   Checklist formal automaticamente (só o aviso de que existe uma pré-coleta
+   registrada — ver eroIniciarChecklistDe); o item 2.4 (licença ambiental)
+   continua sendo pré-preenchido do jeito que já era, isso não muda.
+   `casaComando:true` = só aparece quando a subestação tem Casa de Comando
+   (mesmo padrão usado no Checklist formal); sem a flag, aparece sempre. -- */
+const PRECOLETA_ITENS = [
+  { id: 'pc1', texto: 'A sala de comando está limpa e organizada?', casaComando: true },
+  { id: 'pc2', texto: 'Quantas centrais de ar tem na sala de comando? Todas estão funcionando? Têm identificação? Qual a marca e a temperatura no momento da vistoria?', casaComando: true },
+  { id: 'pc3', texto: 'O ar da sala de baterias está funcionando? Quantos graus?', casaComando: true },
+  { id: 'pc4', texto: 'A sala de baterias apresenta vazamento?', casaComando: true },
+  { id: 'pc5', texto: 'Na subestação, a origem da água é poço ou CAERD?' },
+  { id: 'pc6', texto: 'Há materiais ou resíduos na sala de comando?', casaComando: true },
+  { id: 'pc7', texto: 'Há equipamentos na sala de baterias ou resíduos?', casaComando: true },
+  { id: 'pc8', texto: 'Quantos extintores há na casa de comando? Qual a data de vencimento?', casaComando: true },
+];
 function eroItensPreColeta(semCasa) {
-  return eroGrupos
-    .filter(function(g) { return PRECOLETA_GRUPOS.indexOf(g.num) !== -1; })
-    .flatMap(function(g) { return g.itens; })
-    .filter(function(i) { return eroItemAplica(i, semCasa); });
+  return PRECOLETA_ITENS.filter(function(i) { return semCasa ? !i.casaComando : true; });
 }
 if (typeof window._eroPreColetaLista === 'undefined') window._eroPreColetaLista = null; // null = ainda não carregado
 if (typeof window._eroPreColetaData === 'undefined') window._eroPreColetaData = {}; // form em edição
@@ -30698,7 +30707,7 @@ async function eroPreColetaSalvar() {
   }
   if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.txtOriginal; }
   if (ok) {
-    showToast('✅ Pré-coleta salva! Vai aparecer pré-preenchida quando o Checklist de Inspeção formal desta subestação for aberto.');
+    showToast('✅ Pré Coleta Dados Vistoria salva! Fica disponível pra consulta quando o Checklist de Inspeção formal desta subestação for aberto.');
     await eroPreColetaCarregar(true);
     eroPreColetaVoltar();
   } else {
@@ -30827,45 +30836,29 @@ function eroIniciarChecklistDe(id) {
     window._eroData['na_2.4'] = false;
     window._eroData['pts_2.4'] = licPrefill.label.indexOf('Vencida') === 0 ? 0 : eroPeso(item24Prefill, eroSemCasaAtiva());
   }
-  // Pré-preenche itens simples de observação (ar-condicionado, extintores,
-  // resíduos etc.) a partir de uma Pré-Coleta de Campo já enviada para esta
-  // subestação (pedido 26/09/2026) — mesmo princípio do item 2.4 acima:
-  // vem preenchido, mas continua 100% editável; _precolIds marca quais
-  // vieram de lá pra exibir o aviso "pré-coletado em campo, confira" no
-  // formulário, sem travar nada.
+  // Avisa se existe uma Pré Coleta Dados Vistoria registrada pra esta
+  // subestação (pedido 26/09/2026; lista de perguntas desacoplada do
+  // Checklist formal desde 30/09/2026 — ver PRECOLETA_ITENS) — só um aviso
+  // no topo do formulário lembrando de consultar as respostas, não copia
+  // mais item por item pro Checklist (os textos não são mais os mesmos).
   var precol = eroPreColetaDe(e.id);
   if (precol) {
     if (!window._eroData.temCasaComando && precol.TemCasaComando) window._eroData.temCasaComando = precol.TemCasaComando;
-    var semCasaAtual = eroSemCasaAtiva();
-    var idsPreenchidos = [];
-    eroItensPreColeta(semCasaAtual).forEach(function(item) {
-      var temResposta = precol['na_' + item.id] || (precol['pts_' + item.id] !== '' && precol['pts_' + item.id] !== undefined && precol['pts_' + item.id] !== null);
-      if (!temResposta) return;
-      idsPreenchidos.push(item.id);
-      window._eroData['na_' + item.id] = !!precol['na_' + item.id];
-      if (precol['na_' + item.id]) window._eroData['pts_' + item.id] = '';
-      else if (precol['pts_' + item.id] === 'conforme') window._eroData['pts_' + item.id] = eroPeso(item, semCasaAtual);
-      else window._eroData['pts_' + item.id] = precol['pts_' + item.id];
-      if (precol['obs_' + item.id]) window._eroData['obs_' + item.id] = precol['obs_' + item.id];
+    window._eroData._precolInfo = { data: precol.DataColeta || '', tecnico: precol.TecnicoColeta || '' };
+    // Marca a pré-coleta como aproveitada (não bloqueia reuso em caso de erro —
+    // se a gravação falhar, ela só continua aparecendo como pendente na lista).
+    dbAtualizar('EROPreColeta', precol.Id, { Status: 'aproveitada' }).then(function(ok) {
+      if (ok && Array.isArray(window._eroPreColetaLista)) {
+        var idx = window._eroPreColetaLista.findIndex(function(p) { return p.Id === precol.Id; });
+        if (idx >= 0) window._eroPreColetaLista[idx].Status = 'aproveitada';
+      }
     });
-    if (idsPreenchidos.length) {
-      window._eroData._precolIds = idsPreenchidos;
-      window._eroData._precolInfo = { data: precol.DataColeta || '', tecnico: precol.TecnicoColeta || '' };
-      // Marca a pré-coleta como aproveitada (não bloqueia reuso em caso de erro —
-      // se a gravação falhar, ela só continua aparecendo como pendente na lista).
-      dbAtualizar('EROPreColeta', precol.Id, { Status: 'aproveitada' }).then(function(ok) {
-        if (ok && Array.isArray(window._eroPreColetaLista)) {
-          var idx = window._eroPreColetaLista.findIndex(function(p) { return p.Id === precol.Id; });
-          if (idx >= 0) window._eroPreColetaLista[idx].Status = 'aproveitada';
-        }
-      });
-    }
   }
   window._eroRegistroAtualId = null;
   window._eroPickerAberto = false;
   window._eroFormAberto = true;
   navigate('checklist_ero');
-  showToast('📋 Checklist iniciado para ' + (e.empreendimento || '') + ' — dados da vistoria já preenchidos.' + (precol ? ' Pré-coleta de campo aplicada — confira os itens marcados.' : ''));
+  showToast('📋 Checklist iniciado para ' + (e.empreendimento || '') + ' — dados da vistoria já preenchidos.' + (precol ? ' Há uma Pré Coleta Dados Vistoria registrada — confira as respostas no aviso do topo.' : ''));
 }
 // Começar um checklist em branco (empreendimento sem vistoria MEA rastreada).
 function eroIniciarChecklistManual() {
@@ -33536,7 +33529,7 @@ function rotRenderStopHtml(x, dia, seqIdx) {
      eroPendentesColetaCampo()) e pra subestação (a pré-coleta usa o
      checklist de subestação como destino do prefill, não o de linha). -- */
   var precolBtn = (st === 'programada' && meaTemTipo(x, 'subestacao'))
-    ? '<button onclick="eroPreColetaAbrirForm(\''+x.id+'\',\'roteiro\')" style="background:none;border:1px solid var(--brand-green);color:var(--brand-green);border-radius:6px;padding:3px 8px;font-size:.68rem;font-weight:700;cursor:pointer;white-space:nowrap">🧾 '+(eroPreColetaDe(x.id)?'Editar Pré-Coleta':'Pré-Coleta')+'</button>'
+    ? '<button onclick="eroPreColetaAbrirForm(\''+x.id+'\',\'roteiro\')" style="background:none;border:1px solid var(--brand-green);color:var(--brand-green);border-radius:6px;padding:3px 8px;font-size:.68rem;font-weight:700;cursor:pointer;white-space:nowrap">🧾 '+(eroPreColetaDe(x.id)?'Editar Pré Coleta':'Pré Coleta')+'</button>'
     : '';
   /* -- Empreendimento misto (Linha + Subestação, pedido 30/09/2026): um
      botão de fotos pra cada tipo, cada um subindo pra sua própria subpasta
@@ -34234,16 +34227,17 @@ function pageChecklistERO() {
 }
 
 /* ============================================================
-   PRÉ-COLETA DE CAMPO — telas (pedido 26/09/2026, ver bloco de funções
-   PRECOLETA_GRUPOS/eroPreColeta* logo após a definição de eroGrupos). -- */
+   PRÉ COLETA DADOS VISTORIA — telas (pedido 26/09/2026, renomeado e lista
+   de perguntas própria desde 30/09/2026 — ver PRECOLETA_ITENS/eroPreColeta*
+   logo após a definição de eroGrupos). -- */
 function pageEroPreColetaLista() {
   if (window._eroPreColetaLista === null) eroPreColetaCarregar();
   const candidatas = eroPendentesColetaCampo();
   return `
   <div class="page-header">
     <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="window._meaAba='dashboard';navigate('checklist_ero')">← Voltar ao Monitoramento Ambiental</button>
-    <h1>🧾 Pré-Coleta de Campo</h1>
-    <p>Perguntas simples de observação (ar-condicionado, extintores, resíduos, limpeza...) pra preencher já em campo, antes da vistoria formal. Quando o Checklist de Inspeção Ambiental desta subestação for aberto depois, essas respostas entram pré-preenchidas — mas continuam editáveis, dá pra confirmar ou corrigir na hora.</p>
+    <h1>🧾 Pré Coleta Dados Vistoria</h1>
+    <p>Perguntas simples de observação (ar-condicionado, extintores, resíduos, limpeza, vazamento, origem da água...) pra preencher já em campo, antes da vistoria formal. Fica salvo pra consultar depois, na hora de preencher o Checklist de Inspeção Ambiental desta subestação.</p>
   </div>
   <div class="card">
     <div class="card-title">Subestações com vistoria agendada</div>
@@ -34273,12 +34267,11 @@ function pageEroPreColetaForm() {
   const d = window._eroPreColetaData || {};
   const semCasa = d.TemCasaComando === 'nao';
   const itens = d.TemCasaComando ? eroItensPreColeta(semCasa) : [];
-  const gruposComItens = eroGrupos.filter(function(g) { return PRECOLETA_GRUPOS.indexOf(g.num) !== -1; });
   return `
   <div class="page-header">
-    <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="eroPreColetaVoltar()">${window._eroPreColetaOrigem === 'roteiro' ? '← Voltar ao Roteiro de Campo' : '← Voltar à lista de Pré-Coleta'}</button>
-    <h1>🧾 Pré-Coleta de Campo — ${d.Empreendimento || ''}</h1>
-    <p>Preenchimento rápido, sem pontuação — só marque o que observar em campo. Fica salvo pra pré-preencher o checklist formal depois.</p>
+    <button class="btn-secondary" style="margin-bottom:10px;font-size:.8rem;padding:6px 12px" onclick="eroPreColetaVoltar()">${window._eroPreColetaOrigem === 'roteiro' ? '← Voltar ao Roteiro de Campo' : '← Voltar à lista'}</button>
+    <h1>🧾 Pré Coleta Dados Vistoria — ${d.Empreendimento || ''}</h1>
+    <p>Preenchimento rápido, sem pontuação — só marque o que observar em campo. Fica salvo pra consultar depois, na hora de preencher o Checklist de Inspeção Ambiental formal desta subestação.</p>
   </div>
 
   <div class="card" style="margin-bottom:16px">
@@ -34307,13 +34300,9 @@ function pageEroPreColetaForm() {
       </button>`;
     }).join('')}
   </div>
-  ${!d.TemCasaComando ? `<div class="card" style="text-align:center;padding:30px;color:var(--text-muted);font-size:.85rem">☝️ Selecione acima se a subestação tem Casa de Comando pra ver as perguntas.</div>` : gruposComItens.map(g => {
-    const itensG = g.itens.filter(function(i) { return eroItemAplica(i, semCasa); });
-    if (!itensG.length) return '';
-    return `
+  ${!d.TemCasaComando ? `<div class="card" style="text-align:center;padding:30px;color:var(--text-muted);font-size:.85rem">☝️ Selecione acima se a subestação tem Casa de Comando pra ver as perguntas.</div>` : !itens.length ? '' : `
     <div class="card" style="margin-bottom:16px;border-top:3px solid var(--green-main)">
-      <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800;margin-bottom:14px">${g.titulo}</div>
-      ${itensG.map(item => `
+      ${itens.map(item => `
       <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:${d['na_'+item.id]?'rgba(200,200,200,.06)':'var(--surface2)'}">
         <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
           <div style="flex:1;font-size:.83rem;padding-top:4px;min-width:200px">${item.texto}</div>
@@ -34326,18 +34315,17 @@ function pageEroPreColetaForm() {
           </select>
         </div>
         <textarea rows="2" oninput="window._eroPreColetaData['obs_${item.id}']=this.value"
-          placeholder="Observação (ex: quantidade de centrais de ar e temperatura, validade do extintor...)"
+          placeholder="Observação (ex: quantidade, marca, temperatura, data de vencimento...)"
           style="width:100%;margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:.8rem;font-family:'Mont',sans-serif;outline:none;resize:vertical"
         >${d['obs_'+item.id]||''}</textarea>
       </div>
       `).join('')}
     </div>
-    `;
-  }).join('')}
+  `}
 
   ${d.TemCasaComando ? `
   <div style="margin-bottom:40px">
-    <button class="btn-primary" id="precol-btn-salvar" onclick="eroPreColetaSalvar()">💾 Salvar Pré-Coleta</button>
+    <button class="btn-primary" id="precol-btn-salvar" onclick="eroPreColetaSalvar()">💾 Salvar Pré Coleta</button>
   </div>
   ` : ''}
   `;
@@ -34394,6 +34382,12 @@ function pageChecklistEROForm() {
     <h1>Checklist de Inspeção Ambiental</h1>
     <p>ERO – Energisa Rondônia · Revisão 5 · Código: 8.1-09 · Área: Supervisão de Meio Ambiente</p>
   </div>
+
+  ${d._precolInfo ? `
+  <div style="font-size:.75rem;font-weight:700;color:var(--amber);background:#fff8e8;border:1px solid var(--amber);border-radius:8px;padding:8px 12px;margin-bottom:16px">
+    🧾 Há uma Pré Coleta Dados Vistoria registrada pra esta subestação${d._precolInfo.data ? ' em ' + new Date(d._precolInfo.data + 'T00:00:00').toLocaleDateString('pt-BR') : ''}${d._precolInfo.tecnico ? ' por ' + d._precolInfo.tecnico : ''} — vale consultar as respostas (aba Pré Coleta Dados Vistoria) antes de preencher o checklist.
+  </div>
+  ` : ''}
 
   ${window._eroPickerAberto ? `
   <div style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:5000;display:flex;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this) eroFecharPicker()">
