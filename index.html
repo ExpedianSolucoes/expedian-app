@@ -1457,6 +1457,7 @@ function renderPage(id) {
     checklist_notif: () => pageChecklistNotif(),
     checklist_fornecedores: () => pageChecklistFornecedores(),
     checklist_obras: () => pageChecklistObras(),
+    checklist_historico_obra: () => pageChecklistHistoricoObra(),
     checklist_medicao: () => pageChecklistMedicao(),
     checklist_faturamento: () => pageChecklistFaturamento(),
     checklist_fauna: () => pageChecklistFauna(),
@@ -18834,6 +18835,7 @@ const PROJETOS_ENERGISA_OBRAS_COMPARTILHADO = [
   { rota: 'checklist_mitigacao', icon: '🧯', titulo: 'Kit de Mitigação Ambiental', subtitulo: 'Checklist de vistoria do kit de contenção/mitigação ambiental' },
   { rota: 'checklist_fornecedores', icon: '🧾', titulo: 'Fornecedores', subtitulo: 'Documentação legal dos fornecedores instalados em cada circuito — Conforme/Não Conforme/N.A.' },
   { rota: 'checklist_obras', icon: '📋', titulo: 'Relatório Mensal de Obras', subtitulo: 'Entrega e aprovação do relatório mensal da empreiteira — prazo dia 10 (dia 5 até set/2026), com/sem ressalvas' },
+  { rota: 'checklist_historico_obra', icon: '🕓', titulo: 'Histórico das Obras', subtitulo: 'Linha do tempo de acontecimentos e ações por circuito elétrico — kickoff, decisões, combinados...' },
 ];
 const PROJETOS_ENERGISA_OBRAS_EXCLUSIVO = [
   { rota: 'checklist_medicao', icon: '💰', titulo: 'Medição', subtitulo: 'Medições por período/BM em cada circuito elétrico' },
@@ -37206,6 +37208,7 @@ const FISCALIZACAO_ERO_CATALOGO = [
   { rota: 'checklist_mitigacao', icon: '🧯', titulo: 'Kit de Mitigação Ambiental', subtitulo: 'Checklist de vistoria do kit de contenção/mitigação ambiental' },
   { rota: 'checklist_fornecedores', icon: '🧾', titulo: 'Fornecedores', subtitulo: 'Documentação legal dos fornecedores instalados em cada circuito — Conforme/Não Conforme/N.A.' },
   { rota: 'checklist_obras', icon: '📋', titulo: 'Relatório Mensal de Obras', subtitulo: 'Entrega e aprovação do relatório mensal da empreiteira — prazo dia 10 (dia 5 até set/2026), com/sem ressalvas' },
+  { rota: 'checklist_historico_obra', icon: '🕓', titulo: 'Histórico das Obras', subtitulo: 'Linha do tempo de acontecimentos e ações por circuito elétrico — kickoff, decisões, combinados...' },
 ];
 
 function pageFiscalizacaoEro() {
@@ -40577,6 +40580,7 @@ async function painelGeralCarregarDados(forcar) {
       painelGeralCarregarMitigacaoSemNavegar(),
       (_fornEnergisaLista === null || forcar) ? fornEnergisaCarregar(forcar, true) : Promise.resolve(),
       (window._obraHistorico === null || forcar) ? obraCarregarHistorico(forcar, true) : Promise.resolve(),
+      (window._histObraLista === null || forcar) ? histObraCarregar(forcar, true) : Promise.resolve(),
     ]);
   } finally {
     window._painelGeralCarregando = false;
@@ -40613,6 +40617,11 @@ function painelGeralCalcularFrente(fr, flashList, ncList, mitList) {
   const obraMediaPct = obraScores.length ? (obraScores.reduce((s,n) => s+n, 0) / obraScores.length) : null;
   const obraAtrasados = obraDaFrente.filter(r => { const s = obraSituacaoPrazo(r).situacao; return s === 'atrasado' || s === 'nao_entregue'; }).length;
 
+  // Histórico das Obras (pedido 01/10/2026): só um log de acontecimentos/
+  // ações — não entra na Nota Geral nem no status crítico/atenção, é
+  // puramente informativo.
+  const histObraDaFrente = (window._histObraLista||[]).filter(x => x.FrenteId === fr.id);
+
   const temDados = flashDaFrente.length > 0 || ncDaFrente.length > 0 || mitDaFrente.length > 0 || fornDaFrente.length > 0 || obraDaFrente.length > 0;
   const critico = ncAbertas > 0 || ncForaPrazo > 0 || mitNaoAceitavel > 0 || mitAcoesPendentes > 0 || fornNaoConf > 0 || obraAtrasados > 0;
   const atencao = !critico && flashComOcorr > 0;
@@ -40642,11 +40651,12 @@ function painelGeralCalcularFrente(fr, flashList, ncList, mitList) {
     mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes,
     fornDaFrente, fornConf, fornNaoConf, fornConformePct,
     obraDaFrente, obraMediaPct, obraAtrasados,
+    histObraDaFrente,
   };
 }
 
 function painelGeralCardFrente(p) {
-  const { fr, status, notaGeral, flashDaFrente, flashMediaIda, flashComOcorr, ncDaFrente, ncAbertas, ncForaPrazo, mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, fornDaFrente, fornConf, fornNaoConf, obraDaFrente, obraMediaPct, obraAtrasados } = p;
+  const { fr, status, notaGeral, flashDaFrente, flashMediaIda, flashComOcorr, ncDaFrente, ncAbertas, ncForaPrazo, mitDaFrente, mitMediaPct, mitNaoAceitavel, mitAcoesPendentes, fornDaFrente, fornConf, fornNaoConf, obraDaFrente, obraMediaPct, obraAtrasados, histObraDaFrente } = p;
   const notaCorCss = notaGeral === null ? 'var(--text-muted)' : notaGeral >= 80 ? 'var(--green-main)' : notaGeral >= 50 ? '#d97706' : 'var(--red)';
   return `
   <div class="card" style="border-top:3px solid ${status.corCss}">
@@ -40681,6 +40691,10 @@ function painelGeralCardFrente(p) {
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="obraFiltrarCircuito('${fr.id}')" title="Ver Relatório Mensal de Obras deste circuito">
         <span style="font-size:.72rem">📋 Relatório de Obras</span>
         <span style="font-size:.72rem;font-weight:700;color:${obraAtrasados>0?'var(--red)':'inherit'}">${obraDaFrente.length ? (obraMediaPct===null?'—':obraMediaPct.toFixed(0)+'%') + (obraAtrasados?` · 🔴${obraAtrasados}`:'') : 'sem registros'}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--surface2);border-radius:7px;cursor:pointer" onclick="histObraFiltrarCircuito('${fr.id}')" title="Ver Histórico das Obras deste circuito">
+        <span style="font-size:.72rem">🕓 Histórico da Obra</span>
+        <span style="font-size:.72rem;font-weight:700">${histObraDaFrente.length ? `${histObraDaFrente.length} entrada${histObraDaFrente.length!==1?'s':''}` : 'sem registros'}</span>
       </div>
     </div>
     <button class="btn-secondary" style="width:100%;margin-top:10px;font-size:.72rem;padding:6px" onclick="painelGeralAbrirRelatorio('${fr.id}')">📄 Relatório de Fiscalização</button>
@@ -42179,9 +42193,99 @@ const FORN_ENERGISA_SEED_ENERMAIS = [
   },
 ];
 
+/* -- Seed com os fornecedores/documentação real levantados em campo para o
+      circuito "Subestação Guaporé" (id engm1), a partir da pasta "03 -
+      CLIENTES/.../02 - LDAT 69 KV - PV1-GPO/01 - SED GUAPORÉ - ENGM/04 - PGA/
+      12 - Gestão Fornecedores" (levantamento pedido em 01/10/2026). A pasta
+      "Banheiro quimico" é, na verdade, a mesma empresa LOC-MAQ que já aparece
+      como "LOC MAC" no circuito enermais — aqui ela presta o serviço de
+      banheiro químico, por isso entra como um fornecedor à parte, vinculado a
+      este circuito. A pasta "Cascalheira" reúne documentos de duas pessoas/
+      empresas ligadas à mesma jazida (Pontual Material de Construção, dona do
+      alvará/AVCIP/licença de localização, e Marcos Anderson Ferreira Rego,
+      titular da licença de extração mineral e do registro na ANM) — mantidos
+      juntos num único fornecedor por se tratar do mesmo ponto de fornecimento.
+      A pasta "Laboratório" trouxe um contrato de estaca escavada em nome da
+      Betontech Tecnologia para Concreto (CNPJ 11.382.931/0001-18) e PCMSO/PGR
+      em nome da LF Engenharia e Locações Ltda (CNPJ 16.515.339/0001-60) —
+      CNPJs diferentes nos documentos da mesma pasta, sinalizado na Observação
+      para o Tiago confirmar qual é o fornecedor correto. Documentos sem data
+      de validade legível (escaneados sem OCR, ou sem campo de vencimento no
+      próprio documento) ficam com Validade em branco e a ressalva na
+      Observação, para o fiscal confirmar no arquivo original — status de
+      validação começa em branco em todos os casos. -- */
+const FORN_ENERGISA_SEED_SED_GUAPORE = [
+  {
+    CircuitoId: 'engm1', Nome: 'BANHEIRO QUÍMICO — LOC-MAQ', Tipo: 'locacao',
+    RazaoSocial: 'LOC-MAQ Locação de Máquinas e Equipamentos Ltda', CNPJ: '01.905.016/0001-06',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: 'Documento escaneado sem texto extraído automaticamente — nome do arquivo indica vencimento em 2027, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'ALVARA _ LICENÇA DE LOCALIZAÇÃO E FUNCIONAMENTO REGULAR 2027.pdf' },
+      { Id: 2, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: '', Validade: '2026-06-07', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'alvara bombeiros val 07 06 2026_Auto de Vistoria Contra Incêndio e Pânico - AVCIP (1).pdf' },
+      { Id: 3, Tipo: 'Certificado de Inspeção Sanitária de Veículo de Transporte (C.I.S.V.T.)', Numero: '0394/2025', OrgaoEmissor: 'SEMUSA — Vigilância Sanitária de Porto Velho', Observacao: 'Veículo caminhão limpa-fossa, placa NEG4648.', Validade: '2026-07-09', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'C.I.S.V.T - PLACA NEG4648.pdf' },
+      { Id: 4, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '5061765', OrgaoEmissor: 'IBAMA', Observacao: '', Validade: '2026-06-06', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CERTIFICADO DE REGULARIDADE IBAMA - VALIDADE ATÉ 06.06.2026 (1).pdf' },
+      { Id: 5, Tipo: 'Licença Ambiental de Operação', Numero: '016.00034.003/2026-SUL', OrgaoEmissor: 'SEMA — Prefeitura de Porto Velho', Observacao: '', Validade: '2030-03-19', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA AMBIENTAL Nº 016.00034.003 2026-SUL24 SOL.DLA VENC. 19.03.2030  END. ESTRADA DO BELMONT 1.pdf' },
+      { Id: 6, Tipo: 'Autorização de Transporte Intermunicipal', Numero: '2025SGVKBE1K', OrgaoEmissor: 'SEDAM/RO', Observacao: 'Transporte de resíduos/efluentes de fossa séptica entre municípios da regional até a ETE de Porto Velho.', Validade: '2026-05-14', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA SEDAM VALIDADE 14 05 2026 1.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'engm1', Nome: 'CASCALHEIRA', Tipo: 'concreteira',
+    RazaoSocial: 'Pontual Material de Construção e Terraplenagem Ltda / Marcos Anderson Ferreira Rego (titular da jazida)', CNPJ: '02.675.720/0001-82',
+    Documentos: [
+      { Id: 1, Tipo: 'Auto de Conformidade do Corpo de Bombeiros (ACPS)', Numero: 'PSCIP67530cd9d0f9b', OrgaoEmissor: 'CBMRO', Observacao: '', Validade: '2026-10-08', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'AUTO DE CONFORMIDADE.pdf' },
+      { Id: 2, Tipo: 'Licença Ambiental de Operação', Numero: '221 SOL/DLA', OrgaoEmissor: 'SEMA — Prefeitura de Porto Velho', Observacao: '', Validade: '2027-07-12', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA AMBIENTAL DE OPERAÇÃO.pdf' },
+      { Id: 3, Tipo: 'Licença de Localização e de Funcionamento Regular', Numero: '1422/2026', OrgaoEmissor: 'SEMFAZ — Prefeitura de Porto Velho', Observacao: '', Validade: '2027-05-17', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA DE LOCALIZAÇÃO.pdf' },
+      { Id: 4, Tipo: 'Licença Ambiental de Operação (jazida — extração mineral)', Numero: '016.00047.005/2025-SUL', OrgaoEmissor: 'SEMA — Prefeitura de Porto Velho', Observacao: 'Em nome de Marcos Anderson Ferreira Rego, CPF 663.193.742-68 — titular da jazida explorada pela Pontual.', Validade: '2029-10-16', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA DE OPERAÇÃO_MARCOS ANDERSON FERREIRA REGO.pdf' },
+      { Id: 5, Tipo: 'Licença Especial de Extração Mineral', Numero: '16/2021', OrgaoEmissor: 'SEMA — Prefeitura de Porto Velho', Observacao: 'Em nome de Marcos Anderson Ferreira Rego, CPF 663.193.742-68.', Validade: '2030-12-28', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA ESPECIAL DE EXTRAÇÃO MINERAL.pdf' },
+      { Id: 6, Tipo: 'Registro de Licença — ANM', Numero: '760/2024', OrgaoEmissor: 'Agência Nacional de Mineração', Observacao: 'Em nome de Marcos Anderson Ferreira Rego, CPF 663.193.742-68.', Validade: '2030-12-28', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'REGISTRO ANM.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'engm1', Nome: 'CONCRETO — MADECON', Tipo: 'concreteira',
+    RazaoSocial: 'Madecon Engenharia e Participações Ltda em Recuperação Judicial', CNPJ: '08.666.201/0001-34',
+    Documentos: [
+      { Id: 1, Tipo: 'Alvará de Localização e Funcionamento', Numero: '3210', OrgaoEmissor: 'Prefeitura de Porto Velho', Observacao: '', Validade: '2026-09-21', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'ALVARA MADECON ENGENHARIA 21.09.2026.pdf' },
+      { Id: 2, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: '', Validade: '2026-09-18', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'AVCIP BOMBEIROS VAL 18.09.2026.pdf' },
+      { Id: 3, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '4379350', OrgaoEmissor: 'IBAMA', Observacao: '', Validade: '2026-08-19', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CR CTF VAL 19.08.2026.pdf' },
+      { Id: 4, Tipo: 'Cessão de Direito Minerário / Portaria de Lavra', Numero: 'Portaria nº 175/2005', OrgaoEmissor: 'DNPM', Observacao: 'Título minerário histórico (cessão publicada no DOU em 2008) — sem data de vencimento aplicável, apenas registro da titularidade.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'DOU cessão de direito.pdf / Portaria de lavra.pdf' },
+      { Id: 5, Tipo: 'Licença Ambiental de Operação (Concreteira)', Numero: '016.00093.006/2025-SUL', OrgaoEmissor: 'SEMA — Prefeitura de Porto Velho', Observacao: '', Validade: '2029-11-19', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LAO CONCRETERIA 19.11.2029.pdf' },
+      { Id: 6, Tipo: 'Licença Ambiental de Operação (Pedreira)', Numero: '', OrgaoEmissor: 'Órgão Ambiental Estadual', Observacao: 'Documento escaneado sem texto extraído automaticamente — nome do arquivo indica vencimento em 06/08/2028, conferir original.', Validade: '2028-08-06', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LAO PEDREIRA 06.08.2028.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'engm1', Nome: 'ESTACA ESCAVADA / PERFURAÇÃO — LF ENGENHARIA', Tipo: 'outro',
+    RazaoSocial: 'LF Engenharia e Locações Ltda', CNPJ: '16.515.339/0001-60',
+    Documentos: [
+      { Id: 1, Tipo: 'Contrato de Prestação de Serviços', Numero: '2026-090', OrgaoEmissor: '', Observacao: 'Contrato de 04/06/2026 para estaca escavada — a locadora consta como Betontech Tecnologia para Concreto (CNPJ 11.382.931/0001-18), enquanto o PCMSO/PGR da pasta estão em nome da LF Engenharia (CNPJ acima). Confirmar com o Tiago qual CNPJ é o fornecedor correto deste circuito.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CONTRATO.pdf' },
+      { Id: 2, Tipo: 'PCMSO — Programa de Controle Médico de Saúde Ocupacional', Numero: '', OrgaoEmissor: 'Haase Soluções em Segurança do Trabalho e Meio Ambiente', Observacao: 'Vigência 25/05/2026 a 25/05/2028.', Validade: '2028-05-25', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'PCMSO.pdf' },
+      { Id: 3, Tipo: 'PGR — Programa de Gerenciamento de Riscos', Numero: '', OrgaoEmissor: 'Haase Soluções em Segurança do Trabalho e Meio Ambiente', Observacao: 'Vigência 25/05/2026 a 25/05/2028.', Validade: '2028-05-25', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'PGR 2026.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'engm1', Nome: 'MADEIREIRA SOLTOVSKI', Tipo: 'outro',
+    RazaoSocial: 'M.E.L. Comércio de Madeiras Soltovski Ltda - ME', CNPJ: '84.637.073/0001-89',
+    Documentos: [
+      { Id: 1, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Documento de 2026 — data de validade não identificada no texto extraído (possível página 2), conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CERTIFICADO BOMBEIRO 2026.pdf' },
+      { Id: 2, Tipo: 'Certificado de Regularidade (CR) — IBAMA/CTF-APP', Numero: '', OrgaoEmissor: 'IBAMA', Observacao: 'Documento escaneado sem texto extraído automaticamente, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CTF.pdf' },
+      { Id: 3, Tipo: 'Licença de Localização e de Funcionamento Regular', Numero: '1925/2026', OrgaoEmissor: 'SEMFAZ — Prefeitura de Porto Velho', Observacao: '', Validade: '2027-05-31', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA DE LOCALIZAÇÃO E DE FUNCIONAMENTO REGULAR.pdf' },
+      { Id: 4, Tipo: 'Licença de Operação', Numero: '159522', OrgaoEmissor: 'SEDAM/COLMAMP', Observacao: '', Validade: '2029-12-18', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA OPERAÇÃO_M E L COMÉRCIO DE MADEIRAS SOLTOVSKI LTDA.pdf' },
+    ],
+  },
+  {
+    CircuitoId: 'engm1', Nome: 'RESTAURANTE ESCOLHA DO DIA', Tipo: 'restaurante',
+    RazaoSocial: 'Restaurante e Churrascaria Escolha do Dia Ltda', CNPJ: '47.154.233/0001-02',
+    Documentos: [
+      { Id: 1, Tipo: 'Auto de Vistoria do Corpo de Bombeiros (AVCIP)', Numero: '', OrgaoEmissor: 'CBMRO', Observacao: 'Data de validade não identificada no texto extraído, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CBM 2026.pdf' },
+      { Id: 2, Tipo: 'Certificado de Desratização / Controle de Pragas', Numero: '', OrgaoEmissor: 'Cet Tech Soluções em Controle de Pragas', Observacao: 'Dedetização em 19/02/2026, garantia de 6 meses.', Validade: '2026-08-19', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CERTIFICADO DESRATIZAÇÃO.pdf' },
+      { Id: 3, Tipo: 'Certificado de Limpeza de Caixa D\'Água', Numero: '', OrgaoEmissor: 'Cet Tech Soluções em Controle de Pragas', Observacao: 'Serviço realizado em 19/02/2026.', Validade: '2026-08-19', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'CERTIFICADO LIMPEZA DE CAIXA D\'AGUA.pdf' },
+      { Id: 4, Tipo: 'Licença Sanitária', Numero: '', OrgaoEmissor: 'Vigilância Sanitária — Porto Velho', Observacao: 'Documento escaneado sem texto extraído automaticamente, conferir original.', Validade: '', StatusValidacao: '', ArquivoUrl: '', ArquivoNomeOriginal: 'LICENÇA SANITARIA_RESTAURANTE.pdf' },
+    ],
+  },
+];
+
 /* -- Mapa circuito → seed de fornecedores já levantados em campo. Adicionar
       novos circuitos aqui conforme forem levantados. -- */
 const FORN_ENERGISA_SEEDS = {
+  engm1: FORN_ENERGISA_SEED_SED_GUAPORE,
   engm3: FORN_ENERGISA_SEED_PRESIDENTE_MEDICI,
   enermais: FORN_ENERGISA_SEED_ENERMAIS,
 };
@@ -42323,9 +42427,17 @@ function pageChecklistObras() {
   const registrosDoCircuito = circuito ? lista.filter(x => x.FrenteId === circuito.id).slice().sort((a,b) => (b.AnoReferencia - a.AnoReferencia) || (b.MesReferencia - a.MesReferencia)) : [];
 
   return `
-  <div class="page-header">
-    <h1>📋 Relatório Mensal de Obras</h1>
-    <p>Entrega e aprovação do relatório mensal que cada empreiteira apresenta evidenciando o cumprimento do Plano de Controle Ambiental — prazo contratual: dia 10 de cada mês subsequente (dia 5 para vencimentos até 30/09/2026)</p>
+  <div class="page-header" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px;align-items:start">
+    <div>
+      <h1>📋 Relatório Mensal de Obras</h1>
+      <p>Entrega e aprovação do relatório mensal que cada empreiteira apresenta evidenciando o cumprimento do Plano de Controle Ambiental — prazo contratual: dia 10 de cada mês subsequente (dia 5 para vencimentos até 30/09/2026)</p>
+    </div>
+    <div style="font-size:.72rem;color:var(--text-muted);background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;line-height:1.65">
+      <div style="font-weight:800;text-transform:uppercase;letter-spacing:.06em;font-size:.68rem;color:var(--text-primary);margin-bottom:6px">📊 Legenda — como funciona a pontuação (0 a 100%)</div>
+      <div><strong>Prazo</strong> (até 50 pts): 🟢 Entregue no Prazo = 50 pts &nbsp;·&nbsp; 🔴 Entregue com Atraso = 0 pts</div>
+      <div><strong>Aprovação</strong> (até 50 pts): ✅ Aprovado sem Ressalvas = 50 pts &nbsp;·&nbsp; 🟡 Aprovado com Ressalvas = 25 pts &nbsp;·&nbsp; ❌ Reprovado = 0 pts</div>
+      <div style="margin-top:4px">🟡 Aguardando Entrega ou ⏳ Em Análise: nota fica em "—" até ter os dois resultados (prazo + aprovação). 🔴 Não Entregue com prazo já vencido: nota zera (0%).</div>
+    </div>
   </div>
 
   <div style="margin-bottom:16px">
@@ -42372,7 +42484,7 @@ function pageChecklistObras() {
           <td style="font-size:.8rem;font-weight:800">${score===null?'—':score+'%'}</td>
           <td style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 10px">
             <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="obraAbrirForm(${r.Id},'${circuito.id}')">✏️ Editar</button>
-            ${(Array.isArray(r.Tratativas) && r.Tratativas.length) ? `<span style="font-size:.68rem;color:var(--text-muted);white-space:nowrap" title="Entradas no histórico de tratativas">🕓 ${r.Tratativas.length}</span>` : ''}
+            ${(Array.isArray(r.Tratativas) && r.Tratativas.length) ? `<button onclick="obraAbrirForm(${r.Id},'${circuito.id}')" style="background:none;border:none;padding:0;font-size:.68rem;color:var(--green-main);font-weight:700;white-space:nowrap;cursor:pointer;text-decoration:underline" title="Ver histórico de tratativas">🕓 ${r.Tratativas.length}</button>` : ''}
             ${currentProfile === 'diretoria' ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="obraExcluir(${r.Id})">🗑️ Excluir</button>` : ''}
           </td>
         </tr>`;
@@ -42523,6 +42635,116 @@ async function obraExcluir(id) {
   const { ok } = await dbRemover('RelatoriosObraEmpreiteira', id);
   showToast(ok ? '🗑️ Registro excluído.' : '❌ Erro ao excluir.');
   if (ok) await obraCarregarHistorico(true);
+}
+
+/* ============================================================
+   HISTÓRICO DAS OBRAS (pedido 01/10/2026): linha do tempo de acontecimentos
+   e ações por circuito elétrico — kickoff de obra, decisões, combinados,
+   cobranças etc. DIFERENTE do Histórico de Tratativas de cada registro de
+   Relatório Mensal de Obras (obraHtmlHistoricoTratativas, acima): aquele
+   vive dentro de UM mês de referência específico; este aqui é da obra como
+   um todo, sem vínculo com nenhum mês — um registro só por entrada. Tabela
+   própria `HistoricoObras` (cria sozinha no OneDrive na primeira gravação,
+   mesmo padrão de RelatoriosObraEmpreiteira/CentrosCusto). -- */
+if (typeof window._histObraLista === 'undefined') window._histObraLista = null;
+let _histObraCircuitoFiltro = null;
+
+async function histObraCarregar(forcar, semNavegar) {
+  if (window._histObraLista !== null && !forcar) { if (!semNavegar) navigate('checklist_historico_obra'); return; }
+  let cacheLocal = [];
+  try { cacheLocal = JSON.parse(localStorage.getItem('hist_obra_cache') || '[]'); } catch(e) { cacheLocal = []; }
+  if (window._histObraLista === null) window._histObraLista = cacheLocal;
+  try {
+    const lista = await dbLer('HistoricoObras');
+    if (Array.isArray(lista)) {
+      window._histObraLista = lista;
+      try { localStorage.setItem('hist_obra_cache', JSON.stringify(lista)); } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('[Histórico das Obras] Falha ao carregar, usando cache local.', e);
+  }
+  if (!semNavegar) navigate('checklist_historico_obra');
+}
+
+function histObraFiltrarCircuito(id) { _histObraCircuitoFiltro = id || null; navigate('checklist_historico_obra'); }
+
+function pageChecklistHistoricoObra() {
+  if (window._histObraLista === null) { setTimeout(() => histObraCarregar(), 100); }
+  const lista = window._histObraLista || [];
+  const circuito = FLASH_FRENTES.find(f => f.id === _histObraCircuitoFiltro);
+  const porCircuito = {};
+  FLASH_FRENTES.forEach(f => { porCircuito[f.id] = lista.filter(x => x.FrenteId === f.id); });
+  const entradasDoCircuito = circuito
+    ? lista.filter(x => x.FrenteId === circuito.id).slice().sort((a,b) => (b.Data||'').localeCompare(a.Data||'') || (b.Created||'').localeCompare(a.Created||''))
+    : [];
+
+  return `
+  <div class="page-header">
+    <h1>🕓 Histórico das Obras</h1>
+    <p>Linha do tempo de acontecimentos e ações por circuito elétrico — kickoff, decisões, combinados, cobranças... sem vínculo com nenhum mês específico (diferente do histórico de tratativas de cada Relatório Mensal de Obras).</p>
+  </div>
+
+  <div style="margin-bottom:16px">
+    <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">Selecione o Circuito Elétrico</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px">
+      ${FLASH_FRENTES.map(f => {
+        const doCirc = porCircuito[f.id] || [];
+        const ativo = _histObraCircuitoFiltro === f.id;
+        return `<div class="kpi-card${ativo?' green':''}" style="padding:10px;cursor:pointer;${ativo?'border-color:var(--brand-brown,#3F261F)':''}" onclick="histObraFiltrarCircuito('${f.id}')">
+          <div style="font-size:.72rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${f.nome}">${ativo?'📍 ':''}${f.nome}</div>
+          <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">${doCirc.length} entrada${doCirc.length!==1?'s':''}</div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>
+
+  ${!circuito ? `<div class="card" style="text-align:center;padding:40px 24px;color:var(--text-muted)">👆 Selecione um circuito acima para ver e registrar o histórico.</div>` : `
+
+  <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800;margin-bottom:14px">📍 ${circuito.nome}${circuito.empreiteira ? ' — ' + circuito.empreiteira : ''}</div>
+
+  <div class="card" style="margin-bottom:18px">
+    <div class="card-title">+ Nova Entrada</div>
+    <div class="form-row">
+      <div class="form-group" style="max-width:160px"><label>Data</label><input type="date" id="hist_obra_data" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="form-group" style="flex:2;min-width:220px"><label>O que aconteceu / foi feito</label><textarea id="hist_obra_texto" rows="2" placeholder="Ex: Kickoff de alinhamento da obra com a empreiteira..."></textarea></div>
+    </div>
+    <button class="btn-primary" onclick="histObraAdicionar('${circuito.id}')">✅ Adicionar ao Histórico</button>
+  </div>
+
+  ${entradasDoCircuito.length === 0
+    ? `<div class="card" style="text-align:center;padding:32px 24px;color:var(--text-muted)">Nenhuma entrada registrada ainda neste circuito.</div>`
+    : entradasDoCircuito.map(e => `
+      <div class="card" style="margin-bottom:10px;display:flex;gap:14px;align-items:flex-start">
+        <div style="min-width:88px;font-size:.78rem;font-weight:800;color:var(--green-main)">${e.Data ? new Date(e.Data+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</div>
+        <div style="flex:1;font-size:.82rem;white-space:pre-wrap">${e.Texto||''}${e.Autor ? `<div style="font-size:.66rem;color:var(--text-muted);margin-top:4px">— ${e.Autor}</div>` : ''}</div>
+        <button onclick="histObraRemover(${e.Id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.85rem;padding:2px 4px;flex-shrink:0" title="Remover">✕</button>
+      </div>
+    `).join('')
+  }
+  `}`;
+}
+
+async function histObraAdicionar(frenteId) {
+  const dataEl = document.getElementById('hist_obra_data');
+  const textoEl = document.getElementById('hist_obra_texto');
+  const data = (dataEl || {}).value || '';
+  const texto = ((textoEl || {}).value || '').trim();
+  if (!data || !texto) { showToast('⚠️ Preencha a data e o que aconteceu antes de adicionar.'); return; }
+  const dados = { FrenteId: frenteId, Data: data, Texto: texto, Autor: window._currentUser ? window._currentUser.name : '' };
+  const ok = await dbInserir('HistoricoObras', dados);
+  showToast(ok ? '✅ Adicionado ao histórico!' : ('❌ Erro ao salvar.' + syncErrorDetalhe()));
+  if (ok) await histObraCarregar(true);
+}
+
+async function histObraRemover(id) {
+  if (!confirm('Remover essa entrada do histórico da obra? Essa ação não pode ser desfeita.')) return;
+  const { ok } = await dbRemover('HistoricoObras', id);
+  showToast(ok ? '🗑️ Removido do histórico.' : '❌ Erro ao remover.');
+  if (ok) await histObraCarregar(true);
 }
 
 function pageChecklistMitigacao() {
@@ -45270,6 +45492,14 @@ const FLASH_FRENTES = [
   { id: 'engm2',    nome: 'SE Porto Velho (Bay)',                      empreiteira: 'ENGM', tipo: 'canteiro', valorEscopo: 25923.12, sistemaEletrico: 'Sistema Elétrico Porto Velho I - Guaporé (Subestação e LDAT 69 kV)', sigla: 'SED PV1-GPO', municipio: '' },
   { id: 'engm3',    nome: 'SE Presidente Médici',                      empreiteira: 'ENGM', tipo: 'canteiro', sistemaEletrico: 'Sistema Elétrico Presidente Médici (Subestação)', sigla: 'SED PMD', municipio: 'Presidente Médici - RO' },
   { id: 'enermais', nome: 'LDAT 69 kV Porto Velho / Guaporé',          empreiteira: 'Enermais', tipo: 'linha', valorEscopo: 25923.12, sistemaEletrico: 'Sistema Elétrico Porto Velho I - Guaporé (Subestação e LDAT 69 kV)', sigla: 'LDAT PV1-GPO', municipio: '' },
+  // Duas fiscalizações novas (pedido 01/10/2026, kickoff de alinhamento já
+  // feito em 28/09 e 30/09 — ver HistoricoObras). empreiteira confirmada por
+  // Tiago em 01/10/2026. valorEscopo ainda não confirmado (mesmo padrão do
+  // engm3 — telas que mostram valor já têm fallback pra quando está vazio);
+  // sigla e sistemaEletrico seguem o mesmo padrão de nomenclatura dos outros
+  // circuitos 'linha', mas não foram confirmados contra um BM real ainda.
+  { id: 'ldatptbcac', nome: 'LDAT 138 kV Pimenta Bueno / Cacoal',       empreiteira: 'TC Engenharia', tipo: 'linha', sistemaEletrico: 'Sistema Elétrico Pimenta Bueno - Cacoal (LDAT 138 kV)', sigla: 'LDAT PTB-CAC', municipio: '' },
+  { id: 'ldatcjrcrb',  nome: 'LDAT 69 kV Cerejeiras / Corumbiara',       empreiteira: 'Energia e Serviços', tipo: 'linha', sistemaEletrico: 'Sistema Elétrico Cerejeiras - Corumbiara (LDAT 69 kV)', sigla: 'LDAT CJR-CRB', municipio: '' },
 ];
 const FLASH_RTS = ['Tiago Tavares', 'Marcelo Marafon', 'Luiz Evaristo'];
 const FLASH_CLIMAS = ['Ensolarado', 'Parcialmente nublado', 'Nublado', 'Chuva leve', 'Chuva forte'];
