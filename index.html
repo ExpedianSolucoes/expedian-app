@@ -42370,8 +42370,9 @@ function pageChecklistObras() {
           <td style="font-size:.75rem;font-weight:700;color:${sit.cor}">${sit.label}</td>
           <td style="font-size:.75rem;font-weight:700">${obraStatusAprovacaoLabel(r.StatusAprovacao)}</td>
           <td style="font-size:.8rem;font-weight:800">${score===null?'—':score+'%'}</td>
-          <td style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px">
+          <td style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 10px">
             <button class="btn-secondary" style="padding:4px 8px;font-size:.7rem" onclick="obraAbrirForm(${r.Id},'${circuito.id}')">✏️ Editar</button>
+            ${(Array.isArray(r.Tratativas) && r.Tratativas.length) ? `<span style="font-size:.68rem;color:var(--text-muted);white-space:nowrap" title="Entradas no histórico de tratativas">🕓 ${r.Tratativas.length}</span>` : ''}
             ${currentProfile === 'diretoria' ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.7rem;color:var(--red)" onclick="obraExcluir(${r.Id})">🗑️ Excluir</button>` : ''}
           </td>
         </tr>`;
@@ -42409,11 +42410,74 @@ function obraHtmlForm(circuitoId) {
       </div>
     </div>
     <div class="form-group" style="margin-bottom:12px"><label>Observações</label><textarea id="obra_obs" rows="2" placeholder="Ex: ressalva referente a...">${(editando&&editando.Observacoes||'')}</textarea></div>
-    <div style="display:flex;gap:10px">
+    <div style="display:flex;gap:10px;margin-bottom:${editando?'16px':'0'}">
       <button class="btn-primary" onclick="obraSalvar('${circuitoId}')">✅ Salvar</button>
       <button class="btn-secondary" onclick="obraFecharForm()">Cancelar</button>
     </div>
+    ${editando ? obraHtmlHistoricoTratativas(editando) : `<div style="padding-top:14px;border-top:1px dashed var(--border);font-size:.75rem;color:var(--text-muted)">💾 Salve o registro primeiro pra poder começar a registrar o histórico de tratativas (datas e o que foi conversado/combinado com a empreiteira sobre este relatório).</div>`}
   </div>`;
+}
+
+/* -- Histórico de Tratativas (pedido 01/10/2026): log de acompanhamento DENTRO
+   de cada registro de Relatório Mensal de Obras — diferente de Observações
+   (um campo único, sobrescrito a cada edição), aqui são várias entradas
+   datadas que vão se acumulando com o tempo (cobranças feitas, resposta da
+   empreiteira, combinados etc.), sem apagar as anteriores. Guardado como
+   array `Tratativas` dentro do próprio registro de RelatoriosObraEmpreiteira
+   (sem tabela nova) — cada entrada: {Id, Data, Texto, Autor, CriadoEm}. -- */
+function obraHtmlHistoricoTratativas(reg) {
+  const tratativas = (Array.isArray(reg.Tratativas) ? reg.Tratativas : [])
+    .slice()
+    .sort((a, b) => (b.Data || '').localeCompare(a.Data || '') || (b.CriadoEm || '').localeCompare(a.CriadoEm || ''));
+  return `
+  <div style="padding-top:14px;border-top:1px dashed var(--border)">
+    <div style="font-size:.78rem;font-weight:800;margin-bottom:10px">🕓 Histórico de Tratativas</div>
+    ${!tratativas.length
+      ? `<div style="font-size:.75rem;color:var(--text-muted);margin-bottom:10px">Nenhuma tratativa registrada ainda.</div>`
+      : `<div style="margin-bottom:12px">${tratativas.map(t => `
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--surface2)">
+          <div style="min-width:76px;font-size:.72rem;font-weight:700;color:var(--green-main);white-space:nowrap">${t.Data ? new Date(t.Data + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}</div>
+          <div style="flex:1;font-size:.78rem;white-space:pre-wrap">${t.Texto || ''}${t.Autor ? `<div style="font-size:.65rem;color:var(--text-muted);margin-top:3px">— ${t.Autor}</div>` : ''}</div>
+          <button onclick="obraRemoverTratativa(${reg.Id},'${t.Id}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.8rem;padding:2px 4px;flex-shrink:0" title="Remover">✕</button>
+        </div>`).join('')}</div>`
+    }
+    <div class="form-row">
+      <div class="form-group" style="max-width:160px"><label>Data</label><input type="date" id="obra_trat_data" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="form-group" style="flex:2;min-width:220px"><label>O que foi tratado</label><textarea id="obra_trat_texto" rows="2" placeholder="Ex: Cobrado por e-mail — empreiteira respondeu que envia até sexta..."></textarea></div>
+    </div>
+    <button class="btn-secondary" onclick="obraAdicionarTratativa(${reg.Id})">+ Adicionar ao Histórico</button>
+  </div>`;
+}
+
+async function obraAdicionarTratativa(id) {
+  const dataEl = document.getElementById('obra_trat_data');
+  const textoEl = document.getElementById('obra_trat_texto');
+  const data = (dataEl || {}).value || '';
+  const texto = ((textoEl || {}).value || '').trim();
+  if (!data || !texto) { showToast('⚠️ Preencha a data e o que foi tratado antes de adicionar.'); return; }
+  const reg = (window._obraHistorico || []).find(x => x.Id === id);
+  if (!reg) return;
+  const tratativas = (Array.isArray(reg.Tratativas) ? reg.Tratativas.slice() : []);
+  tratativas.push({
+    Id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    Data: data,
+    Texto: texto,
+    Autor: window._currentUser ? window._currentUser.name : '',
+    CriadoEm: new Date().toISOString(),
+  });
+  const ok = await dbAtualizar('RelatoriosObraEmpreiteira', id, { Tratativas: tratativas });
+  showToast(ok ? '✅ Adicionado ao histórico.' : ('❌ Erro ao salvar.' + syncErrorDetalhe()));
+  if (ok) await obraCarregarHistorico(true);
+}
+
+async function obraRemoverTratativa(id, tratId) {
+  if (!confirm('Remover essa entrada do histórico de tratativas?')) return;
+  const reg = (window._obraHistorico || []).find(x => x.Id === id);
+  if (!reg) return;
+  const tratativas = (Array.isArray(reg.Tratativas) ? reg.Tratativas : []).filter(t => t.Id !== tratId);
+  const ok = await dbAtualizar('RelatoriosObraEmpreiteira', id, { Tratativas: tratativas });
+  showToast(ok ? '🗑️ Removido do histórico.' : '❌ Erro ao remover.');
+  if (ok) await obraCarregarHistorico(true);
 }
 
 function obraAbrirForm(id, circuitoId) {
