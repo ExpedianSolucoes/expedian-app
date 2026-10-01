@@ -41733,6 +41733,7 @@ function pageChecklistFornecedores() {
     <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📍 ${circuito.nome} — ${fornecedoresDoCircuito.length} fornecedor${fornecedoresDoCircuito.length!==1?'es':''}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       ${FORN_ENERGISA_SEEDS[circuito.id] && fornecedoresDoCircuito.length === 0 ? `<button class="btn-secondary" onclick="fornEnergisaCarregarSeed('${circuito.id}')">🌱 Carregar fornecedores já levantados em campo</button>` : ''}
+      ${fornecedoresDoCircuito.length ? `<button class="btn-secondary" onclick="fornEnergisaExportarPDF('${circuito.id}')">🖨️ Exportar PDF</button>` : ''}
       <button class="btn-primary" onclick="fornEnergisaAbrirModal('${circuito.id}')">➕ Novo Fornecedor</button>
     </div>
   </div>
@@ -41784,6 +41785,147 @@ function fornEnergisaCardHtml(f) {
     }
     <button class="btn-secondary" style="margin-top:8px;font-size:.72rem;padding:5px 10px" onclick="fornEnergisaAddDocumentoRapido(${f.Id})">➕ Adicionar Documento</button>
   </div>`;
+}
+
+/* -- Versão "print-safe" do status do documento (mesmas cores de
+      `fornEnergisaStatusInfo`, mas em hex puro — a janela de impressão não
+      carrega o CSS do app, então as variáveis var(--green-main) etc. não
+      funcionariam ali). -- */
+function _fornEnergisaStatusInfoPdf(status) {
+  if (status === 'conforme') return { label: '✅ Conforme', bg: '#eef7ec', color: '#2e7d32' };
+  if (status === 'nao_conforme') return { label: '❌ Não Conforme', bg: '#fce8e8', color: '#c62828' };
+  if (status === 'na') return { label: '➖ Não Aplicável', bg: '#eceef0', color: '#666' };
+  return { label: '⏳ A validar', bg: '#fff8e6', color: '#b25f00' };
+}
+function _fornEnergisaVenceTextoPdf(validade) {
+  if (!validade) return '';
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const d = new Date(validade + 'T00:00:00');
+  const dias = Math.round((d - hoje) / 86400000);
+  if (dias < 0) return ` <span style="color:#c62828;font-weight:700">(vencido há ${Math.abs(dias)}d)</span>`;
+  if (dias <= 60) return ` <span style="color:#b25f00;font-weight:700">(vence em ${dias}d)</span>`;
+  return '';
+}
+
+/* -- Monta o HTML do relatório de Fornecedores de um circuito, no mesmo
+      padrão visual dos demais PDFs da Fiscalização Ambiental ERO (header com
+      logo Expedian, janela de impressão, sincroniza como .html no OneDrive)
+      — pedido em 01/10/2026: poder exportar em PDF a documentação legal dos
+      fornecedores de cada empreendimento. -- */
+function fornEnergisaConstruirHtmlPDF(circuito, fornecedores) {
+  const dataGeracao = new Date().toLocaleDateString('pt-BR');
+  const todosDocs = fornecedores.reduce((arr, f) => arr.concat(f.Documentos || []), []);
+  const totConf = todosDocs.filter(d => d.StatusValidacao === 'conforme').length;
+  const totNaoConf = todosDocs.filter(d => d.StatusValidacao === 'nao_conforme').length;
+  const totNA = todosDocs.filter(d => d.StatusValidacao === 'na').length;
+  const totAValidar = todosDocs.length - totConf - totNaoConf - totNA;
+
+  const fornecedoresHtml = fornecedores.map(f => {
+    const docs = f.Documentos || [];
+    return `
+    <div class="forn-box">
+      <div class="forn-nome">${f.Nome || '—'}${f.Tipo ? ` <span class="forn-tipo">${fornEnergisaTipoLabel(f.Tipo)}</span>` : ''}</div>
+      <div class="forn-dados">${f.RazaoSocial || ''}${f.CNPJ ? ' · CNPJ: ' + f.CNPJ : ''}</div>
+      ${docs.length === 0 ? `<div style="font-size:8pt;color:#888;padding:6px 0">Nenhum documento cadastrado.</div>` : `
+      <table>
+        <thead><tr><th style="width:30%">Documento</th><th style="width:30%">Nº / Órgão / Obs.</th><th style="width:18%">Validade</th><th style="width:22%">Validação</th></tr></thead>
+        <tbody>
+          ${docs.map(d => {
+            const info = _fornEnergisaStatusInfoPdf(d.StatusValidacao);
+            return `<tr>
+              <td>${d.Tipo || '—'}</td>
+              <td style="font-size:7.5pt;color:#555">${d.Numero || ''}${d.OrgaoEmissor ? ' · ' + d.OrgaoEmissor : ''}${d.Observacao ? '<br>' + d.Observacao : ''}</td>
+              <td>${d.Validade ? new Date(d.Validade + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}${_fornEnergisaVenceTextoPdf(d.Validade)}</td>
+              <td><span style="background:${info.bg};color:${info.color};font-weight:700;padding:2px 8px;border-radius:5px;font-size:7.5pt;white-space:nowrap">${info.label}</span></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`}
+    </div>`;
+  }).join('');
+
+  return `<!DOCTYPE html><html lang="pt-BR"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fornecedores - ${circuito.nome}</title>
+  <style>
+    :root{--b-green:#80C476;--b-green-deep:#3a7030;--b-brown:#3F261F;--b-pale:#eef7ec;}
+    @page { size: A4; margin: 15mm 12mm; }
+    * { box-sizing: border-box; margin:0; padding:0; }
+    body { font-family: Arial, sans-serif; font-size: 9pt; color:#1a1a1a; }
+    .header-box { border: 2px solid var(--b-green-deep); border-radius:6px; padding:10px 14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; }
+    .header-info { text-align:right; font-size:7.5pt; color:#555; }
+    .section-title { background: var(--b-green-deep); color:#fff; padding:6px 10px; font-weight:700; font-size:9pt; margin:10px 0 6px; border-radius:4px; }
+    table { width:100%; border-collapse:collapse; margin-bottom:4px; }
+    th { background:#f0f4f1; font-size:7.5pt; font-weight:700; padding:4px 6px; text-align:left; border:1px solid #ccc; }
+    td { font-size:7.8pt; padding:4px 6px; border:1px solid #ddd; vertical-align:top; }
+    tr:nth-child(even) td { background:#f9fbf9; }
+    .resumo-box { display:flex; gap:14px; flex-wrap:wrap; background:#f7f3f1; border:1.5px solid var(--b-green-deep); border-radius:6px; padding:10px 14px; margin-bottom:12px; font-size:8pt; }
+    .forn-box { border:1px solid #ddd; border-radius:6px; padding:10px 12px; margin-bottom:10px; page-break-inside:avoid; }
+    .forn-nome { font-family:'Mont',Arial,sans-serif; font-weight:800; font-size:9.5pt; margin-bottom:2px; }
+    .forn-tipo { font-weight:600; font-size:7.2pt; color:var(--b-green-deep); background:var(--b-pale); padding:2px 7px; border-radius:5px; vertical-align:middle; }
+    .forn-dados { font-size:7.8pt; color:#555; margin-bottom:6px; }
+    .footer { margin-top:16px; border-top:1.5px solid #ccc; padding-top:8px; font-size:7pt; color:#888; display:flex; justify-content:space-between; }
+    @media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
+  </style></head><body>
+
+  <div class="header-box">
+    <img src="${(typeof ASO_LOGO_B64 !== 'undefined' ? ASO_LOGO_B64 : '')}" alt="Logo Expedian" style="height:44px;object-fit:contain">
+    <div class="header-info">
+      <strong style="font-size:10pt">FORNECEDORES — DOCUMENTAÇÃO LEGAL</strong><br>
+      <strong style="color:var(--b-green-deep)">${circuito.nome}</strong>${circuito.empreiteira ? ' · ' + circuito.empreiteira : ''}<br>
+      EXPEDIAN Soluções Ambientais
+    </div>
+  </div>
+
+  <div class="resumo-box">
+    <span><strong>${fornecedores.length}</strong> fornecedor${fornecedores.length !== 1 ? 'es' : ''}</span>
+    <span><strong>${todosDocs.length}</strong> documento${todosDocs.length !== 1 ? 's' : ''}</span>
+    <span style="color:#2e7d32"><strong>${totConf}</strong> conforme${totConf !== 1 ? 's' : ''}</span>
+    <span style="color:#c62828"><strong>${totNaoConf}</strong> não conforme${totNaoConf !== 1 ? 's' : ''}</span>
+    <span style="color:#b25f00"><strong>${totAValidar}</strong> a validar</span>
+    <span style="color:#666"><strong>${totNA}</strong> não aplicável${totNA !== 1 ? 'eis' : ''}</span>
+  </div>
+
+  <div class="section-title">Fornecedores Cadastrados</div>
+  ${fornecedoresHtml}
+
+  <div class="footer">
+    <span>EXPEDIAN Soluções Ambientais — Nós cuidamos do caminho.</span>
+    <span>Emitido em: ${new Date().toLocaleString('pt-BR')}</span>
+  </div>
+
+  <script>window.onload=()=>window.print();<\/script>
+  </body></html>`;
+}
+
+/* -- Abre a janela de impressão do relatório de Fornecedores de um circuito
+      e sincroniza o documento gerado (.html) com o OneDrive, na mesma pasta
+      onde ficam os documentos individuais dos fornecedores. -- */
+async function fornEnergisaExportarPDF(circuitoId) {
+  const circuito = FLASH_FRENTES.find(f => f.id === circuitoId);
+  if (!circuito) return;
+  const fornecedores = (_fornEnergisaLista || []).filter(x => x.CircuitoId === circuitoId);
+  if (!fornecedores.length) { showToast('⚠️ Nenhum fornecedor cadastrado neste circuito ainda.'); return; }
+  showToast('🔄 Gerando relatório... aguarde.');
+  setTimeout(async () => {
+    const htmlContent = fornEnergisaConstruirHtmlPDF(circuito, fornecedores);
+    const win = window.open('', '_blank');
+    if (win) { win.document.write(htmlContent); win.document.close(); }
+    else { showToast('⚠️ Permita pop-ups para visualizar o PDF.'); return; }
+
+    if (typeof uploadParaOneDrive === 'function') {
+      try {
+        const nomeBase = ('Fornecedores - ' + circuito.nome + ' - ' + new Date().toISOString().slice(0,10)).replace(/[\\/:*?"<>|]/g,'');
+        const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
+        showSyncStatus('Enviando relatório para OneDrive...');
+        const url = await uploadParaOneDrive(blob, OD_FOLDERS.fornecedoresEnergisa, nomeBase + '.html');
+        if (url) showSyncStatus('Relatório sincronizado!', 'ok', 4000);
+      } catch(e) {
+        console.warn('[Fornecedores Energisa] Erro ao sincronizar relatório PDF:', e);
+      }
+    }
+  }, 300);
 }
 
 function fornEnergisaFecharModal() {
