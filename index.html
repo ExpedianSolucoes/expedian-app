@@ -1451,6 +1451,7 @@ function renderPage(id) {
     checklist_bombeamento: () => pageChecklistBombeamento(),
     checklist_fiscalizacao_ero: () => pageFiscalizacaoEro(),
     painel_geral_ero: () => pagePainelGeralEro(),
+    painel_geral_detalhe: () => pagePainelGeralDetalheFrente(),
     checklist_mitigacao: () => pageChecklistMitigacao(),
     checklist_coleta: () => pageChecklistColeta(),
     checklist_flash: () => pageChecklistFlash(),
@@ -40662,7 +40663,7 @@ function painelGeralCardFrente(p) {
   <div class="card" style="border-top:3px solid ${status.corCss}">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
       <div style="min-width:0">
-        <div style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${fr.nome}">${status.cor} ${fr.nome}</div>
+        <div style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;text-decoration:underline;text-decoration-color:transparent" onmouseover="this.style.textDecorationColor=''" onmouseout="this.style.textDecorationColor='transparent'" onclick="painelGeralAbrirDetalhe('${fr.id}')" title="Ver visão consolidada de ${fr.nome}">${status.cor} ${fr.nome}</div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-bottom:6px">${fr.empreiteira}</div>
       </div>
       <div style="text-align:center;flex-shrink:0" title="Nota Geral — média de Flash Report, Kit de Mitigação, Fornecedores conformes e Relatório Mensal de Obras, descontando NC em aberto/fora do prazo">
@@ -40698,6 +40699,149 @@ function painelGeralCardFrente(p) {
       </div>
     </div>
     <button class="btn-secondary" style="width:100%;margin-top:10px;font-size:.72rem;padding:6px" onclick="painelGeralAbrirRelatorio('${fr.id}')">📄 Relatório de Fiscalização</button>
+  </div>`;
+}
+
+/* =====================================================================
+   VISÃO CONSOLIDADA DO EMPREENDIMENTO — pedido em 01/10/2026: clicar no
+   nome do circuito num card do Painel Geral abre uma tela só dele, juntando
+   Flash Report, Notificação de NC, Kit de Mitigação, Fornecedores,
+   Relatório Mensal de Obras e Histórico da Obra num único lugar. Reaproveita
+   100% o cálculo já feito por `painelGeralCalcularFrente` (mesmos números do
+   card) — só "abre" os detalhes de cada lista. Cada linha das tabelas
+   reaproveita as telas de visualização/edição que já existem em cada módulo
+   (flashVerRegistro, ncEditarRegistro, mitVerChecklist, obraAbrirForm) — não
+   duplica formulário nenhum aqui, é só uma visão de leitura + atalhos.
+   ===================================================================== */
+let _painelGeralDetalheFrenteId = null;
+
+function painelGeralAbrirDetalhe(frenteId) {
+  _painelGeralDetalheFrenteId = frenteId;
+  navigate('painel_geral_detalhe');
+}
+
+function painelGeralFecharDetalhe() {
+  _painelGeralDetalheFrenteId = null;
+  navigate('painel_geral_ero');
+}
+
+function pagePainelGeralDetalheFrente() {
+  const fr = FLASH_FRENTES.find(f => f.id === _painelGeralDetalheFrenteId);
+  if (!fr) { setTimeout(() => navigate('painel_geral_ero'), 0); return '<div class="card">Empreendimento não encontrado — voltando ao Painel Geral...</div>'; }
+  if (window._flashHistorico === null || window._ncHistorico === null || window._mitHistorico === null || window._obraHistorico === null) {
+    painelGeralCarregarDados();
+  }
+  const flashList = window._flashHistorico || [];
+  const ncList = window._ncHistorico || [];
+  const mitList = window._mitHistorico || [];
+  const p = painelGeralCalcularFrente(fr, flashList, ncList, mitList);
+  const { status, notaGeral, flashDaFrente, ncDaFrente, mitDaFrente, fornDaFrente, fornConf, fornNaoConf, obraDaFrente, histObraDaFrente } = p;
+  const notaCorCss = notaGeral === null ? 'var(--text-muted)' : notaGeral >= 80 ? 'var(--green-main)' : notaGeral >= 50 ? '#d97706' : 'var(--red)';
+
+  const flashRows = flashDaFrente.slice().sort((a,b) => (b.Data||'').localeCompare(a.Data||'')).map(f => {
+    const r = flashCalcularPontuacao(f);
+    return `<tr style="cursor:pointer" onclick="flashVerRegistro(${f.Id})">
+      <td>${f.Data ? new Date(f.Data+'T12:00').toLocaleDateString('pt-BR') : '—'}</td>
+      <td style="font-weight:700">${r.pct===null?'—':r.pct.toFixed(0)+'% IDA'}</td>
+      <td style="color:${r.temOcorr?'var(--red)':'inherit'}">${r.temOcorr?'❌ Com ocorrência':'✅ Sem ocorrência'}</td>
+    </tr>`;
+  }).join('');
+
+  const ncRows = ncDaFrente.slice().sort((a,b) => (b.Data||'').localeCompare(a.Data||'')).map(n => `
+    <tr style="cursor:pointer" onclick="ncEditarRegistro(${n.Id})">
+      <td>${n.Numero||'—'}</td>
+      <td>${n.Data ? new Date(n.Data+'T12:00').toLocaleDateString('pt-BR') : '—'}</td>
+      <td style="color:${n.Status==='Aberta'?'var(--red)':'inherit'};font-weight:700">${n.Status||'—'}</td>
+      <td style="color:${n.AtendimentoPrazoStatus==='Fora do Prazo'?'var(--red)':'inherit'}">${n.AtendimentoPrazoStatus||'—'}</td>
+    </tr>`).join('');
+
+  const mitRows = mitDaFrente.slice().sort((a,b) => (b.data||'').localeCompare(a.data||'')).map(m => `
+    <tr style="cursor:pointer" onclick="mitVerChecklist(${m.Id})">
+      <td>${m.data ? new Date(m.data+'T12:00').toLocaleDateString('pt-BR') : '—'}</td>
+      <td style="font-weight:700;color:${m.pontuacaoLabel==='Não Aceitável'?'var(--red)':'inherit'}">${(m.pontuacaoIcone||'')+' '+(m.pontuacaoPct!=null?m.pontuacaoPct.toFixed(0)+'%':(m.pontuacaoLabel||'—'))}</td>
+      <td>${m.acaoNecessaria==='sim' ? (m.acaoStatus==='concluida'?'✅ Ação concluída':'⏳ Ação pendente') : '—'}</td>
+    </tr>`).join('');
+
+  const obraRows = obraDaFrente.slice().sort((a,b) => (b.AnoReferencia-a.AnoReferencia) || (b.MesReferencia-a.MesReferencia)).map(r => {
+    const sit = obraSituacaoPrazo(r), score = obraCalcularScore(r);
+    return `<tr style="cursor:pointer" onclick="obraAbrirForm(${r.Id},'${fr.id}')">
+      <td style="font-weight:700">${PAINEL_MESES_NOMES[r.MesReferencia-1]}/${r.AnoReferencia}</td>
+      <td style="color:${sit.cor}">${sit.label}</td>
+      <td>${obraStatusAprovacaoLabel(r.StatusAprovacao)}</td>
+      <td style="font-weight:700">${score===null?'—':score+'%'}</td>
+    </tr>`;
+  }).join('');
+
+  const histRows = histObraDaFrente.slice().sort((a,b) => (b.Data||'').localeCompare(a.Data||'')).slice(0,8).map(h => `
+    <div style="padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="font-size:.68rem;color:var(--text-muted)">${h.Data ? new Date(h.Data+'T00:00:00').toLocaleDateString('pt-BR') : '—'}${h.Autor?' · '+h.Autor:''}</div>
+      <div style="font-size:.78rem">${(h.Texto||'').replace(/\n/g,'<br>')}</div>
+    </div>`).join('');
+
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div>
+      <h1>${status.cor} ${fr.nome}</h1>
+      <p>${fr.empreiteira||'—'}${fr.sigla?' · '+fr.sigla:''}${fr.municipio?' · '+fr.municipio:''} — ${fr.tipo==='canteiro'?'Canteiro de Obras':'Linha de Transmissão'}</p>
+    </div>
+    <button class="btn-secondary" onclick="painelGeralFecharDetalhe()">← Painel Geral</button>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;border-top:3px solid ${status.corCss}">
+    <div>
+      <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Situação</div>
+      <div style="font-size:1rem;font-weight:800;color:${status.corCss}">${status.cor} ${status.label}</div>
+    </div>
+    <div style="text-align:center">
+      <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Nota Geral</div>
+      <div style="font-family:'Mont',sans-serif;font-size:2rem;font-weight:800;color:${notaCorCss}">${notaGeral===null?'—':notaGeral.toFixed(0)+'%'}</div>
+    </div>
+    <button class="btn-primary" onclick="painelGeralAbrirRelatorio('${fr.id}')">📄 Relatório de Fiscalização</button>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div class="card-title" style="margin:0">🚧 Flash Report (${flashDaFrente.length})</div>
+      <button class="btn-secondary" style="font-size:.7rem;padding:4px 10px" onclick="flashAbrirNovo('${fr.id}')">➕ Novo</button>
+    </div>
+    ${flashDaFrente.length ? `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>IDA</th><th>Ocorrência</th></tr></thead><tbody>${flashRows}</tbody></table></div>` : `<div style="font-size:.78rem;color:var(--text-muted);text-align:center;padding:16px">Nenhum Flash Report ainda.</div>`}
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div class="card-title" style="margin:0">⚠️ Notificação de NC (${ncDaFrente.length})</div>
+      <button class="btn-secondary" style="font-size:.7rem;padding:4px 10px" onclick="ncAbrirNovo('${fr.id}')">➕ Nova</button>
+    </div>
+    ${ncDaFrente.length ? `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nº</th><th>Data</th><th>Status</th><th>Prazo</th></tr></thead><tbody>${ncRows}</tbody></table></div>` : `<div style="font-size:.78rem;color:var(--text-muted);text-align:center;padding:16px">Nenhuma notificação ainda.</div>`}
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-title" style="margin-bottom:8px">🧯 Kit de Mitigação (${mitDaFrente.length})</div>
+    ${mitDaFrente.length ? `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Pontuação</th><th>Ação Corretiva</th></tr></thead><tbody>${mitRows}</tbody></table></div>` : `<div style="font-size:.78rem;color:var(--text-muted);text-align:center;padding:16px">Nenhum checklist ainda.</div>`}
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="card-title" style="margin:0">🧾 Fornecedores (${fornDaFrente.length})</div>
+      <button class="btn-secondary" style="font-size:.7rem;padding:4px 10px" onclick="fornEnergisaFiltrarCircuito('${fr.id}');navigate('checklist_fornecedores')">Ver tudo →</button>
+    </div>
+    <div style="font-size:.8rem;margin-top:6px">${fornDaFrente.length ? `<span style="color:var(--green-main);font-weight:700">✅ ${fornConf} conforme${fornConf!==1?'s':''}</span> · <span style="color:${fornNaoConf>0?'var(--red)':'inherit'};font-weight:700">❌ ${fornNaoConf} não conforme${fornNaoConf!==1?'s':''}</span>` : 'Nenhum fornecedor cadastrado ainda.'}</div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div class="card-title" style="margin:0">📋 Relatório Mensal de Obras (${obraDaFrente.length})</div>
+      <button class="btn-secondary" style="font-size:.7rem;padding:4px 10px" onclick="obraAbrirForm(null,'${fr.id}')">➕ Novo</button>
+    </div>
+    ${obraDaFrente.length ? `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Referência</th><th>Prazo</th><th>Aprovação</th><th>Nota</th></tr></thead><tbody>${obraRows}</tbody></table></div>` : `<div style="font-size:.78rem;color:var(--text-muted);text-align:center;padding:16px">Nenhum registro ainda.</div>`}
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <div class="card-title" style="margin:0">🕓 Histórico da Obra (${histObraDaFrente.length})</div>
+      <button class="btn-secondary" style="font-size:.7rem;padding:4px 10px" onclick="histObraFiltrarCircuito('${fr.id}')">Ver tudo →</button>
+    </div>
+    ${histRows || `<div style="font-size:.78rem;color:var(--text-muted);text-align:center;padding:16px">Nenhum registro ainda.</div>`}
   </div>`;
 }
 
@@ -41554,22 +41698,24 @@ function pagePainelGeralEro() {
   const totalFlashNaoConforme = porFrente.reduce((s, p) => s + p.flashComOcorr, 0);
 
   return `
-  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+  <div class="page-header" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px;align-items:start">
     <div>
       <h1>Painel Geral — Gestão Ambiental por Empreendimento</h1>
       <p>Visão consolidada de Flash Report, Notificação de NC e Kit de Mitigação por circuito elétrico — Contrato 2025022101</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="btn-secondary" onclick="painelGeralCarregarDados(true)">🔄 Atualizar</button>
+        <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+      </div>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn-secondary" onclick="painelGeralCarregarDados(true)">🔄 Atualizar</button>
-      <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+    <div style="font-size:.72rem;color:var(--text-muted);background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;line-height:1.65">
+      <div style="font-weight:800;text-transform:uppercase;letter-spacing:.06em;font-size:.68rem;color:var(--text-primary);margin-bottom:6px">📊 Legenda — Nota Geral e Situação</div>
+      <div><strong>Nota Geral:</strong> média entre Flash Report (% IDA), Kit de Mitigação (% de conformidade), Fornecedores (% de documentos validados como Conforme) e Relatório Mensal de Obras (entrega no prazo + resultado da aprovação) — só entram na média os indicadores que já têm dado. Depois é descontada uma penalidade de 5 pontos por Notificação de NC aberta e 10 pontos por NC fora do prazo. Sem nenhum indicador disponível, a nota fica em "—".</div>
+      <div style="margin-top:6px"><span style="color:var(--red);font-weight:700">🔴 0–49%</span> Requer atenção &nbsp;·&nbsp; <span style="color:#d97706;font-weight:700">🟡 50–79%</span> Acompanhar &nbsp;·&nbsp; <span style="color:var(--green-main);font-weight:700">🟢 80–100%</span> Satisfatório</div>
+      <div style="margin-top:6px">A etiqueta <strong>Situação</strong> de cada card é diferente da Nota Geral: ela mostra se há algo pendente agora (NC aberta, item não aceitável, documento não conforme, obra atrasada) — por isso pode aparecer "Acompanhar" mesmo com nota alta, só sinalizando que houve alguma ocorrência registrada.</div>
     </div>
   </div>
 
   ${painelGeralHtmlRelatorioForm()}
-
-  <div style="font-size:.72rem;color:var(--text-muted);background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:16px">
-    ℹ️ <strong>Como a Nota Geral é calculada:</strong> média entre Flash Report (% IDA), Kit de Mitigação (% de conformidade), Fornecedores (% de documentos validados como Conforme) e Relatório Mensal de Obras (entrega no prazo + resultado da aprovação) — só entram na média os indicadores que já têm dado. Depois é descontada uma penalidade de 5 pontos por Notificação de NC aberta e 10 pontos por NC fora do prazo. Sem nenhum indicador disponível, a nota fica em "—".
-  </div>
 
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px">
     <div class="kpi-card red" style="padding:12px">
