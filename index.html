@@ -17192,10 +17192,10 @@ function _resolverEmailPorNome(nome) {
    necessária, e Notificação de Não Conformidade — Energisa) que ainda não
    foram resolvidos, pra vincular na Agenda de quem criou o documento e
    alimentar o sino de notificações. -- */
-async function coletarPrazosDocumentos() {
+async function coletarPrazosDocumentos(flashsPreCarregados) {
   const itens = [];
   try {
-    const flashs = await dbLer('FlashReportsEnergisa') || [];
+    const flashs = flashsPreCarregados || await dbLer('FlashReportsEnergisa') || [];
     flashs.forEach(f => {
       const resolvidoFlash = f.OrientacaoStatusCumprimento === 'Atendido' || f.OrientacaoStatusCumprimento === 'Finalizado';
       if (f.OrientacaoVerbal && f.OrientacaoPrazo && !resolvidoFlash) {
@@ -17276,6 +17276,38 @@ async function coletarPrazosDocumentos() {
   return itens;
 }
 
+/* -- Pedido 02/10/2026: "o sistema fica com erro em toda tela, toda hora".
+   Causa raiz encontrada no Console (F12) do Tiago: FlashReportsEnergisa.json
+   e NotificacoesEnergisa.json já passam de 28MB e 11MB (fotos ficam
+   embutidas em base64 dentro do próprio registro) — e coletarPrazosDocumentos()
+   baixava os dois POR INTEIRO toda vez que era chamada. Ela é chamada de
+   dentro do sino de notificação (atualizarBadgeNotificacoes/
+   _atualizarBadgeNotificacoesColaborador), que roda a cada 90s em QUALQUER
+   tela aberta (ver applyLogin) — ou seja, ~40MB sendo rebaixados do OneDrive
+   a cada 90 segundos, pra sempre, só pra checar prazo de atendimento, não
+   importa o que o Tiago estivesse olhando na hora. Numa conexão instável
+   isso é exatamente o tipo de carga que gera "Failed to fetch",
+   net::ERR_HTTP2_PROTOCOL_ERROR e "Unterminated string in JSON" (download
+   grande cortado no meio) — os arquivos em si NÃO estavam corrompidos
+   (conferido rodando json.load neles direto no OneDrive). Prazo de
+   atendimento não muda minuto a minuto, então aqui embrulha
+   coletarPrazosDocumentos() com um cache de 15 minutos compartilhado entre
+   todo mundo que chama — derruba esse tráfego de fundo de 1x/90s pra
+   1x/15min (~10x menos). */
+window._prazosDocumentosCache = null;
+window._prazosDocumentosCacheTs = 0;
+const PRAZOS_DOCUMENTOS_CACHE_MS = 15 * 60 * 1000;
+async function coletarPrazosDocumentosCacheado(flashsPreCarregados) {
+  const agora = Date.now();
+  if (window._prazosDocumentosCache && (agora - window._prazosDocumentosCacheTs) < PRAZOS_DOCUMENTOS_CACHE_MS) {
+    return window._prazosDocumentosCache;
+  }
+  const itens = await coletarPrazosDocumentos(flashsPreCarregados);
+  window._prazosDocumentosCache = itens;
+  window._prazosDocumentosCacheTs = agora;
+  return itens;
+}
+
 async function agendaCarregar() {
   try { AGENDA_DADOS = await dbLer('Agenda') || []; } catch (e) { AGENDA_DADOS = []; }
   // Colaborador só enxerga a própria agenda: eventos que ele criou ou em que
@@ -17323,7 +17355,7 @@ async function agendaCarregar() {
   // de Não Conformidade Energisa) à agenda de quem criou o documento. Diretoria/
   // Coordenação enxergam o panorama completo da empresa; colaborador só os seus.
   try {
-    let prazos = await coletarPrazosDocumentos();
+    let prazos = await coletarPrazosDocumentosCacheado();
     if (currentProfile === 'colaborador') {
       const emailAtualP = (window._currentUser && window._currentUser.email || '').toLowerCase();
       const nomeAtualP = (window._currentUser && window._currentUser.name || '').toLowerCase();
@@ -18000,16 +18032,17 @@ async function cpBackfillEventosOutlook() {
   if (!confirm(`Criar lembrete no Outlook pra ${pendentes.length} conta(s) a pagar em aberto que ainda não têm? Isso pode levar alguns minutos — deixe esta aba aberta até a mensagem final aparecer.`)) return;
   window._cpBackfillRodando = true;
   showToast(`📆 Criando ${pendentes.length} lembretes no Outlook... isso pode demorar um pouco. Pode continuar usando o sistema, mas não feche esta aba.`);
-  let ok = 0, falhou = 0, i = 0;
+  let ok = 0, falhou = 0, i = 0, falhasSeguidas = 0, parouCedo = false;
   // Pedido 02/10/2026 (depois de "Falha ao atualizar ContasPagar" aparecer
-  // durante um backfill anterior): roda uma conta de cada vez, com uma pausa
-  // entre elas — ler+gravar ContasPagar 62x em sequência bem rápida, cada uma
-  // ainda somada à chamada pro Graph (criar o evento), é pesado o bastante
-  // pra esbarrar em throttling do Microsoft Graph/OneDrive e gerar falhas de
-  // leitura passageiras em QUALQUER tela que leia ContasPagar nesse meio
-  // tempo (não é perda de dado — a mensagem já avisa que mostra a última
-  // versão boa — mas assusta à toa). A pausa de 700ms entre cada uma reduz
-  // bastante a chance disso.
+  // durante um backfill anterior, e de novo mesmo depois da 1ª pausa de
+  // 700ms): roda uma conta de cada vez, com uma pausa maior entre elas —
+  // ler+gravar ContasPagar + criar evento no Graph, repetido muitas vezes
+  // seguidas, esbarra em throttling (HTTP 429) do Microsoft Graph, que fica
+  // recusando QUALQUER leitura (inclusive de outras telas) até o limite
+  // liberar de novo — não é perda de dado, só fila. Pausa subiu pra 1,5s, e
+  // agora, se acontecerem 5 falhas seguidas (sinal forte de throttle ativo,
+  // não hiccup isolado), para de vez em vez de continuar insistindo e
+  // alongando o throttle — melhor rodar de novo daqui a alguns minutos.
   for (const cp of pendentes) {
     i++;
     try {
@@ -18017,18 +18050,26 @@ async function cpBackfillEventosOutlook() {
       if (evento && evento.id) {
         await dbAtualizar('ContasPagar', cp.Id, { OutlookEventId: evento.id });
         ok++;
+        falhasSeguidas = 0;
       } else {
         falhou++;
+        falhasSeguidas++;
       }
     } catch (e) {
       console.warn('[ContasPagar] Falha no backfill de evento Outlook:', cp.Id, e);
       falhou++;
+      falhasSeguidas++;
     }
+    if (falhasSeguidas >= 5) { parouCedo = true; break; }
     if (i % 10 === 0 && i < pendentes.length) showToast(`📆 Progresso: ${i}/${pendentes.length} lembretes processados...`);
-    await new Promise(res => setTimeout(res, 700));
+    await new Promise(res => setTimeout(res, 1500));
   }
   window._cpBackfillRodando = false;
-  showToast(`${falhou ? '⚠️' : '✅'} Lembretes criados: ${ok}${falhou ? ` · falharam: ${falhou} (confira login Microsoft/permissão de Calendário e tente de novo — rodar de novo só tenta as que ainda faltam)` : ''}.`);
+  if (parouCedo) {
+    showToast(`⚠️ Parei depois de ${falhasSeguidas} falhas seguidas (provável limite de requisições do Microsoft) — ${ok} criados até agora. Aguarde uns 3-5 minutos e clique em "Criar lembretes retroativos" de novo pra continuar de onde parou.`);
+  } else {
+    showToast(`${falhou ? '⚠️' : '✅'} Lembretes criados: ${ok}${falhou ? ` · falharam: ${falhou} (confira login Microsoft/permissão de Calendário e tente de novo — rodar de novo só tenta as que ainda faltam)` : ''}.`);
+  }
   if (typeof carregarContasPagar === 'function') carregarContasPagar();
 }
 
@@ -52895,7 +52936,7 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
     // Prazos para atendimento (Flash Report, Mitigação, NC) aplicados em documentos
     // criados por este colaborador, vencendo em breve ou em atraso.
     const emailAtualColab = (window._currentUser && window._currentUser.email || '').toLowerCase();
-    const prazosDocumentos = await coletarPrazosDocumentos();
+    const prazosDocumentos = await coletarPrazosDocumentosCacheado();
     const meusPrazos = prazosDocumentos.filter(p =>
       (p.criadoPorEmail || '').toLowerCase() === emailAtualColab || norm(p.criadoPorNome) === norm(nomeAtual)
     );
@@ -53018,7 +53059,7 @@ async function atualizarBadgeNotificacoes() {
     const equipExclusaoPendente = ehDiretoria ? (equipamentos || []).filter(e => e.SolicitacaoExclusao && e.SolicitacaoExclusao.status === 'pendente') : [];
     const faunaExclusaoPendente = ehDiretoria ? (faunaFichas || []).filter(f => f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente') : [];
     const faunaFlashExclusaoPendente = ehDiretoria ? (faunaFlash || []).filter(f => f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente') : [];
-    const prazosDocumentos = await coletarPrazosDocumentos();
+    const prazosDocumentos = await coletarPrazosDocumentosCacheado(flashReports);
     const prazosVencendo = prazosDocumentosVencendoEmBreve(prazosDocumentos);
     const prestsAbertas = prests.filter(r => r.Status === 'Em Aberto');
     const contasPagarAprovacao = contasPagar.filter(r => r.Status === 'Aguardando Aprovação');
@@ -61196,9 +61237,18 @@ async function dbLerComEtag(tabela, forcar) {
     // vez (timeout, hiccup de rede, erro HTTP passageiro no Graph) antes de
     // desistir — bem mais barato que recriar arquivamento/split, e cobre
     // qualquer tabela do app, não só Despesas.
+    // Ajuste no mesmo dia, depois do backfill de lembretes do Outlook (62
+    // contas em sequência) deixar "Falha ao atualizar..." aparecendo toda
+    // hora: um HTTP 429 (limite de requisições do Graph, bem provável logo
+    // depois de uma rajada) tentado de novo após só 800ms só piora —
+    // continua batendo no mesmo limite. Agora, especificamente pra 429,
+    // espera o tempo que o próprio Graph pede (cabeçalho Retry-After) ou,
+    // na falta dele, 6s — bem mais que o suficiente pra passar o throttle —
+    // antes de tentar de novo; qualquer outra falha continua com 800ms.
     let resultado = await _dbLerComEtagUmaVez(tabela);
     if (!resultado.sucesso) {
-      await new Promise(res => setTimeout(res, 800));
+      const espera = resultado.status === 429 ? Math.min((resultado.retryAfter || 6) * 1000, 15000) : 800;
+      await new Promise(res => setTimeout(res, espera));
       resultado = await _dbLerComEtagUmaVez(tabela);
     }
     return resultado;
@@ -61224,7 +61274,8 @@ async function _dbLerComEtagUmaVez(tabela) {
     if (r.status === 404) { window._dbCache[tabela] = { lista: [], etag: null, ts: Date.now() }; return { lista: [], etag: null, sucesso: true }; } // tabela ainda nao existe — isso É sucesso, não falha
     if (!r.ok) {
       console.warn('[DB] Erro ao ler', tabela, r.status);
-      return { lista: [], etag: null, sucesso: false };
+      const retryAfterHeader = r.headers.get('Retry-After');
+      return { lista: [], etag: null, sucesso: false, status: r.status, retryAfter: retryAfterHeader ? parseInt(retryAfterHeader, 10) : null };
     }
     const etag = r.headers.get('etag') || r.headers.get('ETag') || null;
     const data = await r.json();
