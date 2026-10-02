@@ -33024,6 +33024,7 @@ function opacRenderizarLista() {
         (v.tipo || '').toLowerCase().indexOf(busca) === -1 &&
         (v.frota || '').toLowerCase().indexOf(busca) === -1) return false;
     if (st === 'reprovado') { if (opacConformidade(v) !== 'Reprovado') return false; }
+    else if (st === 'naotestavel') { if (opacConformidade(v) !== 'Não Testável') return false; }
     else if (st && (v.status || 'pendente') !== st) return false;
     if (sem) {
       if (!v.data) return false;
@@ -33043,10 +33044,10 @@ function opacRenderizarLista() {
   if (!lista.length) { wrap.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">Nenhum veículo encontrado.</div>'; return; }
   var linhas = lista.map(function(v) {
     var conf = opacConformidade(v);
-    var corRes = v.resultado === 'Conforme' ? '#28a745' : (v.resultado === 'Não Conforme' ? '#dc3545' : '#999');
+    var corRes = v.resultado === 'Conforme' ? '#28a745' : (v.resultado === 'Não Conforme' ? '#dc3545' : (v.resultado === 'Não Testável' ? '#f0a500' : '#999'));
     var lblRes = (v.status === 'realizado' && v.resultado !== '' && v.resultado != null) ? v.resultado : '—';
-    var corConf = v.status !== 'realizado' ? '#999' : (conf === 'Aprovado' ? '#28a745' : (conf === 'Reprovado' ? '#dc3545' : '#999'));
-    var lblConf = v.status !== 'realizado' ? '❌ Pendente' : (conf === 'Aprovado' ? '✅ Conforme' : (conf === 'Reprovado' ? '❌ Não Conforme' : '— Não classificado'));
+    var corConf = v.status !== 'realizado' ? '#999' : (conf === 'Aprovado' ? '#28a745' : (conf === 'Reprovado' ? '#dc3545' : (conf === 'Não Testável' ? '#f0a500' : '#999')));
+    var lblConf = v.status !== 'realizado' ? '❌ Pendente' : (conf === 'Aprovado' ? '✅ Conforme' : (conf === 'Reprovado' ? '❌ Não Conforme' : (conf === 'Não Testável' ? '⚠️ Danificado/Não Testável' : '— Não classificado')));
     return '<tr>' +
       '<td style="font-weight:800">' + v.placa + '</td>' +
       '<td>' + (v.tipo || '—') + '</td>' +
@@ -33074,6 +33075,11 @@ function opacRenderizarKPIs() {
   var realizados = OPAC_DADOS.filter(function(v) { return v.status === 'realizado'; }).length;
   var pendentes = total - realizados;
   var reprovados = OPAC_DADOS.filter(function(v) { return opacConformidade(v) === 'Reprovado'; }).length;
+  // Danificados/indisponíveis: veículo encontrado/visitado mas o teste não pôde ser
+  // feito (defeito, bateria descarregada etc.) — conta no "Testes Realizados" (foi
+  // atendido) mas fica destacado à parte dos Reprovados, que é só quem rodou o teste
+  // e não passou. Pedido em 02/10/2026.
+  var naoTestaveis = OPAC_DADOS.filter(function(v) { return opacConformidade(v) === 'Não Testável'; }).length;
   var st = window._opacFiltroStatus || '';
   function card(cor, label, valor, icon, filtro) {
     var sel = st === filtro;
@@ -33082,7 +33088,8 @@ function opacRenderizarKPIs() {
   el.innerHTML = card('var(--brand-green)', 'Total de Veículos', total, '🚚', '')
     + card('#28a745', 'Testes Realizados', realizados, '✅', 'realizado')
     + card('#dc3545', 'Pendentes', pendentes, '❌', 'pendente')
-    + card('#a83232', 'Reprovados', reprovados, '🚨', 'reprovado');
+    + card('#a83232', 'Reprovados', reprovados, '🚨', 'reprovado')
+    + card('#f0a500', 'Danificados / Não Testável', naoTestaveis, '⚠️', 'naotestavel');
 }
 
 function opacFiltrarPorCard(status) {
@@ -33165,7 +33172,7 @@ async function opacSalvarModal() {
   reg.dpto = g('opac-dpto');
   reg.motorista = g('opac-motorista');
   reg.status = 'realizado';
-  reg.conformidade = reg.resultado === 'Não Conforme' ? 'Reprovado' : 'Aprovado';
+  reg.conformidade = reg.resultado === 'Não Conforme' ? 'Reprovado' : (reg.resultado === 'Não Testável' ? 'Não Testável' : 'Aprovado');
   if (window._opacLaudoArquivo) {
     showSyncStatus('Enviando laudo...');
     var resultado = await uploadComprovanteComNomeOriginal(window._opacLaudoArquivo, OD_FOLDERS.opacidadeLaudos, reg.placa + ' - ' + (reg.data || rotHojeISO(0)) + ' - ' + window._opacLaudoArquivo.name);
@@ -33245,6 +33252,7 @@ function opacModalHtml() {
         <select id="opac-resultado">
           <option value="Conforme">Conforme</option>
           <option value="Não Conforme">Não Conforme</option>
+          <option value="Não Testável">⚠️ Não Testável (veículo danificado/indisponível)</option>
         </select>
       </div>
       <div class="form-group"><label>Técnico Responsável</label><input type="text" id="opac-tecnico" placeholder="Nome do técnico"></div>
@@ -33517,9 +33525,16 @@ function opacRegistroVazio() {
    "não classificado" — pedido em 21/09/2026 pra ter um filtro só de
    reprovados. -- */
 function opacConformidade(v) {
-  if (v.conformidade === 'Aprovado' || v.conformidade === 'Reprovado') return v.conformidade;
+  if (v.conformidade === 'Aprovado' || v.conformidade === 'Reprovado' || v.conformidade === 'Não Testável') return v.conformidade;
   if (v.resultado === 'Conforme') return 'Aprovado';
   if (v.resultado === 'Não Conforme') return 'Reprovado';
+  // "Não Testável" = veículo encontrado/visitado mas com defeito (danificado, bateria
+  // descarregada etc.) que impediu rodar o teste de opacidade em si — não é reprovado
+  // (não rodou o teste) nem aprovado (não tem leitura válida), mas CONTA no total de
+  // veículos atendidos/encontrados no semestre, só não entra no cálculo de Reprovados.
+  // Pedido em 02/10/2026: "registrar tbm os veículos com defeitos, pra incluir no
+  // somatório que foi encontrado, porém com observações conforme fotos".
+  if (v.resultado === 'Não Testável') return 'Não Testável';
   return '';
 }
 
