@@ -19388,7 +19388,35 @@ const CMED_SEED = [
 async function cmedCarregarSemNavegar(forcar) {
   if (window._cmedHistorico !== null && !forcar) return;
   try {
-    let lista = await dbLer('MedicoesContratosEnergisa');
+    // CRÍTICO — corrigido em 02/10/2026: esta função usava dbLer() puro, que
+    // devolve [] tanto quando a tabela está REALMENTE vazia quanto quando a
+    // leitura FALHOU (timeout/429/rede instável — dbLer() descarta esse sinal,
+    // ver dbLerComEtag/dbLerSeguro). Como o bloco abaixo trata "lista vazia"
+    // como "tabela nunca foi criada, pode semear com CMED_SEED" e grava por
+    // cima com dbSalvar() sem condição nenhuma, uma única falha de leitura
+    // (bem provável logo após a correção de 20/09/2026 abaixo ter entrado no
+    // ar) foi suficiente pra REESCREVER a tabela inteira com o seed de 18 BMs
+    // "de fábrica" — apagando os BMs 09/10/11 do WS108438 (e qualquer edição
+    // feita nos BMs 04/05/06/08) que o Tiago já tinha lançado. Ficou assim,
+    // sem ninguém perceber, de 20/09 até 02/10/2026 ("eu havia feito até
+    // medição 11, porém só esta aparecendo até 8") — os 3 BMs perdidos foram
+    // recuperados manualmente do backup diário de 20/09/2026 (único com os
+    // 11 BMs) nessa mesma data. Agora: usa dbLerComEtag direto e só trata como
+    // "tabela vazia, pode semear" quando sucesso:true E lista realmente vazia
+    // (inclui o caso 404 "arquivo não existe ainda", que dbLerComEtag também
+    // marca sucesso:true) — uma falha de leitura (sucesso:false) NUNCA mais
+    // aciona a semeadura, só usa o que já estava em memória (igual
+    // dbLerSeguro faz pras outras tabelas). A gravação do seed também ganhou
+    // If-None-Match:'*' (só cria se o arquivo ainda não existir de verdade no
+    // OneDrive), uma segunda trava contra sobrescrever dado real em uma
+    // corrida rara.
+    const { lista: listaLida, sucesso } = await dbLerComEtag('MedicoesContratosEnergisa', forcar);
+    if (!sucesso) {
+      console.warn('[Medição de Contratos] Falha ao buscar — mantendo o que já estava carregado, NÃO semeando por cima.');
+      if (window._cmedHistorico === null) window._cmedHistorico = [];
+      return;
+    }
+    let lista = listaLida;
     if (!Array.isArray(lista) || lista.length === 0) {
       // Corrigido em 20/09/2026: essa semeadura usava dbSalvar() direto com o
       // array cru do CMED_SEED, que nunca passa pelo dbInserir() — por isso
@@ -19408,11 +19436,11 @@ async function cmedCarregarSemNavegar(forcar) {
         Id: agora + i, ...JSON.parse(JSON.stringify(r)),
         NumeroNF: r.NF || '', Created: new Date(agora + i).toISOString(),
       }));
-      await dbSalvar('MedicoesContratosEnergisa', lista);
+      await dbSalvar('MedicoesContratosEnergisa', lista, '*');
     }
     window._cmedHistorico = lista;
   } catch (e) {
-    console.warn('[Medição de Contratos] Falha ao carregar, usando lista vazia.', e);
+    console.warn('[Medição de Contratos] Falha ao carregar, mantendo o que já estava carregado.', e);
     if (window._cmedHistorico === null) window._cmedHistorico = [];
   }
 }
