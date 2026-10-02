@@ -61125,23 +61125,86 @@ async function dbLerSeguro(tabela) {
    exatamente isso que fez o Painel Geral parecer ter perdido Flash Report/
    Mitigação/NC/Fornecedores de uma vez em 21/08 — ver flashCarregarHistorico
    e afins, que agora checam "sucesso" antes de substituir o cache). -- */
+/* -- Aviso visual global de "carregando dados" / "página carregada" (pedido
+   02/10/2026: "tem como colocar algo em todas as telas que os dados estão
+   sendo carregados ainda... e aviso que página totalmente carregada").
+   Em vez de mexer tela por tela (centenas de lugares chamam dbLer/
+   dbLerSeguro pelo app inteiro), fica um contador global aqui dentro de
+   dbLerComEtag — o ÚNICO function por onde passa toda leitura real de
+   qualquer tabela — incrementado antes de cada leitura de rede e decrementado
+   no fim (sucesso ou falha). Enquanto o contador > 0, alguma coisa ainda está
+   carregando; quando volta a 0, a página (ou o pedaço dela que disparou
+   leituras) terminou. Leitura que já vem do cache de 20s nem entra no
+   contador — é instantânea, não faz sentido "avisar carregando" por isso.
+   Só mostra o aviso de "carregando" se passar de 300ms (evita piscar à toa
+   em leituras rápidas) e só mostra "carregado" se chegou a mostrar
+   "carregando" antes (senão também piscaria sem necessidade). -- */
+window._dbLoadCounter = 0;
+let _dbIndicadorShowTimer = null;
+function _dbIndicadorEl() {
+  let el = document.getElementById('db-loading-badge');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'db-loading-badge';
+    el.style.cssText = "position:fixed;right:14px;bottom:14px;z-index:99999;padding:7px 14px;border-radius:20px;font-family:'Mont',sans-serif;font-size:.76rem;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,.18);display:none;opacity:0;transition:opacity .35s;pointer-events:none";
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function _dbLoadingIniciar() {
+  window._dbLoadCounter++;
+  if (window._dbLoadCounter === 1) {
+    clearTimeout(_dbIndicadorShowTimer);
+    _dbIndicadorShowTimer = setTimeout(() => {
+      if (window._dbLoadCounter <= 0) return;
+      const el = _dbIndicadorEl();
+      el.textContent = '⏳ Carregando dados...';
+      el.style.background = 'var(--surface2, #eef2f0)';
+      el.style.color = 'var(--text-muted, #666)';
+      el.style.border = '1px solid var(--border, #ddd)';
+      el.style.display = 'block';
+      requestAnimationFrame(() => { el.style.opacity = '1'; });
+    }, 300);
+  }
+}
+function _dbLoadingFinalizar() {
+  window._dbLoadCounter = Math.max(0, window._dbLoadCounter - 1);
+  if (window._dbLoadCounter > 0) return;
+  clearTimeout(_dbIndicadorShowTimer);
+  const el = document.getElementById('db-loading-badge');
+  if (!el || el.style.display === 'none') return; // nunca chegou a mostrar "carregando" (foi rápido) — não precisa avisar "carregado"
+  el.textContent = '✅ Dados carregados';
+  el.style.background = 'var(--green-main, #28a745)';
+  el.style.color = '#fff';
+  el.style.border = 'none';
+  setTimeout(() => {
+    if (window._dbLoadCounter > 0) return; // começou a carregar outra coisa nesse meio tempo — deixa o aviso novo cuidar disso
+    el.style.opacity = '0';
+    setTimeout(() => { if (window._dbLoadCounter <= 0 && el) el.style.display = 'none'; }, 400);
+  }, 1200);
+}
 async function dbLerComEtag(tabela, forcar) {
   const cacheado = window._dbCache[tabela];
   if (!forcar && cacheado && (Date.now() - cacheado.ts) < DB_CACHE_TTL_MS) {
     return { lista: cacheado.lista.slice(), etag: cacheado.etag, sucesso: true };
   }
-  // Pedido 02/10/2026 (depois de "Erro ao carregar" em Despesas e Receitas
-  // "não puxando nada" no Dashboard Financeiro, logo após Despesas.json voltar
-  // a ser um arquivo único maior): uma falha de leitura agora tenta mais uma
-  // vez (timeout, hiccup de rede, erro HTTP passageiro no Graph) antes de
-  // desistir — bem mais barato que recriar arquivamento/split, e cobre
-  // qualquer tabela do app, não só Despesas.
-  let resultado = await _dbLerComEtagUmaVez(tabela);
-  if (!resultado.sucesso) {
-    await new Promise(res => setTimeout(res, 800));
-    resultado = await _dbLerComEtagUmaVez(tabela);
+  _dbLoadingIniciar();
+  try {
+    // Pedido 02/10/2026 (depois de "Erro ao carregar" em Despesas e Receitas
+    // "não puxando nada" no Dashboard Financeiro, logo após Despesas.json voltar
+    // a ser um arquivo único maior): uma falha de leitura agora tenta mais uma
+    // vez (timeout, hiccup de rede, erro HTTP passageiro no Graph) antes de
+    // desistir — bem mais barato que recriar arquivamento/split, e cobre
+    // qualquer tabela do app, não só Despesas.
+    let resultado = await _dbLerComEtagUmaVez(tabela);
+    if (!resultado.sucesso) {
+      await new Promise(res => setTimeout(res, 800));
+      resultado = await _dbLerComEtagUmaVez(tabela);
+    }
+    return resultado;
+  } finally {
+    _dbLoadingFinalizar();
   }
-  return resultado;
 }
 async function _dbLerComEtagUmaVez(tabela) {
   const token = await getOneDriveToken();
