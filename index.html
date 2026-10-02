@@ -14041,6 +14041,14 @@ function rdMudarSubTab(tab) {
   window._rdSubTab = tab;
   RD_FILTRO_KPI = '';
   const statusSel = document.getElementById('rd_filtro_status'); if (statusSel) statusSel.value = '';
+  // Feedback visual imediato no clique (pedido 02/10/2026: "não dá pra saber
+  // se foi clicado") — antes só o setActiveChip lá dentro de carregarDespesas()
+  // (async, só roda depois do token+fetch) marcava o botão certo, então em
+  // conexão mais lenta o clique parecia não ter feito nada por 1-2s.
+  const btnAberto = document.getElementById('rd-subtab-aberto');
+  const btnPagos = document.getElementById('rd-subtab-pagos');
+  if (btnAberto) { const ativo = tab==='aberto'; btnAberto.style.background = ativo?'#0d6efd':'var(--surface2)'; btnAberto.style.borderColor = ativo?'#0d6efd':'var(--border)'; btnAberto.style.color = ativo?'#fff':'var(--text)'; btnAberto.style.fontWeight = ativo?'700':'500'; }
+  if (btnPagos) { const ativo = tab==='pagos'; btnPagos.style.background = ativo?'#28a745':'var(--surface2)'; btnPagos.style.borderColor = ativo?'#28a745':'var(--border)'; btnPagos.style.color = ativo?'#fff':'var(--text)'; btnPagos.style.fontWeight = ativo?'700':'500'; }
   carregarDespesas();
 }
 
@@ -15295,6 +15303,13 @@ async function carregarDespesas() {
   const el = document.getElementById('lista-despesas');
   if (!el) return;
   if (currentProfile !== 'diretoria') { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria.</div>'; return; }
+  // Feedback imediato (pedido 02/10/2026: "quando pesquisando aparecer algo
+  // como carregando ou pesquisando" / clicar em Em Aberto-Histórico de Pagos
+  // "não dá pra saber se foi clicado, se está carregando") — mostra isso ANTES
+  // de qualquer await (token, leitura do arquivo), senão a lista antiga fica
+  // parada na tela por 1-2s dando a impressão de que o clique não fez nada.
+  const temBuscaAgora = !!((document.getElementById('rd_filtro_busca')||{}).value || '').trim();
+  el.innerHTML = `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">${temBuscaAgora ? '🔍 Pesquisando em Em Aberto + Histórico de Pagos...' : '⏳ Carregando...'}</div>`;
   const token = await getSharePointToken();
   if (!token) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Sessão Microsoft expirou ou falhou. <button class="btn-secondary" style="font-size:.76rem;padding:4px 10px;margin-left:6px" onclick="reconectarMicrosoft()">🔄 Reconectar</button></div>'; return; }
   try {
@@ -15491,7 +15506,13 @@ async function carregarDespesas() {
     window._rdFiltradas = items;
     rdSyncFiltroMesSelect();
 
-    if (!items.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma despesa encontrada.</div>'; return; }
+    if (!items.length) {
+      const msgVazio = fBusca
+        ? `🔍 Nenhum lançamento encontrado para "${(document.getElementById('rd_filtro_busca')||{}).value||''}" — já procurado em Em Aberto + Histórico de Pagos.`
+        : '📭 Nenhuma despesa encontrada com esses filtros.';
+      el.innerHTML = `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">${msgVazio}</div>`;
+      return;
+    }
 
     const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
     const avisoBusca = fBusca ? '<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">🔍 Buscando em Em Aberto + Histórico de Pagos ao mesmo tempo.</div>' : '';
