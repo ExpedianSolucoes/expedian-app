@@ -7063,6 +7063,7 @@ function pagePagar() {
       <button id="pag-form-toggle" class="btn-primary" onclick="pagToggleFormNovo()">➕ Novo Lançamento</button>
       <button class="btn-secondary" onclick="window._fornVindoDe='pagar';navigate('fornecedores')">🏷️ Fornecedores</button>
       <button class="btn-secondary" onclick="navigate('recibos')">🧾 Recibo</button>
+      ${currentProfile === 'diretoria' ? `<button class="btn-secondary" title="Cria lembrete no Outlook pras contas em aberto que já existiam antes de 30/09 e nunca geraram evento" onclick="cpBackfillEventosOutlook()">📆 Criar lembretes retroativos</button>` : ''}
     </div>
     <div id="pag-form-container" style="display:${window._pagFormAberto ? 'block' : 'none'};margin-top:14px">
     <div class="form-card">
@@ -17864,6 +17865,13 @@ async function agendaCriarEventoOutlook(dados, outlookEventIdExistente, recorren
         start: { dateTime: dados.Data + 'T00:00:00', timeZone: 'America/Porto_Velho' },
         end:   { dateTime: dataFimISO + 'T00:00:00', timeZone: 'America/Porto_Velho' },
       };
+      // Pedido 02/10/2026 — ver cpCriarEventoOutlook: permite convidar alguém
+      // (ex.: o Diretor) mesmo em evento de dia inteiro, pra aparecer no
+      // calendário dessa pessoa mesmo quando quem está logado/criando o
+      // evento é outra pessoa.
+      if (opts.attendees && opts.attendees.length) {
+        body.attendees = opts.attendees.map(p => ({ emailAddress: { address: p.email, name: p.nome }, type: 'required' }));
+      }
       const resp = await fetch(
         outlookEventIdExistente ? 'https://graph.microsoft.com/v1.0/me/events/' + outlookEventIdExistente : 'https://graph.microsoft.com/v1.0/me/events',
         { method: outlookEventIdExistente ? 'PATCH' : 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
@@ -17940,6 +17948,28 @@ async function agendaCriarEventoOutlook(dados, outlookEventIdExistente, recorren
    lançamento em si — se o Outlook falhar (sem login Microsoft, etc.), a
    conta salva normalmente com OutlookEventId null, igual o padrão já usado
    na Agenda. -- */
+/* -- Pedido 02/10/2026: Tiago reportou que nada aparecia no calendário DELE,
+   mesmo com contas a pagar no sistema. Causa: o evento é criado no Outlook de
+   quem está LOGADO no app no momento (getCalendarToken() usa a conta MSAL
+   ativa) — se quem lança/edita a conta é um colaborador (ex.: Marcelo
+   Marafon), o evento vai pro Outlook DELE, não do Tiago. Criar direto no
+   calendário do Tiago não importa quem lançou exigiria permissão de
+   aplicativo (app-only) no Microsoft 365 — escopo bem maior, precisa de
+   consentimento de administrador do tenant da Expedian e, principalmente, um
+   backend pra guardar a credencial (não dá pra expor client secret com
+   segurança dentro de um HTML estático, que roda 100% no navegador). Como
+   alternativa segura e já viável com o que o app tem hoje: o Tiago entra como
+   CONVIDADO em todo evento de Conta a Pagar sempre que não for ele mesmo quem
+   está logado — aparece no Outlook dele também (como convite, visível direto
+   na grade do calendário), sem precisar de nada novo no Microsoft 365. -- */
+const CP_EMAIL_DIRETORIA = 'tiagotavares@expediansolucoes.com.br';
+function _cpContaLogadaEhDiretoria() {
+  try {
+    const accs = window._msalInstance && window._msalInstance.getAllAccounts();
+    const email = ((accs && accs[0] && accs[0].username) || '').toLowerCase();
+    return email === 'tiagotavares@expediansolucoes.com.br' || email === 'tiago@expediansolucoes.com.br';
+  } catch (e) { return false; }
+}
 async function cpCriarEventoOutlook(cp, outlookEventIdExistente) {
   if (!cp || !cp.Vencimento) return { id: outlookEventIdExistente || null, teamsLink: null };
   const valorFmt = 'R$ ' + (cp.Valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -17948,7 +17978,43 @@ async function cpCriarEventoOutlook(cp, outlookEventIdExistente) {
     Descricao: [cp.Empresa, cp.CentroCusto, cp.Categoria, cp.NumeroBoleto ? ('Boleto: ' + cp.NumeroBoleto) : '', cp.Observacao].filter(Boolean).join('<br>'),
     Data: cp.Vencimento,
   };
-  return agendaCriarEventoOutlook(dadosEvento, outlookEventIdExistente || null, null, { allDay: true });
+  const opts = { allDay: true };
+  if (!_cpContaLogadaEhDiretoria()) opts.attendees = [{ email: CP_EMAIL_DIRETORIA, nome: 'Tiago Tavares' }];
+  return agendaCriarEventoOutlook(dadosEvento, outlookEventIdExistente || null, null, opts);
+}
+
+/* -- Backfill retroativo (pedido 02/10/2026): cria o evento/convite agora
+   pras contas a pagar que já existiam ANTES da função existir (30/09/2026) e
+   por isso nunca geraram evento — só as que ainda estão em aberto (Status !==
+   'Pago'); as já pagas não precisam mais de lembrete. Ação manual, disparada
+   por botão em Contas a Pagar (só Diretoria) — roda uma vez, sequencial (não
+   em paralelo, pra não estourar limite de requisições do Graph), com toast de
+   progresso. Cada conta atualizada grava o OutlookEventId igual uma criação
+   normal faria, então rodar de novo não duplica evento pra quem já tem. -- */
+async function cpBackfillEventosOutlook() {
+  if (currentProfile !== 'diretoria') { showToast('🔒 Só a Diretoria pode rodar isso.'); return; }
+  const todas = await dbLerSeguro('ContasPagar');
+  const pendentes = todas.filter(c => c.Status !== 'Pago' && !c.OutlookEventId && c.Vencimento);
+  if (!pendentes.length) { showToast('✅ Nenhuma conta em aberto sem lembrete — nada a fazer.'); return; }
+  if (!confirm(`Criar lembrete no Outlook pra ${pendentes.length} conta(s) a pagar em aberto que ainda não têm? Isso pode levar alguns minutos.`)) return;
+  showToast(`📆 Criando ${pendentes.length} lembretes no Outlook... isso pode demorar um pouco.`);
+  let ok = 0, falhou = 0;
+  for (const cp of pendentes) {
+    try {
+      const evento = await cpCriarEventoOutlook(cp, null);
+      if (evento && evento.id) {
+        await dbAtualizar('ContasPagar', cp.Id, { OutlookEventId: evento.id });
+        ok++;
+      } else {
+        falhou++;
+      }
+    } catch (e) {
+      console.warn('[ContasPagar] Falha no backfill de evento Outlook:', cp.Id, e);
+      falhou++;
+    }
+  }
+  showToast(`${falhou ? '⚠️' : '✅'} Lembretes criados: ${ok}${falhou ? ` · falharam: ${falhou} (confira login Microsoft/permissão de Calendário e tente de novo)` : ''}.`);
+  if (typeof carregarContasPagar === 'function') carregarContasPagar();
 }
 
 /* -- Remove o evento do Outlook de uma Conta a Pagar que não precisa mais de
