@@ -5229,7 +5229,7 @@ async function aprovarPrestacaoGestor(id) {
   _limparSyncError();
   const ok = await dbAtualizar('PrestacaoContas', id, { Status: 'Ag. Financeiro', DataAprovacaoGestor: new Date().toISOString().split('T')[0], AprovadoPorGestor: window._currentUser?.name });
   showToast(ok ? '✅ Aprovado! Enviado ao financeiro.' : ('❌ Erro' + syncErrorDetalhe()));
-  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
+  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); carregarPrestPendentesDespesas(); }, 600);
 }
 
 async function reprovarPrestacaoGestor(id) {
@@ -5238,7 +5238,7 @@ async function reprovarPrestacaoGestor(id) {
   _limparSyncError();
   const ok = await dbAtualizar('PrestacaoContas', id, { Status: 'Suspensa', MotivoReprovacao: motivo, ReprovadoPor: window._currentUser?.name, DataReprovacao: new Date().toISOString().split('T')[0] });
   showToast(ok ? '↩️ Devolvida ao colaborador.' : ('❌ Erro' + syncErrorDetalhe()));
-  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
+  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); carregarPrestPendentesDespesas(); }, 600);
 }
 
 /* -- Colaborador corrige e reenvia uma prestação devolvida (direto ao Financeiro) -- */
@@ -5326,7 +5326,7 @@ async function aprovarPrestacaoFinanceiro(id, ajustes) {
     } catch(e) { console.warn('[BPO] Falha ao gerar Saída a partir da Prestação de Contas', e); }
   }
   showToast(ok ? '✅ Aprovado pelo financeiro!' : ('❌ Erro' + syncErrorDetalhe()));
-  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
+  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); carregarPrestPendentesDespesas(); }, 600);
 }
 
 /* -- Lê os campos de ajuste (Centro de Custo/Contrato, Valor, Nº Medição e
@@ -5516,7 +5516,7 @@ async function devolverPrestacaoFinanceiro(id) {
   _limparSyncError();
   const ok = await dbAtualizar('PrestacaoContas', id, { Status: 'Devolvida', MotivoReprovacao: motivo, ReprovadoPor: window._currentUser?.name, DataReprovacao: new Date().toISOString().split('T')[0] });
   showToast(ok ? '↩️ Indeferida — colaborador pode corrigir e reenviar.' : ('❌ Erro' + syncErrorDetalhe()));
-  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
+  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); carregarPrestPendentesDespesas(); }, 600);
 }
 
 /* -- Passo de conferência (Levi/estagiário): antes da aprovação final, alguém
@@ -5548,7 +5548,7 @@ async function pcConferirPrestacao(id) {
   const ok = await dbAtualizar('PrestacaoContas', id, patch);
   showToast(ok ? '📝 Conferido! Enviado para aprovação final.' : ('❌ Erro' + syncErrorDetalhe()));
   const modalAberto = document.getElementById('pc-view-modal'); if (modalAberto) modalAberto.remove();
-  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); }, 600);
+  setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); carregarPrestPendentesDespesas(); }, 600);
 }
 
 /* -- Modal de visualização de uma Prestação de Contas, com as ações
@@ -10757,7 +10757,7 @@ function pageReceitasDespesas() {
   }
   const tab = window._rdTab || 'despesas';
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarSociosListaRd(); carregarDespesas(); carregarMunicipiosLista(); carregarBancosLista(); lancamentoRetomarPendente(); }, 200);
+  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarSociosListaRd(); carregarDespesas(); carregarMunicipiosLista(); carregarBancosLista(); lancamentoRetomarPendente(); carregarPrestPendentesDespesas(); }, 200);
   if (tab === 'receitas') setTimeout(() => { carregarClientesListaRc(); carregarReceitas(); carregarMunicipiosLista(); carregarBancosLista(); lancamentoRetomarPendente(); }, 200);
   if (tab === 'transferencias') setTimeout(() => { carregarTransferencias(); carregarBancosLista(); }, 200);
 
@@ -13910,6 +13910,25 @@ function renderDespesasTab() {
     </div>
   </div>
 
+  <!-- Prestações de Contas aguardando aprovação, no topo da própria aba Despesas
+       (pedido em 01/10/2026: "quando o colaborador lança, vem direto pra mim
+       aqui em despesas" — Tiago queria revisar/aprovar sem abrir a Central de
+       Aprovações à parte). Só Diretoria/Coordenador vê (mesmo gate de quem já
+       aprova Prestação de Contas hoje); colaborador não vê nada disso, continua
+       lançando normalmente na aba Prestação de Contas de sempre — nada mudou
+       pra ele. Mesma tabela/ações da Central de Aprovações (reaproveitada via
+       _aprovHtmlListaPrestacoesPendentes), só desenhada aqui também. -->
+  ${(currentProfile==='diretoria'||currentProfile==='coordenador') ? `
+  <div class="card" style="margin-bottom:16px;border-left:3px solid var(--amber)" id="desp-card-prest-pendentes">
+    <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="despToggleSecaoPrestPendentes()">
+      <div class="card-title" style="margin:0">📑 Prestações de Contas Aguardando Aprovação <span id="desp-prest-pendentes-badge" class="status-pill amber" style="margin-left:6px"></span></div>
+      <span id="desp-prest-pendentes-seta" style="font-size:.8rem;color:var(--text-muted);transition:transform .15s;transform:${window._despPrestPendentesColapsado ? 'rotate(-90deg)' : 'rotate(0deg)'}">▼</span>
+    </div>
+    <div id="desp-prest-pendentes-wrap" style="margin-top:10px;display:${window._despPrestPendentesColapsado ? 'none' : 'block'}">
+      <div id="desp-prest-pendentes"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+    </div>
+  </div>` : ''}
+
   <!-- Dashboard: KPIs (valores) + calendário mensal lado a lado. O gráfico de linha
        (Pago x A Pagar x Vencido) fica pequeno, encaixado no espaço em branco que sobra
        abaixo dos cards de KPI — mesma altura do calendário ao lado, sem esticar a página
@@ -16695,6 +16714,67 @@ function aprovIrPara(idSecao) {
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+/* -- Tabela de Prestações de Contas aguardando aprovação (Ag. Financeiro /
+   Ag. Aprovação Gestor legado), extraída da Central de Aprovações pra ser
+   reaproveitada também dentro da aba Despesas (pedido em 01/10/2026: "quando
+   ele lança, vem para mim direto aqui em despesas" — Tiago quer revisar essas
+   prestações sem precisar abrir a Central de Aprovações à parte). Mesmas
+   ações de sempre (pcAbrirVisualizar/aprovarPrestacaoGestor/
+   reprovarPrestacaoGestor/devolverPrestacaoFinanceiro) — nenhuma lógica nova
+   de aprovação, só a mesma tabela desenhada em dois lugares. -- */
+function _aprovHtmlListaPrestacoesPendentes(prests) {
+  const pendentes = (prests || []).filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor').sort((a,b) => b.Id - a.Id);
+  if (!pendentes.length) return '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma prestação pendente. ✅</div>';
+  return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Fornecedor</th><th>Responsável</th><th>Empresa</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
+    pendentes.map(i => {
+      const legado = i.Status === 'Ag. Aprovação Gestor';
+      return `<tr>
+      <td><strong>${i.Fornecedor || i.Title || '—'}</strong></td>
+      <td>${i.Responsavel || '—'}</td>
+      <td style="font-size:.75rem">${i.Empresa || '—'}</td>
+      <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></td>
+      <td><span class="status-pill amber">* ${i.Status}</span></td>
+      <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
+        <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="pcAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
+        ${legado
+          ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar</button>
+             <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Reprovar</button>`
+          : `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="pcAbrirVisualizar(${i.Id})">✅ Aprovar</button>
+             <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`
+        }
+      </td>
+    </tr>`;
+    }).join('') + '</tbody></table></div>';
+}
+
+/* -- Mesma lista de pendentes acima, só que renderizada dentro da aba
+   Despesas (card no topo, só Diretoria/Coordenador) — ver comentário acima.
+   Chamada em carregarDespesas() e após qualquer ação de aprovar/reprovar
+   prestação (pra atualizar os dois lugares ao mesmo tempo, caso a pessoa
+   tenha ambas as telas abertas/alternando). Sai sem fazer nada se a aba
+   Despesas não estiver na tela (elemento ausente). -- */
+async function carregarPrestPendentesDespesas() {
+  const el = document.getElementById('desp-prest-pendentes');
+  if (!el) return;
+  const prests = await dbLer('PrestacaoContas');
+  const pendentes = prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor');
+  const badge = document.getElementById('desp-prest-pendentes-badge');
+  if (badge) badge.textContent = pendentes.length ? String(pendentes.length) : '';
+  el.innerHTML = _aprovHtmlListaPrestacoesPendentes(prests);
+}
+
+/* -- Collapse/expand do card de Prestações Pendentes dentro de Despesas —
+   estado em memória (window), sobrevive a re-renderizações da tela (trocar
+   filtro/mês não precisa reabrir o card toda vez). -- */
+window._despPrestPendentesColapsado = window._despPrestPendentesColapsado || false;
+function despToggleSecaoPrestPendentes() {
+  window._despPrestPendentesColapsado = !window._despPrestPendentesColapsado;
+  const wrap = document.getElementById('desp-prest-pendentes-wrap');
+  const seta = document.getElementById('desp-prest-pendentes-seta');
+  if (wrap) wrap.style.display = window._despPrestPendentesColapsado ? 'none' : 'block';
+  if (seta) seta.style.transform = window._despPrestPendentesColapsado ? 'rotate(-90deg)' : 'rotate(0deg)';
+}
+
 async function aprovExportarSolicitacoesExcel() {
   const solicGerais = await dbLer('SolicitacoesGerais');
   if (!solicGerais || !solicGerais.length) { showToast('⚠️ Nenhuma solicitação para exportar.'); return; }
@@ -16765,33 +16845,7 @@ async function carregarAprovacoes() {
 
   // Prestações pendentes (fluxo atual: direto ao Financeiro; "Ag. Aprovação Gestor" é resíduo do fluxo antigo)
   const elPrest = document.getElementById('aprov-lista-prest');
-  if (elPrest) {
-    const pendentes = prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor').sort((a,b) => b.Id - a.Id);
-    if (!pendentes.length) {
-      elPrest.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma prestação pendente. ✅</div>';
-    } else {
-      elPrest.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Fornecedor</th><th>Responsável</th><th>Empresa</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
-        pendentes.map(i => {
-          const legado = i.Status === 'Ag. Aprovação Gestor';
-          return `<tr>
-          <td><strong>${i.Fornecedor || i.Title || '—'}</strong></td>
-          <td>${i.Responsavel || '—'}</td>
-          <td style="font-size:.75rem">${i.Empresa || '—'}</td>
-          <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></td>
-          <td><span class="status-pill amber">* ${i.Status}</span></td>
-          <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
-            <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="pcAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
-            ${legado
-              ? `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar</button>
-                 <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="reprovarPrestacaoGestor(${i.Id})">↩️ Reprovar</button>`
-              : `<button class="btn-primary" style="padding:4px 10px;font-size:.72rem" onclick="pcAbrirVisualizar(${i.Id})">✅ Aprovar</button>
-                 <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`
-            }
-          </td>
-        </tr>`;
-        }).join('') + '</tbody></table></div>';
-    }
-  }
+  if (elPrest) elPrest.innerHTML = _aprovHtmlListaPrestacoesPendentes(prests);
 
   // Adiantamentos aguardando aprovação da Diretoria
   const elAdt = document.getElementById('aprov-lista-adiantamento');
