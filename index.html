@@ -1368,6 +1368,12 @@ function navigate(pageId) {
   if (pageId === 'receitas_despesas') {
     title = { despesas: 'Despesas', receitas: 'Receitas', conciliacao: 'Conciliação Bancária', transferencias: 'Transferências entre Contas' }[window._rdTab || 'despesas'] || 'Receitas e Despesas';
   }
+  // 'checklist_ero' é um hub com sub-abas (window._meaAba) igual 'receitas_despesas' —
+  // na sub-aba de Opacidade o título do topo passa a ser o nome específico da tela,
+  // em vez do nome genérico do hub (pedido 02/10/2026).
+  if (pageId === 'checklist_ero' && window._meaAba === 'opacidade') {
+    title = 'Teste de Opacidade - Energisa Rondônia';
+  }
   document.getElementById('headerTitle').textContent = title;
   // Lista suspensa de empresa (topo, ao lado do título — pedido 27/09/2026) só
   // aparece nas abas Receitas e Despesas; nas demais telas fica escondida.
@@ -33018,10 +33024,10 @@ if (typeof window._opacFiltroStatus === 'undefined') window._opacFiltroStatus = 
 /* -- Mesma lógica de filtro (busca + card de status + semestre) usada pela
    lista em tela e pela exportação em PDF — fatorada aqui pra não duplicar e
    pro PDF sempre sair igual ao que está sendo visto na hora do clique. -- */
-function opacListaFiltrada() {
+function opacListaFiltrada(ignorarStatus) {
   var busca = (window._opacBusca || '').trim().toLowerCase();
   var sem = window._opacSemestre || '';
-  var st = window._opacFiltroStatus || '';
+  var st = ignorarStatus ? '' : (window._opacFiltroStatus || '');
   var base = window._opacFiltroLocalidade || '';
   return OPAC_DADOS.filter(function(v) {
     if (busca && (v.placa || '').toLowerCase().indexOf(busca) === -1 &&
@@ -33080,25 +33086,57 @@ function opacRenderizarLista() {
 function opacRenderizarKPIs() {
   var el = document.getElementById('opac-kpis');
   if (!el) return;
-  var total = OPAC_DADOS.length;
-  var realizados = OPAC_DADOS.filter(function(v) { return v.status === 'realizado'; }).length;
+  // Escopo = respeita busca/semestre/base (filtro por base pedido em 02/10/2026),
+  // mas ignora o card de status selecionado — assim o quantitativo mostra sempre
+  // o recorte atual (ex.: só a base filtrada), e os cards de status continuam
+  // podendo ser clicados pra refinar a LISTA sem fazer o próprio total "sumir".
+  var escopo = opacListaFiltrada(true);
+  var total = escopo.length;
+  var realizados = escopo.filter(function(v) { return v.status === 'realizado'; }).length;
   var pendentes = total - realizados;
-  var reprovados = OPAC_DADOS.filter(function(v) { return opacConformidade(v) === 'Reprovado'; }).length;
+  var reprovados = escopo.filter(function(v) { return opacConformidade(v) === 'Reprovado'; }).length;
   // Danificados/indisponíveis: veículo encontrado/visitado mas o teste não pôde ser
   // feito (defeito, bateria descarregada etc.) — conta no "Testes Realizados" (foi
   // atendido) mas fica destacado à parte dos Reprovados, que é só quem rodou o teste
   // e não passou. Pedido em 02/10/2026.
-  var naoTestaveis = OPAC_DADOS.filter(function(v) { return opacConformidade(v) === 'Não Testável'; }).length;
+  var naoTestaveis = escopo.filter(function(v) { return opacConformidade(v) === 'Não Testável'; }).length;
+  // Quantitativo por regional (Norte/Centro/Sul — únicos 3 valores usados em
+  // VeiculosOpacidade.json) dentro do mesmo escopo filtrado acima — pedido em
+  // 02/10/2026, pra caber ao lado dos outros 5 cards na mesma linha.
+  var norte = escopo.filter(function(v) { return (v.regional || '').trim() === 'Norte'; }).length;
+  var centro = escopo.filter(function(v) { return (v.regional || '').trim() === 'Centro'; }).length;
+  var sul = escopo.filter(function(v) { return (v.regional || '').trim() === 'Sul'; }).length;
   var st = window._opacFiltroStatus || '';
-  function card(cor, label, valor, icon, filtro) {
+  // Porcentagem em relação ao total do escopo atual (toda a frota, ou só a base/
+  // semestre/busca filtrados) — pedido em 02/10/2026.
+  function pct(valor) { return total > 0 ? Math.round(valor / total * 100) : 0; }
+  // Cards reduzidos (fonte/padding menores) pra caber os 8 (5 de status + 3 de
+  // regional) numa linha só — pedido em 02/10/2026.
+  function card(cor, label, valor, icon, filtro, mostrarPct) {
     var sel = st === filtro;
-    return '<div class="kpi-card" style="border-top:3px solid '+cor+';cursor:pointer'+(sel?';box-shadow:0 0 0 2px '+cor+' inset':'')+'" onclick="opacFiltrarPorCard(\''+filtro+'\')"><div class="kpi-label">'+label+'</div><div class="kpi-value" style="color:'+cor+'">'+valor+'</div><div class="kpi-icon">'+icon+'</div></div>';
+    var pctHtml = mostrarPct ? ' <span style="font-size:.58em;font-weight:700;opacity:.72">(' + pct(valor) + '%)</span>' : '';
+    return '<div class="kpi-card" style="border-top:3px solid '+cor+';cursor:pointer;padding:10px 12px'+(sel?';box-shadow:0 0 0 2px '+cor+' inset':'')+'" onclick="opacFiltrarPorCard(\''+filtro+'\')">'
+      + '<div class="kpi-label" style="font-size:.6rem;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+label+'</div>'
+      + '<div class="kpi-value" style="color:'+cor+';font-size:1.2rem">'+valor+pctHtml+'</div>'
+      + '<div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">'+icon+'</div></div>';
   }
-  el.innerHTML = card('var(--brand-green)', 'Total de Veículos', total, '🚚', '')
-    + card('#28a745', 'Testes Realizados', realizados, '✅', 'realizado')
-    + card('#dc3545', 'Pendentes', pendentes, '❌', 'pendente')
-    + card('#a83232', 'Reprovados', reprovados, '🚨', 'reprovado')
-    + card('#f0a500', 'Danificados / Não Testável', naoTestaveis, '⚠️', 'naotestavel');
+  // Cards de regional só exibem o quantitativo (sem filtro próprio ainda — a lista
+  // hoje só filtra por base/localidade, não por regional) — mesmo visual compacto.
+  function cardRegional(cor, label, valor, icon) {
+    var pctHtml = ' <span style="font-size:.58em;font-weight:700;opacity:.72">(' + pct(valor) + '%)</span>';
+    return '<div class="kpi-card" style="border-top:3px solid '+cor+';cursor:default;padding:10px 12px">'
+      + '<div class="kpi-label" style="font-size:.6rem;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+label+'</div>'
+      + '<div class="kpi-value" style="color:'+cor+';font-size:1.2rem">'+valor+pctHtml+'</div>'
+      + '<div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">'+icon+'</div></div>';
+  }
+  el.innerHTML = card('var(--brand-green)', 'Total de Veículos', total, '🚚', '', false)
+    + card('#28a745', 'Testes Realizados', realizados, '✅', 'realizado', true)
+    + card('#dc3545', 'Pendentes', pendentes, '❌', 'pendente', true)
+    + card('#a83232', 'Reprovados', reprovados, '🚨', 'reprovado', true)
+    + card('#f0a500', 'Danificados / Não Testável', naoTestaveis, '⚠️', 'naotestavel', true)
+    + cardRegional('#1f6feb', 'Regional Norte', norte, '🧭')
+    + cardRegional('#6f42c1', 'Regional Centro', centro, '🧭')
+    + cardRegional('#0c8599', 'Regional Sul', sul, '🧭');
 }
 
 function opacFiltrarPorCard(status) {
@@ -33428,19 +33466,15 @@ function pageOpacidadeVeiculos() {
   opacCarregar().then(function() { opacRenderizarLista(); opacRenderizarKPIs(); opacPreencherFiltroBase(); });
   carregarMunicipiosLista();
   return `
-  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
-    <div>
-      <button class="btn-secondary" style="margin-bottom:8px" onclick="window._meaAba='dashboard';navigate('checklist_ero')">← Voltar</button>
-      <h1>🚚 Veículos a Diesel — Teste de Opacidade</h1>
-      <p>Controle de teste de opacidade da frota. Busque pela placa e registre o resultado quando o teste for realizado.</p>
-    </div>
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px">
+    <button class="btn-secondary" onclick="window._meaAba='dashboard';navigate('checklist_ero')">← Voltar</button>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-secondary" onclick="opacExportarPDF()">🖨️ Exportar PDF</button>
       ${(currentProfile === 'diretoria' || currentProfile === 'coordenador') ? `<button class="btn-secondary" onclick="opacReiniciarSemestre()">🔄 Reiniciar Semestre</button>` : ''}
     </div>
   </div>
 
-  <div id="opac-kpis" class="kpi-grid" style="margin-bottom:16px"><div style="text-align:center;padding:20px;color:var(--text-muted);grid-column:1/-1">Carregando...</div></div>
+  <div id="opac-kpis" class="kpi-grid" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px"><div style="text-align:center;padding:20px;color:var(--text-muted);grid-column:1/-1">Carregando...</div></div>
 
   <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">
     <input placeholder="🔍 Buscar por placa, tipo ou frota..." style="flex:1;min-width:220px;font-size:.85rem;padding:10px 14px;border:1px solid var(--border);border-radius:10px" oninput="opacFiltrar(this.value)">
