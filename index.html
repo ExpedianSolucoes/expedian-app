@@ -56156,13 +56156,43 @@ async function _resolverRaizPara(chave, ehTabela, token) {
 }
 
 /* == GARANTIR SUBPASTA == */
+// Cache em memória (dura a sessão/aba) de subpastas já resolvidas, pra não ficar
+// re-verificando/recriando a mesma pasta em toda chamada — era a causa dos POST .../children
+// 409 (Conflict) repetidos no Console: garantirPastaOneDrive tentava CRIAR a pasta toda vez
+// (mesmo ela já existindo havia muito tempo), e só caía no fallback de GET depois do 409.
+// Agora verifica primeiro (GET) se a pasta já existe; só tenta criar (POST) se de fato não
+// existir (404). O 409 só pode voltar a acontecer numa corrida rara (duas abas criando a
+// mesma pasta nova ao mesmo tempo) — nesse caso ainda cai no fallback de buscar de novo.
+let _garantirPastaCache = {};
 async function garantirPastaOneDrive(token, driveId, parentId, subpasta) {
   // Verificar se subpasta tem "/" (subpastas aninhadas)
   const partes = subpasta.split('/').filter(Boolean);
   let currentParentId = parentId;
   for (const parte of partes) {
+    const cacheKey = driveId + '|' + currentParentId + '|' + parte;
+    if (_garantirPastaCache[cacheKey]) {
+      currentParentId = _garantirPastaCache[cacheKey];
+      continue;
+    }
     try {
-      // Tentar criar a pasta diretamente
+      // 1) Verificar se a pasta já existe (evita tentar criar e levar 409 toda vez)
+      const existeResp = await fetch(
+        'https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + currentParentId + ':/' + encodeURIComponent(parte),
+        { headers: { 'Authorization': 'Bearer ' + token } }
+      );
+      if (existeResp.ok) {
+        const d = await existeResp.json();
+        currentParentId = d.id;
+        _garantirPastaCache[cacheKey] = currentParentId;
+        continue;
+      }
+      if (existeResp.status !== 404) {
+        const errTxt = await existeResp.text();
+        console.warn('[OD] garantirPasta: falha ao verificar "' + parte + '"', existeResp.status, errTxt.substring(0, 200));
+        _setSyncError('sem permissão para criar/acessar a subpasta "' + parte + '" no OneDrive', existeResp.status);
+        return null; // FALHA REAL: nunca seguir usando um parentId desatualizado/errado
+      }
+      // 2) Não existe (404) -> criar agora
       const criarResp = await fetch(
         'https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + currentParentId + '/children',
         {
@@ -56175,20 +56205,22 @@ async function garantirPastaOneDrive(token, driveId, parentId, subpasta) {
         // Pasta criada agora -> já temos o id direto na resposta, sem precisar de outra chamada
         const novaPasta = await criarResp.json();
         currentParentId = novaPasta.id;
+        _garantirPastaCache[cacheKey] = currentParentId;
         continue;
       }
-      // Não criou (provavelmente já existe) -> buscar o id da pasta existente
-      const r = await fetch(
+      // Corrida rara: outra aba/dispositivo criou a pasta entre o passo 1 e o 2 -> buscar de novo
+      const r2 = await fetch(
         'https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + currentParentId + ':/' + encodeURIComponent(parte),
         { headers: { 'Authorization': 'Bearer ' + token } }
       );
-      if (r.ok) {
-        const d = await r.json();
-        currentParentId = d.id;
+      if (r2.ok) {
+        const d2 = await r2.json();
+        currentParentId = d2.id;
+        _garantirPastaCache[cacheKey] = currentParentId;
       } else {
-        const errTxt = await r.text();
-        console.warn('[OD] garantirPasta: falha ao resolver/criar "' + parte + '"', r.status, errTxt.substring(0, 200));
-        _setSyncError('sem permissão para criar/acessar a subpasta "' + parte + '" no OneDrive', r.status);
+        const errTxt = await r2.text();
+        console.warn('[OD] garantirPasta: falha ao resolver/criar "' + parte + '"', r2.status, errTxt.substring(0, 200));
+        _setSyncError('sem permissão para criar/acessar a subpasta "' + parte + '" no OneDrive', r2.status);
         return null; // FALHA REAL: nunca seguir usando um parentId desatualizado/errado
       }
     } catch(e) {
