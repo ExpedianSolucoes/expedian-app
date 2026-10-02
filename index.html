@@ -17351,29 +17351,13 @@ async function agendaCarregar() {
       AGENDA_DADOS = AGENDA_DADOS.concat(virtuais);
     } catch (e) { console.warn('[Agenda] Falha ao sincronizar Contas a Pagar.', e); }
   }
-  // Vincula prazos para atendimento (Flash Report, Mitigação Ambiental, Notificação
-  // de Não Conformidade Energisa) à agenda de quem criou o documento. Diretoria/
-  // Coordenação enxergam o panorama completo da empresa; colaborador só os seus.
-  try {
-    let prazos = await coletarPrazosDocumentosCacheado();
-    if (currentProfile === 'colaborador') {
-      const emailAtualP = (window._currentUser && window._currentUser.email || '').toLowerCase();
-      const nomeAtualP = (window._currentUser && window._currentUser.name || '').toLowerCase();
-      prazos = prazos.filter(p =>
-        (p.criadoPorEmail || '').toLowerCase() === emailAtualP ||
-        (p.criadoPorNome || '').toLowerCase() === nomeAtualP
-      );
-    }
-    const virtuaisPrazo = prazos.map((p, idx) => ({
-      Id: -2000000 - idx,
-      Data: p.prazo, HoraIni: '', HoraFim: '',
-      Titulo: p.titulo, Local: '', Descricao: p.descricao,
-      CriadoPorNome: p.criadoPorNome, CriadoPorEmail: p.criadoPorEmail,
-      Participantes: [], Tipo: 'prazo',
-      _prazoOrigem: p.origem, _prazoId: p.id,
-    }));
-    AGENDA_DADOS = AGENDA_DADOS.concat(virtuaisPrazo);
-  } catch (e) { console.warn('[Agenda] Falha ao vincular prazos de documentos.', e); }
+  // Vínculo de "prazos para atendimento" (Flash Report/Mitigação/NC) à Agenda
+  // REMOVIDO em 02/10/2026 (pedido do Tiago: "pode excluir essa checagem de
+  // prazo de atendimento, deixar ele somente para contas a pagar no dia do
+  // vencimento") — essa checagem dependia de coletarPrazosDocumentos(), que
+  // baixava por inteiro FlashReportsEnergisa.json (28MB) e
+  // NotificacoesEnergisa.json (11MB), causa raiz do "erro em toda tela" (ver
+  // histórico 02/10). Mesma remoção feita no sino de notificação.
   agendaRenderTudo();
 }
 
@@ -52885,12 +52869,12 @@ function prazosDocumentosVencendoEmBreve(itens) {
   });
 }
 
-/* -- Despesas com vencimento próximo (ou vencidas recentemente), usada pelo badge de
-      notificações e pelo card "A vencer" do Financeiro. Regras:
-      - Ignora Status Pago/Cancelado.
-      - Considera só o intervalo de -30 (vencida há até 30 dias) a +3 dias (aviso 3 dias
-        antes do vencimento) — fora desse intervalo tende a ser lançamento antigo cujo
-        Status nunca foi atualizado (dado de importação), não uma cobrança real em aberto. -- */
+/* -- Despesas (conta a pagar) vencendo HOJE, usada só pelo badge de notificações.
+      Pedido 02/10/2026: "deixar ele somente para contas a pagar no dia do
+      vencimento" — antes avisava numa janela de -30 (vencida há até 30 dias) a
+      +3 dias (aviso antecipado); agora avisa só no dia exato do vencimento,
+      junto com a remoção da checagem de "prazo de atendimento" (ver nota em
+      atualizarBadgeNotificacoes/_atualizarBadgeNotificacoesColaborador). -- */
 function despesasVencendoEmBreve(despesas) {
   const hoje = new Date(); hoje.setHours(0,0,0,0);
   const MS_DIA = 86400000;
@@ -52900,7 +52884,7 @@ function despesasVencendoEmBreve(despesas) {
     const v = new Date(r.Vencimento + 'T00:00:00');
     if (isNaN(v)) return false;
     const dias = Math.round((v - hoje) / MS_DIA);
-    return dias >= -30 && dias <= 3;
+    return dias === 0;
   });
 }
 
@@ -52933,17 +52917,18 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
       r.Status === 'Pago' && norm(r.LancadoPor) === norm(nomeAtual) && norm(r.PagoPor) !== norm(nomeAtual)
     );
 
-    // Prazos para atendimento (Flash Report, Mitigação, NC) aplicados em documentos
-    // criados por este colaborador, vencendo em breve ou em atraso.
-    const emailAtualColab = (window._currentUser && window._currentUser.email || '').toLowerCase();
-    const prazosDocumentos = await coletarPrazosDocumentosCacheado();
-    const meusPrazos = prazosDocumentos.filter(p =>
-      (p.criadoPorEmail || '').toLowerCase() === emailAtualColab || norm(p.criadoPorNome) === norm(nomeAtual)
-    );
-    const prazosVencendo = prazosDocumentosVencendoEmBreve(meusPrazos);
+    // Checagem de "prazo de atendimento" (Flash Report/Mitigação/NC) REMOVIDA em
+    // 02/10/2026 (pedido do Tiago: "pode excluir essa checagem de prazo de
+    // atendimento, deixar ele somente para contas a pagar no dia do vencimento").
+    // Essa checagem dependia de coletarPrazosDocumentos(), que baixava por
+    // inteiro FlashReportsEnergisa.json (28MB) e NotificacoesEnergisa.json
+    // (11MB) — era a causa raiz dos "Failed to fetch"/erro em toda tela (ver
+    // entrada 02/10 (11) no histórico). Em vez de só reduzir a frequência
+    // (mitigação anterior, mesmo dia), a funcionalidade em si foi retirada do
+    // sino — aqui e no ramo Diretoria/Coordenação logo abaixo.
     const chat = await chatChecarParaSino();
 
-    const total = equipPendentes.length + prestPendentes.length + prazosVencendo.length + contasPagasNotif.length + chat.total;
+    const total = equipPendentes.length + prestPendentes.length + contasPagasNotif.length + chat.total;
 
     // Lista detalhada exibida no dropdown do sino (clique em cada item abre a pendência).
     window._notifItens = [];
@@ -52957,11 +52942,6 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
       icone: '📑', titulo: 'Prestação de contas devolvida — corrija e reenvie',
       subtitulo: r.Descricao || r.Titulo || ('Prestação #' + (r.Id || '')),
       acao: () => navigate('prestacao'),
-    }));
-    prazosVencendo.forEach(p => window._notifItens.push({
-      icone: '⏰', titulo: p.titulo,
-      subtitulo: 'Prazo: ' + (p.prazo ? new Date(p.prazo + 'T12:00').toLocaleDateString('pt-BR') : '—'),
-      acao: () => _notifAbrirPrazoItem(p),
     }));
     contasPagasNotif.forEach(r => window._notifItens.push({
       icone: '💸', titulo: 'Conta a pagar que você lançou foi paga',
@@ -52991,17 +52971,6 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
     }
     _ultimaContagemNotifPrest = prestPendentes.length;
 
-    if (_ultimaContagemNotifPrazos !== null && prazosVencendo.length > _ultimaContagemNotifPrazos) {
-      const novos = prazosVencendo.length - _ultimaContagemNotifPrazos;
-      _notifTocarSom();
-      _notifMostrarPush(
-        '⏰ EXPEDIAN — Prazo para atendimento',
-        novos === 1 ? 'Um prazo para atendimento seu está vencendo (hoje, nos próximos 3 dias, ou em atraso).' : `${novos} prazos para atendimento seus estão vencendo (hoje, nos próximos 3 dias, ou em atraso).`,
-        'agenda'
-      );
-    }
-    _ultimaContagemNotifPrazos = prazosVencendo.length;
-
     if (_ultimaContagemNotifContaPaga !== null && contasPagasNotif.length > _ultimaContagemNotifContaPaga) {
       const novas = contasPagasNotif.length - _ultimaContagemNotifContaPaga;
       _notifTocarSom();
@@ -53013,7 +52982,7 @@ async function _atualizarBadgeNotificacoesColaborador(badge) {
     }
     _ultimaContagemNotifContaPaga = contasPagasNotif.length;
 
-    window._notifColabDestino = equipPendentes.length > 0 ? 'equipamentos' : (prestPendentes.length > 0 ? 'prestacao' : (prazosVencendo.length > 0 ? 'agenda' : (contasPagasNotif.length > 0 ? 'pagar' : 'equipamentos')));
+    window._notifColabDestino = equipPendentes.length > 0 ? 'equipamentos' : (prestPendentes.length > 0 ? 'prestacao' : (contasPagasNotif.length > 0 ? 'pagar' : 'equipamentos'));
 
     badge.dataset.notifCount = total > 0 ? total : '';
     let styleEl = document.getElementById('notif-badge-style');
@@ -53059,8 +53028,12 @@ async function atualizarBadgeNotificacoes() {
     const equipExclusaoPendente = ehDiretoria ? (equipamentos || []).filter(e => e.SolicitacaoExclusao && e.SolicitacaoExclusao.status === 'pendente') : [];
     const faunaExclusaoPendente = ehDiretoria ? (faunaFichas || []).filter(f => f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente') : [];
     const faunaFlashExclusaoPendente = ehDiretoria ? (faunaFlash || []).filter(f => f.SolicitacaoExclusao && f.SolicitacaoExclusao.status === 'pendente') : [];
-    const prazosDocumentos = await coletarPrazosDocumentosCacheado(flashReports);
-    const prazosVencendo = prazosDocumentosVencendoEmBreve(prazosDocumentos);
+    // Checagem de "prazo de atendimento" (Flash Report/Mitigação/NC) REMOVIDA
+    // 02/10/2026 — ver nota equivalente em _atualizarBadgeNotificacoesColaborador
+    // acima (era a causa raiz do download repetido de FlashReportsEnergisa.json/
+    // NotificacoesEnergisa.json, ~40MB). Pedido do Tiago: manter só o aviso de
+    // conta a pagar vencendo (ver despesasVencendo acima, agora restrito ao
+    // dia exato do vencimento).
     const prestsAbertas = prests.filter(r => r.Status === 'Em Aberto');
     const contasPagarAprovacao = contasPagar.filter(r => r.Status === 'Aguardando Aprovação');
     // Contas a Pagar lançadas por este usuário (Diretoria/Coordenação) que já foram
@@ -53076,8 +53049,7 @@ async function atualizarBadgeNotificacoes() {
       contasPagarAprovacao.length +
       adiantamentosAprovacao.length +
       solicGeraisPendentes.length +
-      despesasVencendo.length +
-      prazosVencendo.length;
+      despesasVencendo.length;
     const total = totalAprovacoesPuras + flashPendentes.length + flashExclusaoPendente.length + equipExclusaoPendente.length + faunaExclusaoPendente.length + faunaFlashExclusaoPendente.length + contasPagasNotifDir.length + chat.total;
 
     // Lista detalhada exibida no dropdown do sino (clique em cada item abre a pendência).
@@ -53112,11 +53084,6 @@ async function atualizarBadgeNotificacoes() {
       icone: '💸', titulo: 'Conta a pagar vencendo',
       subtitulo: (r.Descricao || r.Fornecedor || '') + (r.Vencimento ? ' — vence ' + new Date(r.Vencimento + 'T12:00').toLocaleDateString('pt-BR') : ''),
       acao: () => navigate('receitas_despesas'),
-    }));
-    prazosVencendo.forEach(p => window._notifItens.push({
-      icone: '⏰', titulo: p.titulo,
-      subtitulo: 'Prazo: ' + (p.prazo ? new Date(p.prazo + 'T12:00').toLocaleDateString('pt-BR') : '—'),
-      acao: () => _notifAbrirPrazoItem(p),
     }));
     flashPendentes.forEach(f => window._notifItens.push({
       icone: '🚧', titulo: 'Flash Report novo — ' + (f.FrenteNome || ''),
@@ -53289,30 +53256,17 @@ async function atualizarBadgeNotificacoes() {
     }
     _ultimaContagemNotifSolicGeral = solicGeraisPendentes.length;
 
-    // Detectar NOVAS despesas entrando na janela de vencimento -> mensagem específica
+    // Detectar NOVAS despesas vencendo HOJE -> mensagem específica
     if (_ultimaContagemNotifDespesas !== null && despesasVencendo.length > _ultimaContagemNotifDespesas) {
       const novas = despesasVencendo.length - _ultimaContagemNotifDespesas;
       _notifTocarSom();
       _notifMostrarPush(
         '💸 EXPEDIAN — Conta a pagar',
-        novas === 1 ? 'Uma despesa está vencendo (hoje, nos próximos 3 dias, ou em atraso).' : `${novas} despesas estão vencendo (hoje, nos próximos 3 dias, ou em atraso).`,
+        novas === 1 ? 'Uma conta a pagar vence hoje.' : `${novas} contas a pagar vencem hoje.`,
         'receitas_despesas'
       );
     }
     _ultimaContagemNotifDespesas = despesasVencendo.length;
-
-    // Detectar NOVOS prazos de documentos (Flash Report, Mitigação, NC) entrando
-    // na janela de vencimento -> mensagem específica
-    if (_ultimaContagemNotifPrazos !== null && prazosVencendo.length > _ultimaContagemNotifPrazos) {
-      const novos = prazosVencendo.length - _ultimaContagemNotifPrazos;
-      _notifTocarSom();
-      _notifMostrarPush(
-        '⏰ EXPEDIAN — Prazo para atendimento',
-        novos === 1 ? 'Um prazo para atendimento está vencendo (hoje, nos próximos 3 dias, ou em atraso).' : `${novos} prazos para atendimento estão vencendo (hoje, nos próximos 3 dias, ou em atraso).`,
-        'agenda'
-      );
-    }
-    _ultimaContagemNotifPrazos = prazosVencendo.length;
 
     // Atualizar o pseudo-element via atributo data
     badge.dataset.notifCount = total > 0 ? total : '';
