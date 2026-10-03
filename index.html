@@ -14011,6 +14011,15 @@ function renderDespesasTab() {
       ${RD_CATEGORIAS_DESPESAS.map(c => `<option>${c}</option>`).join('')}
     </select>
     <input type="text" id="rd_filtro_busca" placeholder="Fornecedor / serviço / CC..." oninput="dbDebounce('carregarDespesas')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:160px">
+    <!-- Filtro por Colaborador (pedido 03/10/2026) — campo próprio, separado da
+         busca geral de Fornecedor/serviço/CC acima (que já batia em Colaborador
+         via .includes(), mas misturado com fornecedor/serviço/CC, sem como isolar
+         só colaborador). Reaproveita a mesma lista de colaboradores já carregada
+         pro combobox do Lançamento (_rdColaboradores/carregarColaboradoresListaRd),
+         só que num <datalist> nativo — mais simples que o dropdown custom de lá,
+         e já é o mesmo padrão usado em "Lançado por" de Contas a Pagar/Prestação. -->
+    <input type="text" id="rd_filtro_colaborador" placeholder="Colaborador..." list="rd_filtro_colaborador_dl" oninput="dbDebounce('carregarDespesas')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:140px">
+    <datalist id="rd_filtro_colaborador_dl"></datalist>
     <select id="rd_filtro_status" onchange="RD_FILTRO_KPI='';carregarDespesas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
       <option value="">Todos os status</option>
       ${RD_STATUS.map(s => `<option>${s}</option>`).join('')}
@@ -14402,6 +14411,11 @@ async function carregarColaboradoresListaRd() {
     }
   } catch (e) { /* segue com o que já tiver em memória/cache */ }
   _rdColaboradores = (typeof adtColaboradoresDisponiveis === 'function') ? adtColaboradoresDisponiveis() : [];
+  // Datalist do filtro "Colaborador" da barra de filtros (pedido 03/10/2026) —
+  // populado aqui porque a lista só fica pronta depois deste await; a barra de
+  // filtros já tinha renderizado (template síncrono) antes disso rodar.
+  const dlColabFiltro = document.getElementById('rd_filtro_colaborador_dl');
+  if (dlColabFiltro) dlColabFiltro.innerHTML = _rdColaboradores.map(c => `<option value="${String(c.nome||'').replace(/"/g,'&quot;')}">`).join('');
 }
 
 function rdFiltrarColaboradores(texto) {
@@ -15250,7 +15264,7 @@ function rdFiltrarKpi(tipo) {
 }
 
 function rdLimparFiltros() {
-  ['rd_filtro_mes','rd_filtro_dia','rd_filtro_categoria','rd_filtro_busca','rd_filtro_valor_exato','rd_filtro_valor_min','rd_filtro_valor_max'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
+  ['rd_filtro_mes','rd_filtro_dia','rd_filtro_categoria','rd_filtro_busca','rd_filtro_colaborador','rd_filtro_valor_exato','rd_filtro_valor_min','rd_filtro_valor_max'].forEach(id => { const e=document.getElementById(id); if (e) e.value=''; });
   const statusSel = document.getElementById('rd_filtro_status'); if (statusSel) statusSel.value = '';
   window._rdFiltroAnoConsolidado = '';
   RD_FILTRO_KPI = '';
@@ -15437,6 +15451,7 @@ async function carregarDespesas() {
     const fValorExato = rdMoedaParaNumero((document.getElementById('rd_filtro_valor_exato')||{}).value);
     const fValorMin = rdMoedaParaNumero((document.getElementById('rd_filtro_valor_min')||{}).value);
     const fValorMax = rdMoedaParaNumero((document.getElementById('rd_filtro_valor_max')||{}).value);
+    const fColaborador = ((document.getElementById('rd_filtro_colaborador')||{}).value || '').trim().toLowerCase();
 
     // Pedido 03/10/2026: no Histórico de Pagos, o filtro de período (ano/mês/dia)
     // passa a olhar a Data de Pagamento, não a Data de Lançamento — faz mais
@@ -15455,6 +15470,9 @@ async function carregarDespesas() {
     else if (fAnoConsolidado) items = items.filter(r => (r[campoDataPeriodo]||'').slice(0,4) === fAnoConsolidado);
     if (fCategoria) items = items.filter(r => r.Categoria === fCategoria);
     if (fBusca) items = items.filter(r => (r.Fornecedor||'').toLowerCase().includes(fBusca) || (r.Colaborador||'').toLowerCase().includes(fBusca) || (r.ServicoDesc||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca) || (r.Subcategoria||'').toLowerCase().includes(fBusca) || (r.Descricao||'').toLowerCase().includes(fBusca));
+    // Filtro dedicado de Colaborador (pedido 03/10/2026) — independente da busca
+    // geral acima, que já batia em Colaborador mas misturado com outros campos.
+    if (fColaborador) items = items.filter(r => (r.Colaborador||'').toLowerCase().includes(fColaborador));
     if (fStatus) items = items.filter(r => r.Status === fStatus);
     if (fValorExato > 0) items = items.filter(r => Math.abs((r.Valor||0) - fValorExato) < 0.01);
     else {
