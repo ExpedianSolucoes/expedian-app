@@ -40609,6 +40609,104 @@ async function bancosVerMesAMes(banco, empresa) {
     </div>`;
   document.body.appendChild(modal);
 }
+/* -- Saldo Real dia a dia (pedido em 03/10/2026: "como eu acompanho o fluxo
+   de caixa das minhas contas bancarias, para saber dia a dia se o saldo
+   bancario esta batendo com a movimentação") — mesma lógica/critério do Mês
+   a Mês acima (só Pago/Recebido), só que quebrado por dia em vez de mês, e
+   limitado a um mês por vez (selecionável no próprio modal) pra não virar
+   uma tabela de 300+ linhas. Saldo Inicial do mês vem de
+   bancosCalcularSaldoReal() até o último dia do mês anterior — mesma função
+   já usada pro Saldo Real "de hoje" na tabela principal. Em mês corrente,
+   não mostra dias futuros (sem lançamento possível ainda). -- */
+function bancosListaMesesDisponiveis() {
+  const hoje = new Date();
+  const mesAtualStr = hoje.toISOString().slice(0, 7);
+  const meses = [];
+  let cursor = BANCOS_DATA_REFERENCIA_SALDO_INICIAL.slice(0, 7);
+  while (cursor <= mesAtualStr) {
+    meses.push(cursor);
+    const [ano, mes] = cursor.split('-').map(Number);
+    const prox = new Date(ano, mes, 1);
+    cursor = prox.toISOString().slice(0, 7);
+  }
+  return meses;
+}
+function bancosCalcularHistoricoDiario(banco, empresa, despesas, receitas, saldoInicial, mesStr) {
+  const [ano, mes] = mesStr.split('-').map(Number);
+  const primeiroDia = new Date(ano, mes - 1, 1);
+  const ultimoDiaDoMes = new Date(ano, mes, 0);
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const ultimoDia = ultimoDiaDoMes < hoje ? ultimoDiaDoMes : hoje;
+  if (ultimoDia < primeiroDia) return []; // mês inteiramente no futuro (não deve ocorrer, lista de meses não vai além do atual)
+  const diaAnteriorISO = new Date(ano, mes - 1, 0).toISOString().slice(0, 10); // último dia do mês anterior ao de mesStr
+  const saldoInicioMes = bancosCalcularSaldoReal(banco, empresa, despesas, receitas, saldoInicial, diaAnteriorISO);
+
+  const despesasPagas = (despesas || []).filter(d => normalizarEmpresa(d.Empresa) === normalizarEmpresa(empresa) && (d.Banco || '').trim() === banco && d.Status === 'Pago' && d.DataPagamento);
+  const receitasRecebidas = (receitas || []).filter(r => normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa) && (r.Banco || '').trim() === banco && r.Status === 'Recebido' && r.DataRecebimento);
+
+  const dias = [];
+  let saldoCorrente = saldoInicioMes;
+  const cursor = new Date(primeiroDia);
+  while (cursor <= ultimoDia) {
+    const diaISO = cursor.toISOString().slice(0, 10);
+    const entradas = receitasRecebidas.filter(r => r.DataRecebimento === diaISO).reduce((s, r) => s + bancosValorLiquidoReceita(r), 0);
+    const saidas = despesasPagas.filter(d => d.DataPagamento === diaISO).reduce((s, d) => s + (Number(d.Valor) || 0), 0);
+    const saldoInicialDia = saldoCorrente;
+    saldoCorrente = saldoCorrente + entradas - saidas;
+    dias.push({ dia: diaISO, saldoInicialDia, entradas, saidas, saldoFinalDia: saldoCorrente });
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dias;
+}
+async function bancosVerDiaADia(banco, empresa, mesForcar) {
+  showSyncStatus('Carregando dia a dia...');
+  const [despesas, receitas] = await Promise.all([
+    dbLerSeguro('Despesas').catch(() => []),
+    dbLerSeguro('Receitas').catch(() => []),
+  ]);
+  const b = (_bancosCache || []).find(x => x.Title === banco && normalizarEmpresa(x.Empresa) === normalizarEmpresa(empresa));
+  const saldoInicial = b ? (Number(b.SaldoInicial) || 0) : 0;
+  const meses = bancosListaMesesDisponiveis();
+  const mesSelecionado = (mesForcar && meses.includes(mesForcar)) ? mesForcar : meses[meses.length - 1];
+  const dias = bancosCalcularHistoricoDiario(banco, empresa, despesas, receitas, saldoInicial, mesSelecionado);
+  showSyncStatus('', 'ok', 1);
+
+  const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const fmtDia = (d) => new Date(d + 'T00:00:00').toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' });
+  const fmtMesLabel = (m) => { const [a, mm] = m.split('-'); return new Date(Number(a), Number(mm) - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }); };
+
+  const existente = document.getElementById('bancosDiaADiaModal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'bancosDiaADiaModal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:640px">
+      <div class="modal-header">
+        <h2>📆 Dia a dia — 🏦 ${banco}</h2>
+        <div class="modal-close" onclick="document.getElementById('bancosDiaADiaModal').remove()">✕</div>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+          <select onchange="bancosVerDiaADia('${banco.replace(/'/g, "\\'")}','${empresa}', this.value)" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);text-transform:capitalize;cursor:pointer">
+            ${meses.map(m => `<option value="${m}" ${m === mesSelecionado ? 'selected' : ''} style="text-transform:capitalize">${fmtMesLabel(m)}</option>`).join('')}
+          </select>
+          <div style="font-size:.7rem;color:var(--text-muted);text-align:right;max-width:280px">Bata a coluna "Saldo Final" com o extrato real do banco naquele dia — dias sem lançamento ficam esmaecidos.</div>
+        </div>
+        <div style="overflow-x:auto;max-height:460px;overflow-y:auto"><table class="data-table data-table-compact"><thead><tr>
+          <th>Dia</th><th style="text-align:right">Saldo Inicial</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo Final</th>
+        </tr></thead><tbody>
+          ${!dias.length ? '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:16px">Nenhum dia disponível nesse mês ainda.</td></tr>' : dias.map(d => `<tr style="${(d.entradas > 0 || d.saidas > 0) ? '' : 'opacity:.5'}">
+            <td style="text-transform:capitalize">${fmtDia(d.dia)}</td>
+            <td style="text-align:right">${fmt(d.saldoInicialDia)}</td>
+            <td style="text-align:right;color:var(--green-main)">${d.entradas > 0 ? fmt(d.entradas) : '—'}</td>
+            <td style="text-align:right;color:#dc3545">${d.saidas > 0 ? fmt(d.saidas) : '—'}</td>
+            <td style="text-align:right;font-weight:700;color:${d.saldoFinalDia >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(d.saldoFinalDia)}</td>
+          </tr>`).join('')}
+        </tbody></table></div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
 /* -- Gráfico de Movimentação Bancária, por empresa (pedido em 25/09/2026: "em
    cada empresa um gráfico de movimentação bancária"). Um gráfico por empresa
    (a tela já é filtrada por empresa via as abas 🏢), com um seletor
@@ -40773,6 +40871,7 @@ async function bancosResumoCarregar() {
             <td style="padding:8px;text-align:right;white-space:nowrap">
               <span style="font-weight:700;color:${saldoReal >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(saldoReal)}</span>
               <button class="btn-secondary" style="padding:2px 6px;font-size:.68rem;margin-left:6px" title="Ver evolução mês a mês dessa conta" onclick="bancosVerMesAMes('${b.Title.replace(/'/g, "\\'")}','${empresa}')">📅</button>
+              <button class="btn-secondary" style="padding:2px 6px;font-size:.68rem;margin-left:4px" title="Ver saldo dia a dia dessa conta" onclick="bancosVerDiaADia('${b.Title.replace(/'/g, "\\'")}','${empresa}')">📆</button>
             </td>
             <td style="padding:8px;text-align:right;white-space:nowrap;${v.aplicado > 0 ? 'font-weight:700;color:#6f42c1' : 'color:var(--text-muted)'}">
               ${v.aplicado > 0 ? fmt(v.aplicado) : '—'}
@@ -40788,7 +40887,7 @@ async function bancosResumoCarregar() {
     </table>
     <div style="font-size:.7rem;color:var(--text-muted);margin-top:10px">
       Saldo (mov.) = movimentação líquida (Receitas − Despesas) de TODOS os lançamentos daquele Banco, mesmo os ainda pendentes — inclui Transferências entre Contas.
-      Saldo Real = Saldo Inicial (em 01/01/2026) + só o que já foi de fato Pago/Recebido até hoje (usa o valor líquido das Receitas, descontando retenções) — clique no 📅 pra ver a evolução mês a mês.
+      Saldo Real = Saldo Inicial (em 01/01/2026) + só o que já foi de fato Pago/Recebido até hoje (usa o valor líquido das Receitas, descontando retenções) — clique no 📅 pra ver a evolução mês a mês, ou no 📆 pra ver dia a dia (pra bater com o extrato do banco).
       Aplicado = total em Aplicações Financeiras lançadas nessa conta, descontando Resgates já feitos.
     </div>`;
   } catch (e) {
