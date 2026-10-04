@@ -10326,7 +10326,7 @@ const RD_SUBCATEGORIAS_DESPESAS = {
   'Seguros': ['Seguro Contratual','Seguro de Obras','Seguro de Responsabilidade Civil','Seguro de Equipamentos','Seguro Empresarial','Outros Seguros'],
   'Reembolsos': ['Alimentação','Transporte','Compras Emergenciais','Despesas Operacionais','Outros Reembolsos'],
   'CAPEX': ['Aquisição de Veículos','Equipamentos de Campo','Máquinas','Equipamentos de Medição','Computadores','Servidores/Infraestrutura de TI','Equipamentos de Tecnologia','Software de Uso Permanente','Móveis e Equipamentos','Imóveis/Terrenos','Obras e Melhorias (Ativo)','Projetos Estratégicos Capitalizáveis','Outros (CAPEX)'],
-  'Aplicações Financeiras': ['CDB','Tesouro Direto','Fundos de Investimento','Renda Fixa','Outras Aplicações'],
+  'Aplicações Financeiras': ['CDB','Tesouro Direto','Fundos de Investimento','Renda Fixa','Capital Social / Cota-Capital (Cooperativa)','Outras Aplicações'],
   'Consórcios': ['Parcela do Consórcio','Lance','Taxa de Administração','Fundo de Reserva','Seguro do Consórcio','Contemplação','Aquisição do Bem','Outros (Consórcios)'],
   'Financiamentos': ['Amortização de Financiamento','Quitação de Financiamento','Outros (Financiamentos)'],
   'Patrimônio/Sócios': ['Retirada de Sócios','Distribuição de Lucros','Pró-labore','Plano de Saúde dos Sócios','Outros (Patrimônio/Sócios)'],
@@ -10907,6 +10907,7 @@ const LANCAMENTO_TIPOS = [
   { tipo: 'capex', label: 'CAPEX', emoji: '🟠', cor: '#fd7e14' },
   { tipo: 'aplicacao', label: 'Aplicação', emoji: '🟣', cor: '#6f42c1' },
   { tipo: 'resgate', label: 'Resgate', emoji: '🟡', cor: '#b8960c' },
+  { tipo: 'rendimento', label: 'Rendimento', emoji: '📈', cor: '#17a2b8' },
 ];
 function lancamentoAbrirSeletor() {
   const existente = document.getElementById('lancamento-seletor-overlay');
@@ -10975,6 +10976,8 @@ function lancamentoAbrirFormDoTipo(tipo) {
     aplicacaoAbrirModal();
   } else if (tipo === 'resgate') {
     resgateAbrirModal();
+  } else if (tipo === 'rendimento') {
+    rendimentoAbrirModal();
   }
 }
 function lancamentoRetomarPendente() {
@@ -11326,13 +11329,14 @@ async function aplicacaoCarregarHistorico() {
     itens = itens.slice(0, 60);
     window._aplHistoricoPorId = {}; itens.forEach(i => { window._aplHistoricoPorId[i.Id] = i; });
     if (!itens.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:8px 0">Nenhuma aplicação registrada ainda para essa empresa.</div>'; return; }
-    el.innerHTML = '<table class="data-table" style="font-size:.76rem"><thead><tr><th>Data</th><th>Tipo</th><th>Conta</th><th>Valor</th><th>Responsável</th><th></th></tr></thead><tbody>' +
+    el.innerHTML = '<table class="data-table" style="font-size:.76rem"><thead><tr><th>Data</th><th>Tipo</th><th>Conta</th><th>CC/Veículo</th><th>Valor</th><th>Responsável</th><th></th></tr></thead><tbody>' +
       itens.map(i => {
         const dataFmt = i.DataLancamento ? new Date(i.DataLancamento+'T00:00:00').toLocaleDateString('pt-BR') : '—';
         return `<tr>
           <td style="white-space:nowrap">${dataFmt}</td>
           <td>${i.Subcategoria||'—'}</td>
           <td>${i.Banco||'—'}</td>
+          <td style="color:var(--text-muted);font-size:.72rem">${i.CentroCusto||'—'}</td>
           <td style="font-weight:700;white-space:nowrap">${fmtR(i.Valor)}</td>
           <td style="color:var(--text-muted)">${i.ResponsavelLancamento||'—'}</td>
           <td><button type="button" style="border:none;background:transparent;cursor:pointer;font-size:.85rem" title="Editar" onclick="aplicacaoAbrirForm(${i.Id})">✏️</button></td>
@@ -11346,6 +11350,10 @@ function aplicacaoEmpresaAlterada() {
   const empresa = (document.getElementById('apl_empresa')||{}).value || RD_EMPRESAS[0];
   const sel = document.getElementById('apl_banco');
   if (sel) sel.innerHTML = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
+  // Centro de Custo/Veículo (cofrinho) muda de lista ao trocar de empresa —
+  // mesma fonte/formato (datalist) já usado em Transferências (_trfOpcoesCCDatalist).
+  const ccDl = document.getElementById('apl_cc_dl'); if (ccDl) ccDl.innerHTML = _trfOpcoesCCDatalist(empresa);
+  const ccInp = document.getElementById('apl_cc'); if (ccInp) ccInp.value = '';
 }
 // Formulário de Nova Aplicação (sem id) ou Editar Aplicação (com id) — abre
 // como uma segunda janela por cima da tela de histórico (aplicacaoAbrirModal),
@@ -11391,6 +11399,17 @@ async function aplicacaoAbrirForm(id) {
             <select id="apl_banco">${bancosDaEmpresa(empresa).map(b => `<option ${registro && registro.Banco===b?'selected':''}>${b}</option>`).join('')}</select>
           </div>
         </div>
+        <!-- Centro de Custo/Veículo (cofrinho) — pedido 04/10/2026: "tenho
+             cofrinhos para cada centro de custo veicular... como fazemos os
+             investimentos nesses cofrinhos e ou retirada deles". Opcional —
+             uma Aplicação Financeira comum (sem vínculo a um veículo
+             específico) continua válida em branco. Mesmo datalist
+             (_trfOpcoesCCDatalist) já usado em Transferências. -->
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Centro de Custo / Veículo (cofrinho, opcional)</label>
+          <input type="text" id="apl_cc" list="apl_cc_dl" placeholder="Ex: Frota - Saveiro..." autocomplete="off" value="${registro ? (registro.CentroCusto||'').replace(/"/g,'&quot;') : ''}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem">
+          <datalist id="apl_cc_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
+        </div>
         <div class="form-row">
           <div class="form-group"><label>Valor</label><input type="text" id="apl_valor" placeholder="R$ 0,00" value="${registro ? rdNumeroParaMoeda(registro.Valor||0) : ''}" oninput="rdFormatarMoedaInput(this)"></div>
           <div class="form-group"><label>Data</label><input type="date" id="apl_data" value="${registro ? registro.DataLancamento : new Date().toISOString().slice(0,10)}"></div>
@@ -11419,6 +11438,7 @@ async function aplicacaoSalvar() {
   const data = (document.getElementById('apl_data')||{}).value || '';
   const responsavel = (document.getElementById('apl_responsavel')||{}).value || '';
   const obs = (document.getElementById('apl_obs')||{}).value.trim() || '';
+  const cc = (document.getElementById('apl_cc')||{}).value.trim() || '';
 
   if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
   if (!subcategoria) { showToast('⚠️ Selecione o tipo de aplicação.'); return; }
@@ -11439,7 +11459,7 @@ async function aplicacaoSalvar() {
     Modalidade: 'fornecedor', NaturezaEconomica: rdNaturezaDeSubcategoriaDespesas(subcategoria),
     TipoMovimentacao: rdTipoMovimentacao(categoria, subcategoria),
     ServicoId: '', ServicoDesc: '', Fornecedor: 'Aplicação Financeira', Beneficiario: '', Veiculo: '',
-    CentroCusto: '', Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
+    CentroCusto: cc, Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: data, Banco: banco,
     NumMedicao: '', Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
     Vencimento: data, Valor: valor, ValorTotal: valor, Status: 'Pago',
@@ -11462,7 +11482,7 @@ async function aplicacaoSalvar() {
 
 function resgateAbrirModal() {
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  const subs = ['Resgate de CDB','Resgate de Fundos','Resgate de Renda Fixa','Outros Resgates'];
+  const subs = ['Resgate de CDB','Resgate de Fundos','Resgate de Renda Fixa','Resgate de Capital Social / Cota-Capital','Outros Resgates'];
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'resgateModal';
@@ -11490,6 +11510,11 @@ function resgateAbrirModal() {
             <select id="rsg_banco">${bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('')}</select>
           </div>
         </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Centro de Custo / Veículo (cofrinho, opcional)</label>
+          <input type="text" id="rsg_cc" list="rsg_cc_dl" placeholder="Ex: Frota - Saveiro..." autocomplete="off" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem">
+          <datalist id="rsg_cc_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
+        </div>
         <div class="form-row">
           <div class="form-group"><label>Valor</label><input type="text" id="rsg_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)"></div>
           <div class="form-group"><label>Data</label><input type="date" id="rsg_data" value="${new Date().toISOString().slice(0,10)}"></div>
@@ -11514,6 +11539,8 @@ function resgateEmpresaAlterada() {
   const empresa = (document.getElementById('rsg_empresa')||{}).value || RD_EMPRESAS[0];
   const sel = document.getElementById('rsg_banco');
   if (sel) sel.innerHTML = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
+  const ccDl = document.getElementById('rsg_cc_dl'); if (ccDl) ccDl.innerHTML = _trfOpcoesCCDatalist(empresa);
+  const ccInp = document.getElementById('rsg_cc'); if (ccInp) ccInp.value = '';
 }
 async function resgateSalvar() {
   const empresa = (document.getElementById('rsg_empresa')||{}).value || '';
@@ -11523,6 +11550,7 @@ async function resgateSalvar() {
   const data = (document.getElementById('rsg_data')||{}).value || '';
   const responsavel = (document.getElementById('rsg_responsavel')||{}).value || '';
   const obs = (document.getElementById('rsg_obs')||{}).value.trim() || '';
+  const cc = (document.getElementById('rsg_cc')||{}).value.trim() || '';
 
   if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
   if (!subcategoria) { showToast('⚠️ Selecione o tipo de resgate.'); return; }
@@ -11541,7 +11569,7 @@ async function resgateSalvar() {
     DataEmissao: data, Categoria: categoria, Subcategoria: subcategoria,
     NaturezaEconomica: rcNaturezaDeSubcategoria(subcategoria), TipoMovimentacao: rcTipoMovimentacao(categoria, subcategoria),
     Cliente: 'Resgate de Aplicação Financeira', Descricao: descricao,
-    CentroCusto: '', Valor: valor, DataPrevista: data, FormaRecebimento: 'Transferência',
+    CentroCusto: cc, Valor: valor, DataPrevista: data, FormaRecebimento: 'Transferência',
     ResponsavelLancamento: responsavel, DataRecebimento: data, Banco: banco,
     Status: 'Recebido', NumMedicao: '', NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
     OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
@@ -11553,6 +11581,120 @@ async function resgateSalvar() {
   showSyncStatus(ok ? 'Resgate registrado!' : 'Falha ao registrar', ok ? 'ok' : 'err', ok?3000:5000);
   if (ok) {
     const modalEl = document.getElementById('resgateModal'); if (modalEl) modalEl.remove();
+    if (typeof carregarReceitas === 'function') carregarReceitas();
+  }
+}
+
+/* -- Rendimento de Aplicação (pedido 04/10/2026, em cima do pedido dos
+   cofrinhos por veículo): botão dedicado, separado do Resgate — o rendimento
+   do mês que o banco credita DENTRO do próprio investimento (juros do
+   cofrinho do Mercado Pago, juros/sobras da conta capital do Sicoob) não é
+   uma retirada de capital, então o Tiago preferiu uma tela própria em vez de
+   reaproveitar o botão de Resgate com só uma subcategoria diferente. Mesma
+   mecânica de dados (lança uma Receita, categoria "Receitas Financeiras",
+   mesmo impacto no saldo bancário de bancosCalcularSaldoReal), só a UI/
+   rótulo que são dedicados. -- */
+function rendimentoAbrirModal() {
+  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  const subs = ['Rendimento de CDB','Rendimento de Fundos de Investimento','Rendimento de Renda Fixa','Rendimento de Cofrinho (Mercado Pago)','Rendimento/Sobras de Capital Social (Cota-Capital)','Outros Rendimentos'];
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'rendimentoModal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:520px">
+      <div class="modal-header">
+        <h2>📈 Rendimento de Aplicação</h2>
+        <div class="modal-close" onclick="document.getElementById('rendimentoModal').remove()">✕</div>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Lança o rendimento/juros do mês creditado dentro do próprio investimento — Receita (entrada) na conta escolhida, categoria "Receitas Financeiras". Diferente de um Resgate: não é devolução do valor aplicado, é o ganho que o banco/cooperativa creditou.</div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Empresa</label>
+          <select id="rnd_empresa" onchange="rendimentoEmpresaAlterada()">
+            ${RD_EMPRESAS.map(e => `<option value="${e}" ${e===empresa?'selected':''}>${e}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tipo de Rendimento</label>
+            <select id="rnd_subcategoria">${subs.map(s => `<option>${s}</option>`).join('')}</select>
+          </div>
+          <div class="form-group">
+            <label>Conta (onde rendeu)</label>
+            <select id="rnd_banco">${bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Centro de Custo / Veículo (cofrinho, opcional)</label>
+          <input type="text" id="rnd_cc" list="rnd_cc_dl" placeholder="Ex: Frota - Saveiro..." autocomplete="off" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem">
+          <datalist id="rnd_cc_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Valor</label><input type="text" id="rnd_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)"></div>
+          <div class="form-group"><label>Data</label><input type="date" id="rnd_data" value="${new Date().toISOString().slice(0,10)}"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Responsável pelo Lançamento</label>
+          <select id="rnd_responsavel">
+            <option value="">Selecione...</option>
+            ${_servicosResponsaveisDiretoria().map(r => `<option>${r}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="rnd_obs" placeholder="Ex: rendimento de setembro..."></div>
+        <div style="display:flex;gap:10px">
+          <button class="btn-primary" onclick="rendimentoSalvar()">✅ Registrar Rendimento</button>
+          <button class="btn-secondary" onclick="document.getElementById('rendimentoModal').remove()">Cancelar</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+function rendimentoEmpresaAlterada() {
+  const empresa = (document.getElementById('rnd_empresa')||{}).value || RD_EMPRESAS[0];
+  const sel = document.getElementById('rnd_banco');
+  if (sel) sel.innerHTML = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
+  const ccDl = document.getElementById('rnd_cc_dl'); if (ccDl) ccDl.innerHTML = _trfOpcoesCCDatalist(empresa);
+  const ccInp = document.getElementById('rnd_cc'); if (ccInp) ccInp.value = '';
+}
+async function rendimentoSalvar() {
+  const empresa = (document.getElementById('rnd_empresa')||{}).value || '';
+  const subcategoria = (document.getElementById('rnd_subcategoria')||{}).value || '';
+  const banco = (document.getElementById('rnd_banco')||{}).value || '';
+  const valor = rdMoedaParaNumero((document.getElementById('rnd_valor')||{}).value);
+  const data = (document.getElementById('rnd_data')||{}).value || '';
+  const responsavel = (document.getElementById('rnd_responsavel')||{}).value || '';
+  const obs = (document.getElementById('rnd_obs')||{}).value.trim() || '';
+  const cc = (document.getElementById('rnd_cc')||{}).value.trim() || '';
+
+  if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
+  if (!subcategoria) { showToast('⚠️ Selecione o tipo de rendimento.'); return; }
+  if (!banco) { showToast('⚠️ Selecione a conta.'); return; }
+  if (!valor) { showToast('⚠️ Informe o valor.'); return; }
+  if (!data) { showToast('⚠️ Informe a data.'); return; }
+  if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
+
+  const categoria = 'Receitas Financeiras';
+  const lancadoPor = window._currentUser ? window._currentUser.name : '';
+  const descricao = obs || ('Rendimento · ' + subcategoria);
+
+  showSyncStatus('Registrando rendimento...');
+  const dados = {
+    Title: 'Rendimento · ' + subcategoria + ' · ' + data,
+    DataEmissao: data, Categoria: categoria, Subcategoria: subcategoria,
+    NaturezaEconomica: rcNaturezaDeSubcategoria(subcategoria), TipoMovimentacao: rcTipoMovimentacao(categoria, subcategoria),
+    Cliente: 'Rendimento de Aplicação Financeira', Descricao: descricao,
+    CentroCusto: cc, Valor: valor, DataPrevista: data, FormaRecebimento: 'Transferência',
+    ResponsavelLancamento: responsavel, DataRecebimento: data, Banco: banco,
+    Status: 'Recebido', NumMedicao: '', NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
+    OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
+    ValorLiquido: valor, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
+    LancadoPor: lancadoPor,
+  };
+  const ok = await dbInserir('Receitas', dados);
+  showToast(ok ? '✅ Rendimento registrado!' : ('❌ Falha ao registrar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  showSyncStatus(ok ? 'Rendimento registrado!' : 'Falha ao registrar', ok ? 'ok' : 'err', ok?3000:5000);
+  if (ok) {
+    const modalEl = document.getElementById('rendimentoModal'); if (modalEl) modalEl.remove();
     if (typeof carregarReceitas === 'function') carregarReceitas();
   }
 }
@@ -12004,6 +12146,8 @@ function renderReceitasTab() {
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._clientesOrigin='receitas';navigate('clientes')">🧑‍💼 Clientes</button>
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._rdTab='despesas';navigate('receitas_despesas')">💸 Despesas</button>
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="aplicacaoAbrirModal()">💰 Aplicação Financeira</button>
+        <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="resgateAbrirModal()">🟡 Resgate de Aplicação</button>
+        <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="rendimentoAbrirModal()">📈 Rendimento de Aplicação</button>
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._rdTab='transferencias';navigate('receitas_despesas')">🔁 Transferência</button>
         <button class="btn-primary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="lancamentoAbrirSeletor()">➕ Novo Lançamento</button>
       </div>
@@ -14281,6 +14425,8 @@ function renderDespesasTab() {
              Aplicação Financeira, igual Receitas já tinha (o modal em si só
              mudou de conteúdo — ganhou histórico + edição — não de lugar). -->
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="aplicacaoAbrirModal()">💰 Aplicação Financeira</button>
+        <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="resgateAbrirModal()">🟡 Resgate de Aplicação</button>
+        <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="rendimentoAbrirModal()">📈 Rendimento de Aplicação</button>
         <!-- "➕ Novo Lançamento" voltou pra aqui (pedido 03/10/2026: "pode voltar
              para onde ele ficava mesmo anteriormente") — tinha ido pro card
              Calendário Mensal (ver rdRenderResumoMensal) mais cedo no mesmo dia,
@@ -41545,22 +41691,34 @@ async function bancosResumoCarregar() {
    antiga, num modal só de leitura. -- */
 async function bancosVerHistoricoAplicacoes(banco, empresa) {
   showSyncStatus('Carregando histórico...');
-  const [despesas, receitas] = await Promise.all([
+  const [despesas, receitas, saldosIniciais] = await Promise.all([
     dbLerSeguro('Despesas').catch(() => []),
     dbLerSeguro('Receitas').catch(() => []),
+    dbLerSeguro('AplicacoesSaldoInicial').catch(() => []),
   ]);
   const itens = [];
   (despesas || []).forEach(d => {
     if (normalizarEmpresa(d.Empresa) !== empresa) return;
     if ((d.Banco || '').trim() !== banco) return;
     if (d.Categoria !== 'Aplicações Financeiras') return;
-    itens.push({ id: d.Id, origem: 'despesa', tipo: 'Aplicação', emoji: '🟣', cor: '#6f42c1', data: d.DataLancamento || d.Vencimento || '', subcategoria: d.Subcategoria, valor: Number(d.Valor) || 0, responsavel: d.ResponsavelLancamento, desc: d.Descricao || d.Fornecedor });
+    itens.push({ id: d.Id, origem: 'despesa', tipo: 'Aplicação', emoji: '🟣', cor: '#6f42c1', data: d.DataLancamento || d.Vencimento || '', subcategoria: d.Subcategoria, valor: Number(d.Valor) || 0, responsavel: d.ResponsavelLancamento, desc: d.Descricao || d.Fornecedor, centroCusto: d.CentroCusto || '' });
   });
   (receitas || []).forEach(r => {
     if (normalizarEmpresa(r.Empresa) !== empresa) return;
     if ((r.Banco || '').trim() !== banco) return;
-    if (r.Categoria !== 'Receitas Financeiras' || !/^Resgate/.test(r.Subcategoria || '')) return;
-    itens.push({ id: r.Id, origem: 'receita', tipo: 'Resgate', emoji: '🟡', cor: '#b8960c', data: r.DataEmissao || r.DataPrevista || '', subcategoria: r.Subcategoria, valor: Number(r.Valor) || 0, responsavel: r.ResponsavelLancamento, desc: r.Descricao || r.Cliente });
+    if (r.Categoria !== 'Receitas Financeiras') return;
+    // "Rendimento..." tem botão/subcategoria própria (pedido 04/10/2026, em
+    // cima do pedido dos cofrinhos) — é um ganho creditado dentro do
+    // investimento, não uma devolução de capital, por isso emoji/cor/coluna
+    // separados de Resgate. Qualquer outra subcategoria de Receitas
+    // Financeiras que não comece com "Resgate"/"Rendimento" fica de fora
+    // (ex: Transferência entre Contas classificada como receita financeira
+    // por engano não entraria aqui mesmo).
+    if (/^Rendimento/.test(r.Subcategoria || '')) {
+      itens.push({ id: r.Id, origem: 'receita', tipo: 'Rendimento', emoji: '📈', cor: '#17a2b8', data: r.DataEmissao || r.DataPrevista || '', subcategoria: r.Subcategoria, valor: Number(r.Valor) || 0, responsavel: r.ResponsavelLancamento, desc: r.Descricao || r.Cliente, centroCusto: r.CentroCusto || '' });
+    } else if (/^Resgate/.test(r.Subcategoria || '')) {
+      itens.push({ id: r.Id, origem: 'receita', tipo: 'Resgate', emoji: '🟡', cor: '#b8960c', data: r.DataEmissao || r.DataPrevista || '', subcategoria: r.Subcategoria, valor: Number(r.Valor) || 0, responsavel: r.ResponsavelLancamento, desc: r.Descricao || r.Cliente, centroCusto: r.CentroCusto || '' });
+    }
   });
   itens.sort((a, b) => (b.data || '').localeCompare(a.data || ''));
   showSyncStatus('', 'ok', 1);
@@ -41571,25 +41729,146 @@ async function bancosVerHistoricoAplicacoes(banco, empresa) {
   window._bancosHistoricoBanco = banco;
   window._bancosHistoricoEmpresa = empresa;
 
+  // Saldo agrupado por Centro de Custo/Veículo (pedido 04/10/2026: "tipo
+  // dentro do mercado pago tenho cofrinhos para cada centro de custo
+  // veicular... como fazemos... os investimentos nesses cofrinhos e ou
+  // retirada deles") — SEMPRE sobre a lista completa (não respeita a busca),
+  // pra sempre dar pra ver de relance quanto cada cofrinho/veículo tem.
+  // "inicial" (pedido 04/10/2026: "quero colocar uma opção de valor
+  // investido em 31/12/2025") é o saldo que já estava aplicado ANTES de
+  // começar a lançar Aplicação/Resgate/Rendimento aqui — tabela própria
+  // AplicacoesSaldoInicial (1 registro por Empresa+Banco+CentroCusto, cria
+  // sozinha no OneDrive na 1ª gravação, mesmo padrão de tabela nova), soma
+  // no saldo final mas não entra como um "item" na lista/busca abaixo.
+  const fmtCC = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const porCC = {};
+  const chaveDe = (cc) => cc || '— Sem Centro de Custo —';
+  itens.forEach(i => {
+    const chave = chaveDe(i.centroCusto);
+    porCC[chave] = porCC[chave] || { aplicado: 0, resgatado: 0, rendimento: 0, inicial: 0, centroCustoReal: i.centroCusto || '' };
+    if (i.tipo === 'Aplicação') porCC[chave].aplicado += i.valor;
+    else if (i.tipo === 'Rendimento') porCC[chave].rendimento += i.valor;
+    else porCC[chave].resgatado += i.valor;
+  });
+  (saldosIniciais || []).forEach(s => {
+    if (normalizarEmpresa(s.Empresa) !== empresa) return;
+    if ((s.Banco || '').trim() !== banco) return;
+    const chave = chaveDe(s.CentroCusto);
+    porCC[chave] = porCC[chave] || { aplicado: 0, resgatado: 0, rendimento: 0, inicial: 0, centroCustoReal: s.CentroCusto || '' };
+    porCC[chave].inicial += Number(s.Valor) || 0;
+    porCC[chave].inicialId = s.Id;
+    porCC[chave].inicialData = s.Data || '2025-12-31';
+    porCC[chave].inicialObs = s.Observacao || '';
+  });
+  const ccOrdenados = Object.keys(porCC).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  const escJs = (v) => String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const resumoCCHtml = ccOrdenados.length ? `
+    <div style="margin-bottom:14px">
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">💼 Saldo por Centro de Custo / Veículo (cofrinho)</div>
+      <div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Centro de Custo</th><th style="text-align:right">Saldo Inicial (31/12/25)</th><th style="text-align:right">🟣 Aplicado</th><th style="text-align:right">📈 Rendimento</th><th style="text-align:right">🟡 Resgatado</th><th style="text-align:right">Saldo</th><th></th></tr></thead><tbody>
+        ${ccOrdenados.map(cc => { const v = porCC[cc]; const saldo = v.inicial + v.aplicado + v.rendimento - v.resgatado; return `<tr>
+          <td>${cc}</td>
+          <td style="text-align:right;color:var(--text-muted)">${v.inicial > 0 ? fmtCC(v.inicial) : '—'}</td>
+          <td style="text-align:right;color:#6f42c1">${v.aplicado > 0 ? fmtCC(v.aplicado) : '—'}</td>
+          <td style="text-align:right;color:#17a2b8">${v.rendimento > 0 ? fmtCC(v.rendimento) : '—'}</td>
+          <td style="text-align:right;color:#b8960c">${v.resgatado > 0 ? fmtCC(v.resgatado) : '—'}</td>
+          <td style="text-align:right;font-weight:700;color:${saldo >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmtCC(saldo)}</td>
+          <td><button class="btn-secondary" style="padding:2px 7px;font-size:.66rem" title="Definir/editar valor investido em 31/12/2025" onclick="bancosSaldoInicialAbrir('${escJs(banco)}','${escJs(empresa)}','${escJs(v.centroCustoReal)}',${v.inicial || 0},'${escJs(v.inicialData || '2025-12-31')}','${escJs(v.inicialObs || '')}',${v.inicialId || 'null'})">✏️</button></td>
+        </tr>`; }).join('')}
+      </tbody></table></div>
+      <button class="btn-secondary" style="margin-top:8px;font-size:.74rem;padding:6px 10px" onclick="bancosSaldoInicialAbrir('${escJs(banco)}','${escJs(empresa)}',null)">➕ Definir valor investido em 31/12/2025 (novo Centro de Custo)</button>
+    </div>` : `
+    <div style="margin-bottom:14px">
+      <button class="btn-secondary" style="font-size:.74rem;padding:6px 10px" onclick="bancosSaldoInicialAbrir('${escJs(banco)}','${escJs(empresa)}',null)">➕ Definir valor investido em 31/12/2025</button>
+    </div>`;
+
   const existente = document.getElementById('bancosHistoricoModal'); if (existente) existente.remove();
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'bancosHistoricoModal';
   modal.innerHTML = `
-    <div class="modal-box" style="max-width:720px">
+    <div class="modal-box" style="max-width:800px">
       <div class="modal-header">
-        <h2>📜 Aplicações/Resgates — 🏦 ${banco}</h2>
+        <h2>📜 Aplicações / Resgates / Rendimentos — 🏦 ${banco}</h2>
         <div class="modal-close" onclick="document.getElementById('bancosHistoricoModal').remove()">✕</div>
       </div>
       <div class="modal-body">
-        ${!itens.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Nenhuma aplicação ou resgate lançado nessa conta ainda.</div>' : `
-        <input type="text" id="bancosHistoricoBusca" placeholder="🔍 Buscar por tipo, subcategoria, responsável, descrição ou valor..." autocomplete="off" oninput="bancosHistoricoAplicacoesFiltrar()" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);margin-bottom:10px;box-sizing:border-box">
-        <div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Data</th><th>Tipo</th><th>Subcategoria</th><th style="text-align:right">Valor</th><th>Responsável</th><th>Descrição</th><th></th></tr></thead><tbody id="bancosHistoricoTbody"></tbody></table></div>
+        ${resumoCCHtml}
+        ${!itens.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Nenhuma aplicação, resgate ou rendimento lançado nessa conta ainda.</div>' : `
+        <input type="text" id="bancosHistoricoBusca" placeholder="🔍 Buscar por tipo, subcategoria, centro de custo, responsável, descrição ou valor..." autocomplete="off" oninput="bancosHistoricoAplicacoesFiltrar()" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);margin-bottom:10px;box-sizing:border-box">
+        <div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Data</th><th>Tipo</th><th>Subcategoria</th><th>CC/Veículo</th><th style="text-align:right">Valor</th><th>Responsável</th><th>Descrição</th><th></th></tr></thead><tbody id="bancosHistoricoTbody"></tbody></table></div>
         <div id="bancosHistoricoTotais" style="display:flex;justify-content:space-between;gap:12px;margin-top:14px;font-size:.85rem;font-weight:700;flex-wrap:wrap"></div>`}
       </div>
     </div>`;
   document.body.appendChild(modal);
   if (itens.length) bancosHistoricoAplicacoesFiltrar();
+}
+/* -- Valor já investido em 31/12/2025 (pedido 04/10/2026), ponto de partida
+   do saldo de cada Centro de Custo/cofrinho — não é um lançamento de
+   Despesa/Receita, é um registro próprio (1 por Empresa+Banco+CentroCusto)
+   que só soma no cálculo do saldo mostrado em bancosVerHistoricoAplicacoes.
+   Reaproveita o padrão de upsert por combinação-chave (dedupe manual, já
+   usado em outros cadastros do app) em vez de UPDATE/INSERT direto. -- */
+function bancosSaldoInicialAbrir(banco, empresa, centroCustoFixo, valorAtual, dataAtual, obsAtual, idExistente) {
+  const existente = document.getElementById('bancosSaldoInicialModal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'bancosSaldoInicialModal';
+  modal.style.zIndex = '650';
+  const ccFixo = (centroCustoFixo !== null && centroCustoFixo !== undefined);
+  const escAttr = (v) => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  const escJs = (v) => String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:420px">
+      <div class="modal-header">
+        <h2>💰 Valor Investido em 31/12/2025</h2>
+        <div class="modal-close" onclick="document.getElementById('bancosSaldoInicialModal').remove()">✕</div>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:.76rem;color:var(--text-muted);margin-bottom:12px">Saldo que já estava aplicado nessa conta/cofrinho antes de começar a registrar Aplicações, Resgates e Rendimentos aqui no sistema — serve de ponto de partida no cálculo do saldo atual, ao lado do que for lançado depois.</div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Centro de Custo / Veículo</label>
+          ${ccFixo
+            ? `<input type="text" value="${escAttr(centroCustoFixo || '— Sem Centro de Custo —')}" disabled style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;background:var(--surface2);color:var(--text-muted)">`
+            : `<input type="text" id="bsi_cc" list="bsi_cc_dl" placeholder="Deixe em branco se não for de um veículo específico" autocomplete="off" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem">
+               <datalist id="bsi_cc_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>`}
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Valor investido</label><input type="text" id="bsi_valor" placeholder="R$ 0,00" value="${valorAtual ? rdNumeroParaMoeda(valorAtual) : ''}" oninput="rdFormatarMoedaInput(this)"></div>
+          <div class="form-group"><label>Data</label><input type="date" id="bsi_data" value="${dataAtual || '2025-12-31'}"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="bsi_obs" value="${escAttr(obsAtual || '')}" placeholder="Ex: saldo migrado da planilha..."></div>
+        <div style="display:flex;gap:10px">
+          <button class="btn-primary" onclick="bancosSaldoInicialSalvar('${escJs(banco)}','${escJs(empresa)}',${ccFixo ? `'${escJs(centroCustoFixo || '')}'` : 'null'},${idExistente || 'null'})">💾 Salvar</button>
+          <button class="btn-secondary" onclick="document.getElementById('bancosSaldoInicialModal').remove()">Cancelar</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+async function bancosSaldoInicialSalvar(banco, empresa, centroCustoFixo, idExistente) {
+  const cc = (centroCustoFixo !== null) ? centroCustoFixo : ((document.getElementById('bsi_cc')||{}).value.trim() || '');
+  const valor = rdMoedaParaNumero((document.getElementById('bsi_valor')||{}).value);
+  const data = (document.getElementById('bsi_data')||{}).value || '2025-12-31';
+  const obs = (document.getElementById('bsi_obs')||{}).value.trim() || '';
+  if (!valor) { showToast('⚠️ Informe o valor investido.'); return; }
+  const atualizadoPor = window._currentUser ? window._currentUser.name : '';
+  showSyncStatus('Salvando...');
+  const dados = { Empresa: empresa, Banco: banco, CentroCusto: cc, Valor: valor, Data: data, Observacao: obs, AtualizadoPor: atualizadoPor };
+  let ok;
+  if (idExistente) {
+    ok = await dbAtualizar('AplicacoesSaldoInicial', idExistente, dados);
+  } else {
+    const todos = await dbLerSeguro('AplicacoesSaldoInicial').catch(() => []);
+    const jaExiste = (todos || []).find(r => normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa) && (r.Banco || '').trim() === banco && (r.CentroCusto || '') === cc);
+    ok = jaExiste ? await dbAtualizar('AplicacoesSaldoInicial', jaExiste.Id, dados) : await dbInserir('AplicacoesSaldoInicial', dados);
+  }
+  showToast(ok ? '✅ Valor investido salvo!' : ('❌ Falha ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok ? 2000 : 4000);
+  if (ok) {
+    const modalEl = document.getElementById('bancosSaldoInicialModal'); if (modalEl) modalEl.remove();
+    bancosVerHistoricoAplicacoes(banco, empresa);
+  }
 }
 /* -- Busca (inclusive por valor) + edição direta de um item do histórico de
    Aplicações/Resgates (pedido 04/10/2026: "tem que ter opção de editar
@@ -41611,7 +41890,7 @@ function bancosHistoricoAplicacoesFiltrar() {
   if (busca) {
     itens = itens.filter(i => {
       const valorSemMilhar = i.valor.toFixed(2).replace('.', ',');
-      const alvo = [i.tipo, i.subcategoria, i.responsavel, i.desc, fmt(i.valor), valorSemMilhar].join(' ').toLowerCase();
+      const alvo = [i.tipo, i.subcategoria, i.centroCusto, i.responsavel, i.desc, fmt(i.valor), valorSemMilhar].join(' ').toLowerCase();
       return alvo.includes(busca);
     });
   }
@@ -41619,15 +41898,17 @@ function bancosHistoricoAplicacoesFiltrar() {
     <td>${fmtData(i.data)}</td>
     <td style="color:${i.cor};font-weight:700;white-space:nowrap">${i.emoji} ${i.tipo}</td>
     <td>${i.subcategoria || '—'}</td>
+    <td style="color:var(--text-muted);font-size:.72rem">${i.centroCusto || '—'}</td>
     <td style="text-align:right;font-weight:700;white-space:nowrap">${fmt(i.valor)}</td>
     <td>${i.responsavel || '—'}</td>
     <td style="color:var(--text-muted)">${i.desc || ''}</td>
     <td style="white-space:nowrap"><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="bancosHistoricoEditarItem('${i.origem}',${i.id})">✏️ Editar</button></td>
-  </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:16px">Nenhum item encontrado com esse filtro.</td></tr>';
+  </tr>`).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:16px">Nenhum item encontrado com esse filtro.</td></tr>';
   if (totaisEl) {
     const totalAplicado = itens.filter(i => i.tipo === 'Aplicação').reduce((s, i) => s + i.valor, 0);
+    const totalRendimento = itens.filter(i => i.tipo === 'Rendimento').reduce((s, i) => s + i.valor, 0);
     const totalResgatado = itens.filter(i => i.tipo === 'Resgate').reduce((s, i) => s + i.valor, 0);
-    totaisEl.innerHTML = `<span style="color:#6f42c1">🟣 Total aplicado${busca ? ' (filtro)' : ''}: ${fmt(totalAplicado)}</span><span style="color:#b8960c">🟡 Total resgatado${busca ? ' (filtro)' : ''}: ${fmt(totalResgatado)}</span>`;
+    totaisEl.innerHTML = `<span style="color:#6f42c1">🟣 Total aplicado${busca ? ' (filtro)' : ''}: ${fmt(totalAplicado)}</span><span style="color:#17a2b8">📈 Total rendimento${busca ? ' (filtro)' : ''}: ${fmt(totalRendimento)}</span><span style="color:#b8960c">🟡 Total resgatado${busca ? ' (filtro)' : ''}: ${fmt(totalResgatado)}</span>`;
   }
 }
 function bancosHistoricoEditarItem(origem, id) {
