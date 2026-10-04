@@ -12587,6 +12587,16 @@ async function salvarReceita() {
   carregarReceitas();
 }
 
+/* -- Data "de período" de uma Receita pra fins de filtro de mês/dia/ano
+   (pedido 04/10/2026) — Recebimento quando já recebida, senão Previsão,
+   senão Emissão como último recurso (registros muito antigos/incompletos
+   sem nenhuma das duas). Mesmo espírito do campoDataPeriodo já usado em
+   Despesas, só que aqui a escolha é por registro (via Status), não por
+   sub-aba. -- */
+function _rcDataPeriodo(r) {
+  if (r.Status === 'Recebido' && r.DataRecebimento) return r.DataRecebimento;
+  return r.DataPrevista || r.DataEmissao || '';
+}
 async function carregarReceitas() {
   const el = document.getElementById('lista-receitas');
   if (!el) return;
@@ -12653,9 +12663,18 @@ async function carregarReceitas() {
     const fAnoConsolidado = window._rcFiltroAnoConsolidado || '';
 
     // "📊 Consolidado Anual" (pedido 04/10/2026) — mesma prioridade de Despesas:
-    // mês específico primeiro, senão o ano inteiro escolhido no navegador ‹ ano ›.
-    if (fMes) items = items.filter(r => (r.DataEmissao||'').slice(0,7) === fMes);
-    else if (fAnoConsolidado) items = items.filter(r => (r.DataEmissao||'').slice(0,4) === fAnoConsolidado);
+    // dia específico > mês específico > ano consolidado. A partir de
+    // 04/10/2026 (pedido do Tiago, depois de uma receita emitida em
+    // dez/2025 mas prevista/recebida em jan/2026 não aparecer ao filtrar
+    // Janeiro) o critério de "período" deixou de ser sempre a Data de
+    // Emissão: usa a Data de Recebimento quando já recebida, senão a
+    // Previsão, e só cai pra Emissão se nenhuma das duas existir — mesmo
+    // critério já usado no fluxo de caixa (Dia a Dia). O filtro separado
+    // "Mês de recebimento" (fMesReceb, regime de caixa p/ cálculo de
+    // imposto) continua igual, estritamente por Data de Recebimento.
+    if (fDia) items = items.filter(r => _rcDataPeriodo(r) === fDia);
+    else if (fMes) items = items.filter(r => (_rcDataPeriodo(r)||'').slice(0,7) === fMes);
+    else if (fAnoConsolidado) items = items.filter(r => (_rcDataPeriodo(r)||'').slice(0,4) === fAnoConsolidado);
     if (fMesReceb) items = items.filter(r => (r.DataRecebimento||'').slice(0,7) === fMesReceb);
     if (fCategoria) items = items.filter(r => r.Categoria === fCategoria);
     if (fBusca) items = items.filter(r => (r.Cliente||'').toLowerCase().includes(fBusca) || (r.Descricao||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca));
@@ -12688,7 +12707,7 @@ async function carregarReceitas() {
 
     const statusColor = (s) => s==='Recebido'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
     const avisoCorte = totalFiltradoQtd > 300 ? ` (exibindo os 300 mais recentes — a soma abaixo considera os ${totalFiltradoQtd} lançamentos do filtro)` : '';
-    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Emissão</th><th>Categoria</th><th>Cliente</th><th>CC</th><th>Previsão</th><th>Valor Total</th><th>Valor Líquido</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
+    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Emissão</th><th>Categoria</th><th>Cliente</th><th>CC</th><th>Previsão</th><th>Recebimento</th><th>Valor Total</th><th>Valor Líquido</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
         const valorLiquido = (i.ValorLiquido != null && i.ValorLiquido !== '') ? i.ValorLiquido : Math.max((i.Valor||0) - (i.ISSValorRetido||0) - (i.OutrasRetencoesValor||0), 0);
         const temRetencao = (i.ISSValorRetido||0) > 0 || (i.OutrasRetencoesValor||0) > 0;
@@ -12698,6 +12717,7 @@ async function carregarReceitas() {
           <td><strong>${i.Cliente||'—'}</strong>${i.Descricao?`<div style="font-size:.62rem;color:var(--text-muted)">${i.Descricao}</div>`:''}${i.NumeroNF?`<div style="font-size:.62rem;color:var(--blue)">🧾 NF ${i.NumeroNF}</div>`:''}</td>
           <td style="color:var(--text-muted)">${i.CentroCusto||'—'}${i.NumMedicao?`<div style="font-size:.6rem;color:var(--blue)">📋 BM ${i.NumMedicao}</div>`:''}</td>
           <td>${i.DataPrevista ? new Date(i.DataPrevista+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
+          <td>${i.DataRecebimento ? new Date(i.DataRecebimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td style="white-space:nowrap"><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></td>
           <td style="white-space:nowrap">R$ ${valorLiquido.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}${temRetencao?'<div style="font-size:.6rem;color:var(--text-muted)">c/ retenção</div>':''}</td>
           <td><span class="status-pill ${statusColor(i.Status)}">${rcStatusLabel(i.Status)||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário">🏦</span>':''}</td>
@@ -12709,7 +12729,7 @@ async function carregarReceitas() {
       // padrão de Despesas 03/10/2026) — soma TODOS os lançamentos que batem
       // com os filtros atuais, não só os até 300 exibidos.
       + `</tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">`
-      + `<td colspan="5" style="font-size:.78rem;text-align:right;padding:8px 10px">Total filtrado (${totalFiltradoQtd} lançamento${totalFiltradoQtd!==1?'s':''})${avisoCorte}:</td>`
+      + `<td colspan="6" style="font-size:.78rem;text-align:right;padding:8px 10px">Total filtrado (${totalFiltradoQtd} lançamento${totalFiltradoQtd!==1?'s':''})${avisoCorte}:</td>`
       + `<td style="font-size:.85rem;white-space:nowrap">R$ ${totalFiltradoValor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`
       + `<td colspan="4"></td>`
       + `</tr></tfoot></table></div>`;
@@ -12741,7 +12761,10 @@ function rcRenderResumoMensal(items) {
   const porMes = {};
   for (let m = 1; m <= 12; m++) porMes[m] = { total: 0, recebido: 0, vencido: 0, qtd: 0 };
   items.forEach(i => {
-    const chave = i.DataPrevista || i.DataEmissao || '';
+    // Mesmo critério de _rcDataPeriodo() usado no filtro principal (pedido
+    // 04/10/2026) — Recebimento > Previsão > Emissão — pro Calendário Mensal
+    // não discordar da lista de baixo sobre em qual mês cada receita cai.
+    const chave = _rcDataPeriodo(i);
     if (chave.slice(0,4) !== String(ano)) return;
     const m = parseInt(chave.slice(5,7), 10);
     if (!m || !porMes[m]) return;
