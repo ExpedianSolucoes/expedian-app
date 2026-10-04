@@ -40937,12 +40937,17 @@ function _bancosConferenciaDoMes(cache, banco, empresa, mesStr) {
 }
 async function bancosVerDiaADia(banco, empresa, mesForcar) {
   showSyncStatus('Carregando dia a dia...');
+  if (!_bancosCache || !_bancosCache.length) await carregarBancosLista();
   const [despesas, receitas, conciliacoes] = await Promise.all([
     dbLerSeguro('Despesas').catch(() => []),
     dbLerSeguro('Receitas').catch(() => []),
     dbLerSeguro('ConciliacoesMensais').catch(() => []),
   ]);
   window._bancosConciliacoesCache = conciliacoes || [];
+  // Lista de contas da empresa, pra dar pra trocar de conta sem fechar o
+  // modal (pedido 04/10/2026: "tem como colocar... a opção de lista
+  // suspensa para trocar de conta tbm").
+  const bancosDaEmpresaLista = (_bancosCache || []).filter(x => normalizarEmpresa(x.Empresa) === normalizarEmpresa(empresa)).slice().sort((a, b) => (a.Title || '').localeCompare(b.Title || '', 'pt-BR'));
   const b = (_bancosCache || []).find(x => x.Title === banco && normalizarEmpresa(x.Empresa) === normalizarEmpresa(empresa));
   const saldoInicial = b ? (Number(b.SaldoInicial) || 0) : 0;
   const meses = bancosListaMesesDisponiveis();
@@ -40983,6 +40988,9 @@ async function bancosVerDiaADia(banco, empresa, mesForcar) {
         ${seloHtml}
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <select onchange="bancosVerDiaADia(this.value,'${empresa}','${mesSelecionado}')" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);cursor:pointer">
+              ${bancosDaEmpresaLista.map(x => `<option value="${x.Title.replace(/"/g, '&quot;')}" ${x.Title === banco ? 'selected' : ''}>🏦 ${x.Title}</option>`).join('')}
+            </select>
             <select onchange="bancosVerDiaADia('${bancoEsc}','${empresa}', this.value)" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);text-transform:capitalize;cursor:pointer">
               ${meses.map(m => `<option value="${m}" ${m === mesSelecionado ? 'selected' : ''} style="text-transform:capitalize">${_bancosConferenciaDoMes(window._bancosConciliacoesCache, banco, empresa, m) ? '✅ ' : ''}${fmtMesLabel(m)}</option>`).join('')}
             </select>
@@ -41127,6 +41135,149 @@ async function bancosDiaADiaExportarPDF(banco, empresa, mesStr) {
     <table><thead><tr><th>Dia</th><th style="text-align:right">Saldo Inicial</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo do Dia</th><th style="text-align:right">Saldo Final</th></tr></thead>
     <tbody>${linhaInicial}${linhasDias || '<tr><td colspan="6" style="text-align:center;color:#999">Nenhum dia disponível nesse mês.</td></tr>'}</tbody></table>
     <div class="total">Saldo final do mês: ${fmt(saldoFinalDoMes)}</div>
+    <div class="footer"><div class="footer-inner">${emp.razaoSocial} &nbsp;·&nbsp; Gerado em ${new Date().toLocaleDateString('pt-BR')}</div></div>
+  </body></html>`;
+  const win = window.open('', '_blank');
+  if (win) { win.document.write(htmlContent); win.document.close(); }
+  else showToast('⚠️ Permita pop-ups para visualizar o relatório.');
+}
+/* -- Resumo Mensal consolidado de TODAS as contas da empresa (pedido
+   04/10/2026: "um resumo mensal... tipo um consolidado de entradas e saidas
+   e saldo, mostrando todas as contas da empresa naquele mes, e que de para
+   exportar") — uma linha por conta bancária (Saldo Inicial do mês/Entradas/
+   Saídas/Saldo Final, mesmo critério Pago/Recebido do Dia a Dia/Mês a Mês)
+   + linha de Total somando todas as contas, pro mês escolhido. -- */
+function bancosCalcularResumoMensalPorConta(empresa, despesas, receitas, mesStr) {
+  const [ano, mes] = mesStr.split('-').map(Number);
+  const diaAnteriorISO = new Date(ano, mes - 1, 0).toISOString().slice(0, 10); // último dia do mês anterior
+  const bancosDaLista = (_bancosCache || []).filter(b => normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa)).slice().sort((a, b) => (a.Title || '').localeCompare(b.Title || '', 'pt-BR'));
+  return bancosDaLista.map(b => {
+    const saldoInicioMes = bancosCalcularSaldoReal(b.Title, empresa, despesas, receitas, b.SaldoInicial, diaAnteriorISO);
+    const entradas = (receitas || []).filter(r => normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa) && (r.Banco || '').trim() === b.Title && r.Status === 'Recebido' && (r.DataRecebimento || '').slice(0, 7) === mesStr).reduce((s, r) => s + bancosValorLiquidoReceita(r), 0);
+    const saidas = (despesas || []).filter(d => normalizarEmpresa(d.Empresa) === normalizarEmpresa(empresa) && (d.Banco || '').trim() === b.Title && d.Status === 'Pago' && (d.DataPagamento || '').slice(0, 7) === mesStr).reduce((s, d) => s + (Number(d.Valor) || 0), 0);
+    return { banco: b.Title, saldoInicioMes, entradas, saidas, saldoFinalMes: saldoInicioMes + entradas - saidas };
+  });
+}
+async function bancosVerResumoMensal(empresa, mesForcar) {
+  showSyncStatus('Carregando resumo mensal...');
+  if (!_bancosCache || !_bancosCache.length) await carregarBancosLista();
+  const [despesas, receitas] = await Promise.all([
+    dbLerSeguro('Despesas').catch(() => []),
+    dbLerSeguro('Receitas').catch(() => []),
+  ]);
+  const meses = bancosListaMesesDisponiveis();
+  const mesSelecionado = (mesForcar && meses.includes(mesForcar)) ? mesForcar : meses[meses.length - 1];
+  const linhas = bancosCalcularResumoMensalPorConta(empresa, despesas, receitas, mesSelecionado);
+  showSyncStatus('', 'ok', 1);
+
+  const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const fmtMesLabel = (m) => { const [a, mm] = m.split('-'); return new Date(Number(a), Number(mm) - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }); };
+  const totais = linhas.reduce((t, l) => ({ saldoInicioMes: t.saldoInicioMes + l.saldoInicioMes, entradas: t.entradas + l.entradas, saidas: t.saidas + l.saidas, saldoFinalMes: t.saldoFinalMes + l.saldoFinalMes }), { saldoInicioMes: 0, entradas: 0, saidas: 0, saldoFinalMes: 0 });
+
+  const existente = document.getElementById('bancosResumoMensalModal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'bancosResumoMensalModal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:900px;width:94vw;max-height:92vh">
+      <div class="modal-header">
+        <h2>📊 Resumo Mensal — ${empresa}</h2>
+        <div style="display:flex;gap:6px">
+          <div class="modal-close" title="Tela cheia" onclick="modalToggleFullscreen(this)">⛶</div>
+          <div class="modal-close" onclick="document.getElementById('bancosResumoMensalModal').remove()">✕</div>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <select onchange="bancosVerResumoMensal('${empresa}', this.value)" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);text-transform:capitalize;cursor:pointer">
+              ${meses.map(m => `<option value="${m}" ${m === mesSelecionado ? 'selected' : ''} style="text-transform:capitalize">${fmtMesLabel(m)}</option>`).join('')}
+            </select>
+            <button class="btn-secondary" style="font-size:.78rem;padding:6px 12px" onclick="bancosResumoMensalExportarPDF('${empresa}','${mesSelecionado}')">📄 Exportar PDF</button>
+          </div>
+          <div style="font-size:.7rem;color:var(--text-muted);text-align:right;max-width:280px">Consolidado de todas as contas de ${empresa} — só Despesas Pagas e Receitas Recebidas entram no saldo.</div>
+        </div>
+        ${!linhas.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Nenhuma conta cadastrada pra essa empresa ainda.</div>' : `
+        <div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr>
+          <th>Conta</th><th style="text-align:right">Saldo Inicial do Mês</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo Final do Mês</th><th></th>
+        </tr></thead><tbody>
+          ${linhas.map(l => `<tr>
+            <td style="font-weight:600">🏦 ${l.banco}</td>
+            <td style="text-align:right">${fmt(l.saldoInicioMes)}</td>
+            <td style="text-align:right;color:var(--green-main)">${l.entradas > 0 ? fmt(l.entradas) : '—'}</td>
+            <td style="text-align:right;color:#dc3545">${l.saidas > 0 ? fmt(l.saidas) : '—'}</td>
+            <td style="text-align:right;font-weight:700;color:${l.saldoFinalMes >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(l.saldoFinalMes)}</td>
+            <td style="text-align:center"><button class="btn-secondary" style="padding:3px 7px;font-size:.68rem" title="Ver dia a dia dessa conta" onclick="document.getElementById('bancosResumoMensalModal').remove();bancosVerDiaADia('${l.banco.replace(/'/g, "\\'")}','${empresa}','${mesSelecionado}')">📆</button></td>
+          </tr>`).join('')}
+        </tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
+          <td>Total — ${linhas.length} conta${linhas.length === 1 ? '' : 's'}</td>
+          <td style="text-align:right">${fmt(totais.saldoInicioMes)}</td>
+          <td style="text-align:right;color:var(--green-main)">${totais.entradas > 0 ? fmt(totais.entradas) : '—'}</td>
+          <td style="text-align:right;color:#dc3545">${totais.saidas > 0 ? fmt(totais.saidas) : '—'}</td>
+          <td style="text-align:right;color:${totais.saldoFinalMes >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(totais.saldoFinalMes)}</td>
+          <td></td>
+        </tr></tfoot></table></div>`}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+async function bancosResumoMensalExportarPDF(empresa, mesStr) {
+  showToast('🔄 Gerando relatório... aguarde.');
+  if (!_bancosCache || !_bancosCache.length) await carregarBancosLista();
+  const [despesas, receitas] = await Promise.all([
+    dbLerSeguro('Despesas').catch(() => []),
+    dbLerSeguro('Receitas').catch(() => []),
+  ]);
+  const linhas = bancosCalcularResumoMensalPorConta(empresa, despesas, receitas, mesStr);
+  const totais = linhas.reduce((t, l) => ({ saldoInicioMes: t.saldoInicioMes + l.saldoInicioMes, entradas: t.entradas + l.entradas, saidas: t.saidas + l.saidas, saldoFinalMes: t.saldoFinalMes + l.saldoFinalMes }), { saldoInicioMes: 0, entradas: 0, saidas: 0, saldoFinalMes: 0 });
+
+  const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const fmtMesLabel = (m) => { const [a, mm] = m.split('-'); return new Date(Number(a), Number(mm) - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }); };
+  const emp = CONC_EMPRESA_DADOS[empresa] || CONC_EMPRESA_DADOS['Expedian'];
+  const nomeArquivo = ('Resumo Mensal - ' + empresa + ' - ' + fmtMesLabel(mesStr)).replace(/[\\/:*?"<>|]/g, '');
+
+  const linhasHtml = linhas.map(l => `<tr>
+    <td>🏦 ${l.banco}</td>
+    <td style="text-align:right">${fmt(l.saldoInicioMes)}</td>
+    <td style="text-align:right">${l.entradas > 0 ? fmt(l.entradas) : '—'}</td>
+    <td style="text-align:right">${l.saidas > 0 ? fmt(l.saidas) : '—'}</td>
+    <td style="text-align:right;font-weight:700">${fmt(l.saldoFinalMes)}</td>
+  </tr>`).join('');
+
+  const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${nomeArquivo}</title>
+  <style>
+    @page { size: A4; margin: 15mm 12mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { font-family: Arial, sans-serif; font-size: 10.5pt; color: #222; min-height: 100vh; display: flex; flex-direction: column; }
+    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid ${emp.cor}; padding-bottom: 14px; margin-bottom: 18px; }
+    .header .empresa { text-align: right; font-size: 8.5pt; color: #555; line-height: 1.5; }
+    .titulo { font-size: 16pt; font-weight: 900; color: ${emp.cor}; margin-bottom: 4px; text-transform: capitalize; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; }
+    th { background: ${emp.cor}; color: #fff; padding: 8px; text-align: left; font-size: 9pt; }
+    td { padding: 6px 8px; border-bottom: 1px solid #ddd; font-size: 9.5pt; }
+    tfoot td { border-top: 2px solid #999; border-bottom: none; font-weight: 900; }
+    .total { text-align: right; font-size: 12pt; font-weight: 900; margin-top: 10px; }
+    .footer { margin-top: auto; padding-top: 24px; }
+    .footer-inner { border-top: 1px solid #ccc; padding-top: 10px; text-align: center; font-size: 8pt; color: #777; }
+    @media print { .no-print { display: none; } }
+  </style></head>
+  <body>
+    <div class="header">
+      <div>${concLogoOuNomeHtml(emp)}</div>
+      <div class="empresa">
+        <b>${emp.razaoSocial}</b><br>${emp.cnpj}<br>${emp.endereco}<br>${emp.telefone}${emp.email ? ' · ' + emp.email : ''}
+      </div>
+    </div>
+    <div class="titulo">Resumo Mensal das Contas — ${fmtMesLabel(mesStr)}</div>
+    <div style="font-size:9.5pt;color:#555;margin-bottom:14px">Empresa: <b>${empresa}</b> &nbsp;·&nbsp; Consolidado de todas as contas bancárias &nbsp;·&nbsp; Só Despesas Pagas e Receitas Recebidas entram no saldo.</div>
+    <table><thead><tr><th>Conta</th><th style="text-align:right">Saldo Inicial do Mês</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo Final do Mês</th></tr></thead>
+    <tbody>${linhasHtml || '<tr><td colspan="5" style="text-align:center;color:#999">Nenhuma conta cadastrada.</td></tr>'}</tbody>
+    <tfoot><tr><td>Total — ${linhas.length} conta${linhas.length === 1 ? '' : 's'}</td><td style="text-align:right">${fmt(totais.saldoInicioMes)}</td><td style="text-align:right">${totais.entradas > 0 ? fmt(totais.entradas) : '—'}</td><td style="text-align:right">${totais.saidas > 0 ? fmt(totais.saidas) : '—'}</td><td style="text-align:right">${fmt(totais.saldoFinalMes)}</td></tr></tfoot>
+    </table>
+    <div class="total">Saldo final consolidado do mês: ${fmt(totais.saldoFinalMes)}</div>
     <div class="footer"><div class="footer-inner">${emp.razaoSocial} &nbsp;·&nbsp; Gerado em ${new Date().toLocaleDateString('pt-BR')}</div></div>
   </body></html>`;
   const win = window.open('', '_blank');
@@ -41475,6 +41626,9 @@ function pageCadastroBancos() {
       <button class="btn-secondary" onclick="window._rdEmpresaAtiva='${empresa}';window._rdTab='conciliacao';navigate('receitas_despesas')">🏦 Conciliação Bancária</button>
       <button class="btn-secondary" onclick="window._rdEmpresaAtiva='${empresa}';window._rdTab='despesas';navigate('receitas_despesas')">💸 Despesas</button>
       <button class="btn-secondary" onclick="window._rdEmpresaAtiva='${empresa}';window._rdTab='receitas';navigate('receitas_despesas')">📈 Receitas</button>
+      <!-- Resumo Mensal: pedido 04/10/2026 — consolidado de entradas/saídas/
+           saldo de TODAS as contas da empresa num mês, exportável em PDF. -->
+      <button class="btn-secondary" onclick="bancosVerResumoMensal('${empresa}')">📊 Resumo Mensal</button>
       <button class="btn-secondary" onclick="navigate('dashboard_financeiro')">← Dashboard Financeiro</button>
     </div>
   </div>
