@@ -40901,22 +40901,47 @@ function modalToggleFullscreen(btn) {
   btn.textContent = cheia ? '🗗' : '⛶';
   btn.title = cheia ? 'Restaurar tamanho' : 'Tela cheia';
 }
+/* -- Selo de conferência mensal (pedido 04/10/2026: "algo pra mostrar que
+   essa conta foi conferida e validada no mes") — tabela nova
+   ConciliacoesMensais, uma linha por Empresa+Banco+Mes, guardando quem
+   conferiu, quando, e a diferença residual (se houve, tipo os R$0,03 de
+   arredondamento que o Tiago achou ao bater o Sicoob 5024 com o extrato).
+   Não afeta nenhum cálculo de saldo — é só um registro/selo de auditoria;
+   pra realmente zerar uma diferença de centavos no saldo, lança-se um
+   ajuste em Despesas/Receitas (ver orientação dada no chat). -- */
+function _bancosConferenciaDoMes(cache, banco, empresa, mesStr) {
+  return (cache || []).find(c => c.Banco === banco && normalizarEmpresa(c.Empresa) === normalizarEmpresa(empresa) && c.Mes === mesStr) || null;
+}
 async function bancosVerDiaADia(banco, empresa, mesForcar) {
   showSyncStatus('Carregando dia a dia...');
-  const [despesas, receitas] = await Promise.all([
+  const [despesas, receitas, conciliacoes] = await Promise.all([
     dbLerSeguro('Despesas').catch(() => []),
     dbLerSeguro('Receitas').catch(() => []),
+    dbLerSeguro('ConciliacoesMensais').catch(() => []),
   ]);
+  window._bancosConciliacoesCache = conciliacoes || [];
   const b = (_bancosCache || []).find(x => x.Title === banco && normalizarEmpresa(x.Empresa) === normalizarEmpresa(empresa));
   const saldoInicial = b ? (Number(b.SaldoInicial) || 0) : 0;
   const meses = bancosListaMesesDisponiveis();
   const mesSelecionado = (mesForcar && meses.includes(mesForcar)) ? mesForcar : meses[meses.length - 1];
   const dias = bancosCalcularHistoricoDiario(banco, empresa, despesas, receitas, saldoInicial, mesSelecionado);
+  const conferenciaAtual = _bancosConferenciaDoMes(window._bancosConciliacoesCache, banco, empresa, mesSelecionado);
   showSyncStatus('', 'ok', 1);
 
   const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   const fmtDia = (d) => new Date(d + 'T00:00:00').toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' });
   const fmtMesLabel = (m) => { const [a, mm] = m.split('-'); return new Date(Number(a), Number(mm) - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }); };
+
+  const bancoEsc = banco.replace(/'/g, "\\'");
+  const seloHtml = conferenciaAtual
+    ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;background:#e6f5ed;border:1px solid #b0d4be;border-radius:10px;padding:8px 12px;margin-bottom:10px">
+        <div style="font-size:.76rem;color:#1a7f4b"><strong>✅ Mês conferido e validado</strong> por ${conferenciaAtual.ConferidoPor || '—'} em ${conferenciaAtual.DataConferencia ? new Date(conferenciaAtual.DataConferencia+'T00:00:00').toLocaleDateString('pt-BR') : '—'}${conferenciaAtual.DiferencaCentavos ? ` — diferença residual aceita: R$ ${fmt(Math.abs(conferenciaAtual.DiferencaCentavos)).replace('R$','').trim()}` : ''}${conferenciaAtual.Observacao ? `<div style="color:var(--text-muted);font-size:.7rem;margin-top:2px">${conferenciaAtual.Observacao.replace(/</g,'&lt;')}</div>` : ''}</div>
+        <button class="btn-secondary" style="font-size:.72rem;padding:5px 10px;flex-shrink:0" onclick="bancosReabrirConferenciaMes(${conferenciaAtual.Id},'${bancoEsc}','${empresa}','${mesSelecionado}')">🔓 Reabrir conferência</button>
+      </div>`
+    : `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface2);border:1px dashed var(--border);border-radius:10px;padding:8px 12px;margin-bottom:10px">
+        <div style="font-size:.76rem;color:var(--text-muted)">Esse mês ainda não foi marcado como conferido com o extrato real do banco.</div>
+        <button class="btn-primary" style="font-size:.72rem;padding:5px 10px;flex-shrink:0" onclick="bancosAbrirMarcarConferencia('${bancoEsc}','${empresa}','${mesSelecionado}')">✅ Marcar mês como conferido</button>
+      </div>`;
 
   const existente = document.getElementById('bancosDiaADiaModal'); if (existente) existente.remove();
   const modal = document.createElement('div');
@@ -40932,16 +40957,17 @@ async function bancosVerDiaADia(banco, empresa, mesForcar) {
         </div>
       </div>
       <div class="modal-body">
+        ${seloHtml}
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <select onchange="bancosVerDiaADia('${banco.replace(/'/g, "\\'")}','${empresa}', this.value)" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);text-transform:capitalize;cursor:pointer">
-              ${meses.map(m => `<option value="${m}" ${m === mesSelecionado ? 'selected' : ''} style="text-transform:capitalize">${fmtMesLabel(m)}</option>`).join('')}
+            <select onchange="bancosVerDiaADia('${bancoEsc}','${empresa}', this.value)" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);text-transform:capitalize;cursor:pointer">
+              ${meses.map(m => `<option value="${m}" ${m === mesSelecionado ? 'selected' : ''} style="text-transform:capitalize">${_bancosConferenciaDoMes(window._bancosConciliacoesCache, banco, empresa, m) ? '✅ ' : ''}${fmtMesLabel(m)}</option>`).join('')}
             </select>
-            <button class="btn-secondary" style="font-size:.78rem;padding:6px 12px" onclick="bancosDiaADiaExportarPDF('${banco.replace(/'/g, "\\'")}','${empresa}','${mesSelecionado}')">📄 Exportar PDF</button>
+            <button class="btn-secondary" style="font-size:.78rem;padding:6px 12px" onclick="bancosDiaADiaExportarPDF('${bancoEsc}','${empresa}','${mesSelecionado}')">📄 Exportar PDF</button>
           </div>
           <div style="font-size:.7rem;color:var(--text-muted);text-align:right;max-width:280px">Bata a coluna "Saldo Final" com o extrato real do banco naquele dia — dias sem lançamento ficam esmaecidos.</div>
         </div>
-        <div style="overflow-x:auto;max-height:calc(94vh - 180px);overflow-y:auto"><table class="data-table data-table-compact"><thead><tr>
+        <div style="overflow-x:auto;max-height:calc(94vh - 230px);overflow-y:auto"><table class="data-table data-table-compact"><thead><tr>
           <th>Dia</th><th style="text-align:right">Saldo Inicial</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo do Dia</th><th style="text-align:right">Saldo Final</th>
         </tr></thead><tbody>
           ${mesSelecionado === meses[0] ? `<tr style="background:var(--surface2);font-weight:700">
@@ -40960,6 +40986,56 @@ async function bancosVerDiaADia(banco, empresa, mesForcar) {
       </div>
     </div>`;
   document.body.appendChild(modal);
+}
+/* -- Modal pequeno pra registrar o selo de conferência — diferença residual
+   aceita (ex: os R$0,03 de arredondamento) e observação livre são
+   opcionais. -- */
+function bancosAbrirMarcarConferencia(banco, empresa, mesStr) {
+  const existente = document.getElementById('bancos-conferencia-modal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.id = 'bancos-conferencia-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:440px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <div style="font-weight:800;font-size:1rem">✅ Marcar mês como conferido</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('bancos-conferencia-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Confirma que o saldo dia a dia deste banco já foi batido linha a linha com o extrato real. Não altera nenhum lançamento — é só um registro de auditoria. Se sobrou uma diferença residual pequena (de arredondamento), informe abaixo pra ficar documentado.</div>
+      <div class="form-group" style="margin-bottom:10px"><label>Diferença residual aceita (R$, opcional)</label><input type="text" id="bconf_diferenca" placeholder="Ex: 0,03" inputmode="decimal" oninput="rdFormatarMoedaInput(this)"></div>
+      <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="bconf_obs" placeholder="Ex: diferença de arredondamento, sem impacto relevante"></div>
+      <div style="display:flex;gap:10px">
+        <button class="btn-primary" style="flex:1" onclick="bancosConfirmarConferenciaMes('${banco.replace(/'/g,"\\'")}','${empresa}','${mesStr}')">✅ Confirmar conferência</button>
+        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('bancos-conferencia-modal').remove()">Cancelar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+async function bancosConfirmarConferenciaMes(banco, empresa, mesStr) {
+  const diferenca = rdMoedaParaNumero((document.getElementById('bconf_diferenca')||{}).value);
+  const observacao = ((document.getElementById('bconf_obs')||{}).value || '').trim();
+  const responsavel = window._currentUser ? window._currentUser.name : '';
+  const campos = {
+    Empresa: empresa, Banco: banco, Mes: mesStr,
+    ConferidoPor: responsavel, DataConferencia: new Date().toISOString().slice(0,10),
+    DiferencaCentavos: diferenca || 0, Observacao: observacao,
+  };
+  showSyncStatus('Registrando conferência...');
+  const existente = _bancosConferenciaDoMes(window._bancosConciliacoesCache, banco, empresa, mesStr);
+  const ok = existente ? await dbAtualizar('ConciliacoesMensais', existente.Id, campos) : await dbInserir('ConciliacoesMensais', campos);
+  showToast(ok ? '✅ Mês marcado como conferido!' : ('❌ Erro ao registrar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  showSyncStatus(ok ? 'Conferência registrada!' : 'Falha ao registrar', ok ? 'ok' : 'err', ok?3000:5000);
+  if (ok) {
+    const modalEl = document.getElementById('bancos-conferencia-modal'); if (modalEl) modalEl.remove();
+    bancosVerDiaADia(banco, empresa, mesStr);
+  }
+}
+async function bancosReabrirConferenciaMes(id, banco, empresa, mesStr) {
+  if (!confirm('Reabrir a conferência deste mês? O selo de "conferido" será removido — use se percebeu algum erro na checagem anterior.')) return;
+  showSyncStatus('Reabrindo conferência...');
+  const r = await dbRemover('ConciliacoesMensais', id);
+  showToast(r.ok ? '🔓 Conferência reaberta.' : '❌ Erro ao reabrir.');
+  if (r.ok) bancosVerDiaADia(banco, empresa, mesStr);
 }
 /* -- Exportar PDF do Dia a Dia (pedido 03/10/2026): mesmo padrão visual de
    tl3OrcGerarPDF/tl3NotaGerarPDF (header com logo/dados da empresa via
