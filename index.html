@@ -7762,12 +7762,12 @@ function aprovDivccRenderizar(pfx) {
   }
 }
 /* -- HTML reutilizável do bloco de rateio, embutido nos modais de aprovação. -- */
-function aprovDivccBlocoHtml(pfx) {
+function aprovDivccBlocoHtml(pfx, rotulo) {
   return `
     <div style="margin-top:4px;margin-bottom:10px">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:700;font-size:.82rem">
         <input type="checkbox" id="${pfx}_tem_divisaocc" onchange="aprovDivccToggle('${pfx}')" style="width:auto">
-        🧩 Ratear entre mais de um Centro de Custo/Medição
+        🧩 ${rotulo || 'Ratear entre mais de um Centro de Custo/Medição'}
       </label>
       <div id="${pfx}_divisaocc_editor" style="display:none;margin-top:10px;background:var(--surface2);border-radius:10px;padding:12px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
@@ -11013,6 +11013,18 @@ function _trfOpcoesCC(empresa) {
     return `<option value="${label}">${label}</option>`;
   }).join('');
 }
+/* -- Versão em <datalist> da lista acima (pedido 04/10/2026: "a lista
+   suspensa dos contratos tem ser pesquisável") — mesmas opções, servindo um
+   <input type="text" list="..."> em vez de um <select>, pra poder digitar e
+   filtrar em vez de rolar a lista inteira. Sem a opção "— Nenhum —": campo
+   vazio já significa nenhum Centro de Custo selecionado. -- */
+function _trfOpcoesCCDatalist(empresa) {
+  const ccs = (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && c.status === 'ativo');
+  return ccs.map(c => {
+    const label = (c.id + ' · ' + c.contrato).replace(/"/g, '&quot;');
+    return `<option value="${label}">`;
+  }).join('');
+}
 function transferenciaAbrirModal() {
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
   const modal = document.createElement('div');
@@ -11045,16 +11057,26 @@ function transferenciaAbrirModal() {
         <div class="form-row">
           <div class="form-group">
             <label>Centro de Custo de Origem (opcional)</label>
-            <select id="trf_cc_origem">${_trfOpcoesCC(empresa)}</select>
+            <input type="text" id="trf_cc_origem" list="trf_cc_origem_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off">
+            <datalist id="trf_cc_origem_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
           </div>
           <div class="form-group">
             <label>Centro de Custo de Destino (opcional)</label>
-            <select id="trf_cc_destino">${_trfOpcoesCC(empresa)}</select>
+            <input type="text" id="trf_cc_destino" list="trf_cc_destino_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off">
+            <datalist id="trf_cc_destino_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
           </div>
         </div>
         <div style="font-size:.68rem;color:var(--text-muted);margin:-8px 0 12px">☝️ Deixe os dois Centros de Custo em branco pra uma transferência bancária comum. Se a conta de origem e a de destino forem a mesma, escolha Centros de Custo diferentes — é o que caracteriza a movimentação.</div>
+        <!-- Rateio entre mais de um contrato/medição (pedido 04/10/2026: "tem
+             como colocar tbm nos filtros... a opção de ratear o valor em mais
+             de um contrato tbm e medição") — reaproveita o mesmo componente
+             genérico já usado nos modais de aprovação de Contas a
+             Pagar/Prestação de Contas (aprovDivcc*), um bloco pra cada lado
+             (origem/destino), já com busca pesquisável por contrato embutida. -->
+        ${aprovDivccBlocoHtml('trforigem', 'Ratear a Origem entre mais de um Contrato/Medição')}
+        ${aprovDivccBlocoHtml('trfdestino', 'Ratear o Destino entre mais de um Contrato/Medição')}
         <div class="form-row">
-          <div class="form-group"><label>Valor</label><input type="text" id="trf_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)"></div>
+          <div class="form-group"><label>Valor</label><input type="text" id="trf_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);trfSincronizarValorRateio()"></div>
           <div class="form-group"><label>Data</label><input type="date" id="trf_data" value="${new Date().toISOString().slice(0,10)}"></div>
         </div>
         <div class="form-group" style="margin-bottom:12px">
@@ -11072,6 +11094,24 @@ function transferenciaAbrirModal() {
       </div>
     </div>`;
   document.body.appendChild(modal);
+  // Estado do rateio (aprovDivcc*, ver bloco acima) — zera a cada abertura
+  // do modal pra não herdar sobra de uma transferência anterior.
+  window._aprovEmpresa_trforigem = empresa;
+  window._aprovEmpresa_trfdestino = empresa;
+  window._aprovDivisaoCC_trforigem = [];
+  window._aprovDivisaoCC_trfdestino = [];
+  window._aprovValorTotal_trforigem = 0;
+  window._aprovValorTotal_trfdestino = 0;
+}
+/* -- Mantém o "total a dividir" dos dois blocos de rateio (origem/destino)
+   em dia com o campo Valor da transferência, pra conferência da soma
+   funcionar igual nos modais de aprovação. -- */
+function trfSincronizarValorRateio() {
+  const valor = rdMoedaParaNumero((document.getElementById('trf_valor')||{}).value);
+  window._aprovValorTotal_trforigem = valor;
+  window._aprovValorTotal_trfdestino = valor;
+  aprovDivccRenderizar('trforigem');
+  aprovDivccRenderizar('trfdestino');
 }
 
 function transferenciaEmpresaAlterada() {
@@ -11079,17 +11119,30 @@ function transferenciaEmpresaAlterada() {
   const opts = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
   const origSel = document.getElementById('trf_origem'); if (origSel) origSel.innerHTML = opts;
   const destSel = document.getElementById('trf_destino'); if (destSel) destSel.innerHTML = opts;
-  const ccOpts = _trfOpcoesCC(empresa);
-  const ccOrigSel = document.getElementById('trf_cc_origem'); if (ccOrigSel) ccOrigSel.innerHTML = ccOpts;
-  const ccDestSel = document.getElementById('trf_cc_destino'); if (ccDestSel) ccDestSel.innerHTML = ccOpts;
+  const ccDlOpts = _trfOpcoesCCDatalist(empresa);
+  const ccOrigInp = document.getElementById('trf_cc_origem'); if (ccOrigInp) ccOrigInp.value = '';
+  const ccDestInp = document.getElementById('trf_cc_destino'); if (ccDestInp) ccDestInp.value = '';
+  const ccOrigDl = document.getElementById('trf_cc_origem_dl'); if (ccOrigDl) ccOrigDl.innerHTML = ccDlOpts;
+  const ccDestDl = document.getElementById('trf_cc_destino_dl'); if (ccDestDl) ccDestDl.innerHTML = ccDlOpts;
+  // Trocar de empresa invalida a divisão por Centro de Custo em andamento
+  // (contratos são por empresa) — reseta os dois blocos de rateio.
+  window._aprovEmpresa_trforigem = empresa;
+  window._aprovEmpresa_trfdestino = empresa;
+  window._aprovDivisaoCC_trforigem = [];
+  window._aprovDivisaoCC_trfdestino = [];
+  ['trforigem', 'trfdestino'].forEach(pfx => {
+    const chk = document.getElementById(pfx + '_tem_divisaocc');
+    if (chk) chk.checked = false;
+    aprovDivccToggle(pfx);
+  });
 }
 
 async function transferenciaSalvar() {
   const empresa = (document.getElementById('trf_empresa')||{}).value || '';
   const contaOrigem = (document.getElementById('trf_origem')||{}).value || '';
   const contaDestino = (document.getElementById('trf_destino')||{}).value || '';
-  const ccOrigem = (document.getElementById('trf_cc_origem')||{}).value || '';
-  const ccDestino = (document.getElementById('trf_cc_destino')||{}).value || '';
+  const ccOrigemCampo = (document.getElementById('trf_cc_origem')||{}).value || '';
+  const ccDestinoCampo = (document.getElementById('trf_cc_destino')||{}).value || '';
   const valor = rdMoedaParaNumero((document.getElementById('trf_valor')||{}).value);
   const data = (document.getElementById('trf_data')||{}).value || '';
   const responsavel = (document.getElementById('trf_responsavel')||{}).value || '';
@@ -11097,6 +11150,20 @@ async function transferenciaSalvar() {
 
   if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
   if (!contaOrigem || !contaDestino) { showToast('⚠️ Selecione as duas contas.'); return; }
+  if (!valor) { showToast('⚠️ Informe o valor da transferência.'); return; }
+
+  // Rateio entre mais de um contrato/medição (pedido 04/10/2026), um lado por
+  // vez — reaproveita a validação genérica já usada nos modais de aprovação
+  // (soma tem que bater com o Valor, mínimo 2 itens cada). Quando não está
+  // ativo em um lado, segue valendo o campo de Centro de Custo único daquele
+  // lado, como já era antes.
+  const rateioOrigem = aprovDivccValidarEColher('trforigem', valor);
+  if (!rateioOrigem.ok) return;
+  const rateioDestino = aprovDivccValidarEColher('trfdestino', valor);
+  if (!rateioDestino.ok) return;
+  const ccOrigem = rateioOrigem.ativo ? rateioOrigem.centroCusto : ccOrigemCampo;
+  const ccDestino = rateioDestino.ativo ? rateioDestino.centroCusto : ccDestinoCampo;
+
   // A conta pode ser a mesma dos dois lados (ex: só realocando entre Centros
   // de Custo, sem movimentação bancária real) — nesse caso os CCs precisam
   // ser diferentes, senão a "transferência" não muda nada. Pedido 26/09/2026,
@@ -11106,7 +11173,6 @@ async function transferenciaSalvar() {
     showToast(contaOrigem ? '⚠️ A conta de origem e a de destino são iguais — escolha Centros de Custo diferentes pra caracterizar a movimentação, ou contas diferentes.' : '⚠️ A conta de origem e a de destino precisam ser diferentes.');
     return;
   }
-  if (!valor) { showToast('⚠️ Informe o valor da transferência.'); return; }
   if (!data) { showToast('⚠️ Informe a data.'); return; }
   if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
 
@@ -11126,7 +11192,7 @@ async function transferenciaSalvar() {
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: data, Banco: contaOrigem,
     NumMedicao: '', Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
     Vencimento: data, Valor: valor, ValorTotal: valor, Status: 'Pago',
-    NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: [],
+    NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: rateioOrigem.ativo ? rateioOrigem.divisaoCC : [],
     LancadoPor: lancadoPor, Descricao: descricaoBase,
     TransferenciaId: transferenciaId, TransferenciaContraparte: contaDestino,
   };
@@ -11140,6 +11206,7 @@ async function transferenciaSalvar() {
     OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
     ValorLiquido: valor, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
     LancadoPor: lancadoPor, TransferenciaId: transferenciaId, TransferenciaContraparte: contaOrigem,
+    DivisaoCC: rateioDestino.ativo ? rateioDestino.divisaoCC : [],
   };
 
   const okDespesa = await dbInserir('Despesas', despesa);
