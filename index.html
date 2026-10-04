@@ -11025,15 +11025,30 @@ function _trfOpcoesCCDatalist(empresa) {
     return `<option value="${label}">`;
   }).join('');
 }
-function transferenciaAbrirModal() {
-  const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+/* -- "par" (opcional) vem de transferenciaEditar() — { id, saida, entrada },
+   o mesmo objeto montado em carregarTransferencias()/window._trfPares. Sem
+   "par", abre em branco pra lançar uma transferência nova (comportamento de
+   sempre). Pedido 04/10/2026: "tbm tem que colocar opção de editar em
+   transferencia". -- */
+function transferenciaAbrirModal(par) {
+  const editando = !!par;
+  const base = editando ? (par.saida || par.entrada || {}) : {};
+  const empresa = editando ? (base.Empresa || window._rdEmpresaAtiva || RD_EMPRESAS[0]) : (window._rdEmpresaAtiva || RD_EMPRESAS[0]);
+  const contaOrigemAtual = editando && par.saida ? (par.saida.Banco || '') : '';
+  const contaDestinoAtual = editando && par.entrada ? (par.entrada.Banco || '') : '';
+  const divisaoOrigemAtual = (editando && par.saida && par.saida.DivisaoCC && par.saida.DivisaoCC.length) ? par.saida.DivisaoCC : [];
+  const divisaoDestinoAtual = (editando && par.entrada && par.entrada.DivisaoCC && par.entrada.DivisaoCC.length) ? par.entrada.DivisaoCC : [];
+  const ccOrigemAtual = divisaoOrigemAtual.length ? '' : (editando && par.saida ? (par.saida.CentroCusto || '') : '');
+  const ccDestinoAtual = divisaoDestinoAtual.length ? '' : (editando && par.entrada ? (par.entrada.CentroCusto || '') : '');
+  const valorAtual = editando ? Number(base.Valor) || 0 : 0;
+  const dataAtual = editando ? (base.DataLancamento || base.DataEmissao || new Date().toISOString().slice(0,10)) : new Date().toISOString().slice(0,10);
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'transferenciaModal';
   modal.innerHTML = `
     <div class="modal-box" style="max-width:720px;width:94vw;max-height:92vh">
       <div class="modal-header">
-        <h2>🔁 Transferência / Movimentação</h2>
+        <h2>${editando ? '✏️ Editar Transferência / Movimentação' : '🔁 Transferência / Movimentação'}</h2>
         <div class="modal-close" onclick="document.getElementById('transferenciaModal').remove()">✕</div>
       </div>
       <div class="modal-body">
@@ -11047,22 +11062,22 @@ function transferenciaAbrirModal() {
         <div class="form-row">
           <div class="form-group">
             <label>Conta de Origem (sai)</label>
-            <select id="trf_origem">${bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('')}</select>
+            <select id="trf_origem">${bancosDaEmpresa(empresa).map(b => `<option ${b===contaOrigemAtual?'selected':''}>${b}</option>`).join('')}</select>
           </div>
           <div class="form-group">
             <label>Conta de Destino (entra)</label>
-            <select id="trf_destino">${bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('')}</select>
+            <select id="trf_destino">${bancosDaEmpresa(empresa).map(b => `<option ${b===contaDestinoAtual?'selected':''}>${b}</option>`).join('')}</select>
           </div>
         </div>
         <div class="form-row">
           <div class="form-group">
             <label>Centro de Custo de Origem (opcional)</label>
-            <input type="text" id="trf_cc_origem" list="trf_cc_origem_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off">
+            <input type="text" id="trf_cc_origem" list="trf_cc_origem_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off" value="${ccOrigemAtual.replace(/"/g,'&quot;')}">
             <datalist id="trf_cc_origem_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
           </div>
           <div class="form-group">
             <label>Centro de Custo de Destino (opcional)</label>
-            <input type="text" id="trf_cc_destino" list="trf_cc_destino_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off">
+            <input type="text" id="trf_cc_destino" list="trf_cc_destino_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off" value="${ccDestinoAtual.replace(/"/g,'&quot;')}">
             <datalist id="trf_cc_destino_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
           </div>
         </div>
@@ -11076,32 +11091,45 @@ function transferenciaAbrirModal() {
         ${aprovDivccBlocoHtml('trforigem', 'Ratear a Origem entre mais de um Contrato/Medição')}
         ${aprovDivccBlocoHtml('trfdestino', 'Ratear o Destino entre mais de um Contrato/Medição')}
         <div class="form-row">
-          <div class="form-group"><label>Valor</label><input type="text" id="trf_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);trfSincronizarValorRateio()"></div>
-          <div class="form-group"><label>Data</label><input type="date" id="trf_data" value="${new Date().toISOString().slice(0,10)}"></div>
+          <div class="form-group"><label>Valor</label><input type="text" id="trf_valor" placeholder="R$ 0,00" value="${editando ? rdNumeroParaMoeda(valorAtual) : ''}" oninput="rdFormatarMoedaInput(this);trfSincronizarValorRateio()"></div>
+          <div class="form-group"><label>Data</label><input type="date" id="trf_data" value="${dataAtual}"></div>
         </div>
         <div class="form-group" style="margin-bottom:12px">
           <label>Responsável pelo Lançamento</label>
           <select id="trf_responsavel">
             <option value="">Selecione...</option>
-            ${_servicosResponsaveisDiretoria().map(r => `<option>${r}</option>`).join('')}
+            ${_servicosResponsaveisDiretoria().map(r => `<option ${r===(base.ResponsavelLancamento||'')?'selected':''}>${r}</option>`).join('')}
           </select>
         </div>
-        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="trf_obs" placeholder="Ex: reforço de caixa, pagamento de fornecedor..."></div>
+        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="trf_obs" placeholder="Ex: reforço de caixa, pagamento de fornecedor..." value="${(base.Descricao||'').replace(/"/g,'&quot;')}"></div>
         <div style="display:flex;gap:10px">
-          <button class="btn-primary" onclick="transferenciaSalvar()">✅ Registrar</button>
+          <button class="btn-primary" onclick="transferenciaSalvar()">${editando ? '💾 Salvar Alterações' : '✅ Registrar'}</button>
           <button class="btn-secondary" onclick="document.getElementById('transferenciaModal').remove()">Cancelar</button>
         </div>
       </div>
     </div>`;
   document.body.appendChild(modal);
   // Estado do rateio (aprovDivcc*, ver bloco acima) — zera a cada abertura
-  // do modal pra não herdar sobra de uma transferência anterior.
+  // do modal pra não herdar sobra de uma transferência anterior, ou
+  // pré-carrega a divisão já existente quando estiver editando.
   window._aprovEmpresa_trforigem = empresa;
   window._aprovEmpresa_trfdestino = empresa;
-  window._aprovDivisaoCC_trforigem = [];
-  window._aprovDivisaoCC_trfdestino = [];
-  window._aprovValorTotal_trforigem = 0;
-  window._aprovValorTotal_trfdestino = 0;
+  window._aprovDivisaoCC_trforigem = JSON.parse(JSON.stringify(divisaoOrigemAtual));
+  window._aprovDivisaoCC_trfdestino = JSON.parse(JSON.stringify(divisaoDestinoAtual));
+  window._aprovValorTotal_trforigem = valorAtual;
+  window._aprovValorTotal_trfdestino = valorAtual;
+  // window._trfEditando guarda os Ids das duas pontas que já existem (uma
+  // transferência "órfã" — sem contrapartida — só tem um dos dois) pra
+  // transferenciaSalvar() saber que é um dbAtualizar, não um dbInserir.
+  window._trfEditando = editando ? { despesaId: par.saida ? par.saida.Id : null, receitaId: par.entrada ? par.entrada.Id : null } : null;
+  if (divisaoOrigemAtual.length) {
+    const chk = document.getElementById('trforigem_tem_divisaocc'); if (chk) chk.checked = true;
+    aprovDivccToggle('trforigem');
+  }
+  if (divisaoDestinoAtual.length) {
+    const chk = document.getElementById('trfdestino_tem_divisaocc'); if (chk) chk.checked = true;
+    aprovDivccToggle('trfdestino');
+  }
 }
 /* -- Mantém o "total a dividir" dos dois blocos de rateio (origem/destino)
    em dia com o campo Valor da transferência, pra conferência da soma
@@ -11177,11 +11205,12 @@ async function transferenciaSalvar() {
   if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
 
   const lancadoPor = window._currentUser ? window._currentUser.name : '';
+  const editando = window._trfEditando || null;
   const transferenciaId = 'TRF-' + Date.now();
   const movimentaCC = !!(ccOrigem || ccDestino);
   const descricaoBase = obs || ('Transferência de ' + contaOrigem + ' para ' + contaDestino + (movimentaCC ? ' (CC: ' + (ccOrigem || '—') + ' → ' + (ccDestino || '—') + ')' : ''));
 
-  showSyncStatus('Registrando transferência...');
+  showSyncStatus(editando ? 'Salvando alterações...' : 'Registrando transferência...');
 
   const despesa = {
     Title: 'Transferência para ' + contaDestino + ' · ' + data,
@@ -11209,14 +11238,30 @@ async function transferenciaSalvar() {
     DivisaoCC: rateioDestino.ativo ? rateioDestino.divisaoCC : [],
   };
 
-  const okDespesa = await dbInserir('Despesas', despesa);
-  const okReceita = await dbInserir('Receitas', receita);
+  // Editando (pedido 04/10/2026): atualiza só as pontas que já existiam —
+  // uma transferência "órfã" (sem contrapartida, ex: lançamento de consórcio
+  // classificado como transferência) tem só uma ponta, e edição não cria a
+  // outra do nada. Mantém o TransferenciaId/TransferenciaContraparte
+  // originais dos registros existentes (não embaralha o pareamento).
+  let okDespesa, okReceita;
+  if (editando) {
+    delete despesa.TransferenciaId; delete despesa.TransferenciaContraparte;
+    delete receita.TransferenciaId; delete receita.TransferenciaContraparte;
+    okDespesa = editando.despesaId ? await dbAtualizar('Despesas', editando.despesaId, despesa) : true;
+    okReceita = editando.receitaId ? await dbAtualizar('Receitas', editando.receitaId, receita) : true;
+  } else {
+    okDespesa = await dbInserir('Despesas', despesa);
+    okReceita = await dbInserir('Receitas', receita);
+  }
   const ok = !!okDespesa && !!okReceita;
 
-  showToast(ok ? '✅ Transferência registrada nas duas contas!' : ('❌ Falha ao registrar a transferência.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
-  showSyncStatus(ok ? 'Transferência registrada!' : 'Falha ao registrar', ok ? 'ok' : 'err', ok?3000:5000);
+  showToast(ok
+    ? (editando ? '✅ Transferência atualizada!' : '✅ Transferência registrada nas duas contas!')
+    : ('❌ Falha ao salvar a transferência.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  showSyncStatus(ok ? (editando ? 'Alterações salvas!' : 'Transferência registrada!') : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
 
   if (ok) {
+    window._trfEditando = null;
     const modalEl = document.getElementById('transferenciaModal'); if (modalEl) modalEl.remove();
     if (typeof carregarDespesas === 'function') carregarDespesas();
     if (typeof carregarReceitas === 'function') carregarReceitas();
@@ -11653,7 +11698,7 @@ function transferenciasFiltrar() {
         <td style="font-size:.75rem;color:var(--text-muted)">${base.ResponsavelLancamento || '—'}</td>
         <td style="font-size:.75rem;color:var(--text-muted)">${base.Descricao || '—'}</td>
         <td style="font-size:.72rem;color:var(--text-muted)">${base.LancadoPor || '—'}</td>
-        <td><button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="transferenciaExcluir('${p.id}')">🗑️ Excluir</button></td>
+        <td style="white-space:nowrap"><button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="transferenciaEditar('${p.id}')">✏️ Editar</button> <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="transferenciaExcluir('${p.id}')">🗑️ Excluir</button></td>
       </tr>`;
     }).join('') + '</tbody></table>';
 }
@@ -11669,6 +11714,18 @@ async function transferenciaExcluir(transferenciaId) {
   if (par.entrada) { const r = await dbRemover('Receitas', par.entrada.Id); okR = r.ok; }
   showToast((okD && okR) ? '🗑️ Transferência excluída.' : '❌ Erro ao excluir uma das pontas.');
   carregarTransferencias();
+}
+
+/* -- "✏️ Editar" na lista de Transferências (pedido 04/10/2026: "tbm tem
+   que colocar opção de editar em transferencia") — reabre o mesmo modal de
+   lançamento (transferenciaAbrirModal) já preenchido com os dados do par
+   Despesa(saída)/Receita(entrada), inclusive rateio por Centro de
+   Custo/Medição quando existir. -- */
+function transferenciaEditar(transferenciaId) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Edição restrita à Diretoria.'); return; }
+  const par = (window._trfPares || []).find(p => p.id === transferenciaId);
+  if (!par) { showToast('⚠️ Transferência não encontrada.'); return; }
+  transferenciaAbrirModal(par);
 }
 
 function renderReceitasTab() {
