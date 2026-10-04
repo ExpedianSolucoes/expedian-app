@@ -11873,7 +11873,23 @@ function renderReceitasTab() {
   <!-- BARRA DE FILTROS -->
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
     <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
-    <input type="month" id="rc_filtro_mes" onchange="carregarReceitas()" title="Mês de emissão" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <!-- Lista suspensa de período + Consolidado Anual (pedido 04/10/2026: "a
+         opção de filtro vc deixar que nem despesas, lista suspensa do mes e o
+         consolidado anual") — mesmo padrão de Despesas (rd_filtro_mes_select/
+         rdMudarFiltroMesDropdown, 02/10/2026): rc_filtro_mes continua existindo
+         escondido como estado real (usado pelo Calendário Mensal e por
+         rcLimparFiltros); rcSyncFiltroMesSelect() mantém os dois em sincronia. -->
+    <input type="month" id="rc_filtro_mes" onchange="carregarReceitas()" style="display:none">
+    <div style="display:flex;align-items:center;gap:4px">
+      <button type="button" onclick="rcMudarAnoResumo(-1)" style="border:1px solid var(--border);background:var(--surface);border-radius:7px;width:24px;height:24px;cursor:pointer;font-size:.76rem">‹</button>
+      <span id="rc-filtro-ano-label" style="font-weight:800;font-size:.78rem;min-width:32px;text-align:center">${window._rcAnoResumo || new Date().getFullYear()}</span>
+      <button type="button" onclick="rcMudarAnoResumo(1)" style="border:1px solid var(--border);background:var(--surface);border-radius:7px;width:24px;height:24px;cursor:pointer;font-size:.76rem">›</button>
+    </div>
+    <select id="rc_filtro_mes_select" onchange="rcMudarFiltroMesDropdown(this.value)" title="Mês de emissão ou ano consolidado" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
+      <option value="todos">Todos os períodos</option>
+      <option value="ano">📊 Consolidado Anual</option>
+      ${['01 · Jan','02 · Fev','03 · Mar','04 · Abr','05 · Mai','06 · Jun','07 · Jul','08 · Ago','09 · Set','10 · Out','11 · Nov','12 · Dez'].map(m => `<option value="${m.slice(0,2)}">${m}</option>`).join('')}
+    </select>
     <input type="date" id="rc_filtro_dia" onchange="carregarReceitas()" title="Dia exato de emissão" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
     <input type="month" id="rc_filtro_mes_receb" onchange="carregarReceitas()" title="Mês de recebimento (regime de caixa — usado no cálculo de impostos)" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
     <select id="rc_filtro_categoria" onchange="carregarReceitas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
@@ -12120,8 +12136,43 @@ function rcFiltrarKpi(tipo) {
 
 function rcLimparFiltros() {
   ['rc_filtro_mes','rc_filtro_mes_receb','rc_filtro_categoria','rc_filtro_busca','rc_filtro_nf','rc_filtro_responsavel','rc_filtro_banco','rc_filtro_forma','rc_filtro_status','rc_filtro_valor_exato','rc_filtro_valor_min','rc_filtro_valor_max'].forEach(id => { const e=document.getElementById(id); if(e) e.value=''; });
+  window._rcFiltroAnoConsolidado = '';
   RC_FILTRO_KPI = '';
   carregarReceitas();
+}
+
+/* -- Lista suspensa de período + Consolidado Anual em Receitas (pedido
+   04/10/2026) — mesmo mecanismo de rdMudarFiltroMesDropdown/
+   rdSyncFiltroMesSelect em Despesas (02/10/2026), só que gravando no
+   rc_filtro_mes escondido e em window._rcFiltroAnoConsolidado. -- */
+function rcMudarFiltroMesDropdown(valor) {
+  const ano = window._rcAnoResumo || new Date().getFullYear();
+  const elMes = document.getElementById('rc_filtro_mes');
+  const elDia = document.getElementById('rc_filtro_dia');
+  if (elDia) elDia.value = '';
+  if (valor === 'ano') {
+    if (elMes) elMes.value = '';
+    window._rcFiltroAnoConsolidado = String(ano);
+  } else if (valor === 'todos' || !valor) {
+    if (elMes) elMes.value = '';
+    window._rcFiltroAnoConsolidado = '';
+  } else {
+    if (elMes) elMes.value = ano + '-' + valor;
+    window._rcFiltroAnoConsolidado = '';
+  }
+  carregarReceitas();
+}
+
+function rcSyncFiltroMesSelect() {
+  const sel = document.getElementById('rc_filtro_mes_select');
+  const label = document.getElementById('rc-filtro-ano-label');
+  const ano = window._rcAnoResumo || new Date().getFullYear();
+  if (label) label.textContent = ano;
+  if (!sel) return;
+  const fMes = (document.getElementById('rc_filtro_mes')||{}).value || '';
+  if (fMes) sel.value = fMes.slice(5,7);
+  else if (window._rcFiltroAnoConsolidado) sel.value = 'ano';
+  else sel.value = 'todos';
 }
 
 /* -- Leitura automática da Nota Fiscal de Receita (100% no navegador, reaproveita
@@ -12469,8 +12520,12 @@ async function carregarReceitas() {
     const fResponsavel = (document.getElementById('rc_filtro_responsavel')||{}).value || '';
     const fBanco = ((document.getElementById('rc_filtro_banco')||{}).value || '').trim().toLowerCase();
     const fForma = (document.getElementById('rc_filtro_forma')||{}).value || '';
+    const fAnoConsolidado = window._rcFiltroAnoConsolidado || '';
 
+    // "📊 Consolidado Anual" (pedido 04/10/2026) — mesma prioridade de Despesas:
+    // mês específico primeiro, senão o ano inteiro escolhido no navegador ‹ ano ›.
     if (fMes) items = items.filter(r => (r.DataEmissao||'').slice(0,7) === fMes);
+    else if (fAnoConsolidado) items = items.filter(r => (r.DataEmissao||'').slice(0,4) === fAnoConsolidado);
     if (fMesReceb) items = items.filter(r => (r.DataRecebimento||'').slice(0,7) === fMesReceb);
     if (fCategoria) items = items.filter(r => r.Categoria === fCategoria);
     if (fBusca) items = items.filter(r => (r.Cliente||'').toLowerCase().includes(fBusca) || (r.Descricao||'').toLowerCase().includes(fBusca) || (r.CentroCusto||'').toLowerCase().includes(fBusca));
@@ -12490,12 +12545,19 @@ async function carregarReceitas() {
     else if (RC_FILTRO_KPI === 'recebido') items = items.filter(r=>r.Status==='Recebido');
     else if (RC_FILTRO_KPI === 'vencido') items = items.filter(r=>r.Status==='Em atraso');
 
+    // Soma/contagem do filtro ATUAL (pedido 04/10/2026, mesmo padrão de Despesas
+    // 03/10/2026) — calculada sobre TODOS os lançamentos que batem com os
+    // filtros, antes do corte de exibição de 300 linhas.
+    const totalFiltradoQtd = items.length;
+    const totalFiltradoValor = items.reduce((s,i)=>s+(i.Valor||0),0);
     items = items.slice().sort((a,b)=>(b.Id||0)-(a.Id||0)).slice(0,300);
     window._rcFiltradas = items;
+    rcSyncFiltroMesSelect();
 
     if (!items.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhuma receita encontrada.</div>'; return; }
 
     const statusColor = (s) => s==='Recebido'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
+    const avisoCorte = totalFiltradoQtd > 300 ? ` (exibindo os 300 mais recentes — a soma abaixo considera os ${totalFiltradoQtd} lançamentos do filtro)` : '';
     el.innerHTML = '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Emissão</th><th>Categoria</th><th>Cliente</th><th>CC</th><th>Previsão</th><th>Valor Total</th><th>Valor Líquido</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
         const valorLiquido = (i.ValorLiquido != null && i.ValorLiquido !== '') ? i.ValorLiquido : Math.max((i.Valor||0) - (i.ISSValorRetido||0) - (i.OutrasRetencoesValor||0), 0);
@@ -12512,7 +12574,15 @@ async function carregarReceitas() {
           <td>${i.ComprovanteUrl?`<a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver</a>`:'— Não'}</td>
           <td style="white-space:nowrap"><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button> <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="rcExcluirReceita(${i.Id})">🗑️</button></td>
         </tr>`;
-      }).join('') + '</tbody></table></div>';
+      }).join('')
+      // Linha de total ao final da lista filtrada (pedido 04/10/2026, mesmo
+      // padrão de Despesas 03/10/2026) — soma TODOS os lançamentos que batem
+      // com os filtros atuais, não só os até 300 exibidos.
+      + `</tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">`
+      + `<td colspan="5" style="font-size:.78rem;text-align:right;padding:8px 10px">Total filtrado (${totalFiltradoQtd} lançamento${totalFiltradoQtd!==1?'s':''})${avisoCorte}:</td>`
+      + `<td style="font-size:.85rem;white-space:nowrap">R$ ${totalFiltradoValor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`
+      + `<td colspan="4"></td>`
+      + `</tr></tfoot></table></div>`;
   } catch(e) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>'; }
 }
 
