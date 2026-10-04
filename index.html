@@ -11590,6 +11590,11 @@ function renderTransferenciasTab() {
     <input type="date" id="trf_filtro_de" onchange="transferenciasFiltrar()" title="De" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem">
     <span style="font-size:.78rem;color:var(--text-muted)">até</span>
     <input type="date" id="trf_filtro_ate" onchange="transferenciasFiltrar()" title="Até" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem">
+    <!-- Filtro por Conta Bancária (pedido 04/10/2026) — mesmo padrão
+         texto+datalist de Despesas/Receitas (rd_filtro_banco/rc_filtro_banco);
+         bate tanto na conta de Origem quanto na de Destino. -->
+    <input type="text" id="trf_filtro_banco" placeholder="Conta bancária..." list="trf_filtro_banco_dl" oninput="transferenciasFiltrar()" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);min-width:160px">
+    <datalist id="trf_filtro_banco_dl">${(window._rdConsolidado ? [...new Set(RD_EMPRESAS.flatMap(e => bancosDaEmpresa(e)))] : bancosDaEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0])).map(b => `<option value="${b}">`).join('')}</datalist>
   </div>
   <div class="card" style="overflow-x:auto;padding:0">
     <div id="trf-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
@@ -11637,6 +11642,7 @@ function transferenciasFiltrar() {
   const de = (document.getElementById('trf_filtro_de')||{}).value || '';
   const ate = (document.getElementById('trf_filtro_ate')||{}).value || '';
   const mesFiltro = (document.getElementById('trf_filtro_mes')||{}).value || '';
+  const fBanco = ((document.getElementById('trf_filtro_banco')||{}).value || '').trim().toLowerCase();
   const anoFiltro = window._trfAnoFiltro || new Date().getFullYear();
   const fmtR = v => 'R$ ' + (Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 
@@ -11647,6 +11653,11 @@ function transferenciasFiltrar() {
     if (mesFiltro && data.slice(0,7) !== (anoFiltro + '-' + mesFiltro)) return false;
     if (de && data < de) return false;
     if (ate && data > ate) return false;
+    if (fBanco) {
+      const origemB = (p.saida ? p.saida.Banco : '') || '';
+      const destinoB = (p.entrada ? p.entrada.Banco : '') || '';
+      if (!origemB.toLowerCase().includes(fBanco) && !destinoB.toLowerCase().includes(fBanco)) return false;
+    }
     if (!busca) return true;
     const origem = p.saida ? p.saida.Banco : '';
     const destino = p.entrada ? p.entrada.Banco : '';
@@ -12722,7 +12733,7 @@ async function carregarReceitas() {
           <td style="white-space:nowrap">R$ ${valorLiquido.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}${temRetencao?'<div style="font-size:.6rem;color:var(--text-muted)">c/ retenção</div>':''}</td>
           <td><span class="status-pill ${statusColor(i.Status)}">${rcStatusLabel(i.Status)||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário">🏦</span>':''}</td>
           <td>${i.ComprovanteUrl?`<a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver</a>`:'— Não'}</td>
-          <td style="white-space:nowrap"><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button> <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="rcExcluirReceita(${i.Id})">🗑️</button></td>
+          <td style="white-space:nowrap"><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="rcVisualizarReceita(${i.Id})">👁️ Visualizar</button> <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button> <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="rcExcluirReceita(${i.Id})">🗑️</button></td>
         </tr>`;
       }).join('')
       // Linha de total ao final da lista filtrada (pedido 04/10/2026, mesmo
@@ -12747,6 +12758,61 @@ async function rcExcluirReceita(id) {
   const { ok } = await dbRemover('Receitas', id);
   showToast(ok ? '🗑️ Receita excluída.' : '❌ Erro ao excluir.');
   if (ok) carregarReceitas();
+}
+
+/* -- Modal de visualização (somente leitura) de uma Receita — mesmo padrão de
+   rdVisualizarDespesa (Despesas). Pedido em 04/10/2026: "colocar botão de
+   visualizar tbm em receitas" — a linha só tinha Editar/Excluir, sem um
+   jeito rápido de conferir os detalhes sem entrar no modo de edição. -- */
+async function rcVisualizarReceita(id) {
+  const existente = document.getElementById('rc-view-modal'); if (existente) existente.remove();
+  let i = (window._rcReceitasPorId || {})[id];
+  if (!i) { const todos = await dbLerSeguro('Receitas'); i = todos.find(r => r.Id === id); }
+  if (!i) { showToast('⚠️ Receita não encontrada (recarregue a lista).'); return; }
+
+  const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const fmtMoeda = v => 'R$ ' + (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const linha = (label, valor) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
+    <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>`;
+  const temRetencao = (i.ISSValorRetido||0) > 0 || (i.OutrasRetencoesValor||0) > 0;
+
+  const modal = document.createElement('div');
+  modal.id = 'rc-view-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px">
+        <div style="font-weight:800;font-size:1rem">👁️ ${i.Cliente||'Receita'}</div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="document.getElementById('rc-view-modal').remove();rcAbrirEdicaoReceita(${id})">✏️ Editar</button>
+          <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('rc-view-modal').remove()">✕</div>
+        </div>
+      </div>
+      ${linha('Empresa', normalizarEmpresa(i.Empresa)||'—')}
+      ${linha('Cliente', i.Cliente||'—')}
+      ${linha('Centro de Custo', i.CentroCusto||'—')}
+      ${i.DivisaoCC && i.DivisaoCC.length ? linha('Rateio', '🧩 ' + i.DivisaoCC.map(d => d.cc + (d.medicao ? ' (Medição ' + d.medicao + ')' : '')).join(' + ')) : ''}
+      ${i.NumMedicao ? linha('Nº Medição', i.NumMedicao) : ''}
+      ${i.Categoria ? linha('Categoria', i.Categoria) : ''}
+      ${i.Subcategoria ? linha('Subcategoria', i.Subcategoria) : ''}
+      ${linha('Valor Total', fmtMoeda(i.Valor))}
+      ${temRetencao ? linha('Valor Líquido', fmtMoeda(i.ValorLiquido) + ' (c/ retenção)') : ''}
+      ${(i.ISSValorRetido||0) > 0 ? linha('ISS Retido', fmtMoeda(i.ISSValorRetido) + (i.ISSPercentual ? ' (' + i.ISSPercentual + '%)' : '')) : ''}
+      ${(i.OutrasRetencoesValor||0) > 0 ? linha('Outras Retenções', fmtMoeda(i.OutrasRetencoesValor) + (i.OutrasRetencoesMotivo ? ' — ' + i.OutrasRetencoesMotivo : '')) : ''}
+      ${linha('Data de Emissão', fmtData(i.DataEmissao))}
+      ${linha('Previsão', fmtData(i.DataPrevista))}
+      ${linha('Data de Recebimento', fmtData(i.DataRecebimento))}
+      ${linha('Forma de Recebimento', i.FormaRecebimento||'—')}
+      ${i.Banco ? linha('Banco', i.Banco) : ''}
+      ${linha('Status', rcStatusLabel(i.Status)||i.Status||'—')}
+      ${i.Conciliado==='Sim' ? linha('Conciliado', '🏦 Sim') : ''}
+      ${i.NumeroNF ? linha('Nº NF', i.NumeroNF) : ''}
+      ${linha('Responsável', i.ResponsavelLancamento||'—')}
+      ${i.LancadoPor && i.LancadoPor !== i.ResponsavelLancamento ? linha('Lançado por', i.LancadoPor) : ''}
+      ${i.Descricao ? linha('Descrição', i.Descricao) : ''}
+      ${i.ComprovanteUrl ? `<div style="margin-top:8px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.8rem">📎 Ver comprovante</a></div>` : ''}
+    </div>`;
+  document.body.appendChild(modal);
 }
 
 function rcRenderResumoMensal(items) {
