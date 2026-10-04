@@ -41554,51 +41554,94 @@ async function bancosVerHistoricoAplicacoes(banco, empresa) {
     if (normalizarEmpresa(d.Empresa) !== empresa) return;
     if ((d.Banco || '').trim() !== banco) return;
     if (d.Categoria !== 'Aplicações Financeiras') return;
-    itens.push({ tipo: 'Aplicação', emoji: '🟣', cor: '#6f42c1', data: d.DataLancamento || d.Vencimento || '', subcategoria: d.Subcategoria, valor: Number(d.Valor) || 0, responsavel: d.ResponsavelLancamento, desc: d.Descricao || d.Fornecedor });
+    itens.push({ id: d.Id, origem: 'despesa', tipo: 'Aplicação', emoji: '🟣', cor: '#6f42c1', data: d.DataLancamento || d.Vencimento || '', subcategoria: d.Subcategoria, valor: Number(d.Valor) || 0, responsavel: d.ResponsavelLancamento, desc: d.Descricao || d.Fornecedor });
   });
   (receitas || []).forEach(r => {
     if (normalizarEmpresa(r.Empresa) !== empresa) return;
     if ((r.Banco || '').trim() !== banco) return;
     if (r.Categoria !== 'Receitas Financeiras' || !/^Resgate/.test(r.Subcategoria || '')) return;
-    itens.push({ tipo: 'Resgate', emoji: '🟡', cor: '#b8960c', data: r.DataEmissao || r.DataPrevista || '', subcategoria: r.Subcategoria, valor: Number(r.Valor) || 0, responsavel: r.ResponsavelLancamento, desc: r.Descricao || r.Cliente });
+    itens.push({ id: r.Id, origem: 'receita', tipo: 'Resgate', emoji: '🟡', cor: '#b8960c', data: r.DataEmissao || r.DataPrevista || '', subcategoria: r.Subcategoria, valor: Number(r.Valor) || 0, responsavel: r.ResponsavelLancamento, desc: r.Descricao || r.Cliente });
   });
   itens.sort((a, b) => (b.data || '').localeCompare(a.data || ''));
   showSyncStatus('', 'ok', 1);
 
-  const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-  const fmtData = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
-  const totalAplicado = itens.filter(i => i.tipo === 'Aplicação').reduce((s, i) => s + i.valor, 0);
-  const totalResgatado = itens.filter(i => i.tipo === 'Resgate').reduce((s, i) => s + i.valor, 0);
+  // Guardados pra bancosHistoricoAplicacoesFiltrar()/bancosHistoricoEditarItem()
+  // reaproveitarem sem recarregar (pedido 04/10/2026: busca + edição).
+  window._bancosHistoricoItens = itens;
+  window._bancosHistoricoBanco = banco;
+  window._bancosHistoricoEmpresa = empresa;
 
   const existente = document.getElementById('bancosHistoricoModal'); if (existente) existente.remove();
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'bancosHistoricoModal';
   modal.innerHTML = `
-    <div class="modal-box" style="max-width:680px">
+    <div class="modal-box" style="max-width:720px">
       <div class="modal-header">
         <h2>📜 Aplicações/Resgates — 🏦 ${banco}</h2>
         <div class="modal-close" onclick="document.getElementById('bancosHistoricoModal').remove()">✕</div>
       </div>
       <div class="modal-body">
         ${!itens.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Nenhuma aplicação ou resgate lançado nessa conta ainda.</div>' : `
-        <div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Data</th><th>Tipo</th><th>Subcategoria</th><th style="text-align:right">Valor</th><th>Responsável</th><th>Descrição</th></tr></thead><tbody>
-          ${itens.map(i => `<tr>
-            <td>${fmtData(i.data)}</td>
-            <td style="color:${i.cor};font-weight:700;white-space:nowrap">${i.emoji} ${i.tipo}</td>
-            <td>${i.subcategoria || '—'}</td>
-            <td style="text-align:right;font-weight:700;white-space:nowrap">${fmt(i.valor)}</td>
-            <td>${i.responsavel || '—'}</td>
-            <td style="color:var(--text-muted)">${i.desc || ''}</td>
-          </tr>`).join('')}
-        </tbody></table></div>
-        <div style="display:flex;justify-content:space-between;gap:12px;margin-top:14px;font-size:.85rem;font-weight:700;flex-wrap:wrap">
-          <span style="color:#6f42c1">🟣 Total aplicado: ${fmt(totalAplicado)}</span>
-          <span style="color:#b8960c">🟡 Total resgatado: ${fmt(totalResgatado)}</span>
-        </div>`}
+        <input type="text" id="bancosHistoricoBusca" placeholder="🔍 Buscar por tipo, subcategoria, responsável, descrição ou valor..." autocomplete="off" oninput="bancosHistoricoAplicacoesFiltrar()" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface);margin-bottom:10px;box-sizing:border-box">
+        <div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Data</th><th>Tipo</th><th>Subcategoria</th><th style="text-align:right">Valor</th><th>Responsável</th><th>Descrição</th><th></th></tr></thead><tbody id="bancosHistoricoTbody"></tbody></table></div>
+        <div id="bancosHistoricoTotais" style="display:flex;justify-content:space-between;gap:12px;margin-top:14px;font-size:.85rem;font-weight:700;flex-wrap:wrap"></div>`}
       </div>
     </div>`;
   document.body.appendChild(modal);
+  if (itens.length) bancosHistoricoAplicacoesFiltrar();
+}
+/* -- Busca (inclusive por valor) + edição direta de um item do histórico de
+   Aplicações/Resgates (pedido 04/10/2026: "tem que ter opção de editar
+   aplicação, pois vi quem tem valor aplicado errado e campo de pesquisa tbm
+   pelo valor"). A busca compara contra o valor formatado ("R$ 2.055,32") E
+   sem separador de milhar ("2055,32"), pra achar digitando de qualquer
+   jeito. A edição reabre o mesmo formulário de Despesa/Receita já usado nas
+   abas normais (rdAbrirEdicaoDespesa/rcAbrirEdicaoReceita) — fecha esse
+   modal, navega pra Despesas/Receitas na empresa certa e abre a edição do
+   lançamento, mesmo padrão já usado na Busca Global do app. -- */
+function bancosHistoricoAplicacoesFiltrar() {
+  const tbody = document.getElementById('bancosHistoricoTbody');
+  const totaisEl = document.getElementById('bancosHistoricoTotais');
+  if (!tbody) return;
+  const busca = ((document.getElementById('bancosHistoricoBusca')||{}).value || '').trim().toLowerCase();
+  const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const fmtData = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  let itens = window._bancosHistoricoItens || [];
+  if (busca) {
+    itens = itens.filter(i => {
+      const valorSemMilhar = i.valor.toFixed(2).replace('.', ',');
+      const alvo = [i.tipo, i.subcategoria, i.responsavel, i.desc, fmt(i.valor), valorSemMilhar].join(' ').toLowerCase();
+      return alvo.includes(busca);
+    });
+  }
+  tbody.innerHTML = itens.map(i => `<tr>
+    <td>${fmtData(i.data)}</td>
+    <td style="color:${i.cor};font-weight:700;white-space:nowrap">${i.emoji} ${i.tipo}</td>
+    <td>${i.subcategoria || '—'}</td>
+    <td style="text-align:right;font-weight:700;white-space:nowrap">${fmt(i.valor)}</td>
+    <td>${i.responsavel || '—'}</td>
+    <td style="color:var(--text-muted)">${i.desc || ''}</td>
+    <td style="white-space:nowrap"><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="bancosHistoricoEditarItem('${i.origem}',${i.id})">✏️ Editar</button></td>
+  </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:16px">Nenhum item encontrado com esse filtro.</td></tr>';
+  if (totaisEl) {
+    const totalAplicado = itens.filter(i => i.tipo === 'Aplicação').reduce((s, i) => s + i.valor, 0);
+    const totalResgatado = itens.filter(i => i.tipo === 'Resgate').reduce((s, i) => s + i.valor, 0);
+    totaisEl.innerHTML = `<span style="color:#6f42c1">🟣 Total aplicado${busca ? ' (filtro)' : ''}: ${fmt(totalAplicado)}</span><span style="color:#b8960c">🟡 Total resgatado${busca ? ' (filtro)' : ''}: ${fmt(totalResgatado)}</span>`;
+  }
+}
+function bancosHistoricoEditarItem(origem, id) {
+  const modalEl = document.getElementById('bancosHistoricoModal'); if (modalEl) modalEl.remove();
+  if (window._bancosHistoricoEmpresa) window._rdEmpresaAtiva = window._bancosHistoricoEmpresa;
+  if (origem === 'despesa') {
+    window._rdTab = 'despesas';
+    navigate('receitas_despesas');
+    setTimeout(() => rdAbrirEdicaoDespesa(id), 300);
+  } else {
+    window._rdTab = 'receitas';
+    navigate('receitas_despesas');
+    setTimeout(() => rcAbrirEdicaoReceita(id), 300);
+  }
 }
 function bancosResumoMudarEmpresa(emp) {
   window._bancosResumoEmpresa = emp;
