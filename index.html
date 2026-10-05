@@ -41359,32 +41359,57 @@ async function bancosDiaADiaExportarPDF(banco, empresa, mesStr) {
    exportar") — uma linha por conta bancária (Saldo Inicial do mês/Entradas/
    Saídas/Saldo Final, mesmo critério Pago/Recebido do Dia a Dia/Mês a Mês)
    + linha de Total somando todas as contas, pro mês escolhido. -- */
-function bancosCalcularResumoMensalPorConta(empresa, despesas, receitas, mesStr) {
+// Saldo investido (pedido 05/10/2026: "aqui tem que aparecer saldo investido
+// tbm" — na tela de Resumo Mensal de Contas) — acumulado ATÉ o último dia do
+// mês escolhido (não é "o quanto investiu NO mês", é "quanto está investido
+// nessa conta até ali"), somando o valor já investido em 31/12/2025
+// (AplicacoesSaldoInicial, entrada 68) + Aplicações + Rendimentos - Resgates
+// lançados até essa data. Mesma convenção de tipo (Resgate*/Rendimento*) já
+// usada em bancosVerHistoricoAplicacoes.
+function bancosCalcularSaldoInvestido(bancoTitle, empresa, despesas, receitas, saldosIniciais, ateDataISO) {
+  const inicial = (saldosIniciais || []).filter(s => normalizarEmpresa(s.Empresa) === normalizarEmpresa(empresa) && (s.Banco || '').trim() === bancoTitle).reduce((s, r) => s + (Number(r.Valor) || 0), 0);
+  const aplicado = (despesas || []).filter(d => normalizarEmpresa(d.Empresa) === normalizarEmpresa(empresa) && (d.Banco || '').trim() === bancoTitle && d.Categoria === 'Aplicações Financeiras' && (d.DataLancamento || d.Vencimento || '') <= ateDataISO).reduce((s, d) => s + (Number(d.Valor) || 0), 0);
+  let rendimento = 0, resgatado = 0;
+  (receitas || []).forEach(r => {
+    if (normalizarEmpresa(r.Empresa) !== normalizarEmpresa(empresa)) return;
+    if ((r.Banco || '').trim() !== bancoTitle) return;
+    if (r.Categoria !== 'Receitas Financeiras') return;
+    const dataRef = r.DataEmissao || r.DataPrevista || '';
+    if (dataRef > ateDataISO) return;
+    if (/^Rendimento/.test(r.Subcategoria || '')) rendimento += Number(r.Valor) || 0;
+    else if (/^Resgate/.test(r.Subcategoria || '')) resgatado += Number(r.Valor) || 0;
+  });
+  return inicial + aplicado + rendimento - resgatado;
+}
+function bancosCalcularResumoMensalPorConta(empresa, despesas, receitas, mesStr, saldosIniciais) {
   const [ano, mes] = mesStr.split('-').map(Number);
   const diaAnteriorISO = new Date(ano, mes - 1, 0).toISOString().slice(0, 10); // último dia do mês anterior
+  const ultimoDiaMesISO = new Date(ano, mes, 0).toISOString().slice(0, 10); // último dia do mês selecionado
   const bancosDaLista = (_bancosCache || []).filter(b => normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa)).slice().sort((a, b) => (a.Title || '').localeCompare(b.Title || '', 'pt-BR'));
   return bancosDaLista.map(b => {
     const saldoInicioMes = bancosCalcularSaldoReal(b.Title, empresa, despesas, receitas, b.SaldoInicial, diaAnteriorISO);
     const entradas = (receitas || []).filter(r => normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa) && (r.Banco || '').trim() === b.Title && r.Status === 'Recebido' && (r.DataRecebimento || '').slice(0, 7) === mesStr).reduce((s, r) => s + bancosValorLiquidoReceita(r), 0);
     const saidas = (despesas || []).filter(d => normalizarEmpresa(d.Empresa) === normalizarEmpresa(empresa) && (d.Banco || '').trim() === b.Title && d.Status === 'Pago' && (d.DataPagamento || '').slice(0, 7) === mesStr).reduce((s, d) => s + (Number(d.Valor) || 0), 0);
-    return { banco: b.Title, saldoInicioMes, entradas, saidas, saldoFinalMes: saldoInicioMes + entradas - saidas };
+    const saldoInvestido = bancosCalcularSaldoInvestido(b.Title, empresa, despesas, receitas, saldosIniciais, ultimoDiaMesISO);
+    return { banco: b.Title, saldoInicioMes, entradas, saidas, saldoFinalMes: saldoInicioMes + entradas - saidas, saldoInvestido };
   });
 }
 async function bancosVerResumoMensal(empresa, mesForcar) {
   showSyncStatus('Carregando resumo mensal...');
   if (!_bancosCache || !_bancosCache.length) await carregarBancosLista();
-  const [despesas, receitas] = await Promise.all([
+  const [despesas, receitas, saldosIniciais] = await Promise.all([
     dbLerSeguro('Despesas').catch(() => []),
     dbLerSeguro('Receitas').catch(() => []),
+    dbLerSeguro('AplicacoesSaldoInicial').catch(() => []),
   ]);
   const meses = bancosListaMesesDisponiveis();
   const mesSelecionado = (mesForcar && meses.includes(mesForcar)) ? mesForcar : meses[meses.length - 1];
-  const linhas = bancosCalcularResumoMensalPorConta(empresa, despesas, receitas, mesSelecionado);
+  const linhas = bancosCalcularResumoMensalPorConta(empresa, despesas, receitas, mesSelecionado, saldosIniciais);
   showSyncStatus('', 'ok', 1);
 
   const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   const fmtMesLabel = (m) => { const [a, mm] = m.split('-'); return new Date(Number(a), Number(mm) - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }); };
-  const totais = linhas.reduce((t, l) => ({ saldoInicioMes: t.saldoInicioMes + l.saldoInicioMes, entradas: t.entradas + l.entradas, saidas: t.saidas + l.saidas, saldoFinalMes: t.saldoFinalMes + l.saldoFinalMes }), { saldoInicioMes: 0, entradas: 0, saidas: 0, saldoFinalMes: 0 });
+  const totais = linhas.reduce((t, l) => ({ saldoInicioMes: t.saldoInicioMes + l.saldoInicioMes, entradas: t.entradas + l.entradas, saidas: t.saidas + l.saidas, saldoFinalMes: t.saldoFinalMes + l.saldoFinalMes, saldoInvestido: t.saldoInvestido + l.saldoInvestido }), { saldoInicioMes: 0, entradas: 0, saidas: 0, saldoFinalMes: 0, saldoInvestido: 0 });
 
   const existente = document.getElementById('bancosResumoMensalModal'); if (existente) existente.remove();
   const modal = document.createElement('div');
@@ -41411,7 +41436,7 @@ async function bancosVerResumoMensal(empresa, mesForcar) {
         </div>
         ${!linhas.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:20px;text-align:center">Nenhuma conta cadastrada pra essa empresa ainda.</div>' : `
         <div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr>
-          <th>Conta</th><th style="text-align:right">Saldo Inicial do Mês</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo Final do Mês</th><th></th>
+          <th>Conta</th><th style="text-align:right">Saldo Inicial do Mês</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo Final do Mês</th><th style="text-align:right">💰 Saldo Investido</th><th></th>
         </tr></thead><tbody>
           ${linhas.map(l => `<tr>
             <td style="font-weight:600">🏦 ${l.banco}</td>
@@ -41419,6 +41444,7 @@ async function bancosVerResumoMensal(empresa, mesForcar) {
             <td style="text-align:right;color:var(--green-main)">${l.entradas > 0 ? fmt(l.entradas) : '—'}</td>
             <td style="text-align:right;color:#dc3545">${l.saidas > 0 ? fmt(l.saidas) : '—'}</td>
             <td style="text-align:right;font-weight:700;color:${l.saldoFinalMes >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(l.saldoFinalMes)}</td>
+            <td style="text-align:right;font-weight:700;color:#6f42c1">${l.saldoInvestido > 0 ? fmt(l.saldoInvestido) : '—'}</td>
             <td style="text-align:center"><button class="btn-secondary" style="padding:3px 7px;font-size:.68rem" title="Ver dia a dia dessa conta" onclick="document.getElementById('bancosResumoMensalModal').remove();bancosVerDiaADia('${l.banco.replace(/'/g, "\\'")}','${empresa}','${mesSelecionado}')">📆</button></td>
           </tr>`).join('')}
         </tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
@@ -41427,6 +41453,7 @@ async function bancosVerResumoMensal(empresa, mesForcar) {
           <td style="text-align:right;color:var(--green-main)">${totais.entradas > 0 ? fmt(totais.entradas) : '—'}</td>
           <td style="text-align:right;color:#dc3545">${totais.saidas > 0 ? fmt(totais.saidas) : '—'}</td>
           <td style="text-align:right;color:${totais.saldoFinalMes >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(totais.saldoFinalMes)}</td>
+          <td style="text-align:right;color:#6f42c1">${totais.saldoInvestido > 0 ? fmt(totais.saldoInvestido) : '—'}</td>
           <td></td>
         </tr></tfoot></table></div>`}
       </div>
@@ -41436,12 +41463,13 @@ async function bancosVerResumoMensal(empresa, mesForcar) {
 async function bancosResumoMensalExportarPDF(empresa, mesStr) {
   showToast('🔄 Gerando relatório... aguarde.');
   if (!_bancosCache || !_bancosCache.length) await carregarBancosLista();
-  const [despesas, receitas] = await Promise.all([
+  const [despesas, receitas, saldosIniciais] = await Promise.all([
     dbLerSeguro('Despesas').catch(() => []),
     dbLerSeguro('Receitas').catch(() => []),
+    dbLerSeguro('AplicacoesSaldoInicial').catch(() => []),
   ]);
-  const linhas = bancosCalcularResumoMensalPorConta(empresa, despesas, receitas, mesStr);
-  const totais = linhas.reduce((t, l) => ({ saldoInicioMes: t.saldoInicioMes + l.saldoInicioMes, entradas: t.entradas + l.entradas, saidas: t.saidas + l.saidas, saldoFinalMes: t.saldoFinalMes + l.saldoFinalMes }), { saldoInicioMes: 0, entradas: 0, saidas: 0, saldoFinalMes: 0 });
+  const linhas = bancosCalcularResumoMensalPorConta(empresa, despesas, receitas, mesStr, saldosIniciais);
+  const totais = linhas.reduce((t, l) => ({ saldoInicioMes: t.saldoInicioMes + l.saldoInicioMes, entradas: t.entradas + l.entradas, saidas: t.saidas + l.saidas, saldoFinalMes: t.saldoFinalMes + l.saldoFinalMes, saldoInvestido: t.saldoInvestido + l.saldoInvestido }), { saldoInicioMes: 0, entradas: 0, saidas: 0, saldoFinalMes: 0, saldoInvestido: 0 });
 
   const fmt = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   const fmtMesLabel = (m) => { const [a, mm] = m.split('-'); return new Date(Number(a), Number(mm) - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }); };
@@ -41454,6 +41482,7 @@ async function bancosResumoMensalExportarPDF(empresa, mesStr) {
     <td style="text-align:right">${l.entradas > 0 ? fmt(l.entradas) : '—'}</td>
     <td style="text-align:right">${l.saidas > 0 ? fmt(l.saidas) : '—'}</td>
     <td style="text-align:right;font-weight:700">${fmt(l.saldoFinalMes)}</td>
+    <td style="text-align:right;font-weight:700">${l.saldoInvestido > 0 ? fmt(l.saldoInvestido) : '—'}</td>
   </tr>`).join('');
 
   const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
@@ -41485,9 +41514,9 @@ async function bancosResumoMensalExportarPDF(empresa, mesStr) {
     </div>
     <div class="titulo">Resumo Mensal das Contas — ${fmtMesLabel(mesStr)}</div>
     <div style="font-size:9.5pt;color:#555;margin-bottom:14px">Empresa: <b>${empresa}</b> &nbsp;·&nbsp; Consolidado de todas as contas bancárias &nbsp;·&nbsp; Só Despesas Pagas e Receitas Recebidas entram no saldo.</div>
-    <table><thead><tr><th>Conta</th><th style="text-align:right">Saldo Inicial do Mês</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo Final do Mês</th></tr></thead>
-    <tbody>${linhasHtml || '<tr><td colspan="5" style="text-align:center;color:#999">Nenhuma conta cadastrada.</td></tr>'}</tbody>
-    <tfoot><tr><td>Total — ${linhas.length} conta${linhas.length === 1 ? '' : 's'}</td><td style="text-align:right">${fmt(totais.saldoInicioMes)}</td><td style="text-align:right">${totais.entradas > 0 ? fmt(totais.entradas) : '—'}</td><td style="text-align:right">${totais.saidas > 0 ? fmt(totais.saidas) : '—'}</td><td style="text-align:right">${fmt(totais.saldoFinalMes)}</td></tr></tfoot>
+    <table><thead><tr><th>Conta</th><th style="text-align:right">Saldo Inicial do Mês</th><th style="text-align:right">Entradas</th><th style="text-align:right">Saídas</th><th style="text-align:right">Saldo Final do Mês</th><th style="text-align:right">Saldo Investido</th></tr></thead>
+    <tbody>${linhasHtml || '<tr><td colspan="6" style="text-align:center;color:#999">Nenhuma conta cadastrada.</td></tr>'}</tbody>
+    <tfoot><tr><td>Total — ${linhas.length} conta${linhas.length === 1 ? '' : 's'}</td><td style="text-align:right">${fmt(totais.saldoInicioMes)}</td><td style="text-align:right">${totais.entradas > 0 ? fmt(totais.entradas) : '—'}</td><td style="text-align:right">${totais.saidas > 0 ? fmt(totais.saidas) : '—'}</td><td style="text-align:right">${fmt(totais.saldoFinalMes)}</td><td style="text-align:right">${totais.saldoInvestido > 0 ? fmt(totais.saldoInvestido) : '—'}</td></tr></tfoot>
     </table>
     <div class="total">Saldo final consolidado do mês: ${fmt(totais.saldoFinalMes)}</div>
     <div class="footer"><div class="footer-inner">${emp.razaoSocial} &nbsp;·&nbsp; Gerado em ${new Date().toLocaleDateString('pt-BR')}</div></div>
