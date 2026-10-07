@@ -31716,6 +31716,10 @@ if (typeof window._eroDashFiltroMes === 'undefined') window._eroDashFiltroMes = 
 if (typeof window._eroDashFiltroAno === 'undefined') window._eroDashFiltroAno = '';
 if (typeof window._eroDashFiltroSemestre === 'undefined') window._eroDashFiltroSemestre = '';
 if (typeof window._eroDashFiltroBusca === 'undefined') window._eroDashFiltroBusca = '';
+// Filtro por Nº do empreendimento e por Responsável (Elaborado por) no
+// histórico — pedido 07/10/2026.
+if (typeof window._eroDashFiltroNum === 'undefined') window._eroDashFiltroNum = '';
+if (typeof window._eroDashFiltroResponsavel === 'undefined') window._eroDashFiltroResponsavel = '';
 // Ordenação do Histórico de Empreendimentos Inspecionados — 'data' (padrão,
 // mais recente primeiro) ou 'numero' (Nº do empreendimento, crescente,
 // registros sem Nº — checklist manual sem vínculo — vão pro final) —
@@ -31818,7 +31822,7 @@ function eroPendentesColetaCampo() {
     return v.status === 'programada';
   });
 }
-function eroAbrirNovoChecklist() { window._eroPickerAberto = true; navigate('checklist_ero'); }
+function eroAbrirNovoChecklist() { window._eroPickerAberto = true; window._eroHistoricoAberto = false; navigate('checklist_ero'); }
 function eroFecharPicker() { window._eroPickerAberto = false; navigate('checklist_ero'); }
 function eroIniciarChecklistDe(id) {
   const e = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).find(function(x) { return x.id === id; });
@@ -31870,6 +31874,7 @@ function eroIniciarChecklistDe(id) {
   window._eroRegistroAtualId = null;
   window._eroPickerAberto = false;
   window._eroFormAberto = true;
+  window._eroHistoricoAberto = false; // fecha o histórico ao abrir um checklist — pedido 07/10/2026
   navigate('checklist_ero');
   showToast('📋 Checklist iniciado para ' + (e.empreendimento || '') + ' — dados da vistoria já preenchidos.' + (precol ? ' Há uma Pré Coleta Dados Vistoria registrada — confira as respostas no aviso do topo.' : ''));
 }
@@ -31879,6 +31884,7 @@ function eroIniciarChecklistManual() {
   window._eroRegistroAtualId = null;
   window._eroPickerAberto = false;
   window._eroFormAberto = true;
+  window._eroHistoricoAberto = false; // fecha o histórico ao abrir um checklist — pedido 07/10/2026
   navigate('checklist_ero');
 }
 
@@ -31910,6 +31916,10 @@ function eroDashFiltrarSemestre(v) { window._eroDashFiltroSemestre = v; navigate
    dashboard inteiro a cada tecla digitada. Pedido em 07/10/2026. -- */
 function eroDashRenavegar() { navigate('checklist_ero'); }
 function eroDashFiltrarBusca(v) { window._eroDashFiltroBusca = v; dbDebounce('eroDashRenavegar'); }
+// Filtro por Nº do empreendimento (texto livre, com debounce) e por
+// Responsável pelo checklist/Elaborado por (select) — pedido 07/10/2026.
+function eroDashFiltrarNum(v) { window._eroDashFiltroNum = v; dbDebounce('eroDashRenavegar'); }
+function eroDashFiltrarResponsavel(v) { window._eroDashFiltroResponsavel = v; navigate('checklist_ero'); }
 
 /* -- Limpa TODO o histórico de checklists ERO (local + OneDrive central). Ação destrutiva. -- */
 async function eroLimparHistorico() {
@@ -31928,6 +31938,8 @@ async function eroLimparHistorico() {
   window._eroDashFiltroMes = '';
   window._eroDashFiltroAno = '';
   window._eroDashFiltroBusca = '';
+  window._eroDashFiltroNum = '';
+  window._eroDashFiltroResponsavel = '';
   try { localStorage.setItem('ero_historico_cache', JSON.stringify([])); } catch(e) {}
 
   if (ok) {
@@ -32035,11 +32047,17 @@ function renderEROMiniDashboard() {
   const cmpEro = window._eroDashOrdenacao === 'numero' ? cmpEroNumero : (a, b) => (b.data || '').localeCompare(a.data || '');
 
   const buscaNorm = (window._eroDashFiltroBusca || '').trim().toLowerCase();
+  const numNorm = (window._eroDashFiltroNum || '').trim().toLowerCase();
+  // Lista de responsáveis (Elaborado por) com pelo menos 1 checklist, pra
+  // popular o select de filtro — pedido 07/10/2026.
+  const responsaveisDisponiveis = [...new Set(comData.map(r => r.ElaboradoPor).filter(Boolean))].sort();
   const filtrados = comData.filter(r =>
     (!window._eroDashFiltroAno || r._ano === window._eroDashFiltroAno) &&
     (!window._eroDashFiltroMes || r._mes === window._eroDashFiltroMes) &&
     (!window._eroDashFiltroSemestre || r._sem === window._eroDashFiltroSemestre) &&
-    (!buscaNorm || (r.empreendimento || '').toLowerCase().includes(buscaNorm))
+    (!buscaNorm || (r.empreendimento || '').toLowerCase().includes(buscaNorm)) &&
+    (!numNorm || String(r.num || '').toLowerCase().includes(numNorm)) &&
+    (!window._eroDashFiltroResponsavel || r.ElaboradoPor === window._eroDashFiltroResponsavel)
   ).sort(cmpEro);
 
   const empreendimentosUnicos = new Set(filtrados.map(r => (r.empreendimento||'Sem nome').trim()).filter(Boolean));
@@ -32050,6 +32068,11 @@ function renderEROMiniDashboard() {
       <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📊 Mini Dashboard — Checklists ERO</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input type="text" id="ero_dash_busca" value="${(window._eroDashFiltroBusca||'').replace(/"/g,'&quot;')}" placeholder="🔍 Buscar empreendimento..." oninput="eroDashFiltrarBusca(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;min-width:190px">
+        <input type="text" id="ero_dash_filtro_num" value="${(window._eroDashFiltroNum||'').replace(/"/g,'&quot;')}" placeholder="🔢 Nº" oninput="eroDashFiltrarNum(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;width:80px">
+        <select onchange="eroDashFiltrarResponsavel(this.value)" title="Filtrar por responsável pelo checklist" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
+          <option value="">Todos os responsáveis</option>
+          ${responsaveisDisponiveis.map(n => `<option value="${n.replace(/"/g,'&quot;')}" ${window._eroDashFiltroResponsavel===n?'selected':''}>${n}</option>`).join('')}
+        </select>
         <select onchange="eroDashFiltrarMes(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
           <option value="">Todos os meses</option>
           ${ERO_MESES.map((m,idx) => `<option value="${String(idx+1).padStart(2,'0')}" ${window._eroDashFiltroMes===String(idx+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}
@@ -32095,7 +32118,7 @@ function renderEROMiniDashboard() {
       Histórico de Empreendimentos Inspecionados ${window._eroHistorico !== null ? `(${filtrados.length})` : ''}
     </div>
     ${window._eroHistoricoAberto ? `
-    <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
+    <div style="max-height:56vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
       <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;background:var(--surface2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1">
         <div style="flex:1;min-width:140px;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Empreendimento</div>
         <div style="min-width:120px;text-align:center;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Responsável (checklist)</div>
@@ -32742,6 +32765,8 @@ function meaAbrirChecklistSubestacao() {
   window._eroDashFiltroAno = '';
   window._eroDashFiltroSemestre = '';
   window._eroDashFiltroBusca = '';
+  window._eroDashFiltroNum = '';
+  window._eroDashFiltroResponsavel = '';
   window._eroHistoricoAberto = true;
   window._meaAba = 'form';
   navigate('checklist_ero');
@@ -32753,6 +32778,10 @@ function meaAbrirChecklistSubestacao() {
 function meaAbrirChecklistLinha(classificacao) {
   window._linhaDashFiltroClass = classificacao || '';
   window._linhaDashFiltroBusca = '';
+  window._linhaDashFiltroNum = '';
+  window._linhaDashFiltroMes = '';
+  window._linhaDashFiltroResponsavel = '';
+  window._linhaHistoricoAberto = true;
   navigate('checklist_linha');
 }
 
@@ -36546,6 +36575,11 @@ if (typeof window._linhaHistorico === 'undefined') window._linhaHistorico = null
 // principal (meaAbrirChecklistLinha) — pedido 23/09/2026.
 if (typeof window._linhaDashFiltroClass === 'undefined') window._linhaDashFiltroClass = '';
 if (typeof window._linhaDashFiltroBusca === 'undefined') window._linhaDashFiltroBusca = '';
+// Filtro por Nº do empreendimento, por mês e por Responsável (Elaborado por)
+// no histórico — pedido 07/10/2026, mesmo padrão do Checklist ERO.
+if (typeof window._linhaDashFiltroNum === 'undefined') window._linhaDashFiltroNum = '';
+if (typeof window._linhaDashFiltroMes === 'undefined') window._linhaDashFiltroMes = '';
+if (typeof window._linhaDashFiltroResponsavel === 'undefined') window._linhaDashFiltroResponsavel = '';
 // Ordenação do Histórico de Trechos Inspecionados — 'data' (padrão, mais
 // recente primeiro) ou 'numero' (Nº do empreendimento, crescente, registros
 // sem Nº vão pro final) — mesma opção do Checklist ERO, pedido 25/09/2026.
@@ -36556,6 +36590,13 @@ if (typeof window._linhaItemSeq === 'undefined') window._linhaItemSeq = 1;
 // Tela fechada por padrão (mesmo padrão da Subestação/ERO) — o formulário só
 // aparece depois de "🆕 Nova Inspeção" ou "✏️ Editar" num item do histórico.
 if (typeof window._linhaFormAberto === 'undefined') window._linhaFormAberto = false;
+// Histórico de Trechos Inspecionados — até 07/10/2026 ficava sempre aberto
+// (sem toggle); passou a ser recolhível, igual o da Subestação/ERO, e fecha
+// sozinho ao abrir um checklist pra edição/nova inspeção (pedido 07/10/2026:
+// "quando clicar em editar...ou novo check list ai fecha tela de rolagem").
+// Fica aberto por padrão pra não mudar o comportamento de quem já usa.
+if (typeof window._linhaHistoricoAberto === 'undefined') window._linhaHistoricoAberto = true;
+function linhaToggleHistorico() { window._linhaHistoricoAberto = !window._linhaHistoricoAberto; navigate('checklist_linha'); }
 
 const LINHA_CATEGORIAS = [
   'Erosão',
@@ -37267,6 +37308,12 @@ function linhaDashLimparFiltroClass() { window._linhaDashFiltroClass = ''; navig
    mesmo padrão (com debounce) usado no Checklist ERO. Pedido 07/10/2026. -- */
 function linhaDashRenavegar() { navigate('checklist_linha'); }
 function linhaDashFiltrarBusca(v) { window._linhaDashFiltroBusca = v; dbDebounce('linhaDashRenavegar'); }
+// Filtro por Nº do empreendimento (texto livre, com debounce) e por
+// Responsável pelo checklist/Elaborado por (select) — pedido 07/10/2026,
+// mesmo padrão do Checklist ERO.
+function linhaDashFiltrarNum(v) { window._linhaDashFiltroNum = v; dbDebounce('linhaDashRenavegar'); }
+function linhaDashFiltrarMes(v) { window._linhaDashFiltroMes = v; navigate('checklist_linha'); }
+function linhaDashFiltrarResponsavel(v) { window._linhaDashFiltroResponsavel = v; navigate('checklist_linha'); }
 
 function renderLinhaMiniDashboard() {
   const historico = Array.isArray(window._linhaHistorico) ? window._linhaHistorico : [];
@@ -37285,9 +37332,18 @@ function renderLinhaMiniDashboard() {
   };
   const cmpLinha = window._linhaDashOrdenacao === 'numero' ? cmpLinhaNumero : (a, b) => (b.data || '').localeCompare(a.data || '');
   const buscaLinhaNorm = (window._linhaDashFiltroBusca || '').trim().toLowerCase();
+  const numLinhaNorm = (window._linhaDashFiltroNum || '').trim().toLowerCase();
+  // Lista de responsáveis (Elaborado por) com pelo menos 1 checklist, pra
+  // popular o select de filtro — pedido 07/10/2026, mesmo padrão do ERO.
+  const responsaveisLinhaDisponiveis = [...new Set(historico.map(r => r.ElaboradoPor).filter(Boolean))].sort();
+  // Mês extraído do campo data (yyyy-mm-dd) — mesmo critério do ERO, pedido 07/10/2026.
+  const linhaMes = r => (r.data && /^\d{4}-\d{2}/.test(r.data)) ? r.data.slice(5,7) : '';
   const ordenado = [...historico]
     .filter(r => !filtroClass || linhaRegistroClassificacao(r).indexOf(filtroClass) !== -1)
     .filter(r => !buscaLinhaNorm || (r.empreendimento || '').toLowerCase().includes(buscaLinhaNorm))
+    .filter(r => !numLinhaNorm || String(r.num || '').toLowerCase().includes(numLinhaNorm))
+    .filter(r => !window._linhaDashFiltroMes || linhaMes(r) === window._linhaDashFiltroMes)
+    .filter(r => !window._linhaDashFiltroResponsavel || r.ElaboradoPor === window._linhaDashFiltroResponsavel)
     .sort(cmpLinha);
   return `
   <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
@@ -37295,6 +37351,15 @@ function renderLinhaMiniDashboard() {
       <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📊 Mini Dashboard — Checklists de Linha</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input type="text" id="linha_dash_busca" value="${(window._linhaDashFiltroBusca||'').replace(/"/g,'&quot;')}" placeholder="🔍 Buscar empreendimento..." oninput="linhaDashFiltrarBusca(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;min-width:190px">
+        <input type="text" id="linha_dash_filtro_num" value="${(window._linhaDashFiltroNum||'').replace(/"/g,'&quot;')}" placeholder="🔢 Nº" oninput="linhaDashFiltrarNum(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;width:80px">
+        <select onchange="linhaDashFiltrarResponsavel(this.value)" title="Filtrar por responsável pelo checklist" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
+          <option value="">Todos os responsáveis</option>
+          ${responsaveisLinhaDisponiveis.map(n => `<option value="${n.replace(/"/g,'&quot;')}" ${window._linhaDashFiltroResponsavel===n?'selected':''}>${n}</option>`).join('')}
+        </select>
+        <select onchange="linhaDashFiltrarMes(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
+          <option value="">Todos os meses</option>
+          ${ERO_MESES.map((m,idx) => `<option value="${String(idx+1).padStart(2,'0')}" ${window._linhaDashFiltroMes===String(idx+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}
+        </select>
         <select onchange="linhaDashOrdenarPor(this.value)" title="Ordenar o histórico abaixo" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
           <option value="data" ${window._linhaDashOrdenacao==='data'?'selected':''}>Ordenar por Data</option>
           <option value="numero" ${window._linhaDashOrdenacao==='numero'?'selected':''}>Ordenar por Nº</option>
@@ -37313,12 +37378,14 @@ function renderLinhaMiniDashboard() {
       </div>
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted)">
-        Histórico de Trechos Inspecionados ${filtroClass ? `— ${rotuloFiltro} (${ordenado.length})` : ''}
+      <div onclick="linhaToggleHistorico()" style="cursor:pointer;display:flex;align-items:center;gap:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);user-select:none">
+        <span style="display:inline-block;transition:transform .15s;transform:rotate(${window._linhaHistoricoAberto?90:0}deg)">▸</span>
+        Histórico de Trechos Inspecionados ${filtroClass ? `— ${rotuloFiltro}` : ''} ${window._linhaHistorico !== null ? `(${ordenado.length})` : ''}
       </div>
       ${filtroClass ? `<button class="btn-secondary" style="padding:4px 10px;font-size:.7rem" onclick="linhaDashLimparFiltroClass()">✕ Ver todos</button>` : ''}
     </div>
-    <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
+    ${window._linhaHistoricoAberto ? `
+    <div style="max-height:56vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
       <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;background:var(--surface2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1">
         <div style="flex:1;min-width:140px;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Trecho</div>
         <div style="min-width:120px;text-align:center;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Responsável (checklist)</div>
@@ -37372,6 +37439,7 @@ function renderLinhaMiniDashboard() {
             </div>`).join('')
       }
     </div>
+    ` : ''}
   </div>
   `;
 }
@@ -37489,6 +37557,7 @@ async function linhaEditarChecklist(id) {
     linhaMigrarPontuacao(window._linhaData);
     window._linhaRegistroAtualId = id;
     window._linhaFormAberto = true;
+    window._linhaHistoricoAberto = false; // fecha o histórico ao abrir um checklist — pedido 07/10/2026
     showSyncStatus('Checklist carregado!', 'ok', 3000);
     showToast('✏️ Checklist carregado para edição. Altere o que precisar e clique em Salvar.');
     navigate('checklist_linha');
@@ -37964,6 +38033,7 @@ function linhaAbrirNovaInspecao() {
   window._linhaData = { ocorrencias: [], respostas: {} };
   window._linhaRegistroAtualId = null;
   window._linhaFormAberto = true;
+  window._linhaHistoricoAberto = false; // fecha o histórico ao abrir um checklist — pedido 07/10/2026
   navigate('checklist_linha');
 }
 
@@ -56370,6 +56440,7 @@ async function eroEditarChecklist(id) {
     window._eroData = JSON.parse(texto);
     window._eroRegistroAtualId = id;
     window._eroFormAberto = true;
+    window._eroHistoricoAberto = false; // fecha o histórico ao abrir um checklist — pedido 07/10/2026
     showSyncStatus('Checklist carregado!', 'ok', 3000);
     showToast('✏️ Checklist carregado para edição. Altere o que precisar e clique em Salvar.');
     navigate('checklist_ero');
