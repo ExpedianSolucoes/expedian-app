@@ -31715,6 +31715,7 @@ async function eroPreColetaSalvar() {
 if (typeof window._eroDashFiltroMes === 'undefined') window._eroDashFiltroMes = '';
 if (typeof window._eroDashFiltroAno === 'undefined') window._eroDashFiltroAno = '';
 if (typeof window._eroDashFiltroSemestre === 'undefined') window._eroDashFiltroSemestre = '';
+if (typeof window._eroDashFiltroBusca === 'undefined') window._eroDashFiltroBusca = '';
 // Ordenação do Histórico de Empreendimentos Inspecionados — 'data' (padrão,
 // mais recente primeiro) ou 'numero' (Nº do empreendimento, crescente,
 // registros sem Nº — checklist manual sem vínculo — vão pro final) —
@@ -31890,6 +31891,11 @@ async function carregarEROHistorico(forcar) {
 function eroDashFiltrarMes(v) { window._eroDashFiltroMes = v; navigate('checklist_ero'); }
 function eroDashFiltrarAno(v) { window._eroDashFiltroAno = v; navigate('checklist_ero'); }
 function eroDashFiltrarSemestre(v) { window._eroDashFiltroSemestre = v; navigate('checklist_ero'); }
+/* -- Busca por nome de empreendimento no Mini Dashboard — com debounce (igual
+   aos campos de busca de Despesas/Receitas/NF) pra não re-renderizar o
+   dashboard inteiro a cada tecla digitada. Pedido em 07/10/2026. -- */
+function eroDashRenavegar() { navigate('checklist_ero'); }
+function eroDashFiltrarBusca(v) { window._eroDashFiltroBusca = v; dbDebounce('eroDashRenavegar'); }
 
 /* -- Limpa TODO o histórico de checklists ERO (local + OneDrive central). Ação destrutiva. -- */
 async function eroLimparHistorico() {
@@ -31907,6 +31913,7 @@ async function eroLimparHistorico() {
   window._eroHistorico = [];
   window._eroDashFiltroMes = '';
   window._eroDashFiltroAno = '';
+  window._eroDashFiltroBusca = '';
   try { localStorage.setItem('ero_historico_cache', JSON.stringify([])); } catch(e) {}
 
   if (ok) {
@@ -31961,33 +31968,27 @@ function eroFiltrarPorSemestreResumo(ano, sem) {
   window._eroHistoricoAberto = true;
   navigate('checklist_ero');
 }
-function eroHtmlResumoPorSemestre(historico) {
+/* -- Versão compacta do Resumo por Semestre, pra caber como um 4º card ao
+   lado dos cards de KPI (Checklists no Filtro/Total Geral/Empreendimentos
+   Distintos), em vez de uma tabela cheia abaixo deles — pedido em
+   07/10/2026: "ao fazer o filtro do semestre só aparecer a lista histórico
+   ... pode remover esse resumo, colocar como um card ao lado dos cards
+   empreendimentos". Mantém o clique-pra-filtrar de antes. -- */
+function eroHtmlResumoPorSemestreCard(historico) {
   const lista = eroResumoPorSemestre(historico);
-  if (!lista.length) return '';
+  if (!lista.length) {
+    return `<div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">📅 Por Semestre</div><div style="font-size:.8rem;color:var(--text-muted)">—</div>`;
+  }
   return `
-  <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px">
-    📅 Resumo por Semestre <span style="text-transform:none;font-weight:400;letter-spacing:normal">(clique numa linha pra ver os checklists dela)</span>
-  </div>
-  <div style="overflow-x:auto;margin-bottom:18px;border:1px solid var(--border);border-radius:10px">
-    <table style="width:100%;border-collapse:collapse">
-      <thead><tr style="background:var(--surface2)">
-        <th style="padding:8px 10px;text-align:left;font-size:.68rem;color:var(--text-muted)">Semestre</th>
-        <th style="padding:8px 10px;text-align:center;font-size:.68rem;color:var(--text-muted)">Checklists</th>
-        <th style="padding:8px 10px;text-align:center;font-size:.68rem;color:var(--text-muted)">Empreendimentos</th>
-        <th style="padding:8px 10px;text-align:center;font-size:.68rem;color:var(--text-muted)">Média IDA/Pontuação</th>
-      </tr></thead>
-      <tbody>
-        ${lista.map((s,idx) => {
-          const ativo = window._eroDashFiltroAno === s.ano && window._eroDashFiltroSemestre === String(s.sem);
-          return `
-        <tr onclick="eroFiltrarPorSemestreResumo('${s.ano}',${s.sem})" style="cursor:pointer;${ativo?'background:var(--surface2);box-shadow:inset 3px 0 0 var(--green-main)':''}${idx<lista.length-1?';border-bottom:1px solid var(--border)':''}">
-          <td style="padding:8px 10px;font-size:.82rem;font-weight:700">${s.label}${ativo?' ✓':''}</td>
-          <td style="padding:8px 10px;font-size:.82rem;text-align:center">${s.qtd}</td>
-          <td style="padding:8px 10px;font-size:.82rem;text-align:center">${s.qtdEmpreendimentos}</td>
-          <td style="padding:8px 10px;font-size:.82rem;text-align:center;font-weight:700;color:${s.mediaPct===null?'var(--text-muted)':s.mediaPct>=75?'var(--green-main)':s.mediaPct>=50?'#d97706':'var(--red)'}">${s.mediaPct===null?'—':s.mediaPct+'%'}</td>
-        </tr>`;}).join('')}
-      </tbody>
-    </table>
+  <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:6px">📅 Por Semestre <span title="Clique num semestre pra filtrar o histórico abaixo">ⓘ</span></div>
+  <div style="max-height:92px;overflow-y:auto">
+    ${lista.map((s,idx) => {
+      const ativo = window._eroDashFiltroAno === s.ano && window._eroDashFiltroSemestre === String(s.sem);
+      return `
+    <div onclick="eroFiltrarPorSemestreResumo('${s.ano}',${s.sem})" style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:3px 4px;cursor:pointer;border-radius:5px;${ativo?'background:var(--surface2);box-shadow:inset 2px 0 0 var(--green-main)':''}${idx>0?'margin-top:1px':''}">
+      <span style="font-size:.74rem;font-weight:700;white-space:nowrap">${s.label}${ativo?' ✓':''}</span>
+      <span style="font-size:.7rem;color:var(--text-muted);white-space:nowrap">${s.qtd}x · ${s.mediaPct===null?'—':s.mediaPct+'%'}</span>
+    </div>`;}).join('')}
   </div>`;
 }
 
@@ -32019,10 +32020,12 @@ function renderEROMiniDashboard() {
   };
   const cmpEro = window._eroDashOrdenacao === 'numero' ? cmpEroNumero : (a, b) => (b.data || '').localeCompare(a.data || '');
 
+  const buscaNorm = (window._eroDashFiltroBusca || '').trim().toLowerCase();
   const filtrados = comData.filter(r =>
     (!window._eroDashFiltroAno || r._ano === window._eroDashFiltroAno) &&
     (!window._eroDashFiltroMes || r._mes === window._eroDashFiltroMes) &&
-    (!window._eroDashFiltroSemestre || r._sem === window._eroDashFiltroSemestre)
+    (!window._eroDashFiltroSemestre || r._sem === window._eroDashFiltroSemestre) &&
+    (!buscaNorm || (r.empreendimento || '').toLowerCase().includes(buscaNorm))
   ).sort(cmpEro);
 
   const empreendimentosUnicos = new Set(filtrados.map(r => (r.empreendimento||'Sem nome').trim()).filter(Boolean));
@@ -32032,6 +32035,7 @@ function renderEROMiniDashboard() {
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📊 Mini Dashboard — Checklists ERO</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="text" id="ero_dash_busca" value="${(window._eroDashFiltroBusca||'').replace(/"/g,'&quot;')}" placeholder="🔍 Buscar empreendimento..." oninput="eroDashFiltrarBusca(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;min-width:190px">
         <select onchange="eroDashFiltrarMes(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
           <option value="">Todos os meses</option>
           ${ERO_MESES.map((m,idx) => `<option value="${String(idx+1).padStart(2,'0')}" ${window._eroDashFiltroMes===String(idx+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}
@@ -32054,7 +32058,7 @@ function renderEROMiniDashboard() {
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
       <div class="kpi-card green" style="padding:12px">
         <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Checklists no Filtro</div>
         <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${filtrados.length}</div>
@@ -32067,9 +32071,10 @@ function renderEROMiniDashboard() {
         <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:4px">Empreendimentos Distintos (no filtro)</div>
         <div style="font-family:'Mont',sans-serif;font-size:1.5rem;font-weight:800">${empreendimentosUnicos.size}</div>
       </div>
+      <div class="kpi-card" style="padding:12px">
+        ${eroHtmlResumoPorSemestreCard(historico)}
+      </div>
     </div>
-
-    ${eroHtmlResumoPorSemestre(historico)}
 
     <div onclick="eroToggleHistorico()" style="cursor:pointer;display:flex;align-items:center;gap:6px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:8px;user-select:none">
       <span style="display:inline-block;transition:transform .15s;transform:rotate(${window._eroHistoricoAberto?90:0}deg)">▸</span>
@@ -32629,6 +32634,7 @@ function meaAbrirChecklistSubestacao() {
   window._eroDashFiltroMes = '';
   window._eroDashFiltroAno = '';
   window._eroDashFiltroSemestre = '';
+  window._eroDashFiltroBusca = '';
   window._eroHistoricoAberto = true;
   window._meaAba = 'form';
   navigate('checklist_ero');
