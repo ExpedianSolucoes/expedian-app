@@ -32263,6 +32263,31 @@ function meaRelatorioPronto(x) {
   return tipos.every(function(t) { return meaChecklistProntoParaTipo(x, t); });
 }
 
+/* -- Coluna "Checklist" da lista principal de Monitoramento Ambiental (pedido
+   07/10/2026, a partir de print da tela): ✅/❌ se o Checklist formal (ERO/
+   Linha) já foi preenchido pra cada tipo do empreendimento — reaproveita
+   meaChecklistProntoParaTipo (já existia pro card Relatório de Vistoria).
+   Pra misto, 1 ícone por tipo (⚡ Linha / 🏭 Subestação), igual já é feito
+   pro Status de Vistoria. Enquanto o histórico de Checklist ainda não
+   carregou (_eroHistorico/_linhaHistorico null), mostra ⏳ em vez de ❌ pra
+   não dar falso negativo antes da 1ª leitura do OneDrive terminar. -- */
+function meaChecklistStatusHtml(x) {
+  var tipos = meaTipos(x);
+  var temLinha = tipos.indexOf('ld') !== -1 || tipos.indexOf('rede_rural') !== -1;
+  var temSub = tipos.indexOf('subestacao') !== -1;
+  if (!temLinha && !temSub) return '<span style="color:var(--text-muted)">—</span>';
+  function ic(carregado, pronto) {
+    if (!carregado) return '<span style="color:var(--text-muted)" title="Carregando...">⏳</span>';
+    return pronto ? '<span style="color:#1a7a3c;font-weight:700" title="Checklist já preenchido">✅</span>' : '<span style="color:#b02a2a;font-weight:700" title="Checklist pendente">❌</span>';
+  }
+  var subHtml = temSub ? ic(Array.isArray(window._eroHistorico), meaChecklistProntoParaTipo(x, 'subestacao')) : '';
+  var linhaHtml = temLinha ? ic(Array.isArray(window._linhaHistorico), meaChecklistProntoParaTipo(x, 'ld')) : '';
+  if (temLinha && temSub) {
+    return '<div style="font-size:.68rem;white-space:nowrap">⚡ '+linhaHtml+'</div><div style="font-size:.68rem;white-space:nowrap">🏭 '+subHtml+'</div>';
+  }
+  return '<div style="font-size:.78rem">'+(temSub ? subHtml : linhaHtml)+'</div>';
+}
+
 function meaRegistroVazio() {
   return {
     id: meaUid(), num: '', empreendimento: '', regional: '', cnpj: '', municipio: '', endereco: '', coordenadas: '',
@@ -32748,11 +32773,12 @@ function meaRenderizarLista() {
       '<td style="padding:8px;font-size:.72rem;text-align:center"><span style="padding:2px 8px;border-radius:20px;background:'+rB.bg+';color:'+rB.cor+';font-weight:700;white-space:nowrap">'+rB.label+'</span></td>' +
       '<td style="padding:8px;font-size:.72rem;text-align:center"><span style="padding:2px 8px;border-radius:20px;background:'+pB.bg+';color:'+pB.cor+';font-weight:700;white-space:nowrap">'+pB.label+'</span></td>' +
       '<td style="padding:8px;font-size:.72rem;text-align:center"><span style="padding:2px 8px;border-radius:20px;background:'+cB.bg+';color:'+cB.cor+';font-weight:700;white-space:nowrap">'+cB.label+'</span></td>' +
-      '<td style="padding:8px;text-align:center"><button class="btn-secondary" style="font-size:.7rem;padding:4px 10px" onclick="event.stopPropagation();meaAbrirDetalhe(\''+x.id+'\')">✏️</button></td>' +
+      '<td style="padding:8px;text-align:center">'+meaChecklistStatusHtml(x)+'</td>' +
+      '<td style="padding:8px;text-align:center;white-space:nowrap"><button class="btn-secondary" style="font-size:.7rem;padding:4px 8px" title="Visualizar" onclick="event.stopPropagation();meaVisualizarDetalhe(\''+x.id+'\')">👁️</button> <button class="btn-secondary" style="font-size:.7rem;padding:4px 8px" title="Editar" onclick="event.stopPropagation();meaAbrirDetalhe(\''+x.id+'\')">✏️</button></td>' +
     '</tr>';
   }).join('');
   el.innerHTML =
-    '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:900px">' +
+    '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:980px">' +
     '<thead><tr style="border-bottom:2px solid var(--border);text-align:left">' +
     '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Nº</th>' +
     '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Empreendimento</th>' +
@@ -32761,9 +32787,78 @@ function meaRenderizarLista() {
     '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase;text-align:center">Ruído</th>' +
     '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase;text-align:center">Poço</th>' +
     '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase;text-align:center">CSAO</th>' +
+    '<th style="padding:8px;font-size:.68rem;color:var(--text-muted);text-transform:uppercase;text-align:center">Checklist</th>' +
     '<th style="padding:8px"></th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div style="font-size:.72rem;color:var(--text-muted);margin-top:8px">'+lista.length+' de '+MEA_DADOS.length+' empreendimentos</div>';
+}
+
+/* -- "Visualizar" (tela maior, só leitura) pedida em 07/10/2026, pra não
+   precisar abrir o formulário inteiro de edição só pra conferir os dados de
+   um empreendimento — mesmo padrão de rdVisualizarDespesa/rcVisualizarReceita
+   (modal com Editar no topo), só que mais largo porque o MEA tem bem mais
+   campos que Despesa/Receita. -- */
+function meaVisualizarDetalhe(id) {
+  var x = MEA_DADOS.find(function(r){ return r.id === id; });
+  if (!x) { showToast('⚠️ Empreendimento não encontrado (recarregue a lista).'); return; }
+  var existente = document.getElementById('mea-view-modal'); if (existente) existente.remove();
+  var fmtData = function(d) { return d ? laFormatarData(d) : '—'; };
+  var linha = function(label, valor) {
+    if (valor === null || valor === undefined || valor === '') return '';
+    return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">' +
+      '<span style="color:var(--text-muted)">'+label+'</span><span style="font-weight:600;text-align:right">'+valor+'</span></div>';
+  };
+  var secao = function(titulo) {
+    return '<div style="font-size:.74rem;font-weight:700;color:var(--brand-green);margin:16px 0 4px;text-transform:uppercase;letter-spacing:.04em">'+titulo+'</div>';
+  };
+  var v = x.vistoria || {};
+  var lic = meaStatusLicenca(x.vencimento);
+  var tiposLabel = meaTipos(x).map(function(t){
+    return t === 'subestacao' ? '🏭 Subestação' : (t === 'ld' ? '⚡ Linha (LD)' : (t === 'rede_rural' ? '⚡ Rede Rural' : t));
+  }).join(' + ') || '—';
+  var combinado = meaTemLinhaESubestacao(x);
+
+  var vistoriaHtml = combinado
+    ? linha('Status — ⚡ Linha', _vistStatusLabels[v.statusLinha] || '—') +
+      linha('Status — 🏭 Subestação', _vistStatusLabels[v.statusSubestacao] || '—') +
+      linha('Programação — ⚡ Linha', (v.progDataLinha ? fmtData(v.progDataLinha) : '—') + ' · ' + [v.progEquipeLinha1, v.progEquipeLinha2].filter(Boolean).join(' / ') || '—') +
+      linha('Programação — 🏭 Subestação', (v.progDataSubestacao ? fmtData(v.progDataSubestacao) : '—') + ' · ' + [v.progEquipeSubestacao1, v.progEquipeSubestacao2].filter(Boolean).join(' / ') || '—')
+    : linha('Status', _vistStatusLabels[v.status] || '—') +
+      linha('Data Programada', fmtData(v.dataProgramada)) +
+      linha('Equipe Programada', [v.responsavelProgramado, v.responsavelProgramado2].filter(Boolean).join(' / ') || '—') +
+      linha('Data da Vistoria', fmtData(v.data)) +
+      linha('Técnicos (campo)', [v.tecnico1, v.tecnico2].filter(Boolean).join(' / ') || '—');
+
+  var ehSub = meaTemTipo(x, 'subestacao');
+  var r = x.rma || {}, ru = x.ruido || {}, po = x.poco || {}, cs = x.csao || {};
+
+  var modal = document.createElement('div');
+  modal.id = 'mea-view-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML =
+    '<div style="background:var(--surface);border-radius:14px;padding:22px;max-width:760px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;gap:10px">' +
+        '<div style="font-weight:800;font-size:1.05rem">👁️ '+(x.num?x.num+' — ':'')+x.empreendimento+'</div>' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">' +
+          '<button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="document.getElementById(\'mea-view-modal\').remove();meaAbrirDetalhe(\''+x.id+'\')">✏️ Editar</button>' +
+          '<div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById(\'mea-view-modal\').remove()">✕</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:10px">'+tiposLabel+(meaEhMisto(x)?' <span style="display:inline-block;padding:1px 7px;border-radius:20px;background:#f3eefc;color:#6f42c1;font-size:.64rem;font-weight:700;vertical-align:middle;margin-left:4px">🔀 Misto</span>':'')+'</div>' +
+      secao('📍 Dados Gerais') +
+      linha('Regional', x.regional) + linha('Município', x.municipio) + linha('Endereço', x.endereco) + linha('Coordenadas', x.coordenadas) + linha('CNPJ', x.cnpj) +
+      secao('📄 Licença Ambiental') +
+      linha('Nº Licença', x.numeroLicenca) + linha('Nº Processo', x.processoLicenciamento) + linha('Emissão', fmtData(x.emissao)) + linha('Vencimento', fmtData(x.vencimento) + (x.vencimento ? ' <span style="color:'+lic.cor+'">('+lic.label+')</span>' : '')) +
+      secao('🔍 Vistoria') + vistoriaHtml + linha('Motivo (se não realizada/parcial)', v.motivo) +
+      secao('✅ Checklist Formal') + linha('Status', meaChecklistStatusHtml(x)) +
+      secao('📋 RMA') +
+      linha('Necessário?', r.necessario) + linha('Status', meaStatusBadge('rma', r.status||'pendente').label) + linha('ART', r.art) +
+      (ehSub ? secao('🔊 Ruído') + linha('Necessário?', ru.necessario) + linha('Status', meaNaoAplicavel(x,'ruido') ? '➖ N/A' : meaStatusBadge('padrao', ru.status||'pendente').label) : '') +
+      (ehSub ? secao('🕳️ Poço') + linha('Existe?', po.existe) + linha('Status', meaNaoAplicavel(x,'poco') ? '➖ N/A' : meaStatusBadge('padrao', po.status||'pendente').label) : '') +
+      (ehSub ? secao('☣️ CSAO') + linha('Existe?', cs.existe) + linha('Status', meaNaoAplicavel(x,'csao') ? '➖ N/A' : meaStatusBadge('padrao', cs.status||'pendente').label) : '') +
+      (x.obs ? secao('💬 Observações') + '<div style="font-size:.82rem;padding:6px 0">'+x.obs+'</div>' : '') +
+    '</div>';
+  document.body.appendChild(modal);
 }
 
 function meaAbrirDetalhe(id) {
@@ -32801,6 +32896,12 @@ function meaAbrirDetalhe(id) {
   set('mea-vistoria-data', v.data);
   set('mea-vistoria-tec1', v.tecnico1);
   set('mea-vistoria-tec2', v.tecnico2);
+  set('mea-vistoria-prog-linha-data', v.progDataLinha);
+  set('mea-vistoria-prog-linha-eq1', v.progEquipeLinha1);
+  set('mea-vistoria-prog-linha-eq2', v.progEquipeLinha2);
+  set('mea-vistoria-prog-subestacao-data', v.progDataSubestacao);
+  set('mea-vistoria-prog-subestacao-eq1', v.progEquipeSubestacao1);
+  set('mea-vistoria-prog-subestacao-eq2', v.progEquipeSubestacao2);
   set('mea-vistoria-motivo', v.motivo);
   var r = reg.rma || {};
   set('mea-rma-necessario', r.necessario);
@@ -33077,7 +33178,26 @@ async function meaSalvarDetalhe() {
   var meaVistStatusLinha = meaVistCombinado ? g('mea-vistoria-status-linha') : ((reg.vistoria && reg.vistoria.statusLinha) || '');
   var meaVistStatusSubestacao = meaVistCombinado ? g('mea-vistoria-status-subestacao') : ((reg.vistoria && reg.vistoria.statusSubestacao) || '');
   var meaVistStatus = meaVistCombinado ? eroConsolidarStatus(meaVistStatusLinha, meaVistStatusSubestacao) : g('mea-vistoria-status');
-  reg.vistoria = { status: meaVistStatus, statusLinha: meaVistStatusLinha, statusSubestacao: meaVistStatusSubestacao, dataProgramada: g('mea-vistoria-dataprog'), responsavelProgramado: g('mea-vistoria-respprog'), responsavelProgramado2: g('mea-vistoria-respprog2'), data: g('mea-vistoria-data'), tecnico1: g('mea-vistoria-tec1'), tecnico2: g('mea-vistoria-tec2'), motivo: g('mea-vistoria-motivo'), lss: (reg.vistoria && reg.vistoria.lss) || { status: '', obs: '' }, pernoite: (reg.vistoria && reg.vistoria.pernoite) || '', lssNumero: (reg.vistoria && reg.vistoria.lssNumero) || '', observacao: (reg.vistoria && reg.vistoria.observacao) || '', ordemRoteiro: (reg.vistoria && reg.vistoria.ordemRoteiro != null) ? reg.vistoria.ordemRoteiro : null, fotosEnviadas: (reg.vistoria && reg.vistoria.fotosEnviadas) || 0, fotosEnviadasSubestacao: (reg.vistoria && reg.vistoria.fotosEnviadasSubestacao) || 0, fotosEnviadasLinha: (reg.vistoria && reg.vistoria.fotosEnviadasLinha) || 0 };
+  // Programação (equipe+data), pedido 07/10/2026: pra misto, 1 par data+equipe
+  // por tipo (não repete "programada" vs "realizada" — Tiago: "basicamente
+  // será o mesmo"). Pra não-misto, continua o jeito de sempre (campos únicos).
+  var progDataLinha = meaVistCombinado ? g('mea-vistoria-prog-linha-data') : ((reg.vistoria && reg.vistoria.progDataLinha) || '');
+  var progEquipeLinha1 = meaVistCombinado ? g('mea-vistoria-prog-linha-eq1') : ((reg.vistoria && reg.vistoria.progEquipeLinha1) || '');
+  var progEquipeLinha2 = meaVistCombinado ? g('mea-vistoria-prog-linha-eq2') : ((reg.vistoria && reg.vistoria.progEquipeLinha2) || '');
+  var progDataSubestacao = meaVistCombinado ? g('mea-vistoria-prog-subestacao-data') : ((reg.vistoria && reg.vistoria.progDataSubestacao) || '');
+  var progEquipeSubestacao1 = meaVistCombinado ? g('mea-vistoria-prog-subestacao-eq1') : ((reg.vistoria && reg.vistoria.progEquipeSubestacao1) || '');
+  var progEquipeSubestacao2 = meaVistCombinado ? g('mea-vistoria-prog-subestacao-eq2') : ((reg.vistoria && reg.vistoria.progEquipeSubestacao2) || '');
+  // Compat: Roteiro (agenda de campo) e o picker de "Novo Checklist ERO" ainda
+  // leem os campos únicos de sempre (dataProgramada/responsavelProgramado/data/
+  // tecnico1/2) — pra misto, espelham a Subestação (é o que esse automatismo
+  // usa hoje); se só a Linha tiver data, usa a Linha.
+  var dataProgCompat = meaVistCombinado ? (progDataSubestacao || progDataLinha) : g('mea-vistoria-dataprog');
+  var respProg1Compat = meaVistCombinado ? (progDataSubestacao ? progEquipeSubestacao1 : progEquipeLinha1) : g('mea-vistoria-respprog');
+  var respProg2Compat = meaVistCombinado ? (progDataSubestacao ? progEquipeSubestacao2 : progEquipeLinha2) : g('mea-vistoria-respprog2');
+  var dataCompat = meaVistCombinado ? (progDataSubestacao || progDataLinha) : g('mea-vistoria-data');
+  var tec1Compat = meaVistCombinado ? (progDataSubestacao ? progEquipeSubestacao1 : progEquipeLinha1) : g('mea-vistoria-tec1');
+  var tec2Compat = meaVistCombinado ? (progDataSubestacao ? progEquipeSubestacao2 : progEquipeLinha2) : g('mea-vistoria-tec2');
+  reg.vistoria = { status: meaVistStatus, statusLinha: meaVistStatusLinha, statusSubestacao: meaVistStatusSubestacao, progDataLinha: progDataLinha, progEquipeLinha1: progEquipeLinha1, progEquipeLinha2: progEquipeLinha2, progDataSubestacao: progDataSubestacao, progEquipeSubestacao1: progEquipeSubestacao1, progEquipeSubestacao2: progEquipeSubestacao2, dataProgramada: dataProgCompat, responsavelProgramado: respProg1Compat, responsavelProgramado2: respProg2Compat, data: dataCompat, tecnico1: tec1Compat, tecnico2: tec2Compat, motivo: g('mea-vistoria-motivo'), lss: (reg.vistoria && reg.vistoria.lss) || { status: '', obs: '' }, pernoite: (reg.vistoria && reg.vistoria.pernoite) || '', lssNumero: (reg.vistoria && reg.vistoria.lssNumero) || '', observacao: (reg.vistoria && reg.vistoria.observacao) || '', ordemRoteiro: (reg.vistoria && reg.vistoria.ordemRoteiro != null) ? reg.vistoria.ordemRoteiro : null, fotosEnviadas: (reg.vistoria && reg.vistoria.fotosEnviadas) || 0, fotosEnviadasSubestacao: (reg.vistoria && reg.vistoria.fotosEnviadasSubestacao) || 0, fotosEnviadasLinha: (reg.vistoria && reg.vistoria.fotosEnviadasLinha) || 0 };
   reg.rma = { necessario: g('mea-rma-necessario'), status: g('mea-rma-status'), art: g('mea-rma-art'), tecnicoArt: g('mea-rma-tecart'), tecnicoRma: g('mea-rma-tecrma'), historico: (reg.rma && reg.rma.historico) || [] };
   var ruidoNecessario = g('mea-ruido-necessario');
   var ruidoPontos = ruidoNecessario === 'Sim' ? (window._meaPontosRuido || []).map(function(p){ return { data: p.data||'', status: p.status||'pendente' }; }) : [];
@@ -33217,6 +33337,10 @@ function meaVistoriaModoToggle() {
   if (rowCombinado) rowCombinado.style.display = combinado ? '' : 'none';
   if (rowSimples) rowSimples.style.display = combinado ? 'none' : '';
   if (combinado) meaVistoriaConsolidarStatus();
+  var progCombinado = document.getElementById('mea-vistoria-prog-combinado-row');
+  var progSimples = document.getElementById('mea-vistoria-prog-simples-row');
+  if (progCombinado) progCombinado.style.display = combinado ? '' : 'none';
+  if (progSimples) progSimples.style.display = combinado ? 'none' : '';
 }
 /* -- Junta os 2 status (Linha/Subestação) num status único (mesmo critério
    de eroConsolidarStatus já usado na aba Vistorias) e joga no select
@@ -33336,10 +33460,11 @@ function pageMonitoramentoAmbientalERO() {
   // cards "Teste de Opacidade" deste painel (a lista de veículos em si
   // mora na aba própria) — pedido em 12/09/2026.
   opacCarregar().then(function() { meaRenderizarKPIs(); });
-  // Carrega os históricos de Checklist ERO/Linha só pra alimentar o card
-  // "Relatório de Vistoria" (checklist pronto por empreendimento) — pedido
-  // em 23/09/2026.
-  meaChecklistsCarregar().then(function() { meaRenderizarKPIs(); });
+  // Carrega os históricos de Checklist ERO/Linha pra alimentar o card
+  // "Relatório de Vistoria" (23/09/2026) E a coluna "Checklist" da lista
+  // principal (07/10/2026) — reatualiza a lista também quando terminar, já
+  // que ela pode ter renderizado antes com os históricos ainda vazios.
+  meaChecklistsCarregar().then(function() { meaRenderizarKPIs(); meaRenderizarLista(); });
   // Pré-Coleta de Campo (pedido 26/09/2026) — carrega em paralelo pra já
   // deixar pronta a checagem de "tem pré-coleta pendente?" nos badges/picker.
   if (window._eroPreColetaLista === null) eroPreColetaCarregar();
@@ -33449,19 +33574,35 @@ function pageMonitoramentoAmbientalERO() {
             <select id="mea-vistoria-status"><option value="pendente">❌ Pendente</option><option value="programada">📅 Programada</option><option value="parcial">🔶 Parcial</option><option value="realizada">✅ Realizada</option><option value="nao_realizada">🚫 Não Realizada</option></select>
           </div>
         </div>
-        <div class="form-row">
-          <div class="form-group"><label>Data Programada</label><input type="date" id="mea-vistoria-dataprog"></div>
+        <div id="mea-vistoria-prog-simples-row">
+          <div class="form-row">
+            <div class="form-group"><label>Data Programada</label><input type="date" id="mea-vistoria-dataprog"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Equipe Programada 1</label><select id="mea-vistoria-respprog">${meaOptsTecnicos()}</select></div>
+            <div class="form-group"><label>Equipe Programada 2</label><select id="mea-vistoria-respprog2">${meaOptsTecnicos()}</select></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Data da Vistoria</label><input type="date" id="mea-vistoria-data"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Técnico 1 (Equipe de Campo)</label><select id="mea-vistoria-tec1">${meaOptsTecnicos()}</select></div>
+            <div class="form-group"><label>Técnico 2 (Equipe de Campo)</label><select id="mea-vistoria-tec2">${meaOptsTecnicos()}</select></div>
+          </div>
         </div>
-        <div class="form-row">
-          <div class="form-group"><label>Equipe Programada 1</label><select id="mea-vistoria-respprog">${meaOptsTecnicos()}</select></div>
-          <div class="form-group"><label>Equipe Programada 2</label><select id="mea-vistoria-respprog2">${meaOptsTecnicos()}</select></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Data da Vistoria</label><input type="date" id="mea-vistoria-data"></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Técnico 1 (Equipe de Campo)</label><select id="mea-vistoria-tec1">${meaOptsTecnicos()}</select></div>
-          <div class="form-group"><label>Técnico 2 (Equipe de Campo)</label><select id="mea-vistoria-tec2">${meaOptsTecnicos()}</select></div>
+        <div id="mea-vistoria-prog-combinado-row" style="display:none">
+          <div style="font-size:.72rem;font-weight:700;color:#6c4a00;background:#fff3cd;padding:4px 10px;border-radius:6px;display:inline-block;margin-bottom:6px">📅 Programação — ⚡ Linha</div>
+          <div class="form-row">
+            <div class="form-group"><label>Data</label><input type="date" id="mea-vistoria-prog-linha-data"></div>
+            <div class="form-group"><label>Equipe 1</label><select id="mea-vistoria-prog-linha-eq1">${meaOptsTecnicos()}</select></div>
+            <div class="form-group"><label>Equipe 2</label><select id="mea-vistoria-prog-linha-eq2">${meaOptsTecnicos()}</select></div>
+          </div>
+          <div style="font-size:.72rem;font-weight:700;color:#003d6c;background:#d6ebff;padding:4px 10px;border-radius:6px;display:inline-block;margin:10px 0 6px">📅 Programação — 🏭 Subestação</div>
+          <div class="form-row">
+            <div class="form-group"><label>Data</label><input type="date" id="mea-vistoria-prog-subestacao-data"></div>
+            <div class="form-group"><label>Equipe 1</label><select id="mea-vistoria-prog-subestacao-eq1">${meaOptsTecnicos()}</select></div>
+            <div class="form-group"><label>Equipe 2</label><select id="mea-vistoria-prog-subestacao-eq2">${meaOptsTecnicos()}</select></div>
+          </div>
         </div>
         <div class="form-group"><label>Motivo (se não realizada / parcial)</label><input id="mea-vistoria-motivo" placeholder="Ex: acesso bloqueado, chuva, aguardando autorização..."></div>
 
@@ -35838,6 +35979,13 @@ function pageChecklistEROForm() {
           ${ERO_TECNICOS.map(n => `<option value="${n}" ${d.tecnico2===n?'selected':''}>${n}</option>`).join('')}
         </select>
       </div>
+      <div class="form-group">
+        <label>Elaborado por <span style="font-weight:400;color:var(--text-muted)">(uso interno — não aparece no PDF)</span></label>
+        <select id="ero_elaborado_por" onchange="window._eroData.elaboradoPor=this.value">
+          <option value="">Selecione...</option>
+          ${ERO_TECNICOS.map(n => `<option value="${n}" ${d.elaboradoPor===n?'selected':''}>${n}</option>`).join('')}
+        </select>
+      </div>
     </div>
   </div>
 
@@ -37157,6 +37305,10 @@ async function salvarLinhaChecklist() {
     meaId: d.meaId || null,
     num: d.num || '',
     responsavel: d.responsavel || (window._currentUser ? window._currentUser.name : ''),
+    // Quem está preenchendo/elaborando o checklist (diferente de Técnico 1/2,
+    // que é a equipe de campo e aparece no PDF) — pedido 07/10/2026, só pra
+    // controle interno, nunca entra no PDF exportado.
+    ElaboradoPor: d.elaboradoPor || '',
     data: d.data || '',
     tensao: d.tensao || '',
     QtdOcorrencias: (d.ocorrencias || []).length,
@@ -37585,6 +37737,13 @@ function pageChecklistLinha() {
         <select id="linha_tecnico2" onchange="linhaAtualizarResponsaveis()">
           <option value="">Selecione...</option>
           ${ERO_TECNICOS.map(n => `<option value="${n}" ${d.tecnico2===n?'selected':''}>${n}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Elaborado por <span style="font-weight:400;color:var(--text-muted)">(uso interno — não aparece no PDF)</span></label>
+        <select id="linha_elaborado_por" onchange="window._linhaData.elaboradoPor=this.value">
+          <option value="">Selecione...</option>
+          ${ERO_TECNICOS.map(n => `<option value="${n}" ${d.elaboradoPor===n?'selected':''}>${n}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -56017,6 +56176,10 @@ async function salvarEROChecklist() {
     empreendimento: d.empreendimento || '',
     responsaveis: d.responsaveis || (window._currentUser ? window._currentUser.name : ''),
     Responsavel: d.responsaveis || (window._currentUser ? window._currentUser.name : ''),
+    // Quem está preenchendo/elaborando o checklist em si (diferente de
+    // Técnico 1/2, que é a equipe de campo e aparece no PDF) — pedido
+    // 07/10/2026, só pra controle interno, nunca entra no PDF exportado.
+    ElaboradoPor: d.elaboradoPor || '',
     data: d.data || '',
     Percentual: percentual + '%',
     Status: 'Salvo',
