@@ -32122,10 +32122,25 @@ function renderEROMiniDashboard() {
               <div style="font-size:.78rem;font-weight:700;min-width:60px;text-align:right;color:var(--green-main)">
                 ${r.Percentual || '—'}
               </div>
-              <div style="display:flex;gap:4px;flex-shrink:0">
+              <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="${r.documentoUrl?'Ver PDF/documento gerado':'Ainda sem PDF exportado'}" onclick="eroVerChecklist(${r.Id})">👁️ Ver</button>
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Gerar/reimprimir o PDF direto, sem abrir o formulário" onclick="eroExportarPDFdireto(${r.Id})">📄 PDF</button>
                 <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" title="Carregar de volta no formulário para editar" onclick="eroEditarChecklist(${r.Id})">✏️ Editar</button>
+                ${(() => {
+                  // Mesmo padrão de Checklist de Linha (e Fauna): só a Diretoria exclui
+                  // direto; coordenador/colaborador precisam solicitar com motivo, e a
+                  // Diretoria aprova/rejeita. Pedido 07/10/2026: "queria botão tbm de excluir".
+                  const pendente = r.SolicitacaoExclusao && r.SolicitacaoExclusao.status === 'pendente';
+                  if (currentProfile === 'diretoria') {
+                    return pendente
+                      ? `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:#fff;background:var(--red);border-color:var(--red)" onclick="eroResponderSolicitacaoExclusao(${r.Id}, true)" title="Solicitado por ${(r.SolicitacaoExclusao.solicitadoPorNome||'').replace(/"/g,'&quot;')} — motivo: ${(r.SolicitacaoExclusao.motivo||'').replace(/"/g,'&quot;')}">🗑️ Aprovar exclusão</button>
+                         <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="eroResponderSolicitacaoExclusao(${r.Id}, false)">✋ Rejeitar</button>`
+                      : `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:var(--red)" onclick="eroExcluirChecklist(${r.Id})">🗑️ Excluir</button>`;
+                  }
+                  return pendente
+                    ? `<span class="status-pill" style="font-size:.62rem;background:#fff8e6;color:#d97706;border:1px solid #d97706">⏳ Exclusão solicitada</span>`
+                    : `<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:var(--red)" onclick="eroSolicitarExclusaoChecklist(${r.Id})">🗑️ Solicitar exclusão</button>`;
+                })()}
               </div>
             </div>`).join('')
       }
@@ -33195,6 +33210,28 @@ function meaFecharDetalhe() {
   document.getElementById('mea-detalhe-modal').style.display = 'none';
 }
 
+// Compat Roteiro/picker "Novo Checklist" pra empreendimento misto (Linha+
+// Subestação): esses automatismos só leem 1 data/equipe por empreendimento
+// (dataProgramada/responsavelProgramado/data/tecnico1/2). Corrigido em
+// 07/10/2026 — caso real: Subestação já realizada em agosto (ainda com
+// progDataSubestacao preenchido) e Linha programada pra hoje; antes disso
+// a data da Subestação (já feita, no passado) sempre "ganhava" e a parada
+// de Linha de hoje não aparecia no Roteiro. Agora prioriza o lado que AINDA
+// NÃO foi concluído (é o que precisa de parada no Roteiro); se os dois já
+// foram concluídos, ou os dois ainda estão pendentes/programados, mantém a
+// prioridade de sempre (Subestação primeiro, depois Linha) — esse último
+// caso (os dois pendentes em datas diferentes) continua sendo uma limitação
+// conhecida: só 1 dos dois aparece no Roteiro.
+function meaProgCompatEscolher(statusLinha, statusSubestacao, dataLinha, dataSubestacao, eq1Linha, eq2Linha, eq1Sub, eq2Sub) {
+  var feito = ['realizada', 'nao_realizada'];
+  var subFeito = feito.indexOf(statusSubestacao) !== -1;
+  var linFeito = feito.indexOf(statusLinha) !== -1;
+  if (subFeito && !linFeito && dataLinha) return { data: dataLinha, eq1: eq1Linha, eq2: eq2Linha };
+  if (linFeito && !subFeito && dataSubestacao) return { data: dataSubestacao, eq1: eq1Sub, eq2: eq2Sub };
+  if (dataSubestacao) return { data: dataSubestacao, eq1: eq1Sub, eq2: eq2Sub };
+  return { data: dataLinha, eq1: eq1Linha, eq2: eq2Linha };
+}
+
 async function meaSalvarDetalhe() {
   var id = document.getElementById('mea-id').value;
   var nome = document.getElementById('mea-empreendimento').value.trim();
@@ -33245,14 +33282,17 @@ async function meaSalvarDetalhe() {
   var progEquipeSubestacao2 = meaVistCombinado ? g('mea-vistoria-prog-subestacao-eq2') : ((reg.vistoria && reg.vistoria.progEquipeSubestacao2) || '');
   // Compat: Roteiro (agenda de campo) e o picker de "Novo Checklist ERO" ainda
   // leem os campos únicos de sempre (dataProgramada/responsavelProgramado/data/
-  // tecnico1/2) — pra misto, espelham a Subestação (é o que esse automatismo
-  // usa hoje); se só a Linha tiver data, usa a Linha.
-  var dataProgCompat = meaVistCombinado ? (progDataSubestacao || progDataLinha) : g('mea-vistoria-dataprog');
-  var respProg1Compat = meaVistCombinado ? (progDataSubestacao ? progEquipeSubestacao1 : progEquipeLinha1) : g('mea-vistoria-respprog');
-  var respProg2Compat = meaVistCombinado ? (progDataSubestacao ? progEquipeSubestacao2 : progEquipeLinha2) : g('mea-vistoria-respprog2');
-  var dataCompat = meaVistCombinado ? (progDataSubestacao || progDataLinha) : g('mea-vistoria-data');
-  var tec1Compat = meaVistCombinado ? (progDataSubestacao ? progEquipeSubestacao1 : progEquipeLinha1) : g('mea-vistoria-tec1');
-  var tec2Compat = meaVistCombinado ? (progDataSubestacao ? progEquipeSubestacao2 : progEquipeLinha2) : g('mea-vistoria-tec2');
+  // tecnico1/2) — pra misto, usa meaProgCompatEscolher (prioriza o lado ainda
+  // não concluído; ver comentário da função, fix de 07/10/2026).
+  var progCompatEscolha = meaVistCombinado
+    ? meaProgCompatEscolher(meaVistStatusLinha, meaVistStatusSubestacao, progDataLinha, progDataSubestacao, progEquipeLinha1, progEquipeLinha2, progEquipeSubestacao1, progEquipeSubestacao2)
+    : null;
+  var dataProgCompat = meaVistCombinado ? progCompatEscolha.data : g('mea-vistoria-dataprog');
+  var respProg1Compat = meaVistCombinado ? progCompatEscolha.eq1 : g('mea-vistoria-respprog');
+  var respProg2Compat = meaVistCombinado ? progCompatEscolha.eq2 : g('mea-vistoria-respprog2');
+  var dataCompat = meaVistCombinado ? progCompatEscolha.data : g('mea-vistoria-data');
+  var tec1Compat = meaVistCombinado ? progCompatEscolha.eq1 : g('mea-vistoria-tec1');
+  var tec2Compat = meaVistCombinado ? progCompatEscolha.eq2 : g('mea-vistoria-tec2');
   reg.vistoria = { status: meaVistStatus, statusLinha: meaVistStatusLinha, statusSubestacao: meaVistStatusSubestacao, progDataLinha: progDataLinha, progEquipeLinha1: progEquipeLinha1, progEquipeLinha2: progEquipeLinha2, progDataSubestacao: progDataSubestacao, progEquipeSubestacao1: progEquipeSubestacao1, progEquipeSubestacao2: progEquipeSubestacao2, dataProgramada: dataProgCompat, responsavelProgramado: respProg1Compat, responsavelProgramado2: respProg2Compat, data: dataCompat, tecnico1: tec1Compat, tecnico2: tec2Compat, motivo: g('mea-vistoria-motivo'), lss: (reg.vistoria && reg.vistoria.lss) || { status: '', obs: '' }, pernoite: (reg.vistoria && reg.vistoria.pernoite) || '', lssNumero: (reg.vistoria && reg.vistoria.lssNumero) || '', observacao: (reg.vistoria && reg.vistoria.observacao) || '', ordemRoteiro: (reg.vistoria && reg.vistoria.ordemRoteiro != null) ? reg.vistoria.ordemRoteiro : null, fotosEnviadas: (reg.vistoria && reg.vistoria.fotosEnviadas) || 0, fotosEnviadasSubestacao: (reg.vistoria && reg.vistoria.fotosEnviadasSubestacao) || 0, fotosEnviadasLinha: (reg.vistoria && reg.vistoria.fotosEnviadasLinha) || 0 };
   reg.rma = { necessario: g('mea-rma-necessario'), status: g('mea-rma-status'), art: g('mea-rma-art'), tecnicoArt: g('mea-rma-tecart'), tecnicoRma: g('mea-rma-tecrma'), historico: (reg.rma && reg.rma.historico) || [] };
   var ruidoNecessario = g('mea-ruido-necessario');
@@ -35898,8 +35938,12 @@ function pageChecklistEROForm() {
     g.itens.forEach(item => {
       if (!eroItemAplica(item, semCasa)) return;
       totalItens++;
-      totalPossivel += eroPeso(item, semCasa); // peso fixo — soma sempre 100, independe de N/A ou pendência
+      // Corrigido em 07/10/2026 (bug real: % diferente entre form/PDF e o
+      // histórico): item N/A é excluído do total possível, igual já fazia
+      // salvarEROChecklist() — ver meaProgCompatEscolher... não, ver nota em
+      // "Fórmula correta de Percentual" nas notas permanentes do projeto.
       if (d['na_' + item.id]) { totalNA++; return; }
+      totalPossivel += eroPeso(item, semCasa);
       const ptsRaw = d['pts_' + item.id];
       if (ptsRaw === '' || ptsRaw === undefined || ptsRaw === null) return;
       totalAplicaveis++;
@@ -36080,8 +36124,8 @@ function pageChecklistEROForm() {
         let gPoss = 0, gAlc = 0, gConf = 0, gNC = 0, gNA = 0;
         itensG.forEach(i => {
           const pesoI = eroPeso(i, semCasa);
+          if (d['na_'+i.id]) { gNA++; return; } // N/A fora do total possível (fix 07/10/2026)
           gPoss += pesoI;
-          if (d['na_'+i.id]) { gNA++; return; }
           const r = d['pts_'+i.id];
           if (r === '' || r === undefined || r === null) return;
           const v = parseFloat(r);
@@ -36736,8 +36780,8 @@ function renderLinhaChecklistResumo() {
   const itens = linhaTodosItensChecklist();
   let totalPossivel = 0, totalAlcancado = 0, totalNA = 0, totalAplicaveis = 0, respondidos = 0;
   itens.forEach(item => {
+    if (d['na_' + item.id]) { totalNA++; respondidos++; return; } // N/A fora do total possível (fix 07/10/2026)
     totalPossivel += linhaPeso(item);
-    if (d['na_' + item.id]) { totalNA++; respondidos++; return; }
     const raw = d['pts_' + item.id];
     if (raw === '' || raw === undefined || raw === null) return;
     respondidos++;
@@ -37485,11 +37529,12 @@ function linhaImprimirChecklist(dados, autoPrint) {
   linhaMigrarPontuacao(d); // compatibilidade com checklists salvos antes do sistema de pontuação
   const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '—';
 
-  // Pontuação — mesmo cálculo do formulário e da Subestação/ERO.
+  // Pontuação — mesmo cálculo do formulário e da Subestação/ERO. N/A fica
+  // fora do total possível (fix 07/10/2026 — ver nota abaixo).
   let totalPossivel = 0, totalAlcancado = 0, totalNA = 0;
   LINHA_CHECKLIST_GRUPOS.forEach(g => g.itens.forEach(i => {
-    totalPossivel += linhaPeso(i);
     if (d['na_' + i.id]) { totalNA++; return; }
+    totalPossivel += linhaPeso(i);
     const v = parseFloat(d['pts_' + i.id]);
     totalAlcancado += isNaN(v) ? 0 : v;
   }));
@@ -37553,8 +37598,9 @@ function linhaImprimirChecklist(dados, autoPrint) {
   const gruposHtml = LINHA_CHECKLIST_GRUPOS.map((grupo, gIdx) => {
     let gPoss = 0, gAlc = 0;
     grupo.itens.forEach(i => {
+      if (d['na_' + i.id]) return; // N/A fora do total possível (fix 07/10/2026)
       gPoss += linhaPeso(i);
-      if (!d['na_' + i.id]) { const v = parseFloat(d['pts_' + i.id]); gAlc += isNaN(v) ? 0 : v; }
+      const v = parseFloat(d['pts_' + i.id]); gAlc += isNaN(v) ? 0 : v;
     });
     return `
     <div class="section-title">${grupo.titulo} — ${gAlc.toFixed(1)} / ${gPoss.toFixed(1)}</div>
@@ -56368,6 +56414,57 @@ async function eroExportarPDFdireto(id) {
   }
 }
 
+/* -- Exclusão do Checklist ERO (Subestação) no histórico: mesmo padrão já
+      usado em Checklist de Linha/Fauna — só a Diretoria exclui direto;
+      Coordenador/Colaborador enviam uma solicitação com motivo, que fica
+      pendente até a Diretoria aprovar ou rejeitar. Pedido 07/10/2026. -- */
+async function eroExcluirChecklist(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão direta restrita à Diretoria. Use "Solicitar exclusão".'); return; }
+  if (!confirm('Tem certeza que deseja excluir este checklist de Subestação?\n\nEssa ação não pode ser desfeita.')) return;
+  showSyncStatus('Excluindo checklist...');
+  const { ok, lista } = await dbRemover('ChecklistERO', id);
+  showToast(ok ? '🗑️ Checklist excluído.' : '❌ Erro ao excluir.');
+  showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok && lista) { try { localStorage.setItem('ero_historico_cache', JSON.stringify(lista)); } catch(e) {} }
+  await carregarEROHistorico(true);
+}
+
+async function eroSolicitarExclusaoChecklist(id) {
+  const motivo = prompt('Por que este checklist deve ser excluído?\n\nIsso vai ser enviado pra Diretoria aprovar.');
+  if (motivo === null) return;
+  if (!motivo.trim()) { showToast('⚠️ Informe o motivo da solicitação.'); return; }
+  showSyncStatus('Enviando solicitação...');
+  const solicitacao = {
+    motivo: motivo.trim(),
+    solicitadoPorNome: window._currentUser ? window._currentUser.name : '',
+    solicitadoPorEmail: window._currentUser ? window._currentUser.email : '',
+    data: new Date().toISOString(),
+    status: 'pendente',
+  };
+  const ok = await dbAtualizar('ChecklistERO', id, { SolicitacaoExclusao: solicitacao });
+  showToast(ok ? '📨 Solicitação de exclusão enviada à Diretoria.' : '❌ Erro ao enviar solicitação.');
+  showSyncStatus(ok ? 'Enviada!' : 'Falha ao enviar', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  if (ok) await carregarEROHistorico(true);
+}
+
+async function eroResponderSolicitacaoExclusao(id, aprovar) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Apenas a Diretoria pode responder solicitações de exclusão.'); return; }
+  if (aprovar) {
+    if (!confirm('Aprovar a exclusão deste checklist?\n\nEssa ação não pode ser desfeita.')) return;
+    showSyncStatus('Excluindo checklist...');
+    const { ok, lista } = await dbRemover('ChecklistERO', id);
+    showToast(ok ? '🗑️ Checklist excluído.' : '❌ Erro ao excluir.');
+    showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+    if (ok && lista) { try { localStorage.setItem('ero_historico_cache', JSON.stringify(lista)); } catch(e) {} }
+  } else {
+    showSyncStatus('Rejeitando solicitação...');
+    const ok = await dbAtualizar('ChecklistERO', id, { SolicitacaoExclusao: null });
+    showToast(ok ? '✋ Solicitação de exclusão rejeitada.' : '❌ Erro ao rejeitar.');
+    showSyncStatus(ok ? 'Rejeitada!' : 'Falha', ok ? 'ok' : 'err', ok ? 3000 : 5000);
+  }
+  await carregarEROHistorico(true);
+}
+
 async function salvarEROnoSharePoint() {
   try {
     const token = await getSharePointToken();
@@ -56478,13 +56575,14 @@ function exportarEROpdf() {
     const nomeArquivoERO = ('Checklist Inspeção - ' + (d.empreendimento || 'Checklist') + ' ' + dataCurtaNome).replace(/[\\/:*?"<>|]/g, '');
 
     // Calculate totals (excluindo itens que não valem pra essa sub-aba, N/A
-    // e não respondidos, igual ao dashboard)
+    // e não respondidos, igual ao dashboard — fix 07/10/2026: N/A agora
+    // realmente sai do total possível, igual já fazia salvarEROChecklist())
     let totalPossivel = 0, totalAlcancado = 0, totalItens = 0, totalNA = 0, totalAplicaveis = 0;
     eroGrupos.forEach(g => g.itens.forEach(i => {
       if (!eroItemAplica(i, semCasaPdf)) return;
       totalItens++;
-      totalPossivel += eroPeso(i, semCasaPdf); // peso fixo — soma sempre 100, independe de N/A ou pendência
       if (d['na_' + i.id]) { totalNA++; return; }
+      totalPossivel += eroPeso(i, semCasaPdf);
       const ptsRaw = d['pts_' + i.id];
       if (ptsRaw === '' || ptsRaw === undefined || ptsRaw === null) return;
       totalAplicaveis++;
@@ -56582,8 +56680,8 @@ function exportarEROpdf() {
           let gPoss = 0, gAlc = 0, gConf = 0, gNC = 0, gNA = 0;
           g.itens.filter(i => eroItemAplica(i, semCasaPdf)).forEach(i => {
             const pesoI = eroPeso(i, semCasaPdf);
+            if (d['na_'+i.id]) { gNA++; return; } // N/A fora do total possível (fix 07/10/2026)
             gPoss += pesoI;
-            if (d['na_'+i.id]) { gNA++; return; }
             const r = d['pts_'+i.id];
             if (r === '' || r === undefined || r === null) return;
             const v = parseFloat(r);
@@ -56622,8 +56720,8 @@ function exportarEROpdf() {
       const itensG2 = g.itens.filter(i => eroItemAplica(i, semCasaPdf));
       let gPoss2 = 0, gAlc2 = 0;
       itensG2.forEach(i => {
+        if (d['na_'+i.id]) return; // N/A fora do total possível (fix 07/10/2026)
         gPoss2 += eroPeso(i, semCasaPdf);
-        if (d['na_'+i.id]) return;
         const r = d['pts_'+i.id];
         if (r === '' || r === undefined || r === null) return;
         const v = parseFloat(r);
