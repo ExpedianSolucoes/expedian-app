@@ -32106,6 +32106,9 @@ function renderEROMiniDashboard() {
                 <div style="font-size:.82rem;font-weight:700">${r.num ? 'Nº ' + r.num + ' — ' : ''}${r.empreendimento || 'Sem nome'}</div>
                 <div style="font-size:.68rem;color:var(--text-muted)">${r.responsaveis || r.Responsavel || '—'}</div>
               </div>
+              <div style="font-size:.72rem;color:var(--text-muted);min-width:120px;text-align:center" title="Responsável pelo checklist (uso interno)">
+                ${r.ElaboradoPor ? '👤 ' + r.ElaboradoPor : '—'}
+              </div>
               <div style="font-size:.75rem;color:var(--text-muted);min-width:80px;text-align:center">
                 ${r.data ? new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}
               </div>
@@ -32146,6 +32149,37 @@ function atualizarEROResponsaveis() {
   window._eroData.tecnico1 = t1;
   window._eroData.tecnico2 = t2;
   window._eroData.responsaveis = [t1, t2].filter(Boolean).join(' / ');
+}
+
+/* -- "Nome do Empreendimento" do Checklist de Subestação virou lista
+   suspensa puxando de Monitoramento Ambiental, igual o Checklist de Linha já
+   tinha (pedido 07/10/2026: "nao esta aparecendo check list conforme
+   cadastrado em monitoramento ambiental, porem de forma que fique
+   editavel") — "Outro" mantém o campo de texto livre editável de sempre,
+   pra checklist de empreendimento ainda não cadastrado lá. Mesmo padrão de
+   linhaSelecionarEmpreendimento(). -- */
+function eroSelecionarEmpreendimento(val) {
+  const d = window._eroData;
+  if (!val || val === '__outro__') {
+    d.meaId = null;
+    d.num = '';
+    if (val === '') d.empreendimento = '';
+    navigate('checklist_ero');
+    return;
+  }
+  const reg = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).find(function(x) { return x.id === val; });
+  if (!reg) return;
+  d.meaId = reg.id;
+  d.num = reg.num || '';
+  d.empreendimento = reg.empreendimento || '';
+  const lic = meaStatusLicenca(reg.vencimento);
+  const item24 = eroGrupos.reduce(function(acc, g) { return acc.concat(g.itens); }, []).find(function(i) { return i.id === '2.4'; });
+  if (item24) {
+    d['na_2.4'] = false;
+    d['pts_2.4'] = lic.label.indexOf('Vencida') === 0 ? 0 : eroPeso(item24, eroSemCasaAtiva());
+  }
+  navigate('checklist_ero');
+  showToast('📋 Vinculado a "' + d.empreendimento + '" — Licença: ' + lic.label);
 }
 
 /* ===============================
@@ -32764,11 +32798,14 @@ function meaRenderizarLista() {
     var rB = meaStatusBadge('padrao', meaNaoAplicavel(x,'ruido') ? 'na' : ((x.ruido||{}).status || 'pendente'));
     var pB = meaStatusBadge('padrao', meaNaoAplicavel(x,'poco') ? 'na' : ((x.poco||{}).status || 'pendente'));
     var cB = meaStatusBadge('padrao', meaNaoAplicavel(x,'csao') ? 'na' : ((x.csao||{}).status || 'pendente'));
-    var tecnicos = [(x.vistoria||{}).tecnico1, (x.vistoria||{}).tecnico2].filter(Boolean).join(' / ') || '—';
     return '<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="meaAbrirDetalhe(\''+x.id+'\')">' +
       '<td style="padding:8px;font-size:.78rem;color:var(--text-muted)">'+(x.num||'—')+'</td>' +
       '<td style="padding:8px;font-size:.8rem;font-weight:600;max-width:260px">'+x.empreendimento+(meaEhMisto(x) ? ' <span style="display:inline-block;padding:1px 7px;border-radius:20px;background:#f3eefc;color:#6f42c1;font-size:.6rem;font-weight:700;vertical-align:middle" title="Subestação + Linha no mesmo processo">🔀 Misto</span>' : '')+'<div style="font-size:.68rem;color:var(--text-muted);font-weight:400">'+(x.regional||'—')+(x.municipio?' · '+x.municipio:'')+'</div></td>' +
-      '<td style="padding:8px;font-size:.72rem"><span style="padding:2px 8px;border-radius:20px;background:'+vB.bg+';color:'+vB.cor+';font-weight:700;white-space:nowrap">'+vB.label+'</span><div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">'+((x.vistoria||{}).data ? laFormatarData(x.vistoria.data) : '—')+' · '+tecnicos+'</div></td>' +
+      // Nomes de quem fez a vistoria saíram daqui (pedido 07/10/2026: "nao
+      // precisa colocar nome das pessoas que fez vistoria, somente quando
+      // clicar para visualizar a gente verifica") — só data + status aqui;
+      // os técnicos continuam aparecendo no modal de 👁️ Visualizar.
+      '<td style="padding:8px;font-size:.72rem"><span style="padding:2px 8px;border-radius:20px;background:'+vB.bg+';color:'+vB.cor+';font-weight:700;white-space:nowrap">'+vB.label+'</span>'+((x.vistoria||{}).data ? '<div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">'+laFormatarData(x.vistoria.data)+'</div>' : '')+'</td>' +
       '<td style="padding:8px;font-size:.72rem"><span style="font-weight:700;color:'+lic.cor+'">'+lic.label+'</span><div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">'+(x.numeroLicenca||'—')+'</div></td>' +
       '<td style="padding:8px;font-size:.72rem;text-align:center"><span style="padding:2px 8px;border-radius:20px;background:'+rB.bg+';color:'+rB.cor+';font-weight:700;white-space:nowrap">'+rB.label+'</span></td>' +
       '<td style="padding:8px;font-size:.72rem;text-align:center"><span style="padding:2px 8px;border-radius:20px;background:'+pB.bg+';color:'+pB.cor+';font-weight:700;white-space:nowrap">'+pB.label+'</span></td>' +
@@ -35954,7 +35991,12 @@ function pageChecklistEROForm() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
       <div class="form-group" style="grid-column:span 2">
         <label>Nome do Empreendimento</label>
-        <input id="ero_empreendimento" value="${d.empreendimento||''}" oninput="window._eroData.empreendimento=this.value" placeholder="Ex: Subestação Norte – SE 138kV">
+        <select id="ero_empreendimento_select" onchange="eroSelecionarEmpreendimento(this.value)">
+          <option value="">Selecione...</option>
+          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return meaTemTipo(x,'subestacao'); }).sort(meaCmpPorNumero).map(function(e){ return '<option value="'+e.id+'" '+(d.meaId===e.id?'selected':'')+'>'+((e.num?e.num+' — ':'')+(e.empreendimento||'Sem nome'))+(meaEhMisto(e)?' 🔀':'')+'</option>'; }).join('')}
+          <option value="__outro__" ${(!d.meaId && d.empreendimento) ? 'selected' : ''}>Outro (não cadastrado em Monitoramento Ambiental)</option>
+        </select>
+        <input id="ero_empreendimento" style="margin-top:6px;${d.meaId ? 'display:none' : ''}" value="${d.empreendimento||''}" oninput="window._eroData.empreendimento=this.value" placeholder="Ex: Subestação Norte – SE 138kV">
         ${d.meaId ? '<div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">🔗 Vinculado ao cadastro em Monitoramento Ambiental' + (d.num ? ' · Nº ' + d.num : '') + '</div>' : ''}
       </div>
       <div class="form-group">
@@ -37221,6 +37263,9 @@ function renderLinhaMiniDashboard() {
                 <div style="font-size:.82rem;font-weight:700">${r.num ? 'Nº ' + r.num + ' — ' : ''}${r.empreendimento || 'Sem nome'}</div>
                 <div style="font-size:.68rem;color:var(--text-muted)">${r.responsavel || '—'} · ${r.tensao || '—'}</div>
               </div>
+              <div style="font-size:.72rem;color:var(--text-muted);min-width:120px;text-align:center" title="Responsável pelo checklist (uso interno)">
+                ${r.ElaboradoPor ? '👤 ' + r.ElaboradoPor : '—'}
+              </div>
               <div style="font-size:.75rem;color:var(--text-muted);min-width:80px;text-align:center">
                 ${r.data ? new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—'}
               </div>
@@ -37339,6 +37384,9 @@ async function salvarLinhaChecklist() {
   if (novo) {
     showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
     showToast(editando ? '☁️ Checklist atualizado no OneDrive!' : '☁️ Checklist salvo e sincronizado com o OneDrive de atendimento@expediansolucoes.com.br!');
+    // Fecha o formulário e volta pro histórico, que já fica sempre visível
+    // no topo da página (pedido 07/10/2026, igual aplicado na Subestação).
+    window._linhaFormAberto = false;
   } else {
     showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
     showToast('⚠️ Salvo apenas neste dispositivo. Verifique o login com Microsoft e tente sincronizar de novo.');
@@ -56218,6 +56266,14 @@ async function salvarEROChecklist() {
   if (novo) {
     showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
     showToast(editando ? '☁️ Checklist atualizado no OneDrive!' : '☁️ Checklist salvo e sincronizado com o OneDrive de atendimento@expediansolucoes.com.br!');
+    // Fecha o formulário e abre o histórico (pedido 07/10/2026: "ao concluir
+    // um check list ... e clicar em salvar e sincronizar o formulario deve
+    // fechar e ir para o historico de check list prontos") — só quando
+    // realmente sincronizou; se caiu no "else" (sem conexão), mantém o
+    // formulário aberto pra não arriscar perder o preenchimento.
+    window._eroFormAberto = false;
+    window._eroHistoricoAberto = true;
+    navigate('checklist_ero');
   } else {
     showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
     showToast('⚠️ Salvo apenas neste dispositivo. Verifique o login com Microsoft e tente sincronizar de novo.');
