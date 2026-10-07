@@ -31781,9 +31781,23 @@ function eroPendentesChecklist() {
     // picker) gravam o meaId de origem, e essa é a checagem PRINCIPAL
     // (exata, sem ambiguidade, sem depender de nome/data). O nome+data
     // continua como fallback pra checklists antigos/manuais, sem meaId.
+    // Pedido em 07/10/2026 ("Bom Futuro, Jaru aparecem de novo mesmo já
+    // feitos"): o fallback por nome exigia o nome IDÊNTICO ao cadastro em
+    // Monitoramento Ambiental — mas o cadastro às vezes junta Linha+Subestação
+    // no mesmo nome (ex: "LDAT 69 KV Jaru ELN/Jaru e SED Jaru") enquanto o
+    // checklist foi salvo só com o nome curto da subestação ("SED Jaru"),
+    // então nunca batia. Agora também aceita quando um nome é substring do
+    // outro (minímo 4 caracteres, pra não bater só em "SED"), mantendo a
+    // mesma tolerância de data de antes.
+    const nomesBatem = function(nomeChecklist) {
+      if (nomeChecklist === nome) return true;
+      if (nomeChecklist.length > 3 && nome.indexOf(nomeChecklist) !== -1) return true;
+      if (nome.length > 3 && nomeChecklist.indexOf(nome) !== -1) return true;
+      return false;
+    };
     const jaTemChecklist = hist.some(function(h) {
       if (h.meaId != null) return h.meaId === e.id;
-      if (normNome(h.empreendimento) !== nome) return false;
+      if (!nomesBatem(normNome(h.empreendimento))) return false;
       if (!tsVist || !h.data) return true; // sem data pra comparar, confia só no nome
       const tsChecklist = new Date(h.data + 'T00:00:00').getTime();
       if (isNaN(tsChecklist)) return true;
@@ -32176,6 +32190,15 @@ function meaTemTipo(x, tipo) {
 }
 function meaEhMisto(x) {
   return meaTipos(x).length > 1;
+}
+/* -- Linha e Subestação no mesmo empreendimento, mas as vistorias de campo
+   nem sempre são feitas no mesmo dia (pedido 07/10/2026) — usado pra decidir
+   se o formulário de edição do empreendimento mostra 1 status de vistoria
+   só, ou 1 pra Linha + 1 pra Subestação (igual já era feito na aba
+   Vistorias, vist-status-linha/vist-status-subestacao). -- */
+function meaTemLinhaESubestacao(x) {
+  var tipos = meaTipos(x);
+  return tipos.indexOf('subestacao') !== -1 && (tipos.indexOf('ld') !== -1 || tipos.indexOf('rede_rural') !== -1);
 }
 
 async function meaCarregar() {
@@ -32645,6 +32668,7 @@ function meaAbrirChecklistSubestacao() {
    já que hoje o mesmo checklist/tabela cobre os dois tipos. */
 function meaAbrirChecklistLinha(classificacao) {
   window._linhaDashFiltroClass = classificacao || '';
+  window._linhaDashFiltroBusca = '';
   navigate('checklist_linha');
 }
 
@@ -32689,10 +32713,22 @@ function meaFiltrar() {
   meaRenderizarLista();
 }
 
+/* -- Comparador por Nº do empreendimento (numérico, crescente — sem Nº vai
+   pro final), mesmo critério já usado nos históricos de Checklist ERO/Linha.
+   Reaproveitado na lista de Monitoramento Ambiental e nas listas suspensas
+   de empreendimento do Checklist ERO/Linha — pedido 07/10/2026. -- */
+function meaCmpPorNumero(a, b) {
+  var na = (a.num !== undefined && a.num !== null && a.num !== '') ? parseFloat(a.num) : null;
+  var nb = (b.num !== undefined && b.num !== null && b.num !== '') ? parseFloat(b.num) : null;
+  if (na === null && nb === null) return (a.empreendimento || '').localeCompare(b.empreendimento || '');
+  if (na === null) return 1;
+  if (nb === null) return -1;
+  return na - nb;
+}
 function meaRenderizarLista() {
   var el = document.getElementById('mea-lista-wrap');
   if (!el) return;
-  var lista = meaAplicarFiltros(MEA_DADOS);
+  var lista = meaAplicarFiltros(MEA_DADOS).slice().sort(meaCmpPorNumero);
   if (!lista.length) {
     el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">'+(MEA_DADOS.length ? 'Nenhum empreendimento corresponde ao filtro.' : 'Carregando...')+'</div>';
     return;
@@ -32757,6 +32793,8 @@ function meaAbrirDetalhe(id) {
   set('mea-vencimento', reg.vencimento);
   var v = reg.vistoria || {};
   set('mea-vistoria-status', v.status || 'pendente');
+  set('mea-vistoria-status-linha', v.statusLinha || 'pendente');
+  set('mea-vistoria-status-subestacao', v.statusSubestacao || 'pendente');
   set('mea-vistoria-dataprog', v.dataProgramada);
   set('mea-vistoria-respprog', v.responsavelProgramado);
   set('mea-vistoria-respprog2', v.responsavelProgramado2);
@@ -33032,7 +33070,14 @@ async function meaSalvarDetalhe() {
   reg.numeroLicenca = g('mea-numlicenca');
   reg.emissao = g('mea-emissao');
   reg.vencimento = g('mea-vencimento');
-  reg.vistoria = { status: g('mea-vistoria-status'), statusLinha: (reg.vistoria && reg.vistoria.statusLinha) || '', statusSubestacao: (reg.vistoria && reg.vistoria.statusSubestacao) || '', dataProgramada: g('mea-vistoria-dataprog'), responsavelProgramado: g('mea-vistoria-respprog'), responsavelProgramado2: g('mea-vistoria-respprog2'), data: g('mea-vistoria-data'), tecnico1: g('mea-vistoria-tec1'), tecnico2: g('mea-vistoria-tec2'), motivo: g('mea-vistoria-motivo'), lss: (reg.vistoria && reg.vistoria.lss) || { status: '', obs: '' }, pernoite: (reg.vistoria && reg.vistoria.pernoite) || '', lssNumero: (reg.vistoria && reg.vistoria.lssNumero) || '', observacao: (reg.vistoria && reg.vistoria.observacao) || '', ordemRoteiro: (reg.vistoria && reg.vistoria.ordemRoteiro != null) ? reg.vistoria.ordemRoteiro : null, fotosEnviadas: (reg.vistoria && reg.vistoria.fotosEnviadas) || 0 };
+  // Empreendimento com Linha + Subestação (pedido 07/10/2026): status vem
+  // dos 2 selects separados (vistorias podem ser feitas em dias diferentes);
+  // senão, segue vindo do select único de sempre.
+  var meaVistCombinado = meaTemLinhaESubestacao({ classificacoes: tiposSelecionados });
+  var meaVistStatusLinha = meaVistCombinado ? g('mea-vistoria-status-linha') : ((reg.vistoria && reg.vistoria.statusLinha) || '');
+  var meaVistStatusSubestacao = meaVistCombinado ? g('mea-vistoria-status-subestacao') : ((reg.vistoria && reg.vistoria.statusSubestacao) || '');
+  var meaVistStatus = meaVistCombinado ? eroConsolidarStatus(meaVistStatusLinha, meaVistStatusSubestacao) : g('mea-vistoria-status');
+  reg.vistoria = { status: meaVistStatus, statusLinha: meaVistStatusLinha, statusSubestacao: meaVistStatusSubestacao, dataProgramada: g('mea-vistoria-dataprog'), responsavelProgramado: g('mea-vistoria-respprog'), responsavelProgramado2: g('mea-vistoria-respprog2'), data: g('mea-vistoria-data'), tecnico1: g('mea-vistoria-tec1'), tecnico2: g('mea-vistoria-tec2'), motivo: g('mea-vistoria-motivo'), lss: (reg.vistoria && reg.vistoria.lss) || { status: '', obs: '' }, pernoite: (reg.vistoria && reg.vistoria.pernoite) || '', lssNumero: (reg.vistoria && reg.vistoria.lssNumero) || '', observacao: (reg.vistoria && reg.vistoria.observacao) || '', ordemRoteiro: (reg.vistoria && reg.vistoria.ordemRoteiro != null) ? reg.vistoria.ordemRoteiro : null, fotosEnviadas: (reg.vistoria && reg.vistoria.fotosEnviadas) || 0, fotosEnviadasSubestacao: (reg.vistoria && reg.vistoria.fotosEnviadasSubestacao) || 0, fotosEnviadasLinha: (reg.vistoria && reg.vistoria.fotosEnviadasLinha) || 0 };
   reg.rma = { necessario: g('mea-rma-necessario'), status: g('mea-rma-status'), art: g('mea-rma-art'), tecnicoArt: g('mea-rma-tecart'), tecnicoRma: g('mea-rma-tecrma'), historico: (reg.rma && reg.rma.historico) || [] };
   var ruidoNecessario = g('mea-ruido-necessario');
   var ruidoPontos = ruidoNecessario === 'Sim' ? (window._meaPontosRuido || []).map(function(p){ return { data: p.data||'', status: p.status||'pendente' }; }) : [];
@@ -33157,6 +33202,35 @@ function meaClassificacaoToggle(manterDetalhe) {
     else if (el.value === 'N/A') el.value = '';
     par[1]();
   });
+  meaVistoriaModoToggle();
+}
+/* -- Alterna, dentro do formulário de edição do Empreendimento, entre 1
+   campo de Status de vistoria (empreendimento só Linha OU só Subestação)
+   e 2 campos separados (empreendimento com os dois tipos marcados — pedido
+   07/10/2026: "nem sempre são realizados as vistorias no mesmo dia"). Mesma
+   ideia que a aba Vistorias já fazia (vist-campos-linhasede), só que aqui
+   dentro do cadastro do Empreendimento. -- */
+function meaVistoriaModoToggle() {
+  var combinado = meaTemLinhaESubestacao({ classificacoes: meaTiposMarcadosForm() });
+  var rowCombinado = document.getElementById('mea-vistoria-status-combinado-row');
+  var rowSimples = document.getElementById('mea-vistoria-status-simples-row');
+  if (rowCombinado) rowCombinado.style.display = combinado ? '' : 'none';
+  if (rowSimples) rowSimples.style.display = combinado ? 'none' : '';
+  if (combinado) meaVistoriaConsolidarStatus();
+}
+/* -- Junta os 2 status (Linha/Subestação) num status único (mesmo critério
+   de eroConsolidarStatus já usado na aba Vistorias) e joga no select
+   escondido mea-vistoria-status, que é o campo que o resto do app (KPIs,
+   picker do Checklist, filtros) continua lendo. -- */
+function meaVistoriaConsolidarStatus() {
+  var elL = document.getElementById('mea-vistoria-status-linha');
+  var elS = document.getElementById('mea-vistoria-status-subestacao');
+  if (!elL || !elS) return;
+  var cons = eroConsolidarStatus(elL.value, elS.value);
+  var sel = document.getElementById('mea-vistoria-status');
+  if (sel) sel.value = cons;
+  var lbl = document.getElementById('mea-vistoria-status-consolidado-label');
+  if (lbl) lbl.textContent = _vistStatusLabels[cons] || cons;
 }
 
 /* ===============================
@@ -33361,7 +33435,16 @@ function pageMonitoramentoAmbientalERO() {
         </div>
 
         <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Vistoria</div>
-        <div class="form-row">
+        <div class="form-row" id="mea-vistoria-status-combinado-row" style="display:none">
+          <div class="form-group"><label>Status — ⚡ Linha</label>
+            <select id="mea-vistoria-status-linha" onchange="meaVistoriaConsolidarStatus()"><option value="pendente">❌ Pendente</option><option value="programada">📅 Programada</option><option value="parcial">🔶 Parcial</option><option value="realizada">✅ Realizada</option><option value="nao_realizada">🚫 Não Realizada</option></select>
+          </div>
+          <div class="form-group"><label>Status — 🏭 Subestação</label>
+            <select id="mea-vistoria-status-subestacao" onchange="meaVistoriaConsolidarStatus()"><option value="pendente">❌ Pendente</option><option value="programada">📅 Programada</option><option value="parcial">🔶 Parcial</option><option value="realizada">✅ Realizada</option><option value="nao_realizada">🚫 Não Realizada</option></select>
+          </div>
+          <div class="form-group" style="flex:0 0 100%"><div style="font-size:.7rem;color:var(--text-muted)">Status consolidado (usado nos painéis/filtros): <strong id="mea-vistoria-status-consolidado-label">—</strong></div></div>
+        </div>
+        <div class="form-row" id="mea-vistoria-status-simples-row">
           <div class="form-group"><label>Status</label>
             <select id="mea-vistoria-status"><option value="pendente">❌ Pendente</option><option value="programada">📅 Programada</option><option value="parcial">🔶 Parcial</option><option value="realizada">✅ Realizada</option><option value="nao_realizada">🚫 Não Realizada</option></select>
           </div>
@@ -35639,7 +35722,7 @@ function pageChecklistEROForm() {
   const gap = (totalAlcancado - totalPossivel).toFixed(1);
   const scoreColor = pct >= 80 ? 'var(--green-main)' : pct >= 60 ? 'var(--amber)' : 'var(--red)';
 
-  const pendentes = eroPendentesChecklist();
+  const pendentes = eroPendentesChecklist().slice().sort(meaCmpPorNumero);
 
   return `
   <div class="page-header">
@@ -36208,6 +36291,7 @@ if (typeof window._linhaHistorico === 'undefined') window._linhaHistorico = null
 // alimentado pelo deep-link do card "Checklist Inspeção" do painel
 // principal (meaAbrirChecklistLinha) — pedido 23/09/2026.
 if (typeof window._linhaDashFiltroClass === 'undefined') window._linhaDashFiltroClass = '';
+if (typeof window._linhaDashFiltroBusca === 'undefined') window._linhaDashFiltroBusca = '';
 // Ordenação do Histórico de Trechos Inspecionados — 'data' (padrão, mais
 // recente primeiro) ou 'numero' (Nº do empreendimento, crescente, registros
 // sem Nº vão pro final) — mesma opção do Checklist ERO, pedido 25/09/2026.
@@ -36923,6 +37007,10 @@ function linhaRegistroClassificacao(r) {
   return porNome ? meaTipos(porNome) : [];
 }
 function linhaDashLimparFiltroClass() { window._linhaDashFiltroClass = ''; navigate('checklist_linha'); }
+/* -- Busca por nome de empreendimento/trecho no Mini Dashboard da Linha —
+   mesmo padrão (com debounce) usado no Checklist ERO. Pedido 07/10/2026. -- */
+function linhaDashRenavegar() { navigate('checklist_linha'); }
+function linhaDashFiltrarBusca(v) { window._linhaDashFiltroBusca = v; dbDebounce('linhaDashRenavegar'); }
 
 function renderLinhaMiniDashboard() {
   const historico = Array.isArray(window._linhaHistorico) ? window._linhaHistorico : [];
@@ -36940,14 +37028,17 @@ function renderLinhaMiniDashboard() {
     return na - nb;
   };
   const cmpLinha = window._linhaDashOrdenacao === 'numero' ? cmpLinhaNumero : (a, b) => (b.data || '').localeCompare(a.data || '');
+  const buscaLinhaNorm = (window._linhaDashFiltroBusca || '').trim().toLowerCase();
   const ordenado = [...historico]
     .filter(r => !filtroClass || linhaRegistroClassificacao(r).indexOf(filtroClass) !== -1)
+    .filter(r => !buscaLinhaNorm || (r.empreendimento || '').toLowerCase().includes(buscaLinhaNorm))
     .sort(cmpLinha);
   return `
   <div class="card" style="margin-bottom:18px;border-top:3px solid var(--green-main)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📊 Mini Dashboard — Checklists de Linha</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="text" id="linha_dash_busca" value="${(window._linhaDashFiltroBusca||'').replace(/"/g,'&quot;')}" placeholder="🔍 Buscar empreendimento..." oninput="linhaDashFiltrarBusca(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;min-width:190px">
         <select onchange="linhaDashOrdenarPor(this.value)" title="Ordenar o histórico abaixo" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
           <option value="data" ${window._linhaDashOrdenacao==='data'?'selected':''}>Ordenar por Data</option>
           <option value="numero" ${window._linhaDashOrdenacao==='numero'?'selected':''}>Ordenar por Nº</option>
@@ -37472,7 +37563,7 @@ function pageChecklistLinha() {
         <label>Empreendimento / Trecho</label>
         <select id="linha_empreendimento_select" onchange="linhaSelecionarEmpreendimento(this.value)">
           <option value="">Selecione...</option>
-          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return meaTemTipo(x,'ld') || meaTemTipo(x,'rede_rural'); }).sort(function(a,b){ return (a.empreendimento||'').localeCompare(b.empreendimento||''); }).map(function(e){ return '<option value="'+e.id+'" '+(d.meaId===e.id?'selected':'')+'>'+((e.num?e.num+' — ':'')+(e.empreendimento||'Sem nome'))+(meaEhMisto(e)?' 🔀':'')+'</option>'; }).join('')}
+          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return meaTemTipo(x,'ld') || meaTemTipo(x,'rede_rural'); }).sort(meaCmpPorNumero).map(function(e){ return '<option value="'+e.id+'" '+(d.meaId===e.id?'selected':'')+'>'+((e.num?e.num+' — ':'')+(e.empreendimento||'Sem nome'))+(meaEhMisto(e)?' 🔀':'')+'</option>'; }).join('')}
           <option value="__outro__" ${(!d.meaId && d.empreendimento) ? 'selected' : ''}>Outro (não cadastrado em Monitoramento Ambiental)</option>
         </select>
         <input id="linha_empreendimento" style="margin-top:6px;${d.meaId ? 'display:none' : ''}" value="${d.empreendimento||''}" oninput="linhaCampo('empreendimento',this.value)" placeholder="Nome do trecho, se ainda não estiver cadastrado em Monitoramento Ambiental">
