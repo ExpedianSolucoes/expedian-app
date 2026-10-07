@@ -32096,6 +32096,13 @@ function renderEROMiniDashboard() {
     </div>
     ${window._eroHistoricoAberto ? `
     <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;background:var(--surface2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1">
+        <div style="flex:1;min-width:140px;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Empreendimento</div>
+        <div style="min-width:120px;text-align:center;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Responsável (checklist)</div>
+        <div style="min-width:80px;text-align:center;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Data da Inspeção</div>
+        <div style="min-width:60px;text-align:right;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">%</div>
+        <div style="flex-shrink:0;min-width:206px"></div>
+      </div>
       ${window._eroHistorico === null
         ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Carregando histórico...</div>`
         : filtrados.length === 0
@@ -32151,24 +32158,27 @@ function atualizarEROResponsaveis() {
   window._eroData.responsaveis = [t1, t2].filter(Boolean).join(' / ');
 }
 
-/* -- "Nome do Empreendimento" do Checklist de Subestação virou lista
-   suspensa puxando de Monitoramento Ambiental, igual o Checklist de Linha já
-   tinha (pedido 07/10/2026: "nao esta aparecendo check list conforme
-   cadastrado em monitoramento ambiental, porem de forma que fique
-   editavel") — "Outro" mantém o campo de texto livre editável de sempre,
-   pra checklist de empreendimento ainda não cadastrado lá. Mesmo padrão de
-   linhaSelecionarEmpreendimento(). -- */
-function eroSelecionarEmpreendimento(val) {
+/* -- "Nome do Empreendimento" do Checklist de Subestação virou campo de
+   texto pesquisável (list= datalist) puxando de Monitoramento Ambiental,
+   igual o Checklist de Linha (pedido 07/10/2026: "nao esta aparecendo check
+   list conforme cadastrado em monitoramento ambiental, porem de forma que
+   fique editavel" + depois "deve ser pesquisavel e editavel" — um <select>
+   não é pesquisável por texto livre, por isso virou input+datalist). Digitar
+   algo que não bate com nenhuma opção da lista é tratado como nome livre
+   (desvincula do cadastro), igual já era com "Outro" no <select> antigo.
+   Dispara só no onchange (perde o foco / escolheu uma sugestão), não a cada
+   tecla, pra não re-renderizar o formulário enquanto a pessoa ainda digita. -- */
+function eroEmpreendimentoDigitou(valorDigitado) {
   const d = window._eroData;
-  if (!val || val === '__outro__') {
+  const candidatos = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x) { return meaTemTipo(x, 'subestacao'); });
+  const reg = candidatos.find(function(e) { return meaOpcaoLabel(e) === valorDigitado; });
+  if (!reg) {
     d.meaId = null;
     d.num = '';
-    if (val === '') d.empreendimento = '';
+    d.empreendimento = valorDigitado;
     navigate('checklist_ero');
     return;
   }
-  const reg = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).find(function(x) { return x.id === val; });
-  if (!reg) return;
   d.meaId = reg.id;
   d.num = reg.num || '';
   d.empreendimento = reg.empreendimento || '';
@@ -32783,6 +32793,15 @@ function meaCmpPorNumero(a, b) {
   if (na === null) return 1;
   if (nb === null) return -1;
   return na - nb;
+}
+/* -- Rótulo padrão "Nº — Nome 🔀" usado nos campos de busca de empreendimento
+   do Checklist ERO/Linha (datalist, pedido 07/10/2026: "deve ser pesquisavel
+   e editavel") — mesmo texto tanto na opção da lista quanto no valor do
+   campo quando já vinculado, pra eroEmpreendimentoDigitou/linhaEmpreendimento
+   Digitou conseguirem reconhecer um texto digitado que bate com um
+   empreendimento já cadastrado. -- */
+function meaOpcaoLabel(e) {
+  return (e.num ? e.num + ' — ' : '') + (e.empreendimento || 'Sem nome') + (meaEhMisto(e) ? ' 🔀' : '');
 }
 function meaRenderizarLista() {
   var el = document.getElementById('mea-lista-wrap');
@@ -35991,12 +36010,13 @@ function pageChecklistEROForm() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
       <div class="form-group" style="grid-column:span 2">
         <label>Nome do Empreendimento</label>
-        <select id="ero_empreendimento_select" onchange="eroSelecionarEmpreendimento(this.value)">
-          <option value="">Selecione...</option>
-          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return meaTemTipo(x,'subestacao'); }).sort(meaCmpPorNumero).map(function(e){ return '<option value="'+e.id+'" '+(d.meaId===e.id?'selected':'')+'>'+((e.num?e.num+' — ':'')+(e.empreendimento||'Sem nome'))+(meaEhMisto(e)?' 🔀':'')+'</option>'; }).join('')}
-          <option value="__outro__" ${(!d.meaId && d.empreendimento) ? 'selected' : ''}>Outro (não cadastrado em Monitoramento Ambiental)</option>
-        </select>
-        <input id="ero_empreendimento" style="margin-top:6px;${d.meaId ? 'display:none' : ''}" value="${d.empreendimento||''}" oninput="window._eroData.empreendimento=this.value" placeholder="Ex: Subestação Norte – SE 138kV">
+        <input type="text" id="ero_empreendimento" list="ero_empreendimento_dl" autocomplete="off"
+          value="${d.meaId ? meaOpcaoLabel({num:d.num,empreendimento:d.empreendimento,classificacoes:(MEA_DADOS.find(function(x){return x.id===d.meaId;})||{}).classificacoes}).replace(/"/g,'&quot;') : (d.empreendimento||'').replace(/"/g,'&quot;')}"
+          oninput="window._eroData.empreendimento=this.value" onchange="eroEmpreendimentoDigitou(this.value)"
+          placeholder="Digite pra buscar em Monitoramento Ambiental, ou um nome livre...">
+        <datalist id="ero_empreendimento_dl">
+          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return meaTemTipo(x,'subestacao'); }).sort(meaCmpPorNumero).map(function(e){ return '<option value="'+meaOpcaoLabel(e).replace(/"/g,'&quot;')+'">'; }).join('')}
+        </datalist>
         ${d.meaId ? '<div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">🔗 Vinculado ao cadastro em Monitoramento Ambiental' + (d.num ? ' · Nº ' + d.num : '') + '</div>' : ''}
       </div>
       <div class="form-group">
@@ -36783,18 +36803,20 @@ function linhaCampo(campo, valor) {
       22/09/2026: nome do empreendimento e nº de sequência vêm de lá, e a
       pergunta "A Licença de Operação está vigente?" (q1) é pré-preenchida a
       partir do vencimento já cadastrado, mas continua editável (o técnico
-      pode corrigir/retificar em campo). -- */
-function linhaSelecionarEmpreendimento(val) {
+      pode corrigir/retificar em campo). Campo virou texto pesquisável (list=
+      datalist) em vez de <select> — pedido 07/10/2026: "deve ser pesquisavel
+      e editavel". Só dispara no onchange (perde o foco), não a cada tecla. -- */
+function linhaEmpreendimentoDigitou(valorDigitado) {
   const d = window._linhaData;
-  if (!val || val === '__outro__') {
+  const candidatos = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x) { return meaTemTipo(x, 'ld') || meaTemTipo(x, 'rede_rural'); });
+  const reg = candidatos.find(function(e) { return meaOpcaoLabel(e) === valorDigitado; });
+  if (!reg) {
     d.meaId = null;
     d.num = '';
-    if (val === '') d.empreendimento = '';
+    d.empreendimento = valorDigitado;
     navigate('checklist_linha');
     return;
   }
-  const reg = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).find(function(x) { return x.id === val; });
-  if (!reg) return;
   d.meaId = reg.id;
   d.num = reg.num || '';
   d.empreendimento = reg.empreendimento || '';
@@ -37253,6 +37275,14 @@ function renderLinhaMiniDashboard() {
       ${filtroClass ? `<button class="btn-secondary" style="padding:4px 10px;font-size:.7rem" onclick="linhaDashLimparFiltroClass()">✕ Ver todos</button>` : ''}
     </div>
     <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;background:var(--surface2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1">
+        <div style="flex:1;min-width:140px;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Trecho</div>
+        <div style="min-width:120px;text-align:center;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Responsável (checklist)</div>
+        <div style="min-width:80px;text-align:center;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Data da Inspeção</div>
+        <div style="min-width:55px;text-align:center;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">%</div>
+        <div style="min-width:80px;text-align:right;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Ocorr.</div>
+        <div style="flex-shrink:0;min-width:260px"></div>
+      </div>
       ${window._linhaHistorico === null
         ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Carregando histórico...</div>`
         : ordenado.length === 0
@@ -37761,12 +37791,13 @@ function pageChecklistLinha() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
       <div class="form-group" style="grid-column:span 2">
         <label>Empreendimento / Trecho</label>
-        <select id="linha_empreendimento_select" onchange="linhaSelecionarEmpreendimento(this.value)">
-          <option value="">Selecione...</option>
-          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return meaTemTipo(x,'ld') || meaTemTipo(x,'rede_rural'); }).sort(meaCmpPorNumero).map(function(e){ return '<option value="'+e.id+'" '+(d.meaId===e.id?'selected':'')+'>'+((e.num?e.num+' — ':'')+(e.empreendimento||'Sem nome'))+(meaEhMisto(e)?' 🔀':'')+'</option>'; }).join('')}
-          <option value="__outro__" ${(!d.meaId && d.empreendimento) ? 'selected' : ''}>Outro (não cadastrado em Monitoramento Ambiental)</option>
-        </select>
-        <input id="linha_empreendimento" style="margin-top:6px;${d.meaId ? 'display:none' : ''}" value="${d.empreendimento||''}" oninput="linhaCampo('empreendimento',this.value)" placeholder="Nome do trecho, se ainda não estiver cadastrado em Monitoramento Ambiental">
+        <input type="text" id="linha_empreendimento" list="linha_empreendimento_dl" autocomplete="off"
+          value="${d.meaId ? meaOpcaoLabel({num:d.num,empreendimento:d.empreendimento,classificacoes:(MEA_DADOS.find(function(x){return x.id===d.meaId;})||{}).classificacoes}).replace(/"/g,'&quot;') : (d.empreendimento||'').replace(/"/g,'&quot;')}"
+          oninput="linhaCampo('empreendimento',this.value)" onchange="linhaEmpreendimentoDigitou(this.value)"
+          placeholder="Digite pra buscar em Monitoramento Ambiental, ou um nome livre...">
+        <datalist id="linha_empreendimento_dl">
+          ${(typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x){ return meaTemTipo(x,'ld') || meaTemTipo(x,'rede_rural'); }).sort(meaCmpPorNumero).map(function(e){ return '<option value="'+meaOpcaoLabel(e).replace(/"/g,'&quot;')+'">'; }).join('')}
+        </datalist>
         ${d.meaId ? '<div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">🔗 Vinculado ao cadastro em Monitoramento Ambiental' + (d.num ? ' · Nº ' + d.num : '') + '</div>' : ''}
       </div>
       <div class="form-group">
