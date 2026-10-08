@@ -29058,7 +29058,12 @@ let SERV_FILTRO_TIPO = '';
 // por isso agora é array, não string, e tem UI própria (dropdown com
 // checkboxes) em vez do <input type="text"> antigo.
 let SERV_FILTRO_RESP = [];
-let SERV_FILTRO_BENEF = '';
+// Pedido 08/10/2026 (ajuste do mesmo turno): Beneficiário também virou
+// seleção múltipla, mesmo padrão do Responsável — veio pedido de novo
+// porque a 1ª entrega só tinha feito o Responsável ("o filtro de
+// beneficiario ainda veio somente uma opção, não veio pra selecionar mais
+// de um").
+let SERV_FILTRO_BENEF = [];
 let SERV_FILTRO_CC = '';
 let SERV_FILTRO_BUSCA = '';
 let SERV_FILTRO_STATUS = '';
@@ -29067,11 +29072,11 @@ let SERV_FILTRO_STATUS = '';
 let SERV_FILTRO_EMPRESA = '';
 
 function servLimparFiltros() {
-  ['serv_filtro_mes','serv_filtro_benef','serv_filtro_cc','serv_filtro_busca'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['serv_filtro_mes','serv_filtro_cc','serv_filtro_busca'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const tipoSel = document.getElementById('serv_filtro_tipo'); if (tipoSel) tipoSel.value = '';
   const statusSel = document.getElementById('serv_filtro_status'); if (statusSel) statusSel.value = '';
   const empresaSel = document.getElementById('serv_filtro_empresa'); if (empresaSel) empresaSel.value = '';
-  SERV_FILTRO_MES=''; SERV_FILTRO_TIPO=''; SERV_FILTRO_RESP=[]; SERV_FILTRO_BENEF=''; SERV_FILTRO_CC=''; SERV_FILTRO_BUSCA=''; SERV_FILTRO_STATUS=''; SERV_FILTRO_EMPRESA='';
+  SERV_FILTRO_MES=''; SERV_FILTRO_TIPO=''; SERV_FILTRO_RESP=[]; SERV_FILTRO_BENEF=[]; SERV_FILTRO_CC=''; SERV_FILTRO_BUSCA=''; SERV_FILTRO_STATUS=''; SERV_FILTRO_EMPRESA='';
   carregarLancamentosServicos();
 }
 
@@ -29172,7 +29177,9 @@ async function carregarLancamentosServicos() {
   // dropdown) — atualizado diretamente por servFiltroRespToggle/Limpar, não
   // lido de um <input> único como antes.
   if (!Array.isArray(SERV_FILTRO_RESP)) SERV_FILTRO_RESP = [];
-  SERV_FILTRO_BENEF = ((document.getElementById('serv_filtro_benef')||{}).value || SERV_FILTRO_BENEF);
+  // SERV_FILTRO_BENEF também é array agora (mesmo padrão do Responsável) —
+  // atualizado por servFiltroBenefToggle/Limpar.
+  if (!Array.isArray(SERV_FILTRO_BENEF)) SERV_FILTRO_BENEF = [];
   SERV_FILTRO_CC = ((document.getElementById('serv_filtro_cc')||{}).value || SERV_FILTRO_CC);
   SERV_FILTRO_BUSCA = ((document.getElementById('serv_filtro_busca')||{}).value || SERV_FILTRO_BUSCA);
   SERV_FILTRO_STATUS = ((document.getElementById('serv_filtro_status')||{}).value || SERV_FILTRO_STATUS);
@@ -29184,7 +29191,9 @@ async function carregarLancamentosServicos() {
   if (SERV_FILTRO_MES) filtrados = filtrados.filter(l => (l.dataISO||'').slice(0,7) === SERV_FILTRO_MES);
   if (SERV_FILTRO_TIPO) filtrados = filtrados.filter(l => l.tipo === SERV_FILTRO_TIPO);
   if (SERV_FILTRO_RESP.length) filtrados = filtrados.filter(l => SERV_FILTRO_RESP.includes(l.resp));
-  if (SERV_FILTRO_BENEF) filtrados = filtrados.filter(l => (l.benef||'').toLowerCase().includes(SERV_FILTRO_BENEF.toLowerCase()));
+  // Beneficiário dividido (DivisaoBenef) checa cada nome da divisão, não a
+  // string combinada "A + B" salva em l.benef.
+  if (SERV_FILTRO_BENEF.length) filtrados = filtrados.filter(l => (l.DivisaoBenef && l.DivisaoBenef.length) ? l.DivisaoBenef.some(d => SERV_FILTRO_BENEF.includes(d.benef)) : SERV_FILTRO_BENEF.includes(l.benef));
   if (SERV_FILTRO_CC) filtrados = filtrados.filter(l => (l.cc||'').toLowerCase().includes(SERV_FILTRO_CC.toLowerCase()));
   if (SERV_FILTRO_STATUS) filtrados = filtrados.filter(l => servStatusDe(l) === SERV_FILTRO_STATUS);
   if (SERV_FILTRO_EMPRESA) filtrados = filtrados.filter(l => normalizarEmpresa(servEmpresaDoCC(l.cc)) === normalizarEmpresa(SERV_FILTRO_EMPRESA));
@@ -29250,6 +29259,25 @@ async function carregarLancamentosServicos() {
       </div>
     </details>`;
 
+  // Beneficiário — mesmo dropdown de checkboxes do Responsável (pedido
+  // 08/10/2026, ajuste do mesmo turno). Opções = nome de cada beneficiário
+  // que já aparece nos lançamentos, inclusive os de dentro de uma divisão
+  // entre beneficiários (DivisaoBenef), não a string combinada "A + B".
+  const benefOpcoesServ = [...new Set(items.flatMap(l => (l.DivisaoBenef && l.DivisaoBenef.length) ? l.DivisaoBenef.map(d => d.benef) : [l.benef]).filter(Boolean))].sort((a,b) => a.localeCompare(b,'pt-BR'));
+  if (typeof window._servFiltroBenefAberto === 'undefined') window._servFiltroBenefAberto = false;
+  const filtroBenefHtml = `
+    <details id="serv_filtro_benef_details" ontoggle="window._servFiltroBenefAberto=this.open" ${window._servFiltroBenefAberto?'open':''} style="position:relative;display:inline-block">
+      <summary style="list-style:none;cursor:pointer;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);user-select:none">🎁 Beneficiário${SERV_FILTRO_BENEF.length?' ('+SERV_FILTRO_BENEF.length+')':''} ▾</summary>
+      <div style="position:absolute;top:100%;left:0;margin-top:4px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);max-height:240px;overflow-y:auto;z-index:50;min-width:210px;padding:6px">
+        ${!benefOpcoesServ.length ? '<div style="font-size:.75rem;color:var(--text-muted);padding:6px">Nenhum beneficiário lançado ainda.</div>' : benefOpcoesServ.map(b => `
+        <label style="display:flex;align-items:center;gap:6px;padding:4px 6px;font-size:.78rem;cursor:pointer;white-space:nowrap">
+          <input type="checkbox" value="${b.replace(/"/g,'&quot;')}" ${SERV_FILTRO_BENEF.includes(b)?'checked':''} onchange="servFiltroBenefToggle(this.value,this.checked)">
+          ${b}
+        </label>`).join('')}
+        ${SERV_FILTRO_BENEF.length ? `<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px"><button type="button" onclick="servFiltroBenefLimpar()" style="font-size:.72rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:4px 6px">✕ Limpar seleção</button></div>` : ''}
+      </div>
+    </details>`;
+
   const filtrosHtml = `
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
     <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
@@ -29272,7 +29300,7 @@ async function carregarLancamentosServicos() {
       <option value="Rejeitado" ${SERV_FILTRO_STATUS==='Rejeitado'?'selected':''}>Rejeitado</option>
     </select>
     ${filtroRespHtml}
-    <input type="text" id="serv_filtro_benef" value="${SERV_FILTRO_BENEF}" placeholder="Beneficiário..." oninput="dbDebounce('carregarLancamentosServicos')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
+    ${filtroBenefHtml}
     <input type="text" id="serv_filtro_cc" value="${SERV_FILTRO_CC}" placeholder="Centro de custo..." oninput="dbDebounce('carregarLancamentosServicos')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
     <input type="text" id="serv_filtro_busca" value="${SERV_FILTRO_BUSCA}" placeholder="Buscar serviço/observação..." oninput="dbDebounce('carregarLancamentosServicos')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:160px">
     <button onclick="servLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
@@ -29438,6 +29466,17 @@ function servFiltroRespToggle(valor, checked) {
 }
 function servFiltroRespLimpar() {
   SERV_FILTRO_RESP = [];
+  carregarLancamentosServicos();
+}
+// Filtro de Beneficiário (múltipla seleção) — pedido 08/10/2026, mesmo padrão do Responsável.
+function servFiltroBenefToggle(valor, checked) {
+  if (!Array.isArray(SERV_FILTRO_BENEF)) SERV_FILTRO_BENEF = [];
+  if (checked) { if (!SERV_FILTRO_BENEF.includes(valor)) SERV_FILTRO_BENEF.push(valor); }
+  else { SERV_FILTRO_BENEF = SERV_FILTRO_BENEF.filter(v => v !== valor); }
+  carregarLancamentosServicos();
+}
+function servFiltroBenefLimpar() {
+  SERV_FILTRO_BENEF = [];
   carregarLancamentosServicos();
 }
 
