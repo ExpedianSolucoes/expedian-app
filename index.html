@@ -29040,17 +29040,25 @@ function renderServicosTab(items, tipo) {
       (tabela Lancamentos_Servicos), no mesmo padrão de Prestação de Contas / Contas a Pagar. -- */
 let SERV_FILTRO_MES = '';
 let SERV_FILTRO_TIPO = '';
-let SERV_FILTRO_RESP = '';
+// Pedido 08/10/2026: filtro de Responsável virou seleção de MAIS DE UM
+// colaborador ao mesmo tempo (antes só dava pra digitar um texto único) —
+// por isso agora é array, não string, e tem UI própria (dropdown com
+// checkboxes) em vez do <input type="text"> antigo.
+let SERV_FILTRO_RESP = [];
 let SERV_FILTRO_BENEF = '';
 let SERV_FILTRO_CC = '';
 let SERV_FILTRO_BUSCA = '';
 let SERV_FILTRO_STATUS = '';
+// Pedido 08/10/2026: filtro por empresa (Expedian/TL3/EXP Brasil), derivado
+// do Centro de Custo do lançamento via servEmpresaDoCC.
+let SERV_FILTRO_EMPRESA = '';
 
 function servLimparFiltros() {
-  ['serv_filtro_mes','serv_filtro_resp','serv_filtro_benef','serv_filtro_cc','serv_filtro_busca'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['serv_filtro_mes','serv_filtro_benef','serv_filtro_cc','serv_filtro_busca'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const tipoSel = document.getElementById('serv_filtro_tipo'); if (tipoSel) tipoSel.value = '';
   const statusSel = document.getElementById('serv_filtro_status'); if (statusSel) statusSel.value = '';
-  SERV_FILTRO_MES=''; SERV_FILTRO_TIPO=''; SERV_FILTRO_RESP=''; SERV_FILTRO_BENEF=''; SERV_FILTRO_CC=''; SERV_FILTRO_BUSCA=''; SERV_FILTRO_STATUS='';
+  const empresaSel = document.getElementById('serv_filtro_empresa'); if (empresaSel) empresaSel.value = '';
+  SERV_FILTRO_MES=''; SERV_FILTRO_TIPO=''; SERV_FILTRO_RESP=[]; SERV_FILTRO_BENEF=''; SERV_FILTRO_CC=''; SERV_FILTRO_BUSCA=''; SERV_FILTRO_STATUS=''; SERV_FILTRO_EMPRESA='';
   carregarLancamentosServicos();
 }
 
@@ -29147,19 +29155,26 @@ async function carregarLancamentosServicos() {
   const pagosMes = pagos.filter(l => (l.DataPagamento||'').slice(0,7) === mesKpi);
 
   SERV_FILTRO_TIPO = (document.getElementById('serv_filtro_tipo')||{}).value || SERV_FILTRO_TIPO;
-  SERV_FILTRO_RESP = ((document.getElementById('serv_filtro_resp')||{}).value || SERV_FILTRO_RESP);
+  // SERV_FILTRO_RESP agora é array (seleção múltipla via checkboxes no
+  // dropdown) — atualizado diretamente por servFiltroRespToggle/Limpar, não
+  // lido de um <input> único como antes.
+  if (!Array.isArray(SERV_FILTRO_RESP)) SERV_FILTRO_RESP = [];
   SERV_FILTRO_BENEF = ((document.getElementById('serv_filtro_benef')||{}).value || SERV_FILTRO_BENEF);
   SERV_FILTRO_CC = ((document.getElementById('serv_filtro_cc')||{}).value || SERV_FILTRO_CC);
   SERV_FILTRO_BUSCA = ((document.getElementById('serv_filtro_busca')||{}).value || SERV_FILTRO_BUSCA);
   SERV_FILTRO_STATUS = ((document.getElementById('serv_filtro_status')||{}).value || SERV_FILTRO_STATUS);
+  // Empresa: lido direto (sem fallback "|| valor antigo") pra selecionar
+  // "Todas as empresas" (value="") realmente limpar o filtro.
+  { const _elEmp = document.getElementById('serv_filtro_empresa'); if (_elEmp) SERV_FILTRO_EMPRESA = _elEmp.value; }
 
   let filtrados = items.slice();
   if (SERV_FILTRO_MES) filtrados = filtrados.filter(l => (l.dataISO||'').slice(0,7) === SERV_FILTRO_MES);
   if (SERV_FILTRO_TIPO) filtrados = filtrados.filter(l => l.tipo === SERV_FILTRO_TIPO);
-  if (SERV_FILTRO_RESP) filtrados = filtrados.filter(l => (l.resp||'').toLowerCase().includes(SERV_FILTRO_RESP.toLowerCase()));
+  if (SERV_FILTRO_RESP.length) filtrados = filtrados.filter(l => SERV_FILTRO_RESP.includes(l.resp));
   if (SERV_FILTRO_BENEF) filtrados = filtrados.filter(l => (l.benef||'').toLowerCase().includes(SERV_FILTRO_BENEF.toLowerCase()));
   if (SERV_FILTRO_CC) filtrados = filtrados.filter(l => (l.cc||'').toLowerCase().includes(SERV_FILTRO_CC.toLowerCase()));
   if (SERV_FILTRO_STATUS) filtrados = filtrados.filter(l => servStatusDe(l) === SERV_FILTRO_STATUS);
+  if (SERV_FILTRO_EMPRESA) filtrados = filtrados.filter(l => normalizarEmpresa(servEmpresaDoCC(l.cc)) === normalizarEmpresa(SERV_FILTRO_EMPRESA));
   if (SERV_FILTRO_BUSCA) {
     const q = SERV_FILTRO_BUSCA.toLowerCase();
     filtrados = filtrados.filter(l => (l.descServico||'').toLowerCase().includes(q) || (l.obs||'').toLowerCase().includes(q));
@@ -29169,6 +29184,15 @@ async function carregarLancamentosServicos() {
 
   const tipoLabel = t => t==='diarias' ? 'Diária' : t==='veiculos' ? 'Veículo' : t==='projetos' ? 'Projeto' : t||'—';
   const isDirServ = _servicosPodeLancar(); // Diretoria e Coordenação — mesmo critério de quem pode lançar (antes só Diretoria via aprovação/pagamento não apareciam pra Coordenação, o "gestor")
+
+  // Aprovação em lote (pedido 08/10/2026, mesmo padrão de pagToggleItem/
+  // pagAprovarSelecionados em Contas a Pagar): remove da seleção qualquer Id
+  // que não está mais "Aguardando Aprovação" dentro do filtro atual — assim a
+  // seleção nunca fica "presa" em itens já aprovados ou fora do filtro.
+  if (window._servLancSelecionados instanceof Set) {
+    const idsAtuaisServ = new Set(filtrados.filter(l => servStatusDe(l) === 'Aguardando Aprovação').map(l => l.Id));
+    Array.from(window._servLancSelecionados).forEach(id => { if (!idsAtuaisServ.has(id)) window._servLancSelecionados.delete(id); });
+  } else { window._servLancSelecionados = new Set(); }
 
   const kpisHtml = `
   <div class="kpi-grid" style="margin-bottom:12px">
@@ -29194,10 +29218,33 @@ async function carregarLancamentosServicos() {
     </div>
   </div>`;
 
+  // Opções do filtro de Responsável = nomes que realmente aparecem nos
+  // lançamentos (não a lista fixa de diretoria/coordenação), pra sempre bater
+  // com o que tem pra filtrar. Pedido 08/10/2026: seleção de mais de um ao
+  // mesmo tempo, por isso é um dropdown de checkboxes, não um <select> comum.
+  const respOpcoesServ = [...new Set(items.map(l => l.resp).filter(Boolean))].sort((a,b) => a.localeCompare(b,'pt-BR'));
+  if (typeof window._servFiltroRespAberto === 'undefined') window._servFiltroRespAberto = false;
+  const filtroRespHtml = `
+    <details id="serv_filtro_resp_details" ontoggle="window._servFiltroRespAberto=this.open" ${window._servFiltroRespAberto?'open':''} style="position:relative;display:inline-block">
+      <summary style="list-style:none;cursor:pointer;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);user-select:none">👤 Responsável${SERV_FILTRO_RESP.length?' ('+SERV_FILTRO_RESP.length+')':''} ▾</summary>
+      <div style="position:absolute;top:100%;left:0;margin-top:4px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);max-height:240px;overflow-y:auto;z-index:50;min-width:210px;padding:6px">
+        ${!respOpcoesServ.length ? '<div style="font-size:.75rem;color:var(--text-muted);padding:6px">Nenhum responsável lançado ainda.</div>' : respOpcoesServ.map(r => `
+        <label style="display:flex;align-items:center;gap:6px;padding:4px 6px;font-size:.78rem;cursor:pointer;white-space:nowrap">
+          <input type="checkbox" value="${r.replace(/"/g,'&quot;')}" ${SERV_FILTRO_RESP.includes(r)?'checked':''} onchange="servFiltroRespToggle(this.value,this.checked)">
+          ${r}
+        </label>`).join('')}
+        ${SERV_FILTRO_RESP.length ? `<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px"><button type="button" onclick="servFiltroRespLimpar()" style="font-size:.72rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:4px 6px">✕ Limpar seleção</button></div>` : ''}
+      </div>
+    </details>`;
+
   const filtrosHtml = `
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
     <span style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">🔍 Filtrar:</span>
     <input type="month" id="serv_filtro_mes" value="${SERV_FILTRO_MES}" onchange="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <select id="serv_filtro_empresa" onchange="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
+      <option value="">Todas as empresas</option>
+      ${RD_EMPRESAS.map(e => `<option value="${e}" ${normalizarEmpresa(SERV_FILTRO_EMPRESA)===normalizarEmpresa(e)?'selected':''}>${e}</option>`).join('')}
+    </select>
     <select id="serv_filtro_tipo" onchange="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
       <option value="">Todos os tipos</option>
       <option value="diarias" ${SERV_FILTRO_TIPO==='diarias'?'selected':''}>Diárias</option>
@@ -29211,7 +29258,7 @@ async function carregarLancamentosServicos() {
       <option value="Pago" ${SERV_FILTRO_STATUS==='Pago'?'selected':''}>Pago</option>
       <option value="Rejeitado" ${SERV_FILTRO_STATUS==='Rejeitado'?'selected':''}>Rejeitado</option>
     </select>
-    <input type="text" id="serv_filtro_resp" value="${SERV_FILTRO_RESP}" placeholder="Responsável..." oninput="dbDebounce('carregarLancamentosServicos')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
+    ${filtroRespHtml}
     <input type="text" id="serv_filtro_benef" value="${SERV_FILTRO_BENEF}" placeholder="Beneficiário..." oninput="dbDebounce('carregarLancamentosServicos')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
     <input type="text" id="serv_filtro_cc" value="${SERV_FILTRO_CC}" placeholder="Centro de custo..." oninput="dbDebounce('carregarLancamentosServicos')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:130px">
     <input type="text" id="serv_filtro_busca" value="${SERV_FILTRO_BUSCA}" placeholder="Buscar serviço/observação..." oninput="dbDebounce('carregarLancamentosServicos')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:160px">
@@ -29280,12 +29327,18 @@ async function carregarLancamentosServicos() {
   const totalPendenteServ = pendentesServ.reduce((s,l) => s + (Number(l.total)||0), 0);
   const totalPagoServ = pagosServ.reduce((s,l) => s + (Number(l.total)||0), 0);
 
-  const theadServHtml = '<thead><tr><th>Tipo</th><th>Serviço</th><th>Data</th><th>Qtd</th><th style="text-align:right">Unit.</th><th style="text-align:right">Total</th><th>Responsável</th><th>Beneficiário</th><th>Centro de Custo</th><th>Status</th><th>Ações</th></tr></thead>';
+  const theadServHtml = '<thead><tr>' + (isDirServ ? '<th style="width:26px"><input type="checkbox" id="serv-chk-todos" title="Selecionar todos os \'Aguardando Aprovação\' visíveis" onchange="servToggleTodos(this.checked)"></th>' : '') + '<th>Tipo</th><th>Serviço</th><th>Data</th><th>Qtd</th><th style="text-align:right">Unit.</th><th style="text-align:right">Total</th><th>Responsável</th><th>Beneficiário</th><th>Centro de Custo</th><th>Status</th><th>Ações</th></tr></thead>';
   const linhaServ = l => {
           const st = servStatusDe(l);
           const stCor = st==='Pago'?'green':st==='Rejeitado'?'red':st==='A Pagar'?'blue':'amber';
+          // Aprovação em lote (pedido 08/10/2026): checkbox só nas linhas
+          // "Aguardando Aprovação" e só pra quem pode aprovar — mesmo critério
+          // do botão individual "✅ Aprovar" logo abaixo.
+          const podeSelecionarServ = isDirServ && st === 'Aguardando Aprovação';
+          const marcadoServ = podeSelecionarServ && window._servLancSelecionados && window._servLancSelecionados.has(l.Id);
           return `
         <tr>
+          ${isDirServ?`<td>${podeSelecionarServ?`<input type="checkbox" class="serv-chk-item" data-id="${l.Id}" ${marcadoServ?'checked':''} onchange="servToggleItem(${l.Id}, this.checked)">`:''}</td>`:''}
           <td style="font-size:.72rem;color:var(--text-muted)">${tipoLabel(l.tipo)}</td>
           <td style="font-size:.78rem">${l.descServico||'—'}${l.veiculo?`<br><span style="font-size:.68rem;color:var(--text-muted)">🚗 ${l.veiculo}</span>`:''}${l.adicionalLabel?`<br><span style="font-size:.68rem;color:#b07700">⚡ ${l.adicionalLabel}</span>`:''}</td>
           <td style="font-size:.75rem">${l.data||'—'}</td>
@@ -29305,6 +29358,16 @@ async function carregarLancamentosServicos() {
         </tr>`;
   };
 
+  // Barra de aprovação em lote (pedido 08/10/2026, mesmo padrão de Contas a
+  // Pagar/pagAprovarSelecionados): só aparece pra quem pode aprovar, e só
+  // fica visível quando há pelo menos 1 selecionado.
+  const nSelServ = window._servLancSelecionados ? window._servLancSelecionados.size : 0;
+  const barraSelecaoServHtml = isDirServ ? `<div id="serv-bulk-bar" style="display:${nSelServ?'flex':'none'};align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:10px">
+    <span id="serv-bulk-texto" style="font-size:.8rem;font-weight:700"></span>
+    <button id="serv-bulk-btn" class="btn-primary" style="font-size:.76rem;padding:5px 10px" onclick="servAprovarSelecionados()">✅ Aprovar selecionados</button>
+    <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="servLimparSelecaoLancamentos()">✕ Limpar seleção</button>
+  </div>` : '';
+
   el.innerHTML = kpisHtml + dashboardBenefHtml + filtrosHtml + `
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
@@ -29320,13 +29383,14 @@ async function carregarLancamentosServicos() {
       <div style="font-size:.78rem;margin-top:6px">Use as abas acima para lançar serviços.</div>
     </div>` : !filtrados.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado com os filtros aplicados.</div>' : `
     ${!pendentesServ.length ? `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento pendente — tudo pago. ✅</div>` : `
+    ${barraSelecaoServHtml}
     <div style="overflow-x:auto">
     <table class="data-table data-table-compact" style="min-width:1100px">
       ${theadServHtml}
       <tbody>${pendentesServ.map(linhaServ).join('')}</tbody>
       <tfoot>
         <tr style="background:var(--green-pale)">
-          <td colspan="5" style="font-weight:700;padding:10px 12px;font-size:.82rem">TOTAL (pendente)</td>
+          <td colspan="${isDirServ?6:5}" style="font-weight:700;padding:10px 12px;font-size:.82rem">TOTAL (pendente)</td>
           <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif;font-size:1rem;color:var(--green-main);padding:10px 12px">${fmtBRL(totalPendenteServ)}</td>
           <td colspan="4"></td>
         </tr>
@@ -29349,6 +29413,78 @@ async function carregarLancamentosServicos() {
     { diarias: porTipo('diarias'), veiculos: porTipo('veiculos'), projetos: porTipo('projetos') },
     { diarias: qtdPorTipo('diarias'), veiculos: qtdPorTipo('veiculos'), projetos: qtdPorTipo('projetos') }
   ), 0);
+  servAtualizarBarraSelecao();
+}
+
+// Filtro de Responsável (múltipla seleção) — pedido 08/10/2026.
+function servFiltroRespToggle(valor, checked) {
+  if (!Array.isArray(SERV_FILTRO_RESP)) SERV_FILTRO_RESP = [];
+  if (checked) { if (!SERV_FILTRO_RESP.includes(valor)) SERV_FILTRO_RESP.push(valor); }
+  else { SERV_FILTRO_RESP = SERV_FILTRO_RESP.filter(v => v !== valor); }
+  carregarLancamentosServicos();
+}
+function servFiltroRespLimpar() {
+  SERV_FILTRO_RESP = [];
+  carregarLancamentosServicos();
+}
+
+/* -- Aprovação em lote de Lançamentos de Serviços — pedido 08/10/2026
+   ("campo de aprovação em massa de mais de um lançamento por vez"), mesmo
+   padrão de pagToggleItem/pagToggleTodos/pagAprovarSelecionados em Contas a
+   Pagar. Cada selecionado vira "A Pagar" com o Centro de Custo/Medição já
+   gravados no lançamento — pra ajustar algum antes de aprovar, continua
+   valendo o "✅ Aprovar" individual (abre o modal de conferência). -- */
+function servToggleItem(id, checked) {
+  if (!(window._servLancSelecionados instanceof Set)) window._servLancSelecionados = new Set();
+  if (checked) window._servLancSelecionados.add(id); else window._servLancSelecionados.delete(id);
+  servAtualizarBarraSelecao();
+}
+function servToggleTodos(checked) {
+  if (!(window._servLancSelecionados instanceof Set)) window._servLancSelecionados = new Set();
+  const idsVisiveisServ = (window._servFiltrados||[]).filter(l => servStatusDe(l) === 'Aguardando Aprovação').map(l => l.Id);
+  idsVisiveisServ.forEach(id => { if (checked) window._servLancSelecionados.add(id); else window._servLancSelecionados.delete(id); });
+  document.querySelectorAll('.serv-chk-item').forEach(chk => { chk.checked = checked; });
+  servAtualizarBarraSelecao();
+}
+function servLimparSelecaoLancamentos() {
+  window._servLancSelecionados = new Set();
+  document.querySelectorAll('.serv-chk-item').forEach(c => { c.checked = false; });
+  const todos = document.getElementById('serv-chk-todos'); if (todos) todos.checked = false;
+  servAtualizarBarraSelecao();
+}
+function servAtualizarBarraSelecao() {
+  const bar = document.getElementById('serv-bulk-bar');
+  if (!bar) return;
+  const n = window._servLancSelecionados ? window._servLancSelecionados.size : 0;
+  bar.style.display = n ? 'flex' : 'none';
+  if (!n) return;
+  const itensSel = (window._servFiltrados||[]).filter(l => window._servLancSelecionados.has(l.Id));
+  const soma = itensSel.reduce((s,l)=>s+(Number(l.total)||0),0);
+  const txt = document.getElementById('serv-bulk-texto');
+  if (txt) txt.textContent = n + ' selecionado' + (n===1?'':'s') + ' · ' + fmtBRL(soma);
+}
+async function servAprovarSelecionados() {
+  if (!_servicosPodeLancar()) { showToast('⛔ Aprovação restrita à Diretoria e Coordenação.'); return; }
+  const ids = Array.from(window._servLancSelecionados || []);
+  if (!ids.length) return;
+  const itensSel = (window._servFiltrados||[]).filter(l => ids.includes(l.Id));
+  const soma = itensSel.reduce((s,l)=>s+(Number(l.total)||0),0);
+  const ok1 = confirm(`Aprovar ${ids.length} lançamento(s) selecionado(s), totalizando ${fmtBRL(soma)}?\n\nCada um fica "A Pagar" com o Centro de Custo e Nº Medição já informados no lançamento — pra ajustar algum antes, use "✅ Aprovar" individualmente nesse item.`);
+  if (!ok1) return;
+  const btn = document.getElementById('serv-bulk-btn');
+  if (btn) btn.disabled = true;
+  let ok = 0, falhas = 0;
+  for (let idx = 0; idx < ids.length; idx++) {
+    const id = ids[idx];
+    if (btn) btn.innerHTML = '<span class="btn-spinner"></span> Aprovando ' + (idx+1) + '/' + ids.length + '...';
+    const res = await dbAtualizar('Lancamentos_Servicos', id, {
+      Status: 'A Pagar', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
+    }).catch(() => false);
+    if (res) ok++; else falhas++;
+  }
+  window._servLancSelecionados = new Set();
+  showToast(falhas ? `✅ ${ok} aprovado(s), ⚠️ ${falhas} falharam.` : `✅ ${ok} lançamento(s) aprovado(s)!`);
+  setTimeout(() => carregarLancamentosServicos(), 600);
 }
 
 async function exportarLancamentosServicosExcel() {
@@ -29382,6 +29518,33 @@ async function exportarLancamentosServicosExcel() {
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Lancamentos Servicos');
+
+  // Resumo por Nº Medição e por Centro de Custo (pedido 08/10/2026) — agrega
+  // quantidade de lançamentos e valor total do mesmo recorte (filtros já
+  // aplicados na tela) em duas abas extras, pra conferência de faturamento
+  // sem precisar somar a lista inteira linha a linha.
+  const agruparServ = (chaveFn, rotuloChave) => {
+    const mapa = {};
+    items.forEach(l => {
+      const chave = chaveFn(l) || '—';
+      if (!mapa[chave]) mapa[chave] = { qtd: 0, total: 0 };
+      mapa[chave].qtd += 1;
+      mapa[chave].total += Number(l.total) || 0;
+    });
+    const linhas = Object.entries(mapa)
+      .sort((a, b) => b[1].total - a[1].total)
+      .map(([chave, v]) => ({ [rotuloChave]: chave, 'Qtd. Lançamentos': v.qtd, 'Valor Total': v.total }));
+    const totalGeral = linhas.reduce((s, r) => s + r['Valor Total'], 0);
+    linhas.push({ [rotuloChave]: 'TOTAL', 'Qtd. Lançamentos': items.length, 'Valor Total': totalGeral });
+    return linhas;
+  };
+
+  const wsMedicao = XLSX.utils.json_to_sheet(agruparServ(l => l.medicao, 'Nº Medição'));
+  XLSX.utils.book_append_sheet(wb, wsMedicao, 'Resumo por Medicao');
+
+  const wsCC = XLSX.utils.json_to_sheet(agruparServ(l => l.cc, 'Centro de Custo'));
+  XLSX.utils.book_append_sheet(wb, wsCC, 'Resumo por Centro Custo');
+
   XLSX.writeFile(wb, 'LancamentosServicos_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
@@ -29704,7 +29867,11 @@ async function salvarLancamento(tipo) {
     showToast(ok ? '✅ Lançamento atualizado! Total: ' + fmtBRL(total) : '❌ Erro ao atualizar lançamento.');
     window._servEditandoId = null;
     limparForm(tipo);
-    setTimeout(() => carregarLancamentosServicos(), 600);
+    // Pedido 08/10/2026: ao salvar uma edição, volta direto pra aba
+    // "Lançamentos" (lista) em vez de ficar na aba do formulário — o usuário
+    // já vê o lançamento atualizado na lista, sem precisar trocar de aba.
+    window._servicosTab = 'lancamentos';
+    navigate('servicos');
     return;
   }
 
