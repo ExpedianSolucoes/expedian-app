@@ -11983,9 +11983,34 @@ function renderReceitasTab() {
       </div>
       <div class="form-group">
         <label>Valor (R$)</label>
-        <input type="text" inputmode="decimal" id="rc_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularIssPorValorNota('rc')">
+        <input type="text" inputmode="decimal" id="rc_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularIssPorValorNota('rc');rcGerarParcelas()">
       </div>
     </div>
+
+    <div class="form-row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Recebimento à vista ou parcelado?</label>
+        <select id="rc_parcelamento" onchange="rcToggleParcelas()">
+          <option value="avista">À vista (1 recebimento)</option>
+          <option value="parcelado">Parcelado</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row" id="rc_parcelas_row" style="display:none">
+      <div class="form-group">
+        <label>Em quantas vezes?</label>
+        <input type="number" id="rc_num_parcelas" min="2" placeholder="Ex: 3" oninput="rcGerarParcelas()">
+      </div>
+      <div class="form-group">
+        <label>Tipo de Parcelamento</label>
+        <select id="rc_tipo_parcelamento">
+          <option value="Boleto">Boleto</option>
+          <option value="Cartão de Crédito">Cartão de Crédito</option>
+        </select>
+      </div>
+    </div>
+    <div id="rc_parcelas_editor"></div>
 
     <div class="form-row">
       <div class="form-group">
@@ -12002,8 +12027,8 @@ function renderReceitasTab() {
 
     <div class="form-row">
       <div class="form-group">
-        <label>Previsão de Recebimento / Vencimento</label>
-        <input type="date" id="rc_data_prevista">
+        <label id="rc_data_prevista_label">Previsão de Recebimento / Vencimento</label>
+        <input type="date" id="rc_data_prevista" onchange="rcGerarParcelas()">
       </div>
       <div class="form-group">
         <label>Forma de Recebimento</label>
@@ -12651,6 +12676,109 @@ function rcAtualizarNaturezaHint() {
   hint.textContent = nat ? `Natureza Econômica: ${nat}` : '';
 }
 
+/* -- Parcelamento de Receitas (pedido 09/10/2026): mesmo padrão já usado em
+   Prestação de Contas (pcToggleParcelas/prestGerarParcelas/...), adaptado
+   pros campos rc_*. Quando parcelado, salvarReceita() grava N registros na
+   tabela Receitas (um por parcela) em vez de um único, cada um com
+   Parcelamento/TipoParcelamento/NumParcelas/NumParcela e seu próprio
+   vencimento (DataPrevista) e valor (Valor) — ver rcMontarRegistrosParcelados. -- */
+function rcToggleParcelas() {
+  const sel = document.getElementById('rc_parcelamento');
+  const row = document.getElementById('rc_parcelas_row');
+  const isParc = !!sel && sel.value === 'parcelado';
+  if (row) row.style.display = isParc ? '' : 'none';
+  const lbl = document.getElementById('rc_data_prevista_label');
+  if (lbl) lbl.textContent = isParc ? 'Vencimento da 1ª Parcela' : 'Previsão de Recebimento / Vencimento';
+  if (!isParc) {
+    window._rcParcelas = null;
+    const ed = document.getElementById('rc_parcelas_editor'); if (ed) ed.innerHTML = '';
+  } else {
+    rcGerarParcelas();
+  }
+}
+
+function rcGerarParcelas() {
+  const sel = document.getElementById('rc_parcelamento');
+  const ed = document.getElementById('rc_parcelas_editor');
+  if (!sel || sel.value !== 'parcelado') { window._rcParcelas = null; return; }
+  const qtd = parseInt((document.getElementById('rc_num_parcelas')||{}).value || '0', 10);
+  const dataBase = (document.getElementById('rc_data_prevista')||{}).value;
+  const total = rdMoedaParaNumero((document.getElementById('rc_valor')||{}).value);
+  if (!qtd || qtd < 2 || !dataBase || !total) {
+    window._rcParcelas = null;
+    if (ed) ed.innerHTML = '';
+    return;
+  }
+  const valorParcela = Math.round((total / qtd) * 100) / 100;
+  const parcelas = [];
+  let somaParcial = 0;
+  for (let i = 0; i < qtd; i++) {
+    const d = new Date(dataBase + 'T00:00:00');
+    d.setMonth(d.getMonth() + i);
+    const vencimento = d.toISOString().slice(0, 10);
+    parcelas.push({ numero: i + 1, vencimento, valor: valorParcela });
+    somaParcial += valorParcela;
+  }
+  const dif = Math.round((total - somaParcial) * 100) / 100;
+  if (parcelas.length) parcelas[parcelas.length - 1].valor = Math.round((parcelas[parcelas.length - 1].valor + dif) * 100) / 100;
+  window._rcParcelas = parcelas;
+  rcRenderizarParcelas();
+}
+
+function rcRenderizarParcelas() {
+  const ed = document.getElementById('rc_parcelas_editor');
+  if (!ed) return;
+  const parcelas = window._rcParcelas || [];
+  if (!parcelas.length) { ed.innerHTML = ''; return; }
+  const fmtR = (v) => 'R$ ' + v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  ed.innerHTML = '<div style="font-size:.78rem;color:var(--text-muted);margin:6px 0 4px">Parcelas geradas (edite datas/valores se necessário):</div>' +
+    parcelas.map((p, i) => (
+      '<div class="form-row" style="align-items:flex-end">' +
+        '<div class="form-group" style="margin-bottom:0">' +
+          '<label style="font-size:.72rem">Parcela ' + p.numero + '/' + parcelas.length + ' — Vencimento</label>' +
+          '<input type="date" value="' + p.vencimento + '" onchange="rcAtualizarParcela(' + i + ',\'vencimento\',this.value)">' +
+        '</div>' +
+        '<div class="form-group" style="margin-bottom:0">' +
+          '<label style="font-size:.72rem">Valor (R$)</label>' +
+          '<input type="text" inputmode="decimal" value="' + fmtR(p.valor) + '" oninput="rdFormatarMoedaInput(this);rcAtualizarParcela(' + i + ',\'valor\',rdMoedaParaNumero(this.value))">' +
+        '</div>' +
+      '</div>'
+    )).join('');
+}
+
+function rcAtualizarParcela(i, campo, valor) {
+  if (!window._rcParcelas || !window._rcParcelas[i]) return;
+  window._rcParcelas[i][campo] = campo === 'valor' ? (parseFloat(valor) || 0) : valor;
+}
+
+/* Divide o "base" (dados da receita já validados) em N registros, um por
+   parcela — ISS/Outras Retenções são rateados proporcionalmente ao valor de
+   cada parcela, pra manter a soma dos líquidos consistente com o líquido
+   total da nota original. */
+function rcMontarRegistrosParcelados(base, tipoParcelamento) {
+  const parcelas = window._rcParcelas || [];
+  const totalValor = base.Valor || parcelas.reduce((s,p)=>s+p.valor,0) || 1;
+  return parcelas.map(p => {
+    const prop = p.valor / totalValor;
+    const issP = Math.round((base.ISSValorRetido||0) * prop * 100) / 100;
+    const outrasP = Math.round((base.OutrasRetencoesValor||0) * prop * 100) / 100;
+    return {
+      ...base,
+      Title: base.Cliente + ' · parcela ' + p.numero + '/' + parcelas.length + ' · venc. ' + p.vencimento,
+      DataPrevista: p.vencimento,
+      Valor: p.valor,
+      ISSValorRetido: issP,
+      OutrasRetencoesValor: outrasP,
+      ValorLiquido: Math.max(p.valor - issP - outrasP, 0),
+      Parcelamento: 'parcelado',
+      TipoParcelamento: tipoParcelamento,
+      NumParcelas: parcelas.length,
+      TotalParcelas: parcelas.length,
+      NumParcela: p.numero,
+    };
+  });
+}
+
 async function salvarReceita() {
   if (document.getElementById('rc-btn-salvar')?.disabled) return; // clique duplo — já processando
   const dataEmissao = document.getElementById('rc_data_emissao').value;
@@ -12678,6 +12806,8 @@ async function salvarReceita() {
   let comprovanteUrl = window._rcComprovanteUrl || '';
   let comprovanteNome = window._rcComprovanteNome || '';
   const empresa = window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  const parcelamento = (document.getElementById('rc_parcelamento')||{}).value || 'avista';
+  const tipoParcelamento = (document.getElementById('rc_tipo_parcelamento')||{}).value || '';
 
   if (!dataEmissao) { showToast('⚠️ Informe a data de emissão.'); return; }
   if (!categoria) { showToast('⚠️ Selecione a categoria.'); return; }
@@ -12685,6 +12815,7 @@ async function salvarReceita() {
   if (!cc) { showToast('⚠️ Selecione o contrato (centro de custo).'); return; }
   if (!valor) { showToast('⚠️ Informe o valor.'); return; }
   if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
+  if (parcelamento === 'parcelado' && (!window._rcParcelas || window._rcParcelas.length < 2)) { showToast('⚠️ Informe em quantas vezes e o vencimento da 1ª parcela.'); return; }
 
   // Renomeia o comprovante já enviado ao OneDrive conforme data/valor/cliente definitivos
   if (window._rcComprovanteId && window._rcComprovanteDriveId) {
@@ -12704,13 +12835,25 @@ async function salvarReceita() {
     ComprovanteUrl: comprovanteUrl, ComprovanteNome: comprovanteNome, Empresa: empresa,
     Title: cliente + ' · ' + (dataPrevista || dataEmissao),
     LancadoPor: window._currentUser ? window._currentUser.name : '',
+    Parcelamento: parcelamento === 'parcelado' ? 'parcelado' : 'avista',
+    TipoParcelamento: parcelamento === 'parcelado' ? tipoParcelamento : '',
+    NumParcelas: parcelamento === 'parcelado' ? (window._rcParcelas||[]).length : 1,
   };
 
   const btnSalvarRc = _btnCarregando('rc-btn-salvar', ' Salvando...');
   showSyncStatus('Salvando receita...');
   let ok;
   try {
-    ok = await dbInserir('Receitas', dados);
+    if (dados.Parcelamento === 'parcelado' && window._rcParcelas && window._rcParcelas.length) {
+      const registros = rcMontarRegistrosParcelados(dados, tipoParcelamento);
+      ok = true;
+      for (const r of registros) {
+        const okR = await dbInserir('Receitas', r);
+        ok = ok && !!okR;
+      }
+    } else {
+      ok = await dbInserir('Receitas', dados);
+    }
   } finally {
     _btnRestaurar(btnSalvarRc);
   }
@@ -12740,6 +12883,13 @@ async function salvarReceita() {
   const medEl = document.getElementById('rc_medicao'); if (medEl) medEl.value = '';
   const medHint = document.getElementById('rc_medicao_hint'); if (medHint) medHint.textContent = '';
   const medDl = document.getElementById('rc_medicao_dl'); if (medDl) medDl.innerHTML = '';
+  const parcSel = document.getElementById('rc_parcelamento'); if (parcSel) parcSel.value = 'avista';
+  const numParcEl = document.getElementById('rc_num_parcelas'); if (numParcEl) numParcEl.value = '';
+  const tipoParcSel = document.getElementById('rc_tipo_parcelamento'); if (tipoParcSel) tipoParcSel.selectedIndex = 0;
+  const parcRow = document.getElementById('rc_parcelas_row'); if (parcRow) parcRow.style.display = 'none';
+  const parcEditor = document.getElementById('rc_parcelas_editor'); if (parcEditor) parcEditor.innerHTML = '';
+  const dpLabel = document.getElementById('rc_data_prevista_label'); if (dpLabel) dpLabel.textContent = 'Previsão de Recebimento / Vencimento';
+  window._rcParcelas = null;
   window._rcComprovanteUrl = null; window._rcComprovanteNome = null;
   window._rcComprovanteId = null; window._rcComprovanteDriveId = null;
   const comprovScan = document.getElementById('rc_comprovante_scan'); if (comprovScan) comprovScan.value = '';
