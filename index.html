@@ -12019,7 +12019,7 @@ function renderReceitasTab() {
         <datalist id="rc_medicao_dl"></datalist>
         <div id="rc_medicao_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="rc_nf_avista_group">
         <label>Nº da Nota Fiscal <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">(opcional)</span></label>
         <input type="text" id="rc_numero_nf" placeholder="Ex: 168">
       </div>
@@ -12039,6 +12039,7 @@ function renderReceitasTab() {
       </div>
     </div>
 
+    <div id="rc_iss_avista_block">
     <div class="form-row">
       <div class="form-group" style="grid-column:span 2">
         <label>ISS Retido pelo Tomador? <span style="font-size:.7rem;color:var(--text-muted);font-weight:400">(uso no cálculo de impostos)</span></label>
@@ -12059,6 +12060,7 @@ function renderReceitasTab() {
         <label>Valor do ISS Retido (R$)</label>
         <input type="text" inputmode="decimal" id="rc_iss_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rcRecalcularValorLiquido('rc')">
       </div>
+    </div>
     </div>
 
     <div class="form-row">
@@ -12689,6 +12691,11 @@ function rcToggleParcelas() {
   if (row) row.style.display = isParc ? '' : 'none';
   const lbl = document.getElementById('rc_data_prevista_label');
   if (lbl) lbl.textContent = isParc ? 'Vencimento da 1ª Parcela' : 'Previsão de Recebimento / Vencimento';
+  // Quando parcelado, Nº da NF e ISS Retido passam a ser informados POR PARCELA
+  // (ver rcRenderizarParcelas) em vez dos campos únicos abaixo, que escondemos
+  // pra não confundir com 2 lugares pedindo a mesma coisa (pedido 09/10/2026).
+  const nfGroup = document.getElementById('rc_nf_avista_group'); if (nfGroup) nfGroup.style.display = isParc ? 'none' : '';
+  const issBlock = document.getElementById('rc_iss_avista_block'); if (issBlock) issBlock.style.display = isParc ? 'none' : '';
   if (!isParc) {
     window._rcParcelas = null;
     const ed = document.getElementById('rc_parcelas_editor'); if (ed) ed.innerHTML = '';
@@ -12709,6 +12716,9 @@ function rcGerarParcelas() {
     if (ed) ed.innerHTML = '';
     return;
   }
+  // Preserva NF/ISS já preenchidos por índice quando o usuário só ajusta
+  // qtd/data/valor depois de já ter começado a editar as parcelas.
+  const anteriores = window._rcParcelas || [];
   const valorParcela = Math.round((total / qtd) * 100) / 100;
   const parcelas = [];
   let somaParcial = 0;
@@ -12716,7 +12726,14 @@ function rcGerarParcelas() {
     const d = new Date(dataBase + 'T00:00:00');
     d.setMonth(d.getMonth() + i);
     const vencimento = d.toISOString().slice(0, 10);
-    parcelas.push({ numero: i + 1, vencimento, valor: valorParcela });
+    const prev = anteriores[i] || {};
+    parcelas.push({
+      numero: i + 1, vencimento, valor: valorParcela,
+      numeroNF: prev.numeroNF || '',
+      issRetido: prev.issRetido || '',
+      issPercentual: prev.issPercentual || 0,
+      issValor: prev.issValor || 0,
+    });
     somaParcial += valorParcela;
   }
   const dif = Math.round((total - somaParcial) * 100) / 100;
@@ -12725,22 +12742,54 @@ function rcGerarParcelas() {
   rcRenderizarParcelas();
 }
 
+/* -- Pedido 09/10/2026 ("colocar a opção de informar nota fiscal tbm em cada
+   parcela e se houve desconto de iss"): cada parcela ganha seu próprio Nº da
+   NF e sua própria pergunta de ISS Retido (com % e valor em R$, mesmo cálculo
+   automático já usado no formulário à vista) — em vez de 1 NF/1 ISS pro total
+   da receita. Os campos únicos rc_numero_nf/rc_iss_retido ficam escondidos
+   enquanto parcelado (ver rcToggleParcelas). -- */
 function rcRenderizarParcelas() {
   const ed = document.getElementById('rc_parcelas_editor');
   if (!ed) return;
   const parcelas = window._rcParcelas || [];
   if (!parcelas.length) { ed.innerHTML = ''; return; }
   const fmtR = (v) => 'R$ ' + v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-  ed.innerHTML = '<div style="font-size:.78rem;color:var(--text-muted);margin:6px 0 4px">Parcelas geradas (edite datas/valores se necessário):</div>' +
+  ed.innerHTML = '<div style="font-size:.78rem;color:var(--text-muted);margin:6px 0 4px">Parcelas geradas (edite data/valor/NF/ISS de cada uma se necessário):</div>' +
     parcelas.map((p, i) => (
-      '<div class="form-row" style="align-items:flex-end">' +
-        '<div class="form-group" style="margin-bottom:0">' +
-          '<label style="font-size:.72rem">Parcela ' + p.numero + '/' + parcelas.length + ' — Vencimento</label>' +
-          '<input type="date" value="' + p.vencimento + '" onchange="rcAtualizarParcela(' + i + ',\'vencimento\',this.value)">' +
+      '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">' +
+        '<div class="form-row" style="align-items:flex-end;margin-bottom:10px">' +
+          '<div class="form-group" style="margin-bottom:0">' +
+            '<label style="font-size:.72rem">Parcela ' + p.numero + '/' + parcelas.length + ' — Vencimento</label>' +
+            '<input type="date" value="' + p.vencimento + '" onchange="rcAtualizarParcela(' + i + ',\'vencimento\',this.value)">' +
+          '</div>' +
+          '<div class="form-group" style="margin-bottom:0">' +
+            '<label style="font-size:.72rem">Valor (R$)</label>' +
+            '<input type="text" inputmode="decimal" value="' + fmtR(p.valor) + '" oninput="rdFormatarMoedaInput(this);rcAtualizarParcela(' + i + ',\'valor\',rdMoedaParaNumero(this.value));rcParcelaRecalcularIss(' + i + ')">' +
+          '</div>' +
         '</div>' +
-        '<div class="form-group" style="margin-bottom:0">' +
-          '<label style="font-size:.72rem">Valor (R$)</label>' +
-          '<input type="text" inputmode="decimal" value="' + fmtR(p.valor) + '" oninput="rdFormatarMoedaInput(this);rcAtualizarParcela(' + i + ',\'valor\',rdMoedaParaNumero(this.value))">' +
+        '<div class="form-row" style="align-items:flex-end;margin-bottom:0">' +
+          '<div class="form-group" style="margin-bottom:0">' +
+            '<label style="font-size:.72rem">Nº da NF desta parcela <span style="font-weight:400;color:var(--text-muted)">(opcional)</span></label>' +
+            '<input type="text" value="' + (p.numeroNF||'') + '" placeholder="Ex: 168" onchange="rcAtualizarParcela(' + i + ',\'numeroNF\',this.value)">' +
+          '</div>' +
+          '<div class="form-group" style="margin-bottom:0">' +
+            '<label style="font-size:.72rem">Houve desconto de ISS nesta parcela?</label>' +
+            '<select onchange="rcParcelaIssRetidoMudou(' + i + ',this.value)">' +
+              '<option value=""' + (!p.issRetido?' selected':'') + '>Não sei / verificar</option>' +
+              '<option value="Sim"' + (p.issRetido==='Sim'?' selected':'') + '>Sim</option>' +
+              '<option value="Não"' + (p.issRetido==='Não'?' selected':'') + '>Não</option>' +
+            '</select>' +
+          '</div>' +
+        '</div>' +
+        '<div class="form-row" id="rc_parcela_isswrap_' + i + '" style="align-items:flex-end;margin-top:10px;margin-bottom:0;display:' + (p.issRetido==='Sim'?'grid':'none') + '">' +
+          '<div class="form-group" style="margin-bottom:0">' +
+            '<label style="font-size:.72rem">% ISS <span style="font-weight:400;color:var(--text-muted)">(opcional)</span></label>' +
+            '<input type="text" inputmode="decimal" id="rc_parcela_issperc_' + i + '" value="' + (p.issPercentual?String(p.issPercentual).replace('.', ','):'') + '" placeholder="Ex: 5,00" oninput="rcParcelaRecalcularIss(' + i + ')">' +
+          '</div>' +
+          '<div class="form-group" style="margin-bottom:0">' +
+            '<label style="font-size:.72rem">Valor do ISS (R$)</label>' +
+            '<input type="text" inputmode="decimal" id="rc_parcela_issvalor_' + i + '" value="' + fmtR(p.issValor||0) + '" oninput="rdFormatarMoedaInput(this);rcAtualizarParcela(' + i + ',\'issValor\',rdMoedaParaNumero(this.value))">' +
+          '</div>' +
         '</div>' +
       '</div>'
     )).join('');
@@ -12748,28 +12797,67 @@ function rcRenderizarParcelas() {
 
 function rcAtualizarParcela(i, campo, valor) {
   if (!window._rcParcelas || !window._rcParcelas[i]) return;
-  window._rcParcelas[i][campo] = campo === 'valor' ? (parseFloat(valor) || 0) : valor;
+  if (campo === 'valor' || campo === 'issValor') valor = parseFloat(valor) || 0;
+  else if (campo === 'issPercentual') valor = parseFloat(String(valor).replace(',', '.')) || 0;
+  window._rcParcelas[i][campo] = valor;
+}
+
+// Select "Houve desconto de ISS nesta parcela?" — mostra/esconde os campos de
+// %/valor daquela parcela e zera quando volta pra "Não"/"Não sei".
+function rcParcelaIssRetidoMudou(i, valor) {
+  if (!window._rcParcelas || !window._rcParcelas[i]) return;
+  window._rcParcelas[i].issRetido = valor;
+  const wrap = document.getElementById('rc_parcela_isswrap_' + i);
+  if (wrap) wrap.style.display = valor === 'Sim' ? 'grid' : 'none';
+  if (valor !== 'Sim') {
+    window._rcParcelas[i].issValor = 0; window._rcParcelas[i].issPercentual = 0;
+    const percEl = document.getElementById('rc_parcela_issperc_' + i); if (percEl) percEl.value = '';
+    const valEl = document.getElementById('rc_parcela_issvalor_' + i); if (valEl) valEl.value = '';
+  }
+}
+
+// Recalcula o valor do ISS (R$) daquela parcela a partir do % informado,
+// igual ao rcAtualizarIssPercentual do formulário à vista — chamado ao editar
+// o % ou o Valor da parcela.
+function rcParcelaRecalcularIss(i) {
+  if (!window._rcParcelas || !window._rcParcelas[i]) return;
+  const p = window._rcParcelas[i];
+  if (p.issRetido !== 'Sim') return;
+  const percEl = document.getElementById('rc_parcela_issperc_' + i);
+  const valEl = document.getElementById('rc_parcela_issvalor_' + i);
+  const perc = percEl ? (parseFloat(String(percEl.value||'').replace(',', '.')) || 0) : 0;
+  p.issPercentual = perc;
+  if (perc > 0) {
+    p.issValor = Math.round(p.valor * (perc / 100) * 100) / 100;
+    if (valEl) valEl.value = rdNumeroParaMoeda(p.issValor);
+  }
 }
 
 /* Divide o "base" (dados da receita já validados) em N registros, um por
-   parcela — ISS/Outras Retenções são rateados proporcionalmente ao valor de
-   cada parcela, pra manter a soma dos líquidos consistente com o líquido
-   total da nota original. */
+   parcela — Nº da NF e ISS Retido/Valor/Percentual vêm da própria parcela
+   (ver rcRenderizarParcelas); Outras Retenções (campo único, não pedido por
+   parcela) continua rateado proporcionalmente ao valor de cada parcela, pra
+   manter a soma dos líquidos consistente com o líquido total da nota. */
 function rcMontarRegistrosParcelados(base, tipoParcelamento) {
   const parcelas = window._rcParcelas || [];
   const totalValor = base.Valor || parcelas.reduce((s,p)=>s+p.valor,0) || 1;
   return parcelas.map(p => {
     const prop = p.valor / totalValor;
-    const issP = Math.round((base.ISSValorRetido||0) * prop * 100) / 100;
     const outrasP = Math.round((base.OutrasRetencoesValor||0) * prop * 100) / 100;
+    const issRetido = p.issRetido || '';
+    const issValor = issRetido === 'Sim' ? (p.issValor || 0) : 0;
+    const issPercentual = issRetido === 'Sim' ? (p.issPercentual || 0) : 0;
     return {
       ...base,
       Title: base.Cliente + ' · parcela ' + p.numero + '/' + parcelas.length + ' · venc. ' + p.vencimento,
       DataPrevista: p.vencimento,
       Valor: p.valor,
-      ISSValorRetido: issP,
+      NumeroNF: p.numeroNF || '',
+      ISSRetido: issRetido,
+      ISSValorRetido: issValor,
+      ISSPercentual: issPercentual,
       OutrasRetencoesValor: outrasP,
-      ValorLiquido: Math.max(p.valor - issP - outrasP, 0),
+      ValorLiquido: Math.max(p.valor - issValor - outrasP, 0),
       Parcelamento: 'parcelado',
       TipoParcelamento: tipoParcelamento,
       NumParcelas: parcelas.length,
@@ -12889,6 +12977,8 @@ async function salvarReceita() {
   const parcRow = document.getElementById('rc_parcelas_row'); if (parcRow) parcRow.style.display = 'none';
   const parcEditor = document.getElementById('rc_parcelas_editor'); if (parcEditor) parcEditor.innerHTML = '';
   const dpLabel = document.getElementById('rc_data_prevista_label'); if (dpLabel) dpLabel.textContent = 'Previsão de Recebimento / Vencimento';
+  const nfGroup = document.getElementById('rc_nf_avista_group'); if (nfGroup) nfGroup.style.display = '';
+  const issBlock = document.getElementById('rc_iss_avista_block'); if (issBlock) issBlock.style.display = '';
   window._rcParcelas = null;
   window._rcComprovanteUrl = null; window._rcComprovanteNome = null;
   window._rcComprovanteId = null; window._rcComprovanteDriveId = null;
