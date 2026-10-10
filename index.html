@@ -29896,6 +29896,32 @@ async function exportarLancamentosServicosExcel() {
   const wsCC = XLSX.utils.json_to_sheet(agruparServ(l => l.cc, 'Centro de Custo'));
   XLSX.utils.book_append_sheet(wb, wsCC, 'Resumo por Centro Custo');
 
+  // Resumo por Centro de Custo + Medição juntos (pedido 10/10/2026) — mesmo
+  // Centro de Custo (contrato) aparece 1 linha POR medição em que teve
+  // lançamento, em vez de somar tudo numa linha só — ex.: "ERO - Gestão de
+  // Obras" medido 2x em medições diferentes vira 2 linhas, cada uma com o
+  // total daquela medição específica.
+  const agruparServDupla = (chaveFn1, rotulo1, chaveFn2, rotulo2) => {
+    const mapa = {};
+    items.forEach(l => {
+      const c1 = chaveFn1(l) || '—';
+      const c2 = chaveFn2(l) || '—';
+      const chave = c1 + '\u0000' + c2;
+      if (!mapa[chave]) mapa[chave] = { c1, c2, qtd: 0, total: 0 };
+      mapa[chave].qtd += 1;
+      mapa[chave].total += Number(l.total) || 0;
+    });
+    const linhas = Object.values(mapa)
+      .sort((a, b) => String(a.c1).localeCompare(String(b.c1)) || String(a.c2).localeCompare(String(b.c2)))
+      .map(v => ({ [rotulo1]: v.c1, [rotulo2]: v.c2, 'Qtd. Lançamentos': v.qtd, 'Valor Total': v.total }));
+    const totalGeral = linhas.reduce((s, r) => s + r['Valor Total'], 0);
+    linhas.push({ [rotulo1]: 'TOTAL', [rotulo2]: '', 'Qtd. Lançamentos': items.length, 'Valor Total': totalGeral });
+    return linhas;
+  };
+
+  const wsCCMed = XLSX.utils.json_to_sheet(agruparServDupla(l => l.cc, 'Centro de Custo', l => l.medicao, 'Nº Medição'));
+  XLSX.utils.book_append_sheet(wb, wsCCMed, 'Resumo CC + Medicao');
+
   XLSX.writeFile(wb, 'LancamentosServicos_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
