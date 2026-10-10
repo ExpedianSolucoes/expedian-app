@@ -11071,8 +11071,7 @@ function rcPresetResgate() {
 }
 
 // Opções de Centro de Custo pro seletor (origem/destino) do modal de
-// Transferência — mesmo padrão usado no modal de "Locação de veículo
-// próprio" (servConfirmarPagamento). Primeira opção sempre em branco
+// Transferência. Primeira opção sempre em branco
 // ("Nenhum") porque o CC é opcional — pedido 26/09/2026, inspirado na aba
 // "🔄 Transferências" da planilha FINANCEIRO 2026, que já trata Banco e
 // Centro de Custo/Contrato como duas dimensões independentes por lado.
@@ -29380,9 +29379,9 @@ function servLimparFiltros() {
 }
 
 // Lançamentos antigos (antes desta função existir) não têm Status gravado —
-// tratamos como já "A Pagar" pra não sumir da lista nem exigir aprovação
+// tratamos como já "Aprovado" pra não sumir da lista nem exigir aprovação
 // retroativa de algo que já era considerado válido.
-function servStatusDe(l) { return l.Status || 'A Pagar'; }
+function servStatusDe(l) { return l.Status || 'Aprovado'; }
 
 // Quais tipos entram na comparação dos gráficos de pizza do Dashboard de
 // Lançamentos — os 3 vêm marcados por padrão, mas o usuário pode desmarcar
@@ -29467,9 +29466,8 @@ async function carregarLancamentosServicos() {
   const qtdPorTipo = t => itemsKpi.filter(l=>l.tipo===t).length;
   const porStatus = st => itemsKpi.filter(l => servStatusDe(l) === st);
   const aguardando = porStatus('Aguardando Aprovação');
-  const aPagar = porStatus('A Pagar');
-  const pagos = porStatus('Pago');
-  const pagosMes = pagos.filter(l => (l.DataPagamento||'').slice(0,7) === mesKpi);
+  const aprovados = porStatus('Aprovado');
+  const aprovadosMes = aprovados.filter(l => (l.DataAprovacao||'').slice(0,7) === mesKpi);
 
   SERV_FILTRO_TIPO = (document.getElementById('serv_filtro_tipo')||{}).value || SERV_FILTRO_TIPO;
   // SERV_FILTRO_RESP agora é array (seleção múltipla via checkboxes no
@@ -29525,8 +29523,7 @@ async function carregarLancamentosServicos() {
   </div>
   <div class="kpi-grid" style="margin-bottom:20px">
     <div class="kpi-card amber" onclick="SERV_FILTRO_STATUS=(SERV_FILTRO_STATUS==='Aguardando Aprovação'?'':'Aguardando Aprovação');carregarLancamentosServicos()" style="cursor:pointer" title="Filtrar: aguardando aprovação"><div class="kpi-label">Aguardando Aprovação</div><div class="kpi-value">${aguardando.length}</div><div class="kpi-icon">⏳</div></div>
-    <div class="kpi-card blue" onclick="SERV_FILTRO_STATUS=(SERV_FILTRO_STATUS==='A Pagar'?'':'A Pagar');carregarLancamentosServicos()" style="cursor:pointer" title="Filtrar: a pagar"><div class="kpi-label">A Pagar</div><div class="kpi-value" style="font-size:1.1rem">${fmtBRL(aPagar.reduce((s,l)=>s+(Number(l.total)||0),0))}</div><div class="kpi-icon">💳</div></div>
-    <div class="kpi-card green" onclick="SERV_FILTRO_STATUS=(SERV_FILTRO_STATUS==='Pago'?'':'Pago');carregarLancamentosServicos()" style="cursor:pointer" title="Filtrar: pagos"><div class="kpi-label">Pagos (mês)</div><div class="kpi-value" style="font-size:1.1rem">${fmtBRL(pagosMes.reduce((s,l)=>s+(Number(l.total)||0),0))}</div><div class="kpi-icon">✅</div></div>
+    <div class="kpi-card green" onclick="SERV_FILTRO_STATUS=(SERV_FILTRO_STATUS==='Aprovado'?'':'Aprovado');carregarLancamentosServicos()" style="cursor:pointer" title="Filtrar: aprovados"><div class="kpi-label">Aprovados (mês)</div><div class="kpi-value" style="font-size:1.1rem">${fmtBRL(aprovadosMes.reduce((s,l)=>s+(Number(l.total)||0),0))}</div><div class="kpi-icon">✅</div></div>
     <div class="kpi-card" style="cursor:default">
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
         ${['diarias','veiculos','projetos'].map(t => `
@@ -29594,8 +29591,7 @@ async function carregarLancamentosServicos() {
     <select id="serv_filtro_status" onchange="carregarLancamentosServicos()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
       <option value="">Todos os status</option>
       <option value="Aguardando Aprovação" ${SERV_FILTRO_STATUS==='Aguardando Aprovação'?'selected':''}>Ag. Aprovação</option>
-      <option value="A Pagar" ${SERV_FILTRO_STATUS==='A Pagar'?'selected':''}>A Pagar</option>
-      <option value="Pago" ${SERV_FILTRO_STATUS==='Pago'?'selected':''}>Pago</option>
+      <option value="Aprovado" ${SERV_FILTRO_STATUS==='Aprovado'?'selected':''}>Aprovado</option>
       <option value="Rejeitado" ${SERV_FILTRO_STATUS==='Rejeitado'?'selected':''}>Rejeitado</option>
     </select>
     ${filtroRespHtml}
@@ -29605,14 +29601,13 @@ async function carregarLancamentosServicos() {
     <button onclick="servLimparFiltros()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.76rem;color:var(--text-muted);cursor:pointer">✕ Limpar</button>
   </div>`;
 
-  // Dashboard por Beneficiário — soma Pago vs A Pagar (e Aguardando Aprovação)
-  // por colaborador, pra saber rapidamente quanto já foi pago e quanto ainda
-  // falta pagar pra cada um.
+  // Dashboard por Beneficiário — soma Aprovado vs Aguardando Aprovação por
+  // colaborador, pra saber rapidamente quanto já foi aprovado e quanto ainda
+  // está esperando aprovação.
   const porBenef = {};
   const somarBenef = (nome, st, v) => {
-    if (!porBenef[nome]) porBenef[nome] = { pago: 0, aPagar: 0, aguardando: 0 };
-    if (st === 'Pago') porBenef[nome].pago += v;
-    else if (st === 'A Pagar') porBenef[nome].aPagar += v;
+    if (!porBenef[nome]) porBenef[nome] = { aprovado: 0, aguardando: 0 };
+    if (st === 'Aprovado') porBenef[nome].aprovado += v;
     else if (st === 'Aguardando Aprovação') porBenef[nome].aguardando += v;
   };
   items.forEach(l => {
@@ -29626,8 +29621,8 @@ async function carregarLancamentosServicos() {
     }
   });
   const benefLinhas = Object.entries(porBenef)
-    .filter(([,v]) => v.pago || v.aPagar || v.aguardando)
-    .sort((a,b) => (b[1].pago+b[1].aPagar+b[1].aguardando) - (a[1].pago+a[1].aPagar+a[1].aguardando));
+    .filter(([,v]) => v.aprovado || v.aguardando)
+    .sort((a,b) => (b[1].aprovado+b[1].aguardando) - (a[1].aprovado+a[1].aguardando));
   if (typeof window._servDashBenefAberto === 'undefined') window._servDashBenefAberto = false;
   const dashboardBenefHtml = !benefLinhas.length ? '' : `
   <div class="card" style="margin-bottom:20px">
@@ -29638,15 +29633,14 @@ async function carregarLancamentosServicos() {
     ${window._servDashBenefAberto ? `
     <div style="overflow-x:auto">
     <table class="data-table">
-      <thead><tr><th>Beneficiário</th><th style="text-align:right">Pago</th><th style="text-align:right">A Pagar</th><th style="text-align:right">Ag. Aprovação</th><th style="text-align:right">Total</th></tr></thead>
+      <thead><tr><th>Beneficiário</th><th style="text-align:right">Aprovado</th><th style="text-align:right">Ag. Aprovação</th><th style="text-align:right">Total</th></tr></thead>
       <tbody>
         ${benefLinhas.map(([nome,v]) => `
         <tr>
           <td style="font-size:.8rem;font-weight:600">${nome}</td>
-          <td style="text-align:right;color:var(--green-main);font-weight:700">${fmtBRL(v.pago)}</td>
-          <td style="text-align:right;color:var(--blue);font-weight:700">${fmtBRL(v.aPagar)}</td>
+          <td style="text-align:right;color:var(--green-main);font-weight:700">${fmtBRL(v.aprovado)}</td>
           <td style="text-align:right;color:#b07700">${v.aguardando?fmtBRL(v.aguardando):'—'}</td>
-          <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif">${fmtBRL(v.pago+v.aPagar+v.aguardando)}</td>
+          <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif">${fmtBRL(v.aprovado+v.aguardando)}</td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -29657,20 +29651,20 @@ async function carregarLancamentosServicos() {
   const semNenhum = !items.length;
   const totalFiltrado = filtrados.reduce((s,l) => s + (Number(l.total)||0), 0);
 
-  // Pendentes (tudo que ainda não foi pago) com o que espera há mais tempo no
-  // topo; Pagos ficam numa seção retrátil separada, pra não poluir a lista
-  // do que ainda precisa de atenção.
-  const pendentesServ = filtrados.filter(l => servStatusDe(l) !== 'Pago')
+  // Pendentes (tudo que ainda não foi aprovado) com o que espera há mais tempo
+  // no topo; Aprovados ficam numa seção retrátil separada, pra não poluir a
+  // lista do que ainda precisa de atenção.
+  const pendentesServ = filtrados.filter(l => servStatusDe(l) !== 'Aprovado')
     .sort((a,b) => new Date(a.dataISO||0) - new Date(b.dataISO||0));
-  const pagosServ = filtrados.filter(l => servStatusDe(l) === 'Pago')
-    .sort((a,b) => new Date(b.DataPagamento||b.dataISO||0) - new Date(a.DataPagamento||a.dataISO||0));
+  const aprovadosServ = filtrados.filter(l => servStatusDe(l) === 'Aprovado')
+    .sort((a,b) => new Date(b.DataAprovacao||b.dataISO||0) - new Date(a.DataAprovacao||a.dataISO||0));
   const totalPendenteServ = pendentesServ.reduce((s,l) => s + (Number(l.total)||0), 0);
-  const totalPagoServ = pagosServ.reduce((s,l) => s + (Number(l.total)||0), 0);
+  const totalAprovadoServ = aprovadosServ.reduce((s,l) => s + (Number(l.total)||0), 0);
 
   const theadServHtml = '<thead><tr>' + (isDirServ ? '<th style="width:26px"><input type="checkbox" id="serv-chk-todos" title="Selecionar todos os \'Aguardando Aprovação\' visíveis" onchange="servToggleTodos(this.checked)"></th>' : '') + '<th>Tipo</th><th>Serviço</th><th>Data</th><th>Qtd</th><th style="text-align:right">Unit.</th><th style="text-align:right">Total</th><th>Responsável</th><th>Beneficiário</th><th>Centro de Custo</th><th>Status</th><th>Ações</th></tr></thead>';
   const linhaServ = l => {
           const st = servStatusDe(l);
-          const stCor = st==='Pago'?'green':st==='Rejeitado'?'red':st==='A Pagar'?'blue':'amber';
+          const stCor = st==='Aprovado'?'green':st==='Rejeitado'?'red':'amber';
           // Aprovação em lote (pedido 08/10/2026): checkbox só nas linhas
           // "Aguardando Aprovação" e só pra quem pode aprovar — mesmo critério
           // do botão individual "✅ Aprovar" logo abaixo.
@@ -29688,12 +29682,11 @@ async function carregarLancamentosServicos() {
           <td style="font-size:.75rem">${l.resp||'—'}</td>
           <td style="font-size:.75rem">${l.DivisaoBenef && l.DivisaoBenef.length ? '🧩 ' + l.DivisaoBenef.map(d=>d.benef+' ('+fmtBRL(d.valor)+')').join('<br>🧩 ') : (l.benef||'—')}</td>
           <td style="font-size:.72rem;color:var(--text-muted)">${l.cc||'—'}${l.medicao?`<br><span style="font-size:.66rem">📏 Med. ${l.medicao}</span>`:''}</td>
-          <td><span class="status-pill ${stCor}">* ${st}</span>${st==='Rejeitado'&&l.MotivoRejeicao?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.MotivoRejeicao}</div>`:''}${st==='Pago'&&l.BancoPagamento?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.BancoPagamento}</div>`:''}</td>
+          <td><span class="status-pill ${stCor}">* ${st}</span>${st==='Rejeitado'&&l.MotivoRejeicao?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.MotivoRejeicao}</div>`:''}${st==='Aprovado'&&l.AprovadoPor?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${l.AprovadoPor}</div>`:''}</td>
           <td style="display:flex;gap:5px;padding:8px 10px;flex-wrap:wrap">
             ${st==='Aguardando Aprovação'&&isDirServ?`<button class="btn-primary" style="padding:4px 8px;font-size:.68rem" onclick="servAbrirAprovacao(${l.Id})">✅ Aprovar</button><button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="servRejeitarLancamento(${l.Id})">↩️ Rejeitar</button>`:''}
-            ${st==='A Pagar'&&isDirServ?`<button class="btn-primary" style="padding:4px 8px;font-size:.68rem" onclick="servAbrirPagamento(${l.Id})">💳 Pagar</button>`:''}
-            ${st!=='Pago'?`<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="servEditarLancamento(${l.Id})">✏️ Editar</button>`:''}
-            ${st!=='Pago'?`<button onclick="removerLancamento(${l.Id})" style="font-size:.68rem;padding:4px 8px;border:1px solid var(--red);border-radius:6px;background:#fce8e8;cursor:pointer;color:var(--red)">🗑️</button>`:''}
+            ${st!=='Aprovado'?`<button class="btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="servEditarLancamento(${l.Id})">✏️ Editar</button>`:''}
+            ${st!=='Aprovado'?`<button onclick="removerLancamento(${l.Id})" style="font-size:.68rem;padding:4px 8px;border:1px solid var(--red);border-radius:6px;background:#fce8e8;cursor:pointer;color:var(--red)">🗑️</button>`:''}
           </td>
         </tr>`;
   };
@@ -29722,7 +29715,7 @@ async function carregarLancamentosServicos() {
       <div style="font-size:.88rem">Nenhum lançamento registrado ainda.</div>
       <div style="font-size:.78rem;margin-top:6px">Use as abas acima para lançar serviços.</div>
     </div>` : !filtrados.length ? '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento encontrado com os filtros aplicados.</div>' : `
-    ${!pendentesServ.length ? `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento pendente — tudo pago. ✅</div>` : `
+    ${!pendentesServ.length ? `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Nenhum lançamento pendente — tudo aprovado. ✅</div>` : `
     ${barraSelecaoServHtml}
     <div style="overflow-x:auto">
     <table class="data-table data-table-compact" style="min-width:1100px">
@@ -29737,13 +29730,13 @@ async function carregarLancamentosServicos() {
       </tfoot>
     </table>
     </div>`}
-    ${pagosServ.length ? `
+    ${aprovadosServ.length ? `
     <details style="margin-top:16px">
-      <summary style="cursor:pointer;font-size:.82rem;font-weight:700;color:var(--green-main);padding:8px 4px;list-style:none;display:flex;align-items:center;gap:6px">▶ ✅ Pagos <span class="badge">${pagosServ.length} · ${fmtBRL(totalPagoServ)}</span></summary>
+      <summary style="cursor:pointer;font-size:.82rem;font-weight:700;color:var(--green-main);padding:8px 4px;list-style:none;display:flex;align-items:center;gap:6px">▶ ✅ Aprovados <span class="badge">${aprovadosServ.length} · ${fmtBRL(totalAprovadoServ)}</span></summary>
       <div style="overflow-x:auto;margin-top:8px">
       <table class="data-table data-table-compact" style="min-width:1100px">
         ${theadServHtml}
-        <tbody>${pagosServ.map(linhaServ).join('')}</tbody>
+        <tbody>${aprovadosServ.map(linhaServ).join('')}</tbody>
       </table>
       </div>
     </details>` : ''}
@@ -29782,9 +29775,10 @@ function servFiltroBenefLimpar() {
 /* -- Aprovação em lote de Lançamentos de Serviços — pedido 08/10/2026
    ("campo de aprovação em massa de mais de um lançamento por vez"), mesmo
    padrão de pagToggleItem/pagToggleTodos/pagAprovarSelecionados em Contas a
-   Pagar. Cada selecionado vira "A Pagar" com o Centro de Custo/Medição já
-   gravados no lançamento — pra ajustar algum antes de aprovar, continua
-   valendo o "✅ Aprovar" individual (abre o modal de conferência). -- */
+   Pagar. Cada selecionado vira "Aprovado" (fase final, pedido 10/10/2026) com
+   o Centro de Custo/Medição já gravados no lançamento — pra ajustar algum
+   antes de aprovar, continua valendo o "✅ Aprovar" individual (abre o modal
+   de conferência). -- */
 function servToggleItem(id, checked) {
   if (!(window._servLancSelecionados instanceof Set)) window._servLancSelecionados = new Set();
   if (checked) window._servLancSelecionados.add(id); else window._servLancSelecionados.delete(id);
@@ -29820,7 +29814,7 @@ async function servAprovarSelecionados() {
   if (!ids.length) return;
   const itensSel = (window._servFiltrados||[]).filter(l => ids.includes(l.Id));
   const soma = itensSel.reduce((s,l)=>s+(Number(l.total)||0),0);
-  const ok1 = confirm(`Aprovar ${ids.length} lançamento(s) selecionado(s), totalizando ${fmtBRL(soma)}?\n\nCada um fica "A Pagar" com o Centro de Custo e Nº Medição já informados no lançamento — pra ajustar algum antes, use "✅ Aprovar" individualmente nesse item.`);
+  const ok1 = confirm(`Aprovar ${ids.length} lançamento(s) selecionado(s), totalizando ${fmtBRL(soma)}?\n\nCada um fica "Aprovado" com o Centro de Custo e Nº Medição já informados no lançamento — pra ajustar algum antes, use "✅ Aprovar" individualmente nesse item.`);
   if (!ok1) return;
   const btn = document.getElementById('serv-bulk-btn');
   if (btn) btn.disabled = true;
@@ -29829,7 +29823,7 @@ async function servAprovarSelecionados() {
     const id = ids[idx];
     if (btn) btn.innerHTML = '<span class="btn-spinner"></span> Aprovando ' + (idx+1) + '/' + ids.length + '...';
     const res = await dbAtualizar('Lancamentos_Servicos', id, {
-      Status: 'A Pagar', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
+      Status: 'Aprovado', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
     }).catch(() => false);
     if (res) ok++; else falhas++;
   }
@@ -30380,11 +30374,11 @@ async function removerLancamento(id) {
 }
 
 /* ===============================
-   APROVAÇÃO E PAGAMENTO DE LANÇAMENTOS DE SERVIÇOS
+   APROVAÇÃO DE LANÇAMENTOS DE SERVIÇOS
    Fluxo: Aguardando Aprovação (lançado por Diretoria/Coordenação) -> Diretoria
-   aprova (A Pagar) ou rejeita -> Diretoria registra pagamento (Data + Banco,
-   lista suspensa por empresa do Centro de Custo) -> Pago, sincronizando
-   automaticamente com Despesas (mesmo padrão de Contas a Pagar).
+   aprova (Aprovado, fase final — pedido 10/10/2026: não gera mais Despesa
+   nem passa por um registro de pagamento dentro do app, o controle de
+   pagamento desses custos é feito fora do app) ou rejeita (Rejeitado).
 =============================== */
 
 // Modal "Conferir/Ajustar antes de Aprovar" — antes o botão ✅ Aprovar
@@ -30441,12 +30435,12 @@ async function servAprovarLancamentoComAjustes(id) {
   const cc = (document.getElementById('servav_cc')||{}).value || '';
   const medicao = ((document.getElementById('val_medicao_av')||{}).value||'').trim();
   const patch = {
-    Status: 'A Pagar', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
+    Status: 'Aprovado', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
   };
   if (cc) patch.cc = cc;
   patch.medicao = medicao;
   const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), patch);
-  showToast(ok ? '✅ Lançamento aprovado! Aguardando pagamento.' : '❌ Erro ao aprovar.');
+  showToast(ok ? '✅ Lançamento aprovado!' : '❌ Erro ao aprovar.');
   const m = document.getElementById('serv-aprov-modal'); if (m) m.remove();
   setTimeout(() => carregarLancamentosServicos(), 600);
 }
@@ -30454,9 +30448,9 @@ async function servAprovarLancamentoComAjustes(id) {
 async function servAprovarLancamento(id) {
   if (!_servicosPodeLancar()) { showToast('⛔ Aprovação restrita à Diretoria e Coordenação.'); return; }
   const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), {
-    Status: 'A Pagar', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
+    Status: 'Aprovado', AprovadoPor: window._currentUser ? window._currentUser.name : '', DataAprovacao: new Date().toISOString().split('T')[0],
   });
-  showToast(ok ? '✅ Lançamento aprovado! Aguardando pagamento.' : '❌ Erro ao aprovar.');
+  showToast(ok ? '✅ Lançamento aprovado!' : '❌ Erro ao aprovar.');
   setTimeout(() => carregarLancamentosServicos(), 600);
 }
 
@@ -30468,202 +30462,6 @@ async function servRejeitarLancamento(id) {
   });
   showToast(ok ? '↩️ Lançamento rejeitado.' : '❌ Erro.');
   setTimeout(() => carregarLancamentosServicos(), 600);
-}
-
-async function servAbrirPagamento(id) {
-  if (!_servicosPodeLancar()) { showToast('⛔ Pagamento restrito à Diretoria e Coordenação.'); return; }
-  const existente = document.getElementById('serv-pag-modal'); if (existente) existente.remove();
-  const lista = window._servFiltrados || [];
-  let l = lista.find(x => x.Id === id);
-  if (!l) { const todos = await dbLer('Lancamentos_Servicos'); l = todos.find(x => x.Id === id); }
-  if (!l) { showToast('⚠️ Lançamento não encontrado.'); return; }
-
-  const empresa = servEmpresaDoCC(l.cc);
-  const bancos = bancosDaEmpresa(empresa);
-  // Locação de veículo PRÓPRIO da frota (ex: "Caminhão Tanque - RKS3C14") não é
-  // pagamento a um fornecedor externo — é uma movimentação interna entre contas
-  // da empresa (o CC "paga" pelo uso do veículo, o valor vai pra conta da
-  // frota). Por isso, só pra tipo "veiculos", dá a opção de registrar como
-  // Transferência entre Contas em vez de Pagamento normal — pedido 10/09/2026.
-  window._servPagTipo = 'normal';
-  const ehVeiculo = l.tipo === 'veiculos';
-  const frotaCCs = ehVeiculo ? (centrosCustoData || []).filter(c => /^Frota\s*-/.test(c.contrato)) : [];
-  const frotaMatch = ehVeiculo ? servFrotaCCPorVeiculo(l.veiculo) : null;
-
-  const modal = document.createElement('div');
-  modal.id = 'serv-pag-modal';
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
-  modal.innerHTML = `
-    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:440px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.4)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-        <div style="font-weight:800;font-size:1rem">💳 Registrar Pagamento</div>
-        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('serv-pag-modal').remove()">✕</div>
-      </div>
-      <div style="font-size:.82rem;color:var(--text-muted);margin-bottom:14px">${l.descServico||'—'} · ${l.benef||'—'} · <strong>${fmtBRL(l.total)}</strong></div>
-      ${ehVeiculo ? `
-      <div class="form-group" style="margin-bottom:12px">
-        <label>Tipo de Pagamento</label>
-        <div style="display:flex;gap:8px">
-          <button type="button" id="servp_btn_normal" class="btn-primary" style="flex:1;padding:8px;font-size:.78rem" onclick="servPagTipoSelecionar('normal')">💳 Pagamento Normal</button>
-          <button type="button" id="servp_btn_transf" class="btn-secondary" style="flex:1;padding:8px;font-size:.78rem" onclick="servPagTipoSelecionar('transferencia')">🔁 Transferência entre Contas</button>
-        </div>
-        <div style="font-size:.68rem;color:var(--text-muted);margin-top:5px">Veículo próprio da frota? Use "Transferência entre Contas" — não é pagamento a fornecedor externo, é movimentação interna entre as contas da empresa.</div>
-      </div>` : ''}
-      <div class="form-group" style="margin-bottom:10px"><label>Data do Pagamento</label><input type="date" id="servp_data" value="${new Date().toISOString().split('T')[0]}"></div>
-      <div id="servp_campos_normal" class="form-group" style="margin-bottom:16px"><label>Banco</label>
-        <select id="servp_banco">
-          <option value="">Selecione...</option>
-          ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
-        </select>
-      </div>
-      <div id="servp_campos_transf" style="display:none;margin-bottom:16px">
-        <div class="form-row" style="display:flex;gap:10px;margin-bottom:12px">
-          <div class="form-group" style="flex:1">
-            <label>Centro de Custo de Origem (sai)</label>
-            <input type="text" value="${(l.cc||'—').replace(/"/g,'&quot;')}" disabled style="opacity:.75;background:var(--surface2)">
-            <small style="color:var(--text-muted)">Já definido no lançamento.</small>
-          </div>
-          <div class="form-group" style="flex:1">
-            <label>Centro de Custo de Destino (entra)</label>
-            <select id="servp_trf_ccdestino">
-              <option value="">Selecione...</option>
-              ${frotaCCs.map(c => { const label = c.id + ' · ' + c.contrato; return `<option value="${label.replace(/"/g,'&quot;')}" ${frotaMatch && frotaMatch.id===c.id?'selected':''}>${label}</option>`; }).join('')}
-            </select>
-            <small style="color:var(--text-muted)">${frotaMatch ? '✓ Sugerido pelo veículo do lançamento.' : 'Nenhum CC de frota casou com o veículo — selecione manualmente.'}</small>
-          </div>
-        </div>
-        <div class="form-row" style="display:flex;gap:10px">
-          <div class="form-group" style="flex:1"><label>Conta de Origem (sai)</label>
-            <select id="servp_trf_origem">
-              <option value="">Selecione...</option>
-              ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
-            </select>
-          </div>
-          <div class="form-group" style="flex:1"><label>Conta de Destino (entra)</label>
-            <select id="servp_trf_destino">
-              <option value="">Selecione...</option>
-              ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
-            </select>
-          </div>
-        </div>
-      </div>
-      <button class="btn-primary" style="width:100%" onclick="servConfirmarPagamento(${id})">💾 Confirmar</button>
-    </div>`;
-  document.body.appendChild(modal);
-}
-
-function servPagTipoSelecionar(tipo) {
-  window._servPagTipo = tipo;
-  const btnNormal = document.getElementById('servp_btn_normal');
-  const btnTransf = document.getElementById('servp_btn_transf');
-  const campNormal = document.getElementById('servp_campos_normal');
-  const campTransf = document.getElementById('servp_campos_transf');
-  if (btnNormal) btnNormal.className = tipo === 'normal' ? 'btn-primary' : 'btn-secondary';
-  if (btnTransf) btnTransf.className = tipo === 'transferencia' ? 'btn-primary' : 'btn-secondary';
-  if (campNormal) campNormal.style.display = tipo === 'normal' ? '' : 'none';
-  if (campTransf) campTransf.style.display = tipo === 'transferencia' ? 'block' : 'none';
-}
-
-async function servConfirmarPagamento(id) {
-  const dataPag = (document.getElementById('servp_data')||{}).value;
-  if (!dataPag) { showToast('⚠️ Informe a data do pagamento.'); return; }
-
-  if (window._servPagTipo === 'transferencia') {
-    const ccDestino = (document.getElementById('servp_trf_ccdestino')||{}).value;
-    const contaOrigem = (document.getElementById('servp_trf_origem')||{}).value;
-    const contaDestino = (document.getElementById('servp_trf_destino')||{}).value;
-    if (!ccDestino) { showToast('⚠️ Selecione o Centro de Custo de destino (frota).'); return; }
-    if (!contaOrigem || !contaDestino) { showToast('⚠️ Selecione as duas contas bancárias.'); return; }
-    if (contaOrigem === contaDestino) { showToast('⚠️ A conta de origem e a de destino precisam ser diferentes.'); return; }
-    const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: contaOrigem, FormaPagamentoServico: 'Transferência entre Contas', CentroCustoDestino: ccDestino });
-    if (ok) await servSincronizarTransferencia(id, dataPag, contaOrigem, contaDestino, ccDestino);
-    showToast(ok ? '✅ Transferência entre contas registrada!' : '❌ Erro ao registrar.');
-    const m = document.getElementById('serv-pag-modal'); if (m) m.remove();
-    setTimeout(() => carregarLancamentosServicos(), 600);
-    return;
-  }
-
-  const banco = (document.getElementById('servp_banco')||{}).value;
-  if (!banco) { showToast('⚠️ Selecione o banco.'); return; }
-  const ok = await dbAtualizar('Lancamentos_Servicos', parseInt(id), { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco });
-  if (ok) await servSincronizarDespesa(id, dataPag, banco);
-  showToast(ok ? '✅ Pagamento registrado!' : '❌ Erro ao registrar pagamento.');
-  const m = document.getElementById('serv-pag-modal'); if (m) m.remove();
-  setTimeout(() => carregarLancamentosServicos(), 600);
-}
-
-// Locação de veículo próprio marcada como "Transferência entre Contas": em
-// vez de gerar só uma Despesa (como um pagamento normal a fornecedor), gera o
-// par Despesa (saída, no CC de origem — o CC já escolhido no lançamento — e
-// na conta bancária de origem) + Receita (entrada, no CC de destino — a
-// frota do veículo usado — e na conta bancária de destino), mesma categoria
-// "Transferências entre contas" usada no módulo de Transferências. É tanto
-// uma realocação de orçamento entre Centros de Custo QUANTO uma movimentação
-// bancária real entre contas (confirmado pelo usuário em 10/09/2026) — por
-// isso carrega os dois pares (CC origem/destino + conta origem/destino).
-async function servSincronizarTransferencia(id, dataPag, contaOrigem, contaDestino, ccDestino) {
-  try {
-    const todos = await dbLer('Lancamentos_Servicos');
-    const l = todos.find(x => x.Id === id);
-    if (!l || l.DespesaId) return; // já sincronizado antes — não duplica
-    const empresa = normalizarEmpresa(servEmpresaDoCC(l.cc));
-    const responsavel = window._currentUser ? window._currentUser.name : '';
-    const transferenciaId = 'TRF-SERV-' + Date.now();
-    const descricaoBase = 'Locação interna de veículo: ' + (l.descServico || '') + (l.veiculo ? ' — ' + l.veiculo : '');
-    const despesa = await dbInserir('Despesas', {
-      Title: 'Transferência (locação interna) para ' + contaDestino + ' · ' + dataPag,
-      DataLancamento: l.dataISO || dataPag, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
-      Modalidade: 'fornecedor', NaturezaEconomica: 'Não Operacional',
-      ServicoId: l.codServico || '', ServicoDesc: l.descServico || '', Fornecedor: 'Transferência Interna', Beneficiario: l.benef || '', Veiculo: l.veiculo || '',
-      CentroCusto: l.cc || '', Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
-      ResponsavelLancamento: l.resp || responsavel, Empresa: empresa, DataPagamento: dataPag, Banco: contaOrigem,
-      NumMedicao: l.medicao || '', Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
-      Vencimento: l.dataISO || '', Valor: l.total || 0, ValorTotal: l.total || 0, Status: 'Pago',
-      NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: [],
-      LancadoPor: responsavel, Descricao: descricaoBase,
-      TransferenciaId: transferenciaId, TransferenciaContraparte: contaDestino,
-      LancamentoServicoId: l.Id, OrigemLancamentoServico: true,
-    });
-    const receita = await dbInserir('Receitas', {
-      Title: 'Transferência (locação interna) de ' + contaOrigem + ' · ' + dataPag,
-      DataEmissao: l.dataISO || dataPag, Categoria: 'Transferencias entre contas', Subcategoria: 'Transferencias entre contas',
-      NaturezaEconomica: 'Não Operacional', Cliente: 'Transferência Interna', Descricao: descricaoBase,
-      CentroCusto: ccDestino || '', Valor: l.total || 0, DataPrevista: dataPag, FormaRecebimento: 'Transferência',
-      ResponsavelLancamento: l.resp || responsavel, DataRecebimento: dataPag, Banco: contaDestino,
-      Status: 'Recebido', NumMedicao: l.medicao || '', NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
-      OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
-      ValorLiquido: l.total || 0, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
-      LancadoPor: responsavel, TransferenciaId: transferenciaId, TransferenciaContraparte: contaOrigem,
-    });
-    if (despesa && despesa.Id) await dbAtualizar('Lancamentos_Servicos', id, { DespesaId: despesa.Id, ReceitaTransferenciaId: (receita && receita.Id) || null });
-  } catch (e) { console.warn('[Serviços] Falha ao sincronizar transferência', e); }
-}
-
-// Ao marcar um lançamento de serviço como Pago, gera automaticamente o
-// lançamento correspondente em Despesas (modalidade "serviços", mesmo
-// beneficiário/CC/valor/banco/data) — mesmo padrão usado em Contas a Pagar.
-async function servSincronizarDespesa(id, dataPag, banco) {
-  try {
-    const todos = await dbLer('Lancamentos_Servicos');
-    const l = todos.find(x => x.Id === id);
-    if (!l || l.DespesaId) return; // já sincronizado antes — não duplica
-    const empresa = normalizarEmpresa(servEmpresaDoCC(l.cc));
-    const catInfo = SERV_TIPO_PARA_CATEGORIA[l.tipo] || SERV_TIPO_PARA_CATEGORIA.diarias;
-    const despesa = await dbInserir('Despesas', {
-      DataLancamento: l.dataISO || dataPag, Semana: (typeof _rdSemanaDoAno === 'function' ? _rdSemanaDoAno(l.dataISO || dataPag) : ''),
-      Categoria: catInfo.categoria, Subcategoria: catInfo.subcategoria,
-      Modalidade: 'servicos', NaturezaEconomica: (typeof rdNaturezaDeSubcategoriaDespesas === 'function' ? rdNaturezaDeSubcategoriaDespesas(catInfo.subcategoria) : ''),
-      ServicoId: l.codServico || '', ServicoDesc: l.descServico || '', Beneficiario: l.benef || '', Veiculo: l.veiculo || '',
-      Fornecedor: '', CentroCusto: l.cc || '', NumMedicao: l.medicao || '', Local: '', TipoPagamento: 'avista', FormaPagamento: '',
-      ResponsavelLancamento: l.resp || '', Empresa: empresa,
-      DataPagamento: dataPag, Banco: banco, Vencimento: l.dataISO || '', Valor: l.total || 0,
-      Status: 'Pago', Title: (l.descServico || 'Lançamento de Serviço') + ' · ' + (l.dataISO || dataPag),
-      NumParcela: 1, TotalParcelas: 1, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
-      LancadoPor: window._currentUser ? window._currentUser.name : '',
-      LancamentoServicoId: l.Id, OrigemLancamentoServico: true, Distribuicoes: [],
-    });
-    if (despesa && despesa.Id) await dbAtualizar('Lancamentos_Servicos', id, { DespesaId: despesa.Id });
-  } catch (e) { console.warn('[Serviços] Falha ao sincronizar com Despesas', e); }
 }
 
 function filtrarServicos(q, tblId) {
