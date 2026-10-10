@@ -29842,87 +29842,116 @@ async function exportarLancamentosServicosExcel() {
   const items = window._servFiltrados || [];
   if (!items.length) { showToast('⚠️ Nenhum registro para exportar.'); return; }
   showToast('📊 Gerando planilha...');
-  if (typeof XLSX === 'undefined') {
+  if (typeof ExcelJS === 'undefined') {
     await new Promise((res, rej) => {
       const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
       s.onload = res; s.onerror = rej;
       document.head.appendChild(s);
     });
   }
-  const rows = items.map(l => ({
-    'Tipo': l.tipo==='diarias'?'Diária':l.tipo==='veiculos'?'Veículo':l.tipo==='projetos'?'Projeto':l.tipo||'',
-    'Serviço': l.descServico || '',
-    'Veículo': l.veiculo || '',
-    'Data': l.data || '',
-    'Quantidade': l.qtd || 0,
-    'Valor Unitário': l.unit || 0,
-    'Subtotal': l.subtotal || l.unit * l.qtd || 0,
-    'Adicional': l.adicionalLabel || '',
-    'Valor Total': l.total || 0,
-    'Responsável': l.resp || '',
-    'Beneficiário': l.benef || '',
-    'Centro de Custo': l.cc || '',
-    'Nº Medição': l.medicao || '',
-    'Observações': l.obs || '',
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Lancamentos Servicos');
 
-  // Resumo por Nº Medição e por Centro de Custo (pedido 08/10/2026) — agrega
-  // quantidade de lançamentos e valor total do mesmo recorte (filtros já
-  // aplicados na tela) em duas abas extras, pra conferência de faturamento
-  // sem precisar somar a lista inteira linha a linha.
-  const agruparServ = (chaveFn, rotuloChave) => {
-    const mapa = {};
-    items.forEach(l => {
-      const chave = chaveFn(l) || '—';
-      if (!mapa[chave]) mapa[chave] = { qtd: 0, total: 0 };
-      mapa[chave].qtd += 1;
-      mapa[chave].total += Number(l.total) || 0;
+  // Modelo salvo por Tiago em 10/10/2026 (planilha editada manualmente e
+  // devolvida como referência) — cabeçalho com fundo marrom da marca
+  // (#3F261F) + fonte branca, colunas renomeadas (Qnt/R$ Unitário/R$ Sub
+  // Total/R$ Total), linha de soma automática (fórmula, não valor fixo) no
+  // fim da lista, e só 2 abas (a lista + o resumo combinado de Centro de
+  // Custo + Medição, com coluna "Item" numerada). As abas separadas "Resumo
+  // por Medicao" e "Resumo por Centro Custo" (pedido 08/10/2026) saíram do
+  // modelo — ele só quer a combinada agora. Precisa de ExcelJS (não o XLSX
+  // já usado no resto do app) porque esse não grava cor/fonte de célula,
+  // só o conteúdo — testado e confirmado antes de trocar.
+  const FMT_RS = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-';
+  const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF3F261F' } };
+  const estilizarCabecalho = (row, { negrito = false, borda = false } = {}) => {
+    row.eachCell(c => {
+      c.font = { name: 'Mont Black', size: 9, bold: negrito, color: { argb: 'FFFFFFFF' } };
+      c.fill = HEADER_FILL;
+      c.alignment = { horizontal: 'center' };
+      if (borda) c.border = { top: { style: 'thin' }, bottom: { style: 'thin' } };
     });
-    const linhas = Object.entries(mapa)
-      .sort((a, b) => b[1].total - a[1].total)
-      .map(([chave, v]) => ({ [rotuloChave]: chave, 'Qtd. Lançamentos': v.qtd, 'Valor Total': v.total }));
-    const totalGeral = linhas.reduce((s, r) => s + r['Valor Total'], 0);
-    linhas.push({ [rotuloChave]: 'TOTAL', 'Qtd. Lançamentos': items.length, 'Valor Total': totalGeral });
-    return linhas;
   };
 
-  const wsMedicao = XLSX.utils.json_to_sheet(agruparServ(l => l.medicao, 'Nº Medição'));
-  XLSX.utils.book_append_sheet(wb, wsMedicao, 'Resumo por Medicao');
+  const wb = new ExcelJS.Workbook();
 
-  const wsCC = XLSX.utils.json_to_sheet(agruparServ(l => l.cc, 'Centro de Custo'));
-  XLSX.utils.book_append_sheet(wb, wsCC, 'Resumo por Centro Custo');
-
-  // Resumo por Centro de Custo + Medição juntos (pedido 10/10/2026) — mesmo
-  // Centro de Custo (contrato) aparece 1 linha POR medição em que teve
-  // lançamento, em vez de somar tudo numa linha só — ex.: "ERO - Gestão de
-  // Obras" medido 2x em medições diferentes vira 2 linhas, cada uma com o
-  // total daquela medição específica.
-  const agruparServDupla = (chaveFn1, rotulo1, chaveFn2, rotulo2) => {
-    const mapa = {};
-    items.forEach(l => {
-      const c1 = chaveFn1(l) || '—';
-      const c2 = chaveFn2(l) || '—';
-      const chave = c1 + '\u0000' + c2;
-      if (!mapa[chave]) mapa[chave] = { c1, c2, qtd: 0, total: 0 };
-      mapa[chave].qtd += 1;
-      mapa[chave].total += Number(l.total) || 0;
+  // --- Aba 1: Lancamentos Servicos ---
+  const ws1 = wb.addWorksheet('Lancamentos Servicos');
+  ws1.columns = [
+    { header: 'Tipo', key: 'tipo', width: 6.4 },
+    { header: 'Serviço', key: 'servico', width: 33.8 },
+    { header: 'Veículo', key: 'veiculo', width: 13.5 },
+    { header: 'Data', key: 'data', width: 9 },
+    { header: 'Qnt', key: 'qnt', width: 4.5 },
+    { header: 'R$ Unitário', key: 'unit', width: 11.4 },
+    { header: 'R$ Sub Total', key: 'subtotal', width: 10.8 },
+    { header: 'Adicional', key: 'adicional', width: 16.8 },
+    { header: 'R$ Total', key: 'total', width: 11.6 },
+    { header: 'Responsável', key: 'resp', width: 17.4 },
+    { header: 'Beneficiário', key: 'benef', width: 20.3 },
+    { header: 'Centro de Custo', key: 'cc', width: 40.4 },
+    { header: 'Nº Medição', key: 'medicao', width: 9.7 },
+    { header: 'Observações', key: 'obs', width: 54 },
+  ];
+  items.forEach(l => {
+    ws1.addRow({
+      tipo: l.tipo==='diarias'?'Diária':l.tipo==='veiculos'?'Veículo':l.tipo==='projetos'?'Projeto':l.tipo||'',
+      servico: l.descServico || '',
+      veiculo: l.veiculo || '',
+      data: l.data || '',
+      qnt: l.qtd || 0,
+      unit: l.unit || 0,
+      subtotal: l.subtotal || l.unit * l.qtd || 0,
+      adicional: l.adicionalLabel || '',
+      total: l.total || 0,
+      resp: l.resp || '',
+      benef: l.benef || '',
+      cc: l.cc || '',
+      medicao: l.medicao || '',
+      obs: l.obs || '',
     });
-    const linhas = Object.values(mapa)
-      .sort((a, b) => String(a.c1).localeCompare(String(b.c1)) || String(a.c2).localeCompare(String(b.c2)))
-      .map(v => ({ [rotulo1]: v.c1, [rotulo2]: v.c2, 'Qtd. Lançamentos': v.qtd, 'Valor Total': v.total }));
-    const totalGeral = linhas.reduce((s, r) => s + r['Valor Total'], 0);
-    linhas.push({ [rotulo1]: 'TOTAL', [rotulo2]: '', 'Qtd. Lançamentos': items.length, 'Valor Total': totalGeral });
-    return linhas;
-  };
+  });
+  estilizarCabecalho(ws1.getRow(1), { negrito: false, borda: false });
+  ['unit', 'subtotal', 'total'].forEach(k => { ws1.getColumn(k).numFmt = FMT_RS; });
+  const ultimaLinhaDados = items.length + 1;
+  const linhaSoma = ultimaLinhaDados + 1;
+  ws1.getCell('I' + linhaSoma).value = { formula: `SUM(I2:I${ultimaLinhaDados})` };
+  ws1.getCell('I' + linhaSoma).numFmt = FMT_RS;
 
-  const wsCCMed = XLSX.utils.json_to_sheet(agruparServDupla(l => l.cc, 'Centro de Custo', l => l.medicao, 'Nº Medição'));
-  XLSX.utils.book_append_sheet(wb, wsCCMed, 'Resumo CC + Medicao');
+  // --- Aba 2: Resumo CC + Medicao (pedido 10/10/2026) ---
+  const mapa = {};
+  items.forEach(l => {
+    const cc = l.cc || '—';
+    const medicao = l.medicao || '—';
+    const chave = cc + '\u0000' + medicao;
+    if (!mapa[chave]) mapa[chave] = { cc, medicao, qtd: 0, total: 0 };
+    mapa[chave].qtd += 1;
+    mapa[chave].total += Number(l.total) || 0;
+  });
+  const linhasResumo = Object.values(mapa)
+    .sort((a, b) => String(a.cc).localeCompare(String(b.cc)) || String(a.medicao).localeCompare(String(b.medicao)));
 
-  XLSX.writeFile(wb, 'LancamentosServicos_' + new Date().toISOString().slice(0,10) + '.xlsx');
+  const ws2 = wb.addWorksheet('Resumo CC + Medicao');
+  ws2.columns = [
+    { header: 'Item', key: 'item', width: 4.5 },
+    { header: 'Centro de Custo', key: 'cc', width: 40.4 },
+    { header: 'Nº Medição', key: 'medicao', width: 10 },
+    { header: 'Qnt', key: 'qnt', width: 4 },
+    { header: 'Valor Total', key: 'total', width: 11.6 },
+  ];
+  linhasResumo.forEach((v, i) => {
+    ws2.addRow({ item: i + 1, cc: v.cc, medicao: v.medicao, qnt: v.qtd, total: v.total });
+  });
+  const totalGeral = linhasResumo.reduce((s, v) => s + v.total, 0);
+  ws2.addRow({ item: null, cc: 'TOTAL', medicao: '', qnt: items.length, total: totalGeral });
+  estilizarCabecalho(ws2.getRow(1), { negrito: true, borda: true });
+  ws2.getColumn('total').numFmt = FMT_RS;
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'LancamentosServicos_' + new Date().toISOString().slice(0,10) + '.xlsx'; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // (onSelectServico foi substituído pelo callback onSelect registrado em
