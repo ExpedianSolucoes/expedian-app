@@ -7139,6 +7139,8 @@ function pagToggleFormNovo(forcar) {
   window._pagFormAberto = abrir;
   const c = document.getElementById('pag-form-container');
   if (c) c.style.display = abrir ? 'block' : 'none';
+  const bd = document.getElementById('pag-form-backdrop');
+  if (bd) bd.style.display = abrir ? 'block' : 'none';
   // Fechar o formulário (Cancelar/depois de salvar) sempre sai do modo edição
   // e devolve o título padrão "Novo Lançamento" pra próxima vez que abrir.
   if (!abrir) {
@@ -7191,9 +7193,17 @@ function pagePagar() {
       <button class="btn-secondary" onclick="navigate('recibos')">🧾 Recibo</button>
       ${currentProfile === 'diretoria' ? `<button class="btn-secondary" title="Cria lembrete no Outlook pras contas em aberto que já existiam antes de 30/09 e nunca geraram evento" onclick="cpBackfillEventosOutlook()">📆 Criar lembretes retroativos</button>` : ''}
     </div>
-    <div id="pag-form-container" style="display:${window._pagFormAberto ? 'block' : 'none'};margin-top:14px">
-    <div class="form-card">
-    <div id="pag-form-titulo" style="font-family:'Mont',sans-serif;font-size:.85rem;font-weight:700;color:var(--green-main);margin-bottom:14px;text-transform:uppercase;letter-spacing:.07em">${window._pagEditandoId ? '✏️ Editar Lançamento' : '➕ Novo Lançamento'}</div>
+    <!-- Formulário em tela cheia (mesmo padrão de Despesas — rd-form-backdrop/
+         rd-form-container) — pedido 11/10/2026: "não deixou o formulario na
+         tela toda, conforme esta em despesas". Backdrop escuro é uma div
+         irmã, clicar nele fecha o formulário. Botão fechar sticky no topo. -->
+    <div id="pag-form-backdrop" style="display:${window._pagFormAberto ? 'block' : 'none'};position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="pagToggleFormNovo(false)"></div>
+    <div id="pag-form-container" class="form-card" style="position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;border-radius:0;overflow-y:auto;box-shadow:none;z-index:10000;display:${window._pagFormAberto ? 'block' : 'none'}">
+    <div style="position:sticky;top:0;background:var(--surface);z-index:2;margin:-4px -4px 12px;padding:4px 4px 10px;display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid var(--border)">
+      <div id="pag-form-titulo" style="font-family:'Mont',sans-serif;font-size:.82rem;font-weight:700;color:var(--green-main);text-transform:uppercase;letter-spacing:.07em">${window._pagEditandoId ? '✏️ Editar Lançamento' : '➕ Novo Lançamento'}</div>
+      <div onclick="pagToggleFormNovo(false)" title="Fechar" style="cursor:pointer;font-size:1.3rem;line-height:1;color:var(--text-muted);padding:2px 6px;flex-shrink:0">✕</div>
+    </div>
+    <div id="pag-form-campos" style="max-width:1100px;margin:0 auto">
 
     <!-- Linha 0: Anexo — primeiro campo do formulário. Anexar o documento
          primeiro permite ao sistema tentar identificar automaticamente o
@@ -7221,7 +7231,12 @@ function pagePagar() {
           <option>EXP Brasil</option>
         </select>
       </div>
-      <div class="form-group" style="position:relative">
+      <!-- Escondido quando parcelado (cada parcela tem seu próprio Centro de
+           Custo, ao lado da medição) ou quando a divisão por CC está marcada
+           (CC escolhido linha a linha ali embaixo) — ver
+           pagAtualizarVisibilidadeCCTopo(). Pedido 11/10/2026, mesmo padrão
+           já aplicado em Despesas (rd_cc_top_group). -->
+      <div class="form-group" id="pag_cc_top_group" style="position:relative">
         <label>Centro de Custo</label>
         <input type="text" id="pag_cc_input" placeholder="Selecione a empresa e digite para buscar..." autocomplete="off"
           oninput="pagFiltrarCCs(this.value)" onfocus="pagFiltrarCCs(this.value)"
@@ -7589,16 +7604,33 @@ async function pagDivccAtualizarMedicaoPorCC(cc) {
 function pagToggleDivisaoCC() {
   const chk = document.getElementById('pag_tem_divisaocc');
   const editor = document.getElementById('pag_divisaocc_editor');
-  const medicaoRow = document.getElementById('pag_medicao_row');
   if (chk && chk.checked) {
     if (editor) editor.style.display = 'block';
-    if (medicaoRow) medicaoRow.style.display = 'none';
     pagRenderizarDivisaoCC();
   } else {
     if (editor) editor.style.display = 'none';
-    if (medicaoRow) medicaoRow.style.display = '';
     pagAtualizarMedicaoPorCC((document.getElementById('pag_cc')||{}).value || '');
   }
+  pagAtualizarVisibilidadeCCTopo();
+}
+
+/* -- Esconde o campo único "Centro de Custo" (topo) e o campo único "Nº
+   Medição" (pag_medicao_row) quando não fazem mais sentido sozinhos: no
+   parcelado, cada parcela escolhe seu próprio Centro de Custo + Medição (ver
+   pagRenderizarParcelas); na divisão por CC, cada linha da divisão já tem os
+   seus (pag_divcc_cc/pag_divcc_medicao). Pedido 11/10/2026: "esconder o
+   primeiro centro de custo escolhido lá em cima" + "não precisa repetir
+   medição lá embaixo" — mesmo padrão já aplicado em Despesas
+   (rdAtualizarVisibilidadeCCTopo), com a correção de também esconder a
+   Medição junto (lá em Despesas só o CC some sozinho). -- */
+function pagAtualizarVisibilidadeCCTopo() {
+  const ccTopGroup = document.getElementById('pag_cc_top_group');
+  const medicaoRow = document.getElementById('pag_medicao_row');
+  const parcelado = (document.getElementById('pag_parcelamento')||{}).value === 'parcelado';
+  const dividindo = (document.getElementById('pag_tem_divisaocc')||{}).checked || false;
+  const esconder = parcelado || dividindo;
+  if (ccTopGroup) ccTopGroup.style.display = esconder ? 'none' : '';
+  if (medicaoRow) medicaoRow.style.display = esconder ? 'none' : '';
 }
 
 // Preenche o campo Valor de staging com a sugestão de rateio (o que resta do
@@ -8896,6 +8928,7 @@ function pagToggleParcelas() {
   const vencGroup = document.getElementById('pag_vencimento_group');
   const vencLabel = document.getElementById('pag_vencimento_label');
   const valorLabel = document.getElementById('pag_valor_label');
+  pagAtualizarVisibilidadeCCTopo();
   if (row) row.style.display = v === 'parcelado' ? 'flex' : 'none';
   if (vencGroup) vencGroup.style.display = v === 'parcelado' ? 'none' : '';
   if (vencLabel) vencLabel.textContent = 'Vencimento';
@@ -8931,12 +8964,21 @@ function pagGerarParcelas() {
     return;
   }
   const valorParcela = Math.round((total / qtd) * 100) / 100;
+  const medicaoBase = (document.getElementById('pag_medicao')||{}).value || '';
+  const ccBase = (document.getElementById('pag_cc')||{}).value || '';
+  // Preserva o Centro de Custo/Medição já ajustados em cada parcela (se o
+  // usuário já tiver mexido em alguma manualmente antes de mudar qtd/valor/
+  // data) — só usa o CC/medição do campo do topo como valor inicial para
+  // parcelas novas. Mesmo padrão de rdGerarParcelas (Despesas).
+  const parcelasAntigas = window._pagParcelas || [];
   const parcelas = [];
   const base = new Date(dataBase + 'T00:00:00');
   for (let i = 0; i < qtd; i++) {
     const d = new Date(base);
     d.setMonth(d.getMonth() + i);
-    parcelas.push({ numero: i + 1, vencimento: d.toISOString().split('T')[0], valor: valorParcela });
+    const ccAnterior = parcelasAntigas[i] ? parcelasAntigas[i].cc : '';
+    const medicaoAnterior = parcelasAntigas[i] ? parcelasAntigas[i].medicao : '';
+    parcelas.push({ numero: i + 1, vencimento: d.toISOString().split('T')[0], valor: valorParcela, cc: ccAnterior || ccBase, medicao: medicaoAnterior || medicaoBase });
   }
   // Ajusta centavos de arredondamento na última parcela para bater com o total exato
   const soma = parcelas.reduce((s, p) => s + p.valor, 0);
@@ -8951,16 +8993,45 @@ function pagRenderizarParcelas() {
   if (!editor) return;
   const parcelas = window._pagParcelas || [];
   if (!parcelas.length) { editor.style.display = 'none'; editor.innerHTML = ''; return; }
+  const ccOptions = _pagCCsDisponiveis().map(c => c.id + ' · ' + c.contrato);
+  if (ccOptions.length) {
+    parcelas.forEach(p => { if (!p.cc) p.cc = ccOptions[0]; });
+  }
   editor.style.display = 'block';
-  editor.innerHTML = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Parcelas geradas automaticamente — ajuste vencimento e valor se precisar:</div>' +
+  editor.innerHTML = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Parcelas geradas automaticamente — ajuste vencimento, valor, Centro de Custo e nº da medição se precisar:</div>' +
     '<div style="display:flex;flex-direction:column;gap:6px">' +
     parcelas.map((p, i) => `
-      <div style="display:flex;gap:8px;align-items:center;background:var(--surface2);padding:6px 10px;border-radius:8px">
+      <div style="display:flex;gap:8px;align-items:center;background:var(--surface2);padding:6px 10px;border-radius:8px;flex-wrap:wrap">
         <span style="font-size:.78rem;font-weight:700;width:44px">${p.numero}/${parcelas.length}</span>
         <input type="date" value="${p.vencimento}" onchange="pagAtualizarParcela(${i},'vencimento',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem">
         <input type="number" step="0.01" value="${p.valor}" onchange="pagAtualizarParcela(${i},'valor',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px">
+        <select onchange="pagAtualizarParcela(${i},'cc',this.value); pagAtualizarMedicaoParcela(${i},this.value)" title="Centro de Custo que custeia esta parcela específica" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;max-width:220px">
+          ${ccOptions.map(o => `<option value="${o.replace(/"/g,'&quot;')}" ${o===p.cc?'selected':''}>${o}</option>`).join('')}
+        </select>
+        <input type="text" list="pag_medicao_dl_p${i}" value="${(p.medicao||'').toString().replace(/"/g,'&quot;')}" placeholder="Nº medição" onchange="pagAtualizarParcela(${i},'medicao',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px" title="Medição do Centro de Custo selecionado ao lado, para esta parcela específica">
+        <datalist id="pag_medicao_dl_p${i}"></datalist>
       </div>`).join('') +
     '</div>';
+  parcelas.forEach((p, i) => { if (p.cc) pagAtualizarMedicaoParcela(i, p.cc); });
+}
+
+async function pagAtualizarMedicaoParcela(i, cc) {
+  const dl = document.getElementById('pag_medicao_dl_p' + i);
+  if (!dl) return;
+  if (!cc) { dl.innerHTML = ''; return; }
+  const ccId = _ccIdPuro(cc);
+  let medicoes = [];
+  try { medicoes = await medicoesParaCC(ccId); } catch (e) { medicoes = []; }
+  const doCC = medicoes.sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  if (doCC.length) {
+    dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao||''} (${m.Status||''})</option>`).join('');
+    return;
+  }
+  let contas = [];
+  try { contas = await dbLerSeguro('ContasPagar'); } catch (e) { contas = []; }
+  const doContrato = contas.filter(c => _ccIdPuro(c.CentroCusto) === ccId && c.NumMedicao);
+  const usados = [...new Set(doContrato.map(c => c.NumMedicao))];
+  dl.innerHTML = usados.sort().map(n => `<option value="${n}">`).join('');
 }
 
 function pagAtualizarParcela(i, campo, valor) {
@@ -9083,6 +9154,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   if(!fornecedor){showToast('⚠️ Selecione um fornecedor.');return;}
   if(!valor){showToast('⚠️ Informe o valor.');return;}
   if(!empresa){showToast('⚠️ Selecione a empresa.');return;}
+  if(parcelamento==='parcelado' && (window._pagParcelas||[]).some(p=>!p.cc)){showToast('⚠️ Selecione o Centro de Custo de cada parcela.');return;}
   if(temDivisaoCC){
     if(divisaoCC.length<2){showToast('⚠️ Adicione pelo menos 2 Centros de Custo na divisão, ou desmarque a opção.');return;}
     const somaDivisao=divisaoCC.reduce((s,d)=>s+(d.valor||0),0);
@@ -9194,6 +9266,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
         Parcelamento: 'parcelado', NumParcela: p.numero, TotalParcelas: parcelas.length,
         ComprovanteUrl: compParcela.url, ComprovanteNome: compParcela.nome,
         OutlookEventId: rOutlookParc.id,
+        CentroCusto: p.cc || base.CentroCusto, NumMedicao: p.medicao || base.NumMedicao,
       };
       const okP = await salvarNoSharePoint('ContasPagar', dados);
       ok = ok && okP;
