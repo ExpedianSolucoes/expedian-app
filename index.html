@@ -16451,6 +16451,40 @@ async function carregarDespesas() {
       if (fValorMin > 0) items = items.filter(r => (r.Valor||0) >= fValorMin);
       if (fValorMax > 0) items = items.filter(r => (r.Valor||0) <= fValorMax);
     }
+
+    // Busca por Valor exato cruzando Contas a Pagar e Prestação de Contas
+    // (pedido Tiago 11/10/2026: "quando eu colocar o valor pesquisa tanto em
+    // despesas... pesquisar em prestação de contas e pesquisar em contas a
+    // pagar... deixar sinalizado que falta aprovação") — um lançamento que
+    // ainda está em Prestação de Contas (aguardando aprovação do
+    // coordenador/diretoria) ou em Contas a Pagar (já aprovado, aguardando
+    // pagamento) ainda NÃO é uma Despesa; por isso não aparece na tabela
+    // principal acima, só aqui como aviso à parte, com o mesmo valor
+    // procurado — evita a impressão de "sumiu" quando na real só falta
+    // aprovar/pagar. Mesmo mecanismo de busca cruzada já usado em
+    // financeiroHubBuscar() (hub Financeiro), só que disparado pelo campo
+    // "Valor exato" já existente aqui em vez de um campo de busca à parte.
+    let fValorExatoExtras = [];
+    if (fValorExato > 0) {
+      try {
+        const [cpExtras, pcExtras] = await Promise.all([dbLerSeguro('ContasPagar'), dbLer('PrestacaoContas')]);
+        const bateValorExtra = (r) => Math.abs((r.Valor||0) - fValorExato) < 0.01 && (window._rdConsolidado || r.Empresa === empresaAtiva);
+        (cpExtras||[]).filter(bateValorExtra).forEach(r => fValorExatoExtras.push({ origem:'pagar', id:r.Id, fornecedor:r.Fornecedor||'', valor:r.Valor||0, data:r.Vencimento||'', status:r.Status||'' }));
+        (pcExtras||[]).filter(bateValorExtra).forEach(r => fValorExatoExtras.push({ origem:'prestacao', id:r.Id, fornecedor:r.Fornecedor||'', valor:r.Valor||0, data:r.DataDespesa||'', status:r.Status||'' }));
+      } catch(e) { console.warn('[Despesas] Falha ao buscar valor exato em Contas a Pagar/Prestação de Contas:', e); }
+    }
+    const htmlValorExatoExtras = fValorExatoExtras.length ? `<div style="background:#fff8e1;border:1px solid #f0d58c;border-radius:10px;padding:10px 12px;margin-bottom:12px">
+      <div style="font-size:.76rem;font-weight:700;color:#8a6d1a;margin-bottom:6px">⏳ ${fValorExatoExtras.length} lançamento(s) com este valor em Prestação de Contas/Contas a Pagar — falta aprovação ou pagamento, por isso ainda não aparece(m) em Despesas:</div>
+      ${fValorExatoExtras.map(r => {
+        const info = _bfLabelOrigem(r.origem);
+        const dataFmt = r.data ? new Date(r.data+'T12:00').toLocaleDateString('pt-BR') : '—';
+        const onclickAttr = r.origem === 'pagar' ? `pagAbrirVisualizar(${r.id})` : `pcAbrirVisualizar(${r.id})`;
+        return `<div onclick="${onclickAttr}" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:5px 0;font-size:.78rem;border-top:1px solid #f0d58c">
+          <span>${info.icone} <strong>${r.fornecedor||'—'}</strong> · ${info.nome} · ${dataFmt}</span>
+          <span style="white-space:nowrap">R$ ${(r.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} <span class="status-pill amber" style="font-size:.65rem;margin-left:4px">⏳ Falta aprovação</span></span>
+        </div>`;
+      }).join('')}
+    </div>` : '';
     // Assim como a separação Em Aberto x Pagos logo abaixo, o filtro rápido dos
     // chips/KPIs (Pagos/Vencido/A Vencer) só vale sem busca ativa — senão um chip
     // clicado antes continuaria escondendo o lançamento do outro status durante
@@ -16504,14 +16538,14 @@ async function carregarDespesas() {
       const msgVazio = fBusca
         ? `🔍 Nenhum lançamento encontrado para "${(document.getElementById('rd_filtro_busca')||{}).value||''}" — já procurado em Em Aberto + Histórico de Pagos.`
         : '📭 Nenhuma despesa encontrada com esses filtros.';
-      el.innerHTML = `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">${msgVazio}</div>`;
+      el.innerHTML = htmlValorExatoExtras + `<div style="color:var(--text-muted);font-size:.85rem;padding:12px">${msgVazio}</div>`;
       return;
     }
 
     const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
     const avisoBusca = fBusca ? '<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">🔍 Buscando em Em Aberto + Histórico de Pagos ao mesmo tempo.</div>' : '';
     const avisoCorte = totalFiltradoQtd > 300 ? ` (exibindo os 300 mais recentes — a soma abaixo considera os ${totalFiltradoQtd} lançamentos do filtro)` : '';
-    el.innerHTML = avisoBusca + '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Data Pagto</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
+    el.innerHTML = htmlValorExatoExtras + avisoBusca + '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Data Pagto</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
         const desc = rdDescricaoModalidade(i);
         const ehParcelado = i.TotalParcelas > 1;
@@ -16523,7 +16557,7 @@ async function carregarDespesas() {
           <td style="font-size:.78rem">${i.DataLancamento ? new Date(i.DataLancamento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td style="font-size:.76rem">${i.Categoria||'—'}${i.Subcategoria?`<div style="font-size:.66rem;color:var(--text-muted)">${i.Subcategoria}</div>`:''}${tipoMovimentacaoBadge(i.TipoMovimentacao || rdTipoMovimentacao(i.Categoria, i.Subcategoria))}</td>
           <td style="font-size:.78rem"><strong>${desc}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}${i.Veiculo?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.Veiculo}</div>`:''}${i.DiariaVeiculoDesc?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.DiariaVeiculoDesc} (${rdNumeroParaMoeda(i.DiariaVeiculoValor||0)})</div>`:''}</td>
-          <td style="font-size:.72rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px" title="${(i.CentroCusto||'').replace(/"/g,'&quot;')}">${i.CentroCusto||'—'}${(i.DivisaoCC&&i.DivisaoCC.length) ? ` <span style="color:var(--blue)" title="Dividido entre ${i.DivisaoCC.length} contratos — editar para ver/ajustar">🧩${i.DivisaoCC.length}</span>` : ''}</td>
+          <td style="font-size:.72rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px" title="${(i.CentroCusto||'').replace(/"/g,'&quot;')}">${i.CentroCusto||'—'}${(i.DivisaoCC&&i.DivisaoCC.length) ? ` <span style="color:var(--blue)" title="Dividido entre ${i.DivisaoCC.length} contratos — editar para ver/ajustar">🧩${i.DivisaoCC.length}</span>` : ''}${(!i.DivisaoCC||!i.DivisaoCC.length) && i.NumMedicao ? `<div style="font-size:.64rem;color:var(--text-muted)">Medição ${i.NumMedicao}</div>` : ''}</td>
           <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}</td>
           <td style="font-size:.72rem">${pgtoCel}</td>
           <td style="font-size:.8rem">${i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
@@ -16800,17 +16834,12 @@ function rdRenderResumoMensal(items) {
             ${!vazio ? `<div style="font-size:.5rem;color:var(--text-muted);line-height:1.45">${d.pago>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✅ ${fmt0(d.pago)}</div>`):''}${d.aVencer>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🟡 ${fmt0(d.aVencer)}</div>`):''}${d.vencido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">⚠️ ${fmt0(d.vencido)}</div>`):''}</div>` : ''}
           </div>`;
         }).join('')}
-        <!-- Pedido em 27/09/2026: o formulário de busca rápida (antes na linha
-             de título) agora mora aqui dentro do Calendário Mensal — como 13º
-             item da mesma grade dos 12 meses, ele flui sozinho pra linha de
-             baixo logo depois de Dez; "grid-column:span 3" faz ocupar as 3
-             colunas vazias restantes dessa linha (ao lado de Dez, embaixo de
-             Ago/Set/Out), sem precisar fixar o número de colunas da grade. -->
-        <div style="grid-column:span 3;position:relative;min-width:0">
-          <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:.85rem;pointer-events:none">🔍</span>
-          <input type="text" id="fh_busca" placeholder="Buscar fornecedor ou valor..." autocomplete="off" oninput="financeiroHubBuscar()" style="width:100%;height:100%;box-sizing:border-box;padding:8px 10px 8px 30px;border-radius:9px;border:1px solid var(--border);font-size:.76rem;background:var(--surface)">
-          <div id="fh-busca-resultados" style="position:absolute;top:100%;left:0;right:0;z-index:60"></div>
-        </div>
+        <!-- O campo de busca rápida (Fornecedor/valor, cruzando Contas a
+             Pagar/Despesas/Prestação) que morava aqui como 13º item da grade
+             foi removido (pedido Tiago 11/10/2026) — o filtro "Valor exato"
+             da barra de filtros acima agora já cobre as 3 tabelas sozinho
+             (ver carregarDespesas -> fValorExatoExtras), então ficava
+             duplicado ter os dois. -->
       </div>
       <div style="font-size:.62rem;color:var(--text-muted);display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
         <span>✅ Pago</span><span>🟡 A pagar</span><span>⚠️ Vencido</span>
