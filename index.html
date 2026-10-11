@@ -5014,11 +5014,33 @@ async function carregarPrestacoes() {
           const nome = r.Responsavel || r.EnviadoPor || '—';
           if (!porColab[nome]) porColab[nome] = { pago: 0, aprovada: 0, pendente: 0, devolvida: 0 };
           const v = Number(r.Valor) || 0;
-          if (r.Status === 'Paga') porColab[nome].pago += v;
+          // "Paga" aqui só pega registro legado que ainda não foi removido
+          // (ver pcSincronizarDespesa) — daqui pra frente uma prestação some
+          // da tabela assim que é paga, então o "Pago" de cada colaborador
+          // é somado a partir de Despesas logo abaixo (bloco _despesasPc).
+          if (r.Status === 'Paga' && !r.DespesaId) porColab[nome].pago += v;
           else if (r.Status === 'Aprovada') porColab[nome].aprovada += v;
           else if (r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor') porColab[nome].pendente += v;
           else if (r.Status === 'Devolvida' || r.Status === 'Suspensa') porColab[nome].devolvida += v;
         });
+        // Pedido Tiago 11/10/2026: "a partir do momento que foi aprovado não
+        // tem pq aparecer em prestação de contas, fica somente em despesas"
+        // — pcSincronizarDespesa agora EXCLUI o registro de Prestação de
+        // Contas assim que ele vira Despesa, em vez de só marcar DespesaId.
+        // Pra não perder o histórico de "Pago" por colaborador (que antes
+        // vinha só da linha acima, com Status==='Paga'), soma aqui o mesmo
+        // valor a partir das Despesas geradas por Prestação de Contas
+        // (OrigemPrestacaoContas===true), usando o mesmo nome gravado em
+        // ResponsavelLancamento (= Responsavel/EnviadoPor da prestação
+        // original — ver pcSincronizarDespesa).
+        try {
+          const despesasPc = (await dbLerSeguro('Despesas')).filter(d => d.OrigemPrestacaoContas);
+          despesasPc.forEach(d => {
+            const nome = d.ResponsavelLancamento || '—';
+            if (!porColab[nome]) porColab[nome] = { pago: 0, aprovada: 0, pendente: 0, devolvida: 0 };
+            porColab[nome].pago += Number(d.Valor) || 0;
+          });
+        } catch (e) { console.warn('[Prestação] Falha ao somar Despesas de prestações já pagas no Dashboard por Colaborador:', e); }
         const linhasColab = Object.entries(porColab)
           .sort((a,b) => (b[1].pago+b[1].aprovada+b[1].pendente+b[1].devolvida) - (a[1].pago+a[1].aprovada+a[1].pendente+a[1].devolvida));
         const fmtBRLpc = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2,maximumFractionDigits:2});
@@ -5790,11 +5812,22 @@ async function pcConfirmarPagamento(id) {
 // Ao registrar o pagamento de uma Prestação de Contas, gera automaticamente o
 // lançamento correspondente em Despesas — mesma Empresa/CC/Valor/Banco/Data —
 // para o extrato bancário bater certinho com as despesas pagas, sem duplicar.
+// Pedido Tiago 11/10/2026 ("a partir do momento que foi aprovado não tem pq
+// aparecer em prestação de contas, fica somente em despesas" — reportado
+// depois de reparar que a mesma prestação aparecia 2x em buscas, uma vez
+// como Prestação de Contas e outra como Despesa): em vez de só marcar
+// DespesaId e deixar o registro original para trás (status "Paga" lá pra
+// sempre), o registro é removido de PrestacaoContas assim que a Despesa é
+// criada com sucesso — ele deixa de existir ali e passa a existir só como
+// Despesa. NF/Recibo, Observações e Conferido por/Data (campos que só
+// existiam em Prestação de Contas) são copiados pra Despesa antes de
+// remover, pra não perder essa informação.
 async function pcSincronizarDespesa(id, dataPag, banco) {
   try {
     const todos = await dbLer('PrestacaoContas');
-    const i = todos.find(r => r.Id === id);
-    if (!i || i.DespesaId) return; // já sincronizado antes — não duplica
+    const idx = todos.findIndex(r => r.Id === id);
+    if (idx === -1) return; // já sincronizado/removido antes — não duplica
+    const i = todos[idx];
     const empresaRd = normalizarEmpresa(i.Empresa);
     // Usa a Categoria/Subcategoria informadas no lançamento (se houver); cai no
     // padrão antigo só pra registros legados que não tinham esses campos ainda.
@@ -5817,8 +5850,22 @@ async function pcSincronizarDespesa(id, dataPag, banco) {
       LancadoPor: window._currentUser ? window._currentUser.name : '',
       PrestacaoContasId: i.Id, OrigemPrestacaoContas: true, Distribuicoes: [],
       DivisaoCC: i.DivisaoCC || [],
+      // Só existiam em Prestação de Contas — preservados aqui pra não se
+      // perder quando o registro original for removido logo abaixo.
+      // Observacao no singular — mesmo nome de campo já usado/exibido em
+      // Despesas (ver rdVisualizarDespesa); a prestação original guarda em
+      // "Observacoes" (plural), por isso o de-para aqui.
+      NumeroNF: i.NumeroNF || '', Observacao: i.Observacoes || '',
+      ConferidoPor: i.ConferidoPor || '', DataConferencia: i.DataConferencia || '',
     });
-    if (despesa && despesa.Id) await dbAtualizar('PrestacaoContas', id, { DespesaId: despesa.Id });
+    if (despesa && despesa.Id) {
+      const atual = await dbLer('PrestacaoContas');
+      const idx2 = atual.findIndex(r => r.Id === id);
+      if (idx2 !== -1) {
+        atual.splice(idx2, 1);
+        await dbSalvar('PrestacaoContas', atual);
+      }
+    }
   } catch (e) { console.warn('[PrestacaoContas] Falha ao sincronizar com Despesas', e); }
 }
 
@@ -16468,7 +16515,12 @@ async function carregarDespesas() {
     if (fValorExato > 0) {
       try {
         const [cpExtras, pcExtras] = await Promise.all([dbLerSeguro('ContasPagar'), dbLer('PrestacaoContas')]);
-        const bateValorExtra = (r) => Math.abs((r.Valor||0) - fValorExato) < 0.01 && (window._rdConsolidado || r.Empresa === empresaAtiva);
+        // Exclui quem já tem DespesaId — já virou Despesa de verdade (mesmo
+        // mecanismo que pagSincronizarEEnviar/pcSincronizarDespesa usam pra não
+        // duplicar o envio); sem isso, uma prestação já paga e sincronizada
+        // aparecia aqui como "falta aprovação" de novo, mesmo já estando
+        // certinha na tabela de Despesas logo abaixo (bug reportado 11/10/2026).
+        const bateValorExtra = (r) => !r.DespesaId && Math.abs((r.Valor||0) - fValorExato) < 0.01 && (window._rdConsolidado || r.Empresa === empresaAtiva);
         (cpExtras||[]).filter(bateValorExtra).forEach(r => fValorExatoExtras.push({ origem:'pagar', id:r.Id, fornecedor:r.Fornecedor||'', valor:r.Valor||0, data:r.Vencimento||'', status:r.Status||'' }));
         (pcExtras||[]).filter(bateValorExtra).forEach(r => fValorExatoExtras.push({ origem:'prestacao', id:r.Id, fornecedor:r.Fornecedor||'', valor:r.Valor||0, data:r.DataDespesa||'', status:r.Status||'' }));
       } catch(e) { console.warn('[Despesas] Falha ao buscar valor exato em Contas a Pagar/Prestação de Contas:', e); }
@@ -17165,7 +17217,10 @@ async function rdVisualizarDespesa(id) {
       ${i.LancadoPor && i.LancadoPor !== i.ResponsavelLancamento ? linha('Lançado por', i.LancadoPor) : ''}
       ${i.Descricao ? linha('Descrição', i.Descricao) : ''}
       ${i.Local ? linha('Local', i.Local) : ''}
+      ${i.NumeroNF ? linha('NF/Recibo', i.NumeroNF) : ''}
       ${i.Observacao ? linha('Observação', i.Observacao) : ''}
+      ${i.ConferidoPor ? linha('Conferido por', i.ConferidoPor + (i.DataConferencia ? ' em ' + fmtData(i.DataConferencia) : '')) : ''}
+      ${i.OrigemPrestacaoContas ? linha('Origem', '📑 Prestação de Contas') : ''}
       ${i.ComprovanteUrl ? `<div style="margin-top:8px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.8rem">📎 Ver comprovante</a></div>` : ''}
     </div>`;
   document.body.appendChild(modal);
@@ -39753,8 +39808,16 @@ async function financeiroHubBuscar() {
     };
 
     const resultados = [];
+    // Contas a Pagar/Prestação já sincronizadas (DespesaId preenchido) não
+    // entram aqui — já viraram uma Despesa de verdade e aparecem por ela logo
+    // abaixo; sem esse filtro, o mesmo lançamento pago aparecia duas vezes na
+    // busca, uma por Contas a Pagar/Prestação e outra por Despesa (pedido
+    // Tiago 11/10/2026: "quando pesquiso aparece duas vezes, como se tivesse
+    // em prestação de contas e despesas"). O registro em si continua existindo
+    // normalmente em Contas a Pagar/Prestação de Contas (histórico, dashboards
+    // e exportações de lá não mudam) — só não aparece de novo aqui.
     (contasPagar || []).forEach(r => {
-      if (bate(r.Fornecedor, r.Valor)) resultados.push({
+      if (!r.DespesaId && bate(r.Fornecedor, r.Valor)) resultados.push({
         origem: 'pagar', id: r.Id, fornecedor: r.Fornecedor || '', valor: r.Valor || 0,
         data: r.Vencimento || '', status: r.Status || '', categoria: r.Categoria || '', municipio: '',
       });
@@ -39768,7 +39831,7 @@ async function financeiroHubBuscar() {
       });
     });
     (prestacoes || []).forEach(r => {
-      if (bate(r.Fornecedor, r.Valor)) resultados.push({
+      if (!r.DespesaId && bate(r.Fornecedor, r.Valor)) resultados.push({
         origem: 'prestacao', id: r.Id, fornecedor: r.Fornecedor || '', valor: r.Valor || 0,
         data: r.DataDespesa || '', status: r.Status || '', categoria: r.Categoria || '', municipio: r.Municipio || '',
       });
