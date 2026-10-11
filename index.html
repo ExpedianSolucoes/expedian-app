@@ -14255,9 +14255,15 @@ async function carregarNotasFiscais() {
 
     const statusColor = (s) => s==='Recebido'?'green':(s==='Em atraso'||s==='Cancelado')?'red':'amber';
     const issColor = (v) => v==='Sim'?'amber':v==='Não'?'green':'';
+    // Somatória do filtro atual (mesmo padrão já usado em Despesas — pedido
+    // 11/10/2026: "aqui em receitas, nao tem a somatoria do filtro").
+    const nfValorLiquido = (i) => (i.ValorLiquido != null && i.ValorLiquido !== '') ? i.ValorLiquido : Math.max((i.Valor||0) - (i.ISSValorRetido||0) - (i.OutrasRetencoesValor||0), 0);
+    const totalFiltradoQtdNF = filtrados.length;
+    const totalFiltradoValorNF = filtrados.reduce((s,i)=>s+(i.Valor||0),0);
+    const totalFiltradoLiquidoNF = filtrados.reduce((s,i)=>s+nfValorLiquido(i),0);
     el.innerHTML = '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Nº NF</th><th>Cliente</th><th>CC</th><th>Emissão</th><th>Vencimento</th><th>Recebimento</th><th>Valor Total</th><th>Valor Líquido</th><th>ISS Retido</th><th>Status</th><th></th></tr></thead><tbody>' +
       filtrados.map(i => {
-        const valorLiquido = (i.ValorLiquido != null && i.ValorLiquido !== '') ? i.ValorLiquido : Math.max((i.Valor||0) - (i.ISSValorRetido||0) - (i.OutrasRetencoesValor||0), 0);
+        const valorLiquido = nfValorLiquido(i);
         return `<tr>
           <td style="font-weight:700;white-space:nowrap">${i.NumeroNF}</td>
           <td><strong>${i.Cliente||'—'}</strong></td>
@@ -14271,7 +14277,13 @@ async function carregarNotasFiscais() {
           <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span></td>
           <td style="white-space:nowrap"><button class="btn-secondary" style="padding:3px 8px;font-size:.68rem" onclick="rcAbrirEdicaoReceita(${i.Id})">✏️ Editar</button> <button class="btn-secondary" style="padding:3px 8px;font-size:.68rem;color:var(--red)" onclick="rcExcluirReceita(${i.Id})">🗑️</button></td>
         </tr>`;
-      }).join('') + '</tbody></table></div>';
+      }).join('')
+      + `</tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">`
+      + `<td colspan="6" style="font-size:.78rem;text-align:right;padding:8px 10px">Total filtrado (${totalFiltradoQtdNF} nota${totalFiltradoQtdNF!==1?'s':''}):</td>`
+      + `<td style="font-size:.85rem">R$ ${totalFiltradoValorNF.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`
+      + `<td style="font-size:.85rem">R$ ${totalFiltradoLiquidoNF.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`
+      + `<td colspan="3"></td>`
+      + `</tr></tfoot></table></div>`;
   } catch (e) {
     el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';
   }
@@ -16352,6 +16364,9 @@ async function carregarDespesas() {
   const el = document.getElementById('lista-despesas');
   if (!el) return;
   if (currentProfile !== 'diretoria') { el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:12px">🔒 Acesso restrito à Diretoria.</div>'; return; }
+  // Seleção múltipla p/ exclusão em lote (pedido 11/10/2026) — reinicia a cada
+  // recarga da lista (filtro novo = seleção perde o sentido).
+  window._rdSelecionados = new Set();
   // Feedback imediato (pedido 02/10/2026: "quando pesquisando aparecer algo
   // como carregando ou pesquisando" / clicar em Em Aberto-Histórico de Pagos
   // "não dá pra saber se foi clicado, se está carregando") — mostra isso ANTES
@@ -16618,7 +16633,8 @@ async function carregarDespesas() {
     const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Cancelado')?'red':(s==='Vence hoje'||s==='Vence em breve')?'amber':'amber';
     const avisoBusca = fBusca ? '<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">🔍 Buscando em Em Aberto + Histórico de Pagos ao mesmo tempo.</div>' : '';
     const avisoCorte = totalFiltradoQtd > 300 ? ` (exibindo os 300 mais recentes — a soma abaixo considera os ${totalFiltradoQtd} lançamentos do filtro)` : '';
-    el.innerHTML = htmlValorExatoExtras + avisoBusca + '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Data Pagto</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
+    const htmlToolbarSelecao = '<div id="rd_bulk_toolbar" style="display:none;align-items:center;gap:10px;background:#fff3e0;border:1px solid #ffb74d;border-radius:8px;padding:6px 12px;margin-bottom:8px"></div>';
+    el.innerHTML = htmlValorExatoExtras + avisoBusca + htmlToolbarSelecao + '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th style="width:26px"><input type="checkbox" id="rd_sel_all" onchange="rdToggleSelecionarTodos(this.checked)" title="Selecionar todos"></th><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Data Pagto</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
         const desc = rdDescricaoModalidade(i);
         const ehParcelado = i.TotalParcelas > 1;
@@ -16627,6 +16643,7 @@ async function carregarDespesas() {
           ? `<span onclick="rdVerHistoricoCompra(${i.Id})" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted" title="Ver todas as parcelas desta compra">${pgtoTxt}</span>`
           : pgtoTxt;
         return `<tr>
+          <td><input type="checkbox" class="rd-sel-check" data-id="${i.Id}" onchange="rdToggleSelecao(${i.Id}, this.checked)"></td>
           <td style="font-size:.78rem">${i.DataLancamento ? new Date(i.DataLancamento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td style="font-size:.76rem">${i.Categoria||'—'}${i.Subcategoria?`<div style="font-size:.66rem;color:var(--text-muted)">${i.Subcategoria}</div>`:''}${tipoMovimentacaoBadge(i.TipoMovimentacao || rdTipoMovimentacao(i.Categoria, i.Subcategoria))}</td>
           <td style="font-size:.78rem"><strong>${desc}</strong>${ehLancadorExtra(i.LancadoPor)?`<div style="font-size:.65rem;color:var(--amber);font-weight:700">🎓 ${i.LancadoPor}</div>`:''}${i.Beneficiario?`<div style="font-size:.68rem;color:var(--text-muted)">Benef.: ${i.Beneficiario}</div>`:''}${i.Veiculo?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.Veiculo}</div>`:''}${i.DiariaVeiculoDesc?`<div style="font-size:.68rem;color:var(--text-muted)">🚗 ${i.DiariaVeiculoDesc} (${rdNumeroParaMoeda(i.DiariaVeiculoValor||0)})</div>`:''}</td>
@@ -16645,7 +16662,7 @@ async function carregarDespesas() {
       // colocar no final do filtro a somatória do total?") — soma TODOS os
       // lançamentos que batem com os filtros atuais, não só os até 300 exibidos.
       + `</tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">`
-      + `<td colspan="8" style="font-size:.78rem;text-align:right;padding:8px 10px">Total filtrado (${totalFiltradoQtd} lançamento${totalFiltradoQtd!==1?'s':''})${avisoCorte}:</td>`
+      + `<td colspan="9" style="font-size:.78rem;text-align:right;padding:8px 10px">Total filtrado (${totalFiltradoQtd} lançamento${totalFiltradoQtd!==1?'s':''})${avisoCorte}:</td>`
       + `<td style="font-size:.85rem">R$ ${totalFiltradoValor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`
       + `<td colspan="3"></td>`
       + `</tr></tfoot></table></div>`;
@@ -17164,6 +17181,60 @@ async function rdExcluirDespesa(id) {
   showToast(ok ? '🗑️ Despesa excluída.' : '❌ Erro ao excluir.');
   showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 2500 : 5000);
   if (ok) carregarDespesas();
+}
+
+/* -- Seleção múltipla + exclusão em lote na lista de Despesas (pedido
+   11/10/2026: "e tbm a opção de selecionar mais de um item para esclusão").
+   Mesmo gate de diretoria e mesmo aviso de sincronização do rdExcluirDespesa
+   acima, só que soma todos os selecionados numa confirmação só. -- */
+function rdToggleSelecao(id, checked) {
+  if (!window._rdSelecionados) window._rdSelecionados = new Set();
+  if (checked) window._rdSelecionados.add(id); else window._rdSelecionados.delete(id);
+  rdAtualizarToolbarSelecao();
+}
+function rdToggleSelecionarTodos(checked) {
+  if (!window._rdSelecionados) window._rdSelecionados = new Set();
+  document.querySelectorAll('.rd-sel-check').forEach(cb => {
+    cb.checked = checked;
+    const id = Number(cb.dataset.id);
+    if (checked) window._rdSelecionados.add(id); else window._rdSelecionados.delete(id);
+  });
+  rdAtualizarToolbarSelecao();
+}
+function rdAtualizarToolbarSelecao() {
+  const bar = document.getElementById('rd_bulk_toolbar');
+  if (!bar) return;
+  const sel = window._rdSelecionados || new Set();
+  const n = sel.size;
+  if (!n) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  const itens = (window._rdFiltradas || []).filter(i => sel.has(i.Id));
+  const total = itens.reduce((s,i) => s + (i.Valor||0), 0);
+  bar.style.display = 'flex';
+  bar.innerHTML = `<span style="font-size:.78rem;font-weight:700">☑️ ${n} selecionado${n!==1?'s':''} · R$ ${total.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+    <button class="btn-secondary" style="padding:3px 10px;font-size:.72rem;color:var(--red)" onclick="rdExcluirSelecionados()">🗑️ Excluir selecionados</button>
+    <button class="btn-secondary" style="padding:3px 10px;font-size:.72rem" onclick="rdToggleSelecionarTodos(false)">Limpar seleção</button>`;
+}
+async function rdExcluirSelecionados() {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const ids = Array.from(window._rdSelecionados || []);
+  if (!ids.length) return;
+  const itens = (window._rdFiltradas || []).filter(i => ids.includes(i.Id));
+  const total = itens.reduce((s,i) => s + (i.Valor||0), 0);
+  const temSync = itens.some(i => i.OrigemPrestacaoContas || i.OrigemContaPagar);
+  const avisoSync = temSync
+    ? '\n\n⚠️ Um ou mais lançamentos selecionados vieram de uma sincronização automática (Prestação de Contas/Contas a Pagar) — excluir aqui não remove o registro de origem.'
+    : '';
+  if (!confirm(`Excluir ${ids.length} despesa(s) selecionada(s), totalizando R$ ${total.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}? Essa ação não pode ser desfeita.${avisoSync}`)) return;
+  showSyncStatus(`Excluindo ${ids.length} despesa(s)...`);
+  let okCount = 0, falhas = 0;
+  for (const id of ids) {
+    const { ok } = await dbRemover('Despesas', id);
+    if (ok) okCount++; else falhas++;
+  }
+  window._rdSelecionados = new Set();
+  showToast(falhas ? `🗑️ ${okCount} excluída(s), ${falhas} falharam.` : `🗑️ ${okCount} despesa(s) excluída(s).`);
+  showSyncStatus(falhas ? 'Concluído com falhas' : 'Excluído!', falhas ? 'err' : 'ok', falhas ? 5000 : 2500);
+  carregarDespesas();
 }
 
 /* -- Edição de uma Despesa já lançada — antes abria um modal compacto (só
