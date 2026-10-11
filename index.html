@@ -422,6 +422,9 @@
   .form-row-rd-modalidade { grid-template-columns: 170px 1fr; }
   @media (max-width: 600px) { .form-row-rd-modalidade { grid-template-columns: 1fr; } }
 
+  .form-row-rd-pagamento { grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 760px) { .form-row-rd-pagamento { grid-template-columns: 1fr; } }
+
   .form-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
   .form-group label { font-size: .75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
   .form-group input,
@@ -10641,6 +10644,16 @@ const RC_NATUREZA_ECONOMICA = {};
 RC_CATEGORIAS.forEach(cat => (RC_SUBCATEGORIAS[cat] || []).forEach(sub => {
   RC_NATUREZA_ECONOMICA[sub] = RC_NATUREZA_SUBCATEGORIA_OVERRIDE[sub] || RC_NATUREZA_CATEGORIA[cat] || 'Operacional';
 }));
+/* -- Categorias de Receita que NÃO contam como Faturamento/Receita Bruta no
+   Painel Financeiro e no DRE (pedido Tiago 11/10/2026) — entram no Saldo/Caixa
+   normalmente (o dinheiro realmente movimentou a conta), mas não são
+   venda/serviço prestado: Reembolsos (ex.: devolução de pagamento a
+   fornecedor que não prestou o serviço), Receitas Financeiras
+   (rendimento/resgate de aplicação) e Aportes/Financiamentos (capital de
+   sócio/empréstimo) — mesmo tratamento que Aporte/Aplicação Financeira já
+   recebem do lado da Despesa (ficam fora do EBITDA). Transferencias entre
+   contas já era excluída antes. Usado em dashFinCarregar() e dreCarregar(). -- */
+const RC_CATEGORIAS_FORA_FATURAMENTO = ['Transferencias entre contas', 'Reembolsos', 'Receitas Financeiras', 'Aportes', 'Financiamentos'];
 function rcNaturezaDeSubcategoria(subcategoria) { return RC_NATUREZA_ECONOMICA[subcategoria] || ''; }
 const RC_STATUS = ['Pendente','Vence em breve','Vence hoje','Em atraso','Recebido','Cancelado'];
 const RC_FORMAS = ['PIX','Boleto','Transferência','Cartão de Crédito','Cartão de Débito','Débito em Conta','Crédito em Conta'];
@@ -14588,8 +14601,14 @@ function renderDespesasTab() {
       </div>
     </div>
 
-    <!-- Linha 6: Data de Pagamento + Banco -->
-    <div class="form-row">
+    <!-- Linha 6: Data de Pagamento + Banco + Status de Pagamento na mesma linha
+         (pedido Tiago 11/10/2026: "aqui quero que data de pagamento, banco e
+         status fique todos na mesma linha" — correção do pedido anterior, que
+         tinha ido pro lado oposto, 1 campo por linha). Nº Medição continua
+         numa linha própria abaixo (é escondida condicionalmente quando a
+         divisão de CC está ativa, então não pode ficar presa a um campo fixo
+         do lado). -->
+    <div class="form-row form-row-rd-pagamento">
       <div class="form-group">
         <label>Data de Pagamento</label>
         <input type="date" id="rd_data_pagamento" oninput="rdAtualizarStatusAuto()">
@@ -14599,17 +14618,17 @@ function renderDespesasTab() {
         <input type="text" id="rd_banco" list="dl_rd_bancos" placeholder="Selecione ou digite..." onblur="this.value=rdNormalizarBanco(this.value)">
         <datalist id="dl_rd_bancos">${bancosDaEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]).map(b => `<option value="${b}">`).join('')}</datalist>
       </div>
-    </div>
-
-    <!-- Linha 7: Status + Nº Medição (Comprovante virou o 1º campo do formulário) -->
-    <div class="form-row">
       <div class="form-group">
-        <label>Status de Pagamento <span style="font-weight:400;font-size:.68rem;color:var(--text-muted)">(automático pela Data de Pagamento/Vencimento — pode ajustar manualmente se precisar, ex. Cancelado)</span></label>
+        <label>Status de Pagamento <span style="font-weight:400;font-size:.62rem;color:var(--text-muted)">(automático pela Data de Pagamento/Vencimento — pode ajustar manualmente, ex. Cancelado)</span></label>
         <select id="rd_status">
           ${RD_STATUS.map(s => `<option>${s}</option>`).join('')}
         </select>
       </div>
-      <div class="form-group">
+    </div>
+
+    <!-- Linha 7c: Nº Medição (escondida quando a divisão de CC está ativa — ver rdToggleDivisaoCC()) -->
+    <div class="form-row">
+      <div class="form-group" style="grid-column:span 2">
         <label>Nº Medição</label>
         <input type="text" id="rd_medicao" list="rd_medicao_dl" placeholder="Selecione o contrato...">
         <datalist id="rd_medicao_dl"></datalist>
@@ -39801,7 +39820,7 @@ async function dashFinCarregar() {
     const despesaOperPorMes = {}, despesaAdmPorMes = {};
     chavesMeses.forEach(k => { receitaBrutaPorMes[k]=0; receitaLiquidaPorMes[k]=0; deducoesPorMes[k]=0; despesaOperPorMes[k]=0; despesaAdmPorMes[k]=0; });
     (receitas || []).forEach(r => {
-      if (r.Categoria === 'Transferencias entre contas') return; // movimentação entre contas, não é receita do período
+      if (RC_CATEGORIAS_FORA_FATURAMENTO.includes(r.Categoria)) return; // movimentação entre contas, reembolso, aplicação financeira ou aporte/financiamento — não é Faturamento/Receita Bruta do período (ainda assim conta no Saldo, calculado separadamente acima)
       const k = chaveMes(r.DataEmissao || r.DataPrevista);
       if (!(k in receitaBrutaPorMes)) return;
       const bruto = Number(r.Valor) || 0;
@@ -39862,7 +39881,7 @@ async function dashFinCarregar() {
 
     const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
     const fmt = (v) => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    setTxt('dashfin-kpi-receita', fmt(totalReceitas));
+    setTxt('dashfin-kpi-receita', fmt(totalReceitaBruta));
     setTxt('dashfin-kpi-despesa', fmt(totalDespesas));
     setTxt('dashfin-kpi-saldo', fmt(saldo));
     const kpiSaldoEl = document.getElementById('dashfin-kpi-saldo');
@@ -40235,7 +40254,7 @@ function pageDashboardFinanceiro() {
   </div>
 
   <div class="kpi-grid" style="margin-bottom:20px">
-    <div class="kpi-card green"><div class="kpi-label">Receitas no período</div><div class="kpi-value" id="dashfin-kpi-receita" style="font-size:1.15rem">—</div><div class="kpi-icon">💰</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Faturamento no período <span style="font-weight:400;font-size:.6rem">(exclui reembolso/resgate/aporte)</span></div><div class="kpi-value" id="dashfin-kpi-receita" style="font-size:1.15rem">—</div><div class="kpi-icon">💰</div></div>
     <div class="kpi-card red"><div class="kpi-label">Despesas no período</div><div class="kpi-value" id="dashfin-kpi-despesa" style="font-size:1.15rem">—</div><div class="kpi-icon">💸</div></div>
     <div class="kpi-card blue"><div class="kpi-label">Saldo</div><div class="kpi-value" id="dashfin-kpi-saldo" style="font-size:1.15rem">—</div><div class="kpi-icon">⚖️</div></div>
     <div class="kpi-card amber"><div class="kpi-label">Despesa média/mês</div><div class="kpi-value" id="dashfin-kpi-media" style="font-size:1.15rem">—</div><div class="kpi-icon">📉</div></div>
@@ -41704,7 +41723,7 @@ async function dreCarregar() {
     const despesaOperPorMes = {}, despesaAdmPorMes = {};
     chavesMeses.forEach(k => { receitaBrutaPorMes[k]=0; receitaLiquidaPorMes[k]=0; deducoesPorMes[k]=0; despesaOperPorMes[k]=0; despesaAdmPorMes[k]=0; });
     (receitas || []).forEach(r => {
-      if (r.Categoria === 'Transferencias entre contas') return; // movimentação entre contas, não é receita do período
+      if (RC_CATEGORIAS_FORA_FATURAMENTO.includes(r.Categoria)) return; // movimentação entre contas, reembolso, aplicação financeira ou aporte/financiamento — não é Faturamento/Receita Bruta do período
       const k = chaveMes(r.DataEmissao || r.DataPrevista);
       if (!(k in receitaBrutaPorMes)) return;
       const bruto = Number(r.Valor) || 0;
