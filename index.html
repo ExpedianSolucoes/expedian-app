@@ -422,7 +422,7 @@
   .form-row-rd-modalidade { grid-template-columns: 170px 1fr; }
   @media (max-width: 600px) { .form-row-rd-modalidade { grid-template-columns: 1fr; } }
 
-  .form-row-rd-pagamento { grid-template-columns: 1fr 1fr 1fr; }
+  .form-row-rd-pagamento { grid-template-columns: 1fr 1fr 1fr 1fr; }
   @media (max-width: 760px) { .form-row-rd-pagamento { grid-template-columns: 1fr; } }
 
   .form-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
@@ -13320,10 +13320,30 @@ async function rcVisualizarReceita(id) {
   if (!i) { const todos = await dbLerSeguro('Receitas'); i = todos.find(r => r.Id === id); }
   if (!i) { showToast('⚠️ Receita não encontrada (recarregue a lista).'); return; }
 
+  // Transferência entre Contas: Banco/Centro de Custo/Medição salvos só do lado
+  // desta Receita (destino) — o lado origem mora na Despesa pareada via
+  // TransferenciaId (pedido Tiago 11/10/2026: mesmo ajuste do modal de Despesa). -->
+  let _trfPar = null;
+  if (i.TransferenciaId) {
+    try {
+      const despesas = await dbLerSeguro('Despesas');
+      _trfPar = (despesas || []).find(d => d.TransferenciaId === i.TransferenciaId) || null;
+    } catch (e) {}
+  }
+
   const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR') : '—';
   const fmtMoeda = v => 'R$ ' + (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
   const linha = (label, valor) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
     <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>`;
+  const ccBloco = (ccTxt, divisaoCC, numMedicao, rotulo) => {
+    if (divisaoCC && divisaoCC.length) {
+      return divisaoCC.map((d,idx) => linha(
+        rotulo + ' ' + (idx+1)+'/'+divisaoCC.length + (d.medicao?' · Medição '+d.medicao:''),
+        'R$ '+(d.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})
+      )).join('');
+    }
+    return linha(rotulo, ccTxt||'—') + (numMedicao ? linha(rotulo.replace('Centro de Custo','Medição'), numMedicao) : '');
+  };
   const temRetencao = (i.ISSValorRetido||0) > 0 || (i.OutrasRetencoesValor||0) > 0;
 
   const modal = document.createElement('div');
@@ -13340,9 +13360,8 @@ async function rcVisualizarReceita(id) {
       </div>
       ${linha('Empresa', normalizarEmpresa(i.Empresa)||'—')}
       ${linha('Cliente', i.Cliente||'—')}
-      ${linha('Centro de Custo', i.CentroCusto||'—')}
-      ${i.DivisaoCC && i.DivisaoCC.length ? linha('Rateio', '🧩 ' + i.DivisaoCC.map(d => d.cc + (d.medicao ? ' (Medição ' + d.medicao + ')' : '')).join(' + ')) : ''}
-      ${i.NumMedicao ? linha('Nº Medição', i.NumMedicao) : ''}
+      ${i.TransferenciaId ? ccBloco(i.CentroCusto, i.DivisaoCC, i.NumMedicao, 'Centro de Custo Destino') : ccBloco(i.CentroCusto, i.DivisaoCC, i.NumMedicao, 'Centro de Custo')}
+      ${i.TransferenciaId && _trfPar ? ccBloco(_trfPar.CentroCusto, _trfPar.DivisaoCC, _trfPar.NumMedicao, 'Centro de Custo Origem') : ''}
       ${i.Categoria ? linha('Categoria', i.Categoria) : ''}
       ${i.Subcategoria ? linha('Subcategoria', i.Subcategoria) : ''}
       ${linha('Valor Total', fmtMoeda(i.Valor))}
@@ -13353,7 +13372,7 @@ async function rcVisualizarReceita(id) {
       ${linha('Previsão', fmtData(i.DataPrevista))}
       ${linha('Data de Recebimento', fmtData(i.DataRecebimento))}
       ${linha('Forma de Recebimento', i.FormaRecebimento||'—')}
-      ${i.Banco ? linha('Banco', i.Banco) : ''}
+      ${i.TransferenciaId ? linha('Banco Destino', i.Banco||'—') + linha('Banco Origem', i.TransferenciaContraparte||'—') : (i.Banco ? linha('Banco', i.Banco) : '')}
       ${linha('Status', rcStatusLabel(i.Status)||i.Status||'—')}
       ${i.Conciliado==='Sim' ? linha('Conciliado', '🏦 Sim') : ''}
       ${i.NumeroNF ? linha('Nº NF', i.NumeroNF) : ''}
@@ -14667,40 +14686,19 @@ function renderDespesasTab() {
       </div>
     </div>
 
-    <!-- Linha 5b: Lançado por — quem de fato preencheu este lançamento. Também
-         alimenta "Responsável pelo Lançamento" (abaixo, escondido por padrão)
-         automaticamente quando o nome digitado é de Diretoria/Coordenador —
-         evita digitar o mesmo nome duas vezes quando as duas coisas são a
-         mesma pessoa (caso mais comum), mas mesmo assim distingue quem tem
-         login próprio de quem usa login compartilhado (ex.: estagiário sem
-         login — daí o Responsável fica em branco/outro nome, mesmo com
-         Lançado por preenchido). Pedido em 04/09/2026: "tem duas vezes
-         lançado e responsavel lançamento, trata-se da mesma coisa". -->
-    <div class="form-row">
-      <div class="form-group" style="grid-column:span 2">
+    <!-- Linha 6: Lançado por + Data de Pagamento + Banco + Status de Pagamento
+         na mesma linha (pedido Tiago 11/10/2026: "deixar lançado por, data
+         pagamento, banco e status pagamento tudo na mesma linha" — Lançado por
+         juntado à linha de Data/Banco/Status que já estava assim). Nº Medição
+         continua numa linha própria abaixo (é escondida condicionalmente
+         quando a divisão de CC está ativa, então não pode ficar presa a um
+         campo fixo do lado). -->
+    <div class="form-row form-row-rd-pagamento">
+      <div class="form-group">
         <label>Lançado por</label>
         <input list="rd_lancadopor_dl" id="rd_lancadopor" placeholder="Nome de quem está fazendo este lançamento" value="${prestNomeSugeridoLancadoPor().replace(/"/g, '&quot;')}" oninput="rdSincronizarResponsavel()">
         <datalist id="rd_lancadopor_dl">${prestListaLancadores().map(n => `<option value="${n}">`).join('')}</datalist>
       </div>
-    </div>
-    <div class="form-row" id="rd_responsavel_row" style="${responsaveis.includes(prestNomeSugeridoLancadoPor()) ? 'display:none' : ''}">
-      <div class="form-group" style="grid-column:span 2">
-        <label>Responsável pelo Lançamento <span style="font-weight:400;font-size:.68rem;color:var(--text-muted)">(preenchido automaticamente pelo "Lançado por" acima — só aparece separado quando quem lançou não é da Diretoria/Coordenação)</span></label>
-        <select id="rd_responsavel">
-          <option value="">Selecione...</option>
-          ${responsaveis.map(n => `<option ${n === prestNomeSugeridoLancadoPor() ? 'selected' : ''}>${n}</option>`).join('')}
-        </select>
-      </div>
-    </div>
-
-    <!-- Linha 6: Data de Pagamento + Banco + Status de Pagamento na mesma linha
-         (pedido Tiago 11/10/2026: "aqui quero que data de pagamento, banco e
-         status fique todos na mesma linha" — correção do pedido anterior, que
-         tinha ido pro lado oposto, 1 campo por linha). Nº Medição continua
-         numa linha própria abaixo (é escondida condicionalmente quando a
-         divisão de CC está ativa, então não pode ficar presa a um campo fixo
-         do lado). -->
-    <div class="form-row form-row-rd-pagamento">
       <div class="form-group">
         <label>Data de Pagamento</label>
         <input type="date" id="rd_data_pagamento" oninput="rdAtualizarStatusAuto()">
@@ -14714,6 +14712,24 @@ function renderDespesasTab() {
         <label>Status de Pagamento</label>
         <select id="rd_status">
           ${RD_STATUS.map(s => `<option>${s}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <!-- Linha 6b: Responsável pelo Lançamento — alimentado automaticamente pelo
+         "Lançado por" (linha acima) quando o nome digitado é de Diretoria/
+         Coordenador — evita digitar o mesmo nome duas vezes quando as duas
+         coisas são a mesma pessoa (caso mais comum), mas mesmo assim distingue
+         quem tem login próprio de quem usa login compartilhado (ex.:
+         estagiário sem login — daí o Responsável fica em branco/outro nome,
+         mesmo com Lançado por preenchido). Pedido em 04/09/2026: "tem duas
+         vezes lançado e responsavel lançamento, trata-se da mesma coisa". -->
+    <div class="form-row" id="rd_responsavel_row" style="${responsaveis.includes(prestNomeSugeridoLancadoPor()) ? 'display:none' : ''}">
+      <div class="form-group" style="grid-column:span 2">
+        <label>Responsável pelo Lançamento <span style="font-weight:400;font-size:.68rem;color:var(--text-muted)">(preenchido automaticamente pelo "Lançado por" acima — só aparece separado quando quem lançou não é da Diretoria/Coordenação)</span></label>
+        <select id="rd_responsavel">
+          <option value="">Selecione...</option>
+          ${responsaveis.map(n => `<option ${n === prestNomeSugeridoLancadoPor() ? 'selected' : ''}>${n}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -17060,9 +17076,31 @@ async function rdVisualizarDespesa(id) {
   if (!i) { const todos = await dbLerSeguro('Despesas'); i = todos.find(r => r.Id === id); }
   if (!i) { showToast('⚠️ Despesa não encontrada (recarregue a lista).'); return; }
 
+  // Transferência entre Contas: Banco/Centro de Custo/Medição salvos só do lado
+  // desta Despesa (origem) — o lado destino mora na Receita pareada via
+  // TransferenciaId. Busca a contraparte pra mostrar os dois lados juntos
+  // (pedido Tiago 11/10/2026: "aparecer o banco origem e destino... quando
+  // houver centros de custos e medições, tbm deve aparecer"). -->
+  let _trfPar = null;
+  if (i.TransferenciaId) {
+    try {
+      const receitas = await dbLerSeguro('Receitas');
+      _trfPar = (receitas || []).find(r => r.TransferenciaId === i.TransferenciaId) || null;
+    } catch (e) {}
+  }
+
   const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR') : '—';
   const linha = (label, valor) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
     <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;text-align:right">${valor}</span></div>`;
+  const ccBloco = (ccTxt, divisaoCC, numMedicao, rotulo) => {
+    if (divisaoCC && divisaoCC.length) {
+      return divisaoCC.map((d,idx) => linha(
+        rotulo + ' ' + (idx+1)+'/'+divisaoCC.length + (d.medicao?' · Medição '+d.medicao:''),
+        'R$ '+(d.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})
+      )).join('');
+    }
+    return linha(rotulo, ccTxt||'—') + (numMedicao ? linha(rotulo.replace('Centro de Custo','Medição'), numMedicao) : '');
+  };
   const desc = rdDescricaoModalidade(i);
   const pgtoTxt = i.TotalParcelas > 1 ? `${i.FormaPagamento||''} · parcela ${i.NumParcela}/${i.TotalParcelas}` : (i.FormaPagamento || i.TipoPagamento || '—');
 
@@ -17082,11 +17120,8 @@ async function rdVisualizarDespesa(id) {
       ${i.Beneficiario ? linha('Beneficiário', i.Beneficiario) : ''}
       ${i.Veiculo ? linha('Veículo', '🚗 '+i.Veiculo) : ''}
       ${i.DiariaVeiculoDesc ? linha('Veículo da diária', '🚗 '+i.DiariaVeiculoDesc+' ('+rdNumeroParaMoeda(i.DiariaVeiculoValor||0)+')') : ''}
-      ${linha('Centro de Custo', i.CentroCusto||'—')}
-      ${(i.DivisaoCC && i.DivisaoCC.length) ? i.DivisaoCC.map((d,idx) => linha(
-          'CC '+(idx+1)+'/'+i.DivisaoCC.length+(d.medicao?' · Medição '+d.medicao:''),
-          'R$ '+(d.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})
-        )).join('') : (i.NumMedicao ? linha('Nº Medição', i.NumMedicao) : '')}
+      ${i.TransferenciaId ? ccBloco(i.CentroCusto, i.DivisaoCC, i.NumMedicao, 'Centro de Custo Origem') : ccBloco(i.CentroCusto, i.DivisaoCC, i.NumMedicao, 'Centro de Custo')}
+      ${i.TransferenciaId && _trfPar ? ccBloco(_trfPar.CentroCusto, _trfPar.DivisaoCC, _trfPar.NumMedicao, 'Centro de Custo Destino') : ''}
       ${i.Categoria ? linha('Categoria', i.Categoria) : ''}
       ${i.Subcategoria ? linha('Subcategoria', i.Subcategoria) : ''}
       ${linha('Valor', 'R$ '+(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}))}
@@ -17094,7 +17129,7 @@ async function rdVisualizarDespesa(id) {
       ${linha('Vencimento', fmtData(i.Vencimento))}
       ${linha('Data de Pagamento', fmtData(i.DataPagamento))}
       ${linha('Forma de Pagamento', pgtoTxt)}
-      ${i.Banco ? linha('Banco', i.Banco) : ''}
+      ${i.TransferenciaId ? linha('Banco Origem', i.Banco||'—') + linha('Banco Destino', i.TransferenciaContraparte||'—') : (i.Banco ? linha('Banco', i.Banco) : '')}
       ${linha('Status', i.Status||'—')}
       ${i.Conciliado==='Sim' ? linha('Conciliado', '🏦 Sim') : ''}
       ${linha('Responsável', i.ResponsavelLancamento||'—')}
