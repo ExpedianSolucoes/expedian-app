@@ -33002,7 +33002,7 @@ function renderEROMiniDashboard() {
     ${window._eroHistoricoAberto ? `
     <div style="max-height:56vh;overflow-y:auto;overflow-x:auto;border:1px solid var(--border);border-radius:10px">
       <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;background:var(--surface2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1">
-        <div style="flex:1;min-width:140px;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Empreendimento</div>
+        <div style="flex:1;min-width:140px;max-width:230px;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Empreendimento</div>
         <div style="min-width:120px;text-align:center;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Responsável (checklist)</div>
         <div style="min-width:80px;text-align:center;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Data da Inspeção</div>
         <div style="min-width:60px;text-align:right;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">%</div>
@@ -33014,9 +33014,9 @@ function renderEROMiniDashboard() {
           ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Nenhum checklist encontrado para este período.</div>`
           : filtrados.map((r,idx) => `
             <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;${idx%2===0?'background:var(--surface)':'background:var(--surface2)'};${idx<filtrados.length-1?'border-bottom:1px solid var(--border)':''}">
-              <div style="flex:1;min-width:140px">
-                <div style="font-size:.82rem;font-weight:700">${r.num ? 'Nº ' + r.num + ' — ' : ''}${r.empreendimento || 'Sem nome'}</div>
-                <div style="font-size:.68rem;color:var(--text-muted)">${r.responsaveis || r.Responsavel || '—'}</div>
+              <div style="flex:1;min-width:140px;max-width:230px">
+                <div style="font-size:.76rem;font-weight:700;line-height:1.25">${r.num ? 'Nº ' + r.num + ' — ' : ''}${r.empreendimento || 'Sem nome'}</div>
+                <div style="font-size:.6rem;color:var(--text-muted)">${r.responsaveis || r.Responsavel || '—'}</div>
               </div>
               <div style="font-size:.72rem;color:var(--text-muted);min-width:120px;text-align:center" title="Responsável pelo checklist (uso interno)">
                 ${r.ElaboradoPor ? '👤 ' + r.ElaboradoPor : '—'}
@@ -33088,6 +33088,37 @@ function atualizarEROResponsaveis() {
    (desvincula do cadastro), igual já era com "Outro" no <select> antigo.
    Dispara só no onchange (perde o foco / escolheu uma sugestão), não a cada
    tecla, pra não re-renderizar o formulário enquanto a pessoa ainda digita. -- */
+/* -- Semestre civil (1º = Jan-Jun, 2º = Jul-Dez) de uma data "yyyy-mm-dd" —
+   mesmo critério já usado no "Resumo por Semestre" do ERO. Retorna null se a
+   data for inválida/vazia. -- */
+function semestreCivilDe(dataStr) {
+  if (!dataStr || !/^\d{4}-\d{2}/.test(dataStr)) return null;
+  const ano = dataStr.slice(0, 4);
+  const mes = parseInt(dataStr.slice(5, 7), 10);
+  return { ano: ano, sem: mes <= 6 ? 1 : 2 };
+}
+
+/* -- Verifica se já existe checklist (ERO ou Linha, cada um com seu próprio
+   histórico) pro empreendimento informado dentro do semestre civil ATUAL
+   (hoje), pra avisar antes de abrir uma nova inspeção possivelmente
+   duplicada no mesmo semestre — pedido 12/10/2026. Retorna null se não
+   achar nenhum, ou {qtd, ultimaData} se achar. -- */
+function checklistJaNoSemestreAtual(historico, nomeEmp) {
+  if (!Array.isArray(historico) || !nomeEmp) return null;
+  const hoje = semestreCivilDe(new Date().toISOString().slice(0, 10));
+  if (!hoje) return null;
+  const nomeNorm = nomeEmp.trim().toLowerCase();
+  const achados = historico.filter(function(r) {
+    if (!r.empreendimento || r.empreendimento.trim().toLowerCase() !== nomeNorm) return false;
+    const sem = semestreCivilDe(r.data);
+    return sem && sem.ano === hoje.ano && sem.sem === hoje.sem;
+  });
+  if (!achados.length) return null;
+  const datas = achados.map(function(r) { return r.data; }).filter(Boolean).sort();
+  const ultima = datas.length ? datas[datas.length - 1] : null;
+  return { qtd: achados.length, ultimaData: ultima ? new Date(ultima + 'T00:00:00').toLocaleDateString('pt-BR') : null };
+}
+
 function eroEmpreendimentoDigitou(valorDigitado) {
   const d = window._eroData;
   const candidatos = (typeof MEA_DADOS !== 'undefined' ? MEA_DADOS : []).filter(function(x) { return meaTemTipo(x, 'subestacao'); });
@@ -33098,6 +33129,21 @@ function eroEmpreendimentoDigitou(valorDigitado) {
     d.empreendimento = valorDigitado;
     navigate('checklist_ero');
     return;
+  }
+  if (!window._eroRegistroAtualId) {
+    const jaNoSemestre = checklistJaNoSemestreAtual(window._eroHistorico, reg.empreendimento || valorDigitado);
+    if (jaNoSemestre) {
+      const prosseguir = confirm(
+        '⚠️ "' + (reg.empreendimento || valorDigitado) + '" já tem ' + jaNoSemestre.qtd + ' checklist(s) de Subestação registrado(s) neste semestre' +
+        (jaNoSemestre.ultimaData ? ' (último em ' + jaNoSemestre.ultimaData + ')' : '') + '.\n\n' +
+        'Deseja mesmo assim confirmar uma nova inspeção para este empreendimento?'
+      );
+      if (!prosseguir) {
+        const campo = document.getElementById('ero_empreendimento');
+        if (campo) campo.value = '';
+        return;
+      }
+    }
   }
   d.meaId = reg.id;
   d.num = reg.num || '';
@@ -37788,6 +37834,21 @@ function linhaEmpreendimentoDigitou(valorDigitado) {
     navigate('checklist_linha');
     return;
   }
+  if (!window._linhaRegistroAtualId) {
+    const jaNoSemestre = checklistJaNoSemestreAtual(window._linhaHistorico, reg.empreendimento || valorDigitado);
+    if (jaNoSemestre) {
+      const prosseguir = confirm(
+        '⚠️ "' + (reg.empreendimento || valorDigitado) + '" já tem ' + jaNoSemestre.qtd + ' checklist(s) de Linha registrado(s) neste semestre' +
+        (jaNoSemestre.ultimaData ? ' (último em ' + jaNoSemestre.ultimaData + ')' : '') + '.\n\n' +
+        'Deseja mesmo assim confirmar uma nova inspeção para este empreendimento?'
+      );
+      if (!prosseguir) {
+        const campo = document.getElementById('linha_empreendimento');
+        if (campo) campo.value = '';
+        return;
+      }
+    }
+  }
   d.meaId = reg.id;
   d.num = reg.num || '';
   d.empreendimento = reg.empreendimento || '';
@@ -38299,7 +38360,7 @@ function renderLinhaMiniDashboard() {
     ${window._linhaHistoricoAberto ? `
     <div style="max-height:56vh;overflow-y:auto;overflow-x:auto;border:1px solid var(--border);border-radius:10px">
       <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;background:var(--surface2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1">
-        <div style="flex:1;min-width:140px;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Trecho</div>
+        <div style="flex:1;min-width:140px;max-width:230px;font-size:.6rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Trecho</div>
         <!-- Larguras fixas (width + flex-shrink:0) nas 4 colunas abaixo, em vez de
              min-width solto — antes, nome de responsável comprido ou ausência do
              badge "não conf." deslocava Data/%/Ocorr. de linha pra linha, ficando
@@ -38317,16 +38378,16 @@ function renderLinhaMiniDashboard() {
           ? `<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:.8rem">Nenhum checklist encontrado${filtroClass ? ' para este filtro' : ' ainda'}.</div>`
           : ordenado.map((r, idx) => `
             <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;${idx%2===0?'background:var(--surface)':'background:var(--surface2)'};${idx<ordenado.length-1?'border-bottom:1px solid var(--border)':''}">
-              <div style="flex:1;min-width:140px">
+              <div style="flex:1;min-width:140px;max-width:230px">
                 ${(() => {
                   const tituloTrecho = `${r.num ? 'Nº ' + r.num + ' — ' : ''}${r.empreendimento || 'Sem nome'}`;
                   // Nome de empreendimento comprido quebrava em 2 linhas e ficava
                   // desalinhado/"não justificado" — reduz a fonte conforme o
                   // tamanho do texto pra caber melhor. Pedido 07/10/2026.
-                  const fsTrecho = tituloTrecho.length > 70 ? '.7rem' : tituloTrecho.length > 55 ? '.76rem' : '.82rem';
+                  const fsTrecho = tituloTrecho.length > 70 ? '.64rem' : tituloTrecho.length > 55 ? '.7rem' : '.76rem';
                   return `<div style="font-size:${fsTrecho};font-weight:700;line-height:1.25">${tituloTrecho}</div>`;
                 })()}
-                <div style="font-size:.68rem;color:var(--text-muted)">${r.responsavel || '—'} · ${r.tensao || '—'}</div>
+                <div style="font-size:.6rem;color:var(--text-muted)">${r.responsavel || '—'} · ${r.tensao || '—'}</div>
               </div>
               <div style="width:130px;flex-shrink:0;font-size:.72rem;color:var(--text-muted);text-align:center" title="Responsável pelo checklist (uso interno)">
                 ${r.ElaboradoPor ? '👤 ' + r.ElaboradoPor : '—'}
