@@ -7498,9 +7498,9 @@ function pagePagar() {
     <input type="month" id="pag_filtro_mes" onchange="carregarContasPagar()" title="Mês do vencimento" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
     <input type="text" id="pag_filtro_fornecedor" placeholder="Fornecedor..." oninput="dbDebounce('carregarContasPagar')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:140px">
     <input type="text" id="pag_filtro_cc" placeholder="Centro de custo..." oninput="dbDebounce('carregarContasPagar')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);min-width:140px">
-    <input type="number" id="pag_filtro_valor_exato" placeholder="Valor exato" title="Buscar por valor exato" oninput="dbDebounce('carregarContasPagar')" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
-    <input type="number" id="pag_filtro_valor_min" placeholder="Valor mín." oninput="dbDebounce('carregarContasPagar')" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
-    <input type="number" id="pag_filtro_valor_max" placeholder="Valor máx." oninput="dbDebounce('carregarContasPagar')" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <input type="number" id="pag_filtro_valor_exato" placeholder="Valor exato" title="Buscar por valor exato — casa tanto o valor da parcela quanto o valor total do parcelamento" oninput="dbDebounce('carregarContasPagar')" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <input type="number" id="pag_filtro_valor_min" placeholder="Valor mín." title="Casa tanto o valor da parcela quanto o valor total do parcelamento" oninput="dbDebounce('carregarContasPagar')" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
+    <input type="number" id="pag_filtro_valor_max" placeholder="Valor máx." title="Casa tanto o valor da parcela quanto o valor total do parcelamento" oninput="dbDebounce('carregarContasPagar')" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
     <select id="filtro-status-pagar" onchange="PAG_FILTRO_KPI='';carregarContasPagar()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
       <option value="">Todos os status</option>
       <option value="Pendente">Pendente</option>
@@ -8990,7 +8990,15 @@ function pagGerarParcelas() {
     d.setMonth(d.getMonth() + i);
     const ccAnterior = parcelasAntigas[i] ? parcelasAntigas[i].cc : '';
     const medicaoAnterior = parcelasAntigas[i] ? parcelasAntigas[i].medicao : '';
-    parcelas.push({ numero: i + 1, vencimento: d.toISOString().split('T')[0], valor: valorParcela, cc: ccAnterior || ccBase, medicao: medicaoAnterior || medicaoBase });
+    // Preserva também o boleto anexado individualmente nesta posição, se já
+    // tinha (pedido 12/10/2026) — senão, reajustar data/valor/qtd apagaria o
+    // upload que o usuário acabou de fazer.
+    const anterior = parcelasAntigas[i] || {};
+    parcelas.push({
+      numero: i + 1, vencimento: d.toISOString().split('T')[0], valor: valorParcela, cc: ccAnterior || ccBase, medicao: medicaoAnterior || medicaoBase,
+      comprovanteUrl: anterior.comprovanteUrl || '', comprovanteNome: anterior.comprovanteNome || '',
+      comprovanteId: anterior.comprovanteId || null, comprovanteDriveId: anterior.comprovanteDriveId || null,
+    });
   }
   // Ajusta centavos de arredondamento na última parcela para bater com o total exato
   const soma = parcelas.reduce((s, p) => s + p.valor, 0);
@@ -9010,7 +9018,7 @@ function pagRenderizarParcelas() {
     parcelas.forEach(p => { if (!p.cc) p.cc = ccOptions[0]; });
   }
   editor.style.display = 'block';
-  editor.innerHTML = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Parcelas geradas automaticamente — ajuste vencimento, valor, Centro de Custo e nº da medição se precisar:</div>' +
+  editor.innerHTML = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Parcelas geradas automaticamente — ajuste vencimento, valor, Centro de Custo e nº da medição se precisar. Pode anexar o boleto de cada parcela individualmente (se não anexar, usa o mesmo documento do 1º passo em todas):</div>' +
     '<div style="display:flex;flex-direction:column;gap:6px">' +
     parcelas.map((p, i) => `
       <div style="display:flex;gap:8px;align-items:center;background:var(--surface2);padding:6px 10px;border-radius:8px;flex-wrap:wrap">
@@ -9022,6 +9030,10 @@ function pagRenderizarParcelas() {
         </select>
         <input type="text" list="pag_medicao_dl_p${i}" value="${(p.medicao||'').toString().replace(/"/g,'&quot;')}" placeholder="Nº medição" onchange="pagAtualizarParcela(${i},'medicao',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px" title="Medição do Centro de Custo selecionado ao lado, para esta parcela específica">
         <datalist id="pag_medicao_dl_p${i}"></datalist>
+        <div style="display:flex;align-items:center;gap:6px;width:100%">
+          <input type="file" id="pag_parcela_anexo_${i}" accept=".pdf,.jpg,.jpeg,.png" title="Anexar o boleto desta parcela específica (opcional)" onchange="pagAnexarParcela(${i},this)" style="font-size:.68rem;max-width:190px">
+          <span id="pag_parcela_anexo_status_${i}" style="font-size:.66rem;color:var(--text-muted)">${p.comprovanteNome ? '📎 '+p.comprovanteNome : ''}</span>
+        </div>
       </div>`).join('') +
     '</div>';
   parcelas.forEach((p, i) => { if (p.cc) pagAtualizarMedicaoParcela(i, p.cc); });
@@ -9049,6 +9061,37 @@ async function pagAtualizarMedicaoParcela(i, cc) {
 function pagAtualizarParcela(i, campo, valor) {
   if (!window._pagParcelas || !window._pagParcelas[i]) return;
   window._pagParcelas[i][campo] = campo === 'valor' ? (parseFloat(valor) || 0) : valor;
+}
+
+/* -- Anexo individual por parcela — pedido em 12/10/2026 ("quando for
+   parcelado, tem já como abrir campo para fazer upload de cada boleto").
+   Sobe o arquivo pro OneDrive (pasta do mês atual, mesmo padrão do anexo
+   compartilhado do 1º passo) e guarda id/driveId/url/nome na própria
+   parcela; ao salvar, _salvarContaPagarInterno move esse arquivo pra pasta
+   do mês de VENCIMENTO dessa parcela específica, em vez de usar o
+   comprovante compartilhado nela. Parcela sem anexo próprio continua
+   recebendo cópia do anexo compartilhado do 1º passo, se houver (mesmo
+   comportamento de antes). -- */
+async function pagAnexarParcela(i, inputEl) {
+  const file = inputEl.files[0];
+  if (!file) return;
+  const p = (window._pagParcelas || [])[i];
+  if (!p) return;
+  const statusEl = document.getElementById('pag_parcela_anexo_status_' + i);
+  if (statusEl) statusEl.textContent = '⏳ Enviando...';
+  showToast('☁️ Enviando boleto da parcela ' + p.numero + '...');
+  const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.contasPagar);
+  if (resultado) {
+    p.comprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
+    p.comprovanteNome = resultado.nome;
+    p.comprovanteId = resultado.id || null;
+    p.comprovanteDriveId = resultado.driveId || null;
+    if (statusEl) statusEl.textContent = '📎 ' + resultado.nome;
+    showToast('☁️ Boleto da parcela ' + p.numero + ' salvo no OneDrive!');
+  } else {
+    if (statusEl) statusEl.textContent = '⚠️ Falha ao salvar';
+    showToast('⚠️ Falha ao salvar o boleto da parcela ' + p.numero);
+  }
 }
 
 /* -- Ao escolher a Subcategoria, preenche a Categoria automaticamente
@@ -9205,24 +9248,41 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   let comprovanteUrlFinal = window._pagComprovanteUrl || '';
   let comprovanteNomeFinal = window._pagComprovanteNome || '';
   let comprovantesPorParcela = null; // {numero: {url, nome}} — só quando parcelado
-  if (window._pagComprovanteId && window._pagComprovanteDriveId) {
+  // Pedido 12/10/2026: parcela com boleto anexado individualmente (ver
+  // pagAnexarParcela) usa ESSE arquivo, em vez do comprovante compartilhado
+  // do 1º passo — então o bloco roda se houver anexo compartilhado OU pelo
+  // menos uma parcela com anexo próprio.
+  const parcelasComAnexoProprio = (parcelamento === 'parcelado' && window._pagParcelas) ? window._pagParcelas.filter(p => p.comprovanteId && p.comprovanteDriveId) : [];
+  if ((window._pagComprovanteId && window._pagComprovanteDriveId) || parcelasComAnexoProprio.length) {
     if (parcelamento === 'parcelado' && window._pagParcelas && window._pagParcelas.length) {
       comprovantesPorParcela = {};
       const parcelasComprovante = window._pagParcelas;
+      let usouCompartilhado = false;
       for (let idx = 0; idx < parcelasComprovante.length; idx++) {
         const p = parcelasComprovante[idx];
-        const nomeDesejado = financeiroGerarNomeComprovante(p.vencimento, p.valor, fornecedor, comprovanteNomeFinal);
         const pastaDestino = odPastaMesDe(OD_FOLDERS.contasPagar, p.vencimento);
-        if (idx === 0) {
-          const movido = await moverArquivoOneDrive(window._pagComprovanteDriveId, window._pagComprovanteId, pastaDestino, nomeDesejado);
-          if (movido) { comprovanteUrlFinal = movido.url || comprovanteUrlFinal; comprovanteNomeFinal = movido.nome || comprovanteNomeFinal; }
-          comprovantesPorParcela[p.numero] = { url: comprovanteUrlFinal, nome: comprovanteNomeFinal };
-        } else {
-          const copiado = await copiarArquivoOneDrivePara(window._pagComprovanteDriveId, window._pagComprovanteId, pastaDestino, nomeDesejado);
-          comprovantesPorParcela[p.numero] = copiado ? { url: copiado.url, nome: copiado.nome } : { url: comprovanteUrlFinal, nome: comprovanteNomeFinal };
+        if (p.comprovanteId && p.comprovanteDriveId) {
+          // Boleto próprio desta parcela — move pra pasta do vencimento dela.
+          const nomeDesejadoP = financeiroGerarNomeComprovante(p.vencimento, p.valor, fornecedor, p.comprovanteNome);
+          const movidoP = await moverArquivoOneDrive(p.comprovanteDriveId, p.comprovanteId, pastaDestino, nomeDesejadoP);
+          comprovantesPorParcela[p.numero] = movidoP ? { url: movidoP.url, nome: movidoP.nome } : { url: p.comprovanteUrl || '', nome: p.comprovanteNome || '' };
+        } else if (window._pagComprovanteId && window._pagComprovanteDriveId) {
+          // Sem anexo próprio — cai no comportamento de sempre: cópia do
+          // anexo compartilhado do 1º passo (movido na 1ª parcela, copiado
+          // nas demais).
+          const nomeDesejado = financeiroGerarNomeComprovante(p.vencimento, p.valor, fornecedor, comprovanteNomeFinal);
+          if (!usouCompartilhado) {
+            const movido = await moverArquivoOneDrive(window._pagComprovanteDriveId, window._pagComprovanteId, pastaDestino, nomeDesejado);
+            if (movido) { comprovanteUrlFinal = movido.url || comprovanteUrlFinal; comprovanteNomeFinal = movido.nome || comprovanteNomeFinal; }
+            comprovantesPorParcela[p.numero] = { url: comprovanteUrlFinal, nome: comprovanteNomeFinal };
+            usouCompartilhado = true;
+          } else {
+            const copiado = await copiarArquivoOneDrivePara(window._pagComprovanteDriveId, window._pagComprovanteId, pastaDestino, nomeDesejado);
+            comprovantesPorParcela[p.numero] = copiado ? { url: copiado.url, nome: copiado.nome } : { url: comprovanteUrlFinal, nome: comprovanteNomeFinal };
+          }
         }
       }
-    } else {
+    } else if (window._pagComprovanteId && window._pagComprovanteDriveId) {
       const dataRef = vencimento || '';
       const nomeDesejado = financeiroGerarNomeComprovante(dataRef, valor, fornecedor, comprovanteNomeFinal);
       const pastaDestino = odPastaMesDe(OD_FOLDERS.contasPagar, dataRef);
@@ -9238,6 +9298,12 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
     LancadoPor:lancadoPor, NumMedicao: temDivisaoCC ? '' : medicao,
     ComprovanteUrl: comprovanteUrlFinal, ComprovanteNome: comprovanteNomeFinal,
     DivisaoCC: temDivisaoCC ? divisaoCC : [],
+    // Valor TOTAL originalmente informado (= Valor quando à vista; = soma das
+    // parcelas quando parcelado) — grava em TODA parcela, pra dar pra buscar
+    // um lançamento parcelado tanto pelo valor da parcela quanto pelo valor
+    // total (pedido 12/10/2026: "não consigo buscar pelo valor total e pelo
+    // valor de parcela"). Mesmo campo/convenção já usado em Despesas.
+    ValorTotal: valor,
   };
   const statusFinal = enviarFinanceiro ? 'Aguardando Aprovação' : (document.getElementById('pag_status').value || null);
 
@@ -9261,6 +9327,11 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
     const parcelas = window._pagParcelas || [];
     if (!parcelas.length) { showToast('⚠️ Configure a quantidade de parcelas e o vencimento da 1ª parcela.'); return; }
     if (parcelas.length > 1) showToast('📆 Salvando parcelas e criando lembretes no Outlook...');
+    // Liga todas as parcelas deste lançamento, pra dar pra abrir o "Histórico
+    // do Parcelamento" a partir de qualquer parcela (pedido 12/10/2026 —
+    // "clicando em uma parcela, não consegue abrir histórico das demais").
+    // Mesmo padrão/nome de campo já usado em Despesas (rdVerHistoricoCompra).
+    const grupoCompraId = 'GC-' + Date.now();
     for (const p of parcelas) {
       const statusP = statusFinal || calcularStatusVencimento(p.vencimento);
       const compParcela = (comprovantesPorParcela && comprovantesPorParcela[p.numero]) || { url: comprovanteUrlFinal, nome: comprovanteNomeFinal };
@@ -9276,6 +9347,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
         Title: fornecedor + ' · parcela ' + p.numero + '/' + parcelas.length + ' · ' + p.vencimento,
         Vencimento: p.vencimento, Valor: p.valor, Status: statusP,
         Parcelamento: 'parcelado', NumParcela: p.numero, TotalParcelas: parcelas.length,
+        GrupoCompraId: grupoCompraId,
         ComprovanteUrl: compParcela.url, ComprovanteNome: compParcela.nome,
         OutlookEventId: rOutlookParc.id,
         CentroCusto: p.cc || base.CentroCusto, NumMedicao: p.medicao || base.NumMedicao,
@@ -9442,6 +9514,8 @@ async function pagAbrirVisualizar(id) {
       ${i.Categoria ? linha('Categoria', i.Categoria) : ''}
       ${i.Subcategoria ? linha('Subcategoria', i.Subcategoria) : ''}
       ${linha('Valor', 'R$ '+(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}))}
+      ${(i.Parcelamento==='parcelado' && i.ValorTotal) ? linha('Valor Total do Parcelamento', 'R$ '+(i.ValorTotal||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})) : ''}
+      ${i.Parcelamento==='parcelado' ? linha('Parcelamento', (i.NumParcela?('Parcela '+i.NumParcela+'/'+(i.TotalParcelas||'?')):'—') + (i.GrupoCompraId ? ` <span style="cursor:pointer;color:var(--blue);text-decoration:underline;font-weight:700" onclick="pagVerHistoricoCompra(${id})">🧾 Ver histórico</span>` : '')) : ''}
       ${linha('Vencimento', fmtData(i.Vencimento))}
       ${linha('Forma de Pagamento', i.FormaPagamento||'—')}
       ${i.NumeroBoleto ? linha('Número do Boleto', i.NumeroBoleto) : ''}
@@ -9973,10 +10047,23 @@ async function carregarContasPagar() {
     if (fLancadoPor) items = items.filter(r => (r.LancadoPor||'').toLowerCase().includes(fLancadoPor));
     if (fForn) items = items.filter(r => (r.Fornecedor||'').toLowerCase().includes(fForn));
     if (fCc) items = items.filter(r => (r.CentroCusto||'').toLowerCase().includes(fCc));
-    if (!isNaN(fValorExato)) items = items.filter(r => Math.abs((r.Valor||0) - fValorExato) < 0.01);
-    else {
-      if (!isNaN(fValorMin)) items = items.filter(r => (r.Valor||0) >= fValorMin);
-      if (!isNaN(fValorMax)) items = items.filter(r => (r.Valor||0) <= fValorMax);
+    // Busca por valor — casa tanto o valor da PARCELA (r.Valor) quanto o
+    // valor TOTAL do parcelamento (r.ValorTotal), quando diferentes. Pedido
+    // 12/10/2026: "quando lanço o boleto e é parcelado eu não consigo
+    // buscar dele pelo valor total e pelo valor de parcela".
+    if (!isNaN(fValorExato) || !isNaN(fValorMin) || !isNaN(fValorMax)) {
+      const pagValorBate = (r) => {
+        const candidatos = [r.Valor || 0];
+        if (r.ValorTotal != null && Math.abs((r.ValorTotal||0) - (r.Valor||0)) > 0.009) candidatos.push(r.ValorTotal || 0);
+        return candidatos.some(v => {
+          if (!isNaN(fValorExato)) return Math.abs(v - fValorExato) < 0.01;
+          let bate = true;
+          if (!isNaN(fValorMin)) bate = bate && v >= fValorMin;
+          if (!isNaN(fValorMax)) bate = bate && v <= fValorMax;
+          return bate;
+        });
+      };
+      items = items.filter(pagValorBate);
     }
     if (filtroStatus) items = items.filter(r=>r.Status===filtroStatus);
     if (PAG_FILTRO_KPI === 'aprovacao') items = items.filter(r=>r.Status==='Aguardando Aprovação');
@@ -10005,11 +10092,16 @@ async function carregarContasPagar() {
     const barraSelecaoHtml = isDir ? `<div id="pag-bulk-bar" style="display:${nSelBar?'flex':'none'};align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:10px">
       <span id="pag-bulk-texto" style="font-size:.8rem;font-weight:700"></span>
       <button id="pag-bulk-btn" class="btn-primary" style="font-size:.76rem;padding:5px 10px" onclick="pagAprovarSelecionados()">✅ Aprovar selecionados</button>
+      <button id="pag-bulk-btn-excluir" class="btn-secondary" style="font-size:.76rem;padding:5px 10px;color:var(--red);border-color:var(--red)" onclick="pagExcluirSelecionados()">🗑️ Excluir selecionados</button>
       <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="pagLimparSelecao()">✕ Limpar seleção</button>
     </div>` : '';
     el.innerHTML = barraSelecaoHtml + '<div style="overflow-x:auto"><table class="data-table"><thead><tr>' + (isDir?'<th style="width:26px"><input type="checkbox" id="pag-chk-todos" title="Selecionar todas as \'Aguardando Aprovação\' visíveis" onchange="pagToggleTodos(this.checked)"></th>':'') + '<th>Empresa</th><th>Fornecedor</th><th>Lançado em</th><th>Descrição</th><th>CC</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
       items.map(i=>{
-        const pgtoTxt = i.Parcelamento==='parcelado' ? `${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}` : (i.FormaPagamento||'—');
+        const pgtoTxt = i.Parcelamento==='parcelado'
+          ? (i.GrupoCompraId
+              ? `<span style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="pagVerHistoricoCompra(${i.Id})" title="Ver histórico das demais parcelas deste lançamento">${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}</span>`
+              : `${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}`)
+          : (i.FormaPagamento||'—');
         const podeSelecionar = isDir && i.Status === 'Aguardando Aprovação';
         const marcado = podeSelecionar && window._pagSelecionados && window._pagSelecionados.has(i.Id);
         return `<tr>
@@ -10106,6 +10198,35 @@ async function pagAprovarSelecionados() {
   atualizarBadgeNotificacoes();
 }
 
+/* -- Exclusão em lote — pedido em 12/10/2026 ("ao selecionar tem que ter
+   opção pra mim de excluir todos selecionados"): mesma barra de seleção já
+   usada pra aprovação em lote, com o mesmo aviso de Despesa vinculada já
+   usado na exclusão individual (pagExcluirLancamento). Restrita à Diretoria
+   — a barra de seleção inteira já só aparece pra esse perfil. -- */
+async function pagExcluirSelecionados() {
+  const ids = Array.from(window._pagSelecionados || []);
+  if (!ids.length) return;
+  const itens = (window._pagFiltradas||[]).filter(r => ids.includes(r.Id));
+  const soma = itens.reduce((s,r)=>s+(r.Valor||0),0);
+  const temDespesaVinculada = itens.some(r => r.DespesaId);
+  const avisoDespesa = temDespesaVinculada ? '\n\n⚠️ Um ou mais lançamentos selecionados já foram pagos e geraram Despesa vinculada — excluir aqui NÃO remove a Despesa correspondente.' : '';
+  const ok1 = confirm(`Excluir ${ids.length} lançamento(s) selecionado(s), totalizando R$ ${soma.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}?\n\nEssa ação não pode ser desfeita.${avisoDespesa}`);
+  if (!ok1) return;
+  const btn = document.getElementById('pag-bulk-btn-excluir');
+  if (btn) btn.disabled = true;
+  let ok = 0, falhas = 0;
+  for (let idx = 0; idx < ids.length; idx++) {
+    const id = ids[idx];
+    if (btn) btn.innerHTML = '<span class="btn-spinner"></span> Excluindo ' + (idx+1) + '/' + ids.length + '...';
+    const item = itens.find(r => r.Id === id);
+    const { ok: okItem } = await dbRemover('ContasPagar', id).catch(() => ({ ok: false }));
+    if (okItem) { ok++; if (item && item.OutlookEventId) cpExcluirEventoOutlook(item.OutlookEventId); } else falhas++;
+  }
+  window._pagSelecionados = new Set();
+  showToast(falhas ? `🗑️ ${ok} excluído(s), ⚠️ ${falhas} falharam${syncErrorDetalhe()}` : `🗑️ ${ok} lançamento(s) excluído(s)!`);
+  carregarContasPagar();
+}
+
 /* -- Exclusão direta — restrita à Diretoria (a página inteira de Contas a
    Pagar já é exclusiva pra esse perfil). Pedido em 30/08/2026 junto com a
    checagem de duplicidade, pra dar um jeito rápido de apagar um lançamento
@@ -10123,6 +10244,79 @@ async function pagExcluirLancamento(id) {
   if (ok && i && i.OutlookEventId) cpExcluirEventoOutlook(i.OutlookEventId);
   showToast(ok ? '🗑️ Lançamento excluído.' : '❌ Erro ao excluir.');
   if (ok) carregarContasPagar();
+}
+
+/* ===== Histórico do Parcelamento (Contas a Pagar) =====
+   Mesmo padrão de rdVerHistoricoCompra (Despesas) — ao clicar numa parcela
+   (X/Y), busca todas as parcelas irmãs (mesma GrupoCompraId, inclusive já
+   pagas — ficam ocultas da lista principal mas continuam na tabela
+   ContasPagar) e mostra um modal com o andamento completo do parcelamento:
+   quanto já foi pago, quanto falta, e o status de cada parcela. Pedido em
+   12/10/2026 ("clicando em uma parcela, não consegue abrir histórico das
+   demais"). Só funciona em lançamentos criados após esse recurso (precisam
+   ter GrupoCompraId). */
+async function pagVerHistoricoCompra(id) {
+  let i = (window._pagFiltradas || []).find(r => r.Id === id);
+  if (!i) { const todos = await dbLerSeguro('ContasPagar'); i = todos.find(r => r.Id === id); }
+  if (!i) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+  if (!i.GrupoCompraId) { showToast('⚠️ Este lançamento não tem histórico de parcelamento vinculado (foi lançado antes desse recurso).'); return; }
+
+  showToast('🔎 Buscando parcelas...');
+  const todas = await dbLerSeguro('ContasPagar');
+  const parcelas = todas.filter(x => x.GrupoCompraId === i.GrupoCompraId).sort((a,b) => (a.NumParcela||0)-(b.NumParcela||0));
+  if (!parcelas.length) { showToast('⚠️ Nenhuma parcela encontrada.'); return; }
+
+  const existente = document.getElementById('pag-hist-modal');
+  if (existente) existente.remove();
+  const viewModal = document.getElementById('pag-view-modal');
+  if (viewModal) viewModal.remove();
+
+  const totalCompra = parcelas.reduce((s,p)=>s+(p.Valor||0),0);
+  const totalPago = parcelas.filter(p=>p.Status==='Pago').reduce((s,p)=>s+(p.Valor||0),0);
+  const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Rejeitada')?'red':'amber';
+
+  const modal = document.createElement('div');
+  modal.id = 'pag-hist-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="font-weight:800;font-size:1rem">🧾 Histórico do Parcelamento</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('pag-hist-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.85rem;font-weight:700;margin-bottom:2px">${i.Fornecedor||'—'}</div>
+      <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:14px">${i.Descricao||i.CentroCusto||'—'} · ${parcelas.length} parcelas</div>
+
+      <div style="display:flex;gap:10px;margin-bottom:14px">
+        <div style="flex:1;padding:10px;border-radius:10px;background:var(--surface2);text-align:center">
+          <div style="font-size:.68rem;color:var(--text-muted)">TOTAL</div>
+          <div style="font-size:1rem;font-weight:800">R$ ${totalCompra.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+        </div>
+        <div style="flex:1;padding:10px;border-radius:10px;background:#e8f5e9;text-align:center">
+          <div style="font-size:.68rem;color:#2e7d32">JÁ PAGO</div>
+          <div style="font-size:1rem;font-weight:800;color:#2e7d32">R$ ${totalPago.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+        </div>
+        <div style="flex:1;padding:10px;border-radius:10px;background:#fce8e8;text-align:center">
+          <div style="font-size:.68rem;color:var(--red)">FALTA PAGAR</div>
+          <div style="font-size:1rem;font-weight:800;color:var(--red)">R$ ${(totalCompra-totalPago).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${parcelas.map(p => `
+          <div onclick="document.getElementById('pag-hist-modal').remove();pagAbrirVisualizar(${p.Id})" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:var(--surface2);border-left:3px solid ${p.Status==='Pago'?'#2e7d32':(p.Status==='Em atraso'?'var(--red)':'#e0a800')}">
+            <div>
+              <div style="font-size:.8rem;font-weight:700">Parcela ${p.NumParcela}/${p.TotalParcelas}</div>
+              <div style="font-size:.7rem;color:var(--text-muted)">Vence ${p.Vencimento ? new Date(p.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}${p.DataPagamento?(' · Pago em '+new Date(p.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR')):''}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:.85rem;font-weight:800">R$ ${(p.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+              <span class="status-pill ${statusColor(p.Status)}" style="font-size:.65rem">${p.Status||'—'}</span>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
 }
 
 /* -- Edição de um lançamento já existente — antes só dava pra Visualizar ou
