@@ -9028,10 +9028,11 @@ function pagRenderizarParcelas() {
         <select onchange="pagAtualizarParcela(${i},'cc',this.value); pagAtualizarMedicaoParcela(${i},this.value)" title="Centro de Custo que custeia esta parcela específica" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;max-width:220px">
           ${ccOptions.map(o => `<option value="${o.replace(/"/g,'&quot;')}" ${o===p.cc?'selected':''}>${o}</option>`).join('')}
         </select>
-        <input type="text" list="pag_medicao_dl_p${i}" value="${(p.medicao||'').toString().replace(/"/g,'&quot;')}" placeholder="Nº medição" onchange="pagAtualizarParcela(${i},'medicao',this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px" title="Medição do Centro de Custo selecionado ao lado, para esta parcela específica">
+        <input type="text" list="pag_medicao_dl_p${i}" value="${(p.medicao||'').toString().replace(/"/g,'&quot;')}" placeholder="Nº medição" oninput="pagAtualizarParcela(${i},'medicao',this.value);bmMostrarDescricao(document.getElementById('pag_parcela_medicao_hint_${i}'),this.value)" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;width:110px" title="Medição do Centro de Custo selecionado ao lado, para esta parcela específica">
         <datalist id="pag_medicao_dl_p${i}"></datalist>
         <input type="file" id="pag_parcela_anexo_${i}" accept=".pdf,.jpg,.jpeg,.png" title="Anexar o boleto desta parcela específica (opcional)" onchange="pagAnexarParcela(${i},this)" style="font-size:.68rem;max-width:160px">
         <span id="pag_parcela_anexo_status_${i}" style="font-size:.66rem;color:var(--text-muted)">${p.comprovanteNome ? '📎 '+p.comprovanteNome : ''}</span>
+        <div id="pag_parcela_medicao_hint_${i}" style="font-size:.66rem;color:var(--text-muted);width:100%"></div>
       </div>`).join('') +
     '</div>' +
     '<div id="pag_parcelas_soma_bar" style="display:flex;gap:14px;margin-top:10px;padding:8px 12px;border-radius:8px;align-items:center;flex-wrap:wrap"></div>';
@@ -9062,14 +9063,25 @@ function pagAtualizarSomaParcelas() {
 
 async function pagAtualizarMedicaoParcela(i, cc) {
   const dl = document.getElementById('pag_medicao_dl_p' + i);
+  // Hint com a descrição da medição (BM nº / descrição / status) — mesmo
+  // padrão do campo principal pag_medicao (ver pagAtualizarMedicaoPorCC) e
+  // de rd_divcc_medicao_hint_N em Despesas. Pedido 12/10/2026.
+  const hint = document.getElementById('pag_parcela_medicao_hint_' + i);
   if (!dl) return;
-  if (!cc) { dl.innerHTML = ''; return; }
+  if (!cc) { dl.innerHTML = ''; if (hint) { hint.textContent = ''; hint.dataset.ccId = ''; } return; }
   const ccId = _ccIdPuro(cc);
   let medicoes = [];
   try { medicoes = await medicoesParaCC(ccId); } catch (e) { medicoes = []; }
   const doCC = medicoes.sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
   if (doCC.length) {
     dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao||''} (${m.Status||''})</option>`).join('');
+    if (hint) {
+      const abertas = doCC.filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status));
+      hint.textContent = abertas.length
+        ? `Medições em aberto: ${abertas.map(m => m.NumMedicao).join(', ')}.`
+        : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+      hint.dataset.ccId = ccId; hint.dataset.textoBase = hint.innerHTML;
+    }
     return;
   }
   let contas = [];
@@ -9077,6 +9089,7 @@ async function pagAtualizarMedicaoParcela(i, cc) {
   const doContrato = contas.filter(c => _ccIdPuro(c.CentroCusto) === ccId && c.NumMedicao);
   const usados = [...new Set(doContrato.map(c => c.NumMedicao))];
   dl.innerHTML = usados.sort().map(n => `<option value="${n}">`).join('');
+  if (hint) { hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.'; hint.dataset.ccId = ccId; hint.dataset.textoBase = hint.innerHTML; }
 }
 
 function pagAtualizarParcela(i, campo, valor) {
