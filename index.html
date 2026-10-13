@@ -7451,7 +7451,7 @@ function pagePagar() {
   </div>
 
   <!-- Modal cadastro fornecedor -->
-  <div id="modal-fornecedor" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;display:none;align-items:center;justify-content:center">
+  <div id="modal-fornecedor" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10001;display:none;align-items:center;justify-content:center">
     <div style="background:var(--surface);border-radius:14px;padding:24px;width:min(420px,90vw);box-shadow:0 20px 60px rgba(0,0,0,.4)">
       <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem;margin-bottom:16px">Cadastrar Novo Fornecedor</div>
       <div class="form-group" style="margin-bottom:12px">
@@ -8063,15 +8063,19 @@ async function confirmarCadastroFornecedor() {
 function pageFornecedores() {
   setTimeout(() => { carregarMunicipiosLista(); carregarFornecedoresPagina(); }, 150);
   const origem = window._fornVindoDe;
-  const voltarRota = origem === 'pagar' ? 'pagar' : origem === 'prestacao' ? 'prestacao' : 'financeiro';
-  const voltarLabel = origem === 'pagar' ? 'Contas a Pagar' : origem === 'prestacao' ? 'Prestação de Contas' : 'Financeiro';
+  // Despesas não é uma rota própria — é uma aba dentro de receitas_despesas
+  // (window._rdTab) — então "voltar" precisa setar a aba certa antes de navegar,
+  // não só chamar navigate() com o nome da aba. Pedido 13/10/2026.
+  const voltarRota = origem === 'pagar' ? 'pagar' : origem === 'prestacao' ? 'prestacao' : origem === 'despesas' ? 'receitas_despesas' : 'financeiro';
+  const voltarLabel = origem === 'pagar' ? 'Contas a Pagar' : origem === 'prestacao' ? 'Prestação de Contas' : origem === 'despesas' ? 'Despesas' : 'Financeiro';
+  const voltarOnclick = origem === 'despesas' ? `window._fornVindoDe=null;window._rdTab='despesas';navigate('receitas_despesas')` : `window._fornVindoDe=null;navigate('${voltarRota}')`;
   return `
   <div class="page-header">
     <h1>Fornecedores</h1>
     <p>Cadastro compartilhado usado em Contas a Pagar, Prestação de Contas e Despesas</p>
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
-    <button class="btn-secondary" onclick="window._fornVindoDe=null;navigate('${voltarRota}')">← ${voltarLabel}</button>
+    <button class="btn-secondary" onclick="${voltarOnclick}">← ${voltarLabel}</button>
     <button class="btn-primary" onclick="fornAbrirForm()">➕ Novo Fornecedor</button>
     <input type="text" id="forn_busca" placeholder="Buscar por nome ou CNPJ..." oninput="dbDebounce('carregarFornecedoresPagina')" style="flex:1;min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:.85rem;background:var(--surface)">
   </div>
@@ -11568,6 +11572,13 @@ function transferenciaAbrirModal(par) {
   const divisaoDestinoAtual = (editando && par.entrada && par.entrada.DivisaoCC && par.entrada.DivisaoCC.length) ? par.entrada.DivisaoCC : [];
   const ccOrigemAtual = divisaoOrigemAtual.length ? '' : (editando && par.saida ? (par.saida.CentroCusto || '') : '');
   const ccDestinoAtual = divisaoDestinoAtual.length ? '' : (editando && par.entrada ? (par.entrada.CentroCusto || '') : '');
+  // Nº Medição por lado (opcional) — pedido 13/10/2026: "aqui em transferência
+  // entre contas tem que ter a opção de medição tbm ao lado de centro de
+  // custo de origem e destino". Só faz sentido quando aquele lado NÃO está
+  // ratenado entre vários CCs (aí cada linha do rateio já tem sua própria
+  // medição — mesmo padrão de pag_medicao/temDivisaoCC).
+  const medicaoOrigemAtual = divisaoOrigemAtual.length ? '' : (editando && par.saida ? (par.saida.NumMedicao || '') : '');
+  const medicaoDestinoAtual = divisaoDestinoAtual.length ? '' : (editando && par.entrada ? (par.entrada.NumMedicao || '') : '');
   const valorAtual = editando ? Number(base.Valor) || 0 : 0;
   const dataAtual = editando ? (base.DataLancamento || base.DataEmissao || new Date().toISOString().slice(0,10)) : new Date().toISOString().slice(0,10);
   const modal = document.createElement('div');
@@ -11600,13 +11611,33 @@ function transferenciaAbrirModal(par) {
         <div class="form-row">
           <div class="form-group">
             <label>Centro de Custo de Origem (opcional)</label>
-            <input type="text" id="trf_cc_origem" list="trf_cc_origem_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off" value="${ccOrigemAtual.replace(/"/g,'&quot;')}">
+            <input type="text" id="trf_cc_origem" list="trf_cc_origem_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off" value="${ccOrigemAtual.replace(/"/g,'&quot;')}" oninput="trfAtualizarMedicaoPorCC('trforigem',this.value)">
             <datalist id="trf_cc_origem_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
           </div>
           <div class="form-group">
             <label>Centro de Custo de Destino (opcional)</label>
-            <input type="text" id="trf_cc_destino" list="trf_cc_destino_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off" value="${ccDestinoAtual.replace(/"/g,'&quot;')}">
+            <input type="text" id="trf_cc_destino" list="trf_cc_destino_dl" placeholder="— Nenhum — (digite para buscar)" autocomplete="off" value="${ccDestinoAtual.replace(/"/g,'&quot;')}" oninput="trfAtualizarMedicaoPorCC('trfdestino',this.value)">
             <datalist id="trf_cc_destino_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
+          </div>
+        </div>
+        <!-- Nº Medição por lado (opcional) — pedido 13/10/2026. IDs
+             trforigem_medicao/trfdestino_medicao de propósito: é o mesmo
+             padrão "pfx + '_medicao'" que aprovDivccToggle() já procura pra
+             esconder automaticamente quando aquele lado estiver ratenado
+             entre vários CCs (ver aprovDivccBlocoHtml logo abaixo) — não
+             precisa de nenhum toggle novo aqui. -->
+        <div class="form-row">
+          <div class="form-group">
+            <label>Nº Medição de Origem <span style="font-size:.7rem;color:var(--text-muted)">(opcional)</span></label>
+            <input type="text" id="trforigem_medicao" list="trforigem_medicao_dl" placeholder="Selecione o Centro de Custo de Origem acima..." autocomplete="off" value="${medicaoOrigemAtual.replace(/"/g,'&quot;')}" oninput="bmMostrarDescricao(document.getElementById('trforigem_medicao_hint'),this.value)">
+            <datalist id="trforigem_medicao_dl"></datalist>
+            <div id="trforigem_medicao_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
+          </div>
+          <div class="form-group">
+            <label>Nº Medição de Destino <span style="font-size:.7rem;color:var(--text-muted)">(opcional)</span></label>
+            <input type="text" id="trfdestino_medicao" list="trfdestino_medicao_dl" placeholder="Selecione o Centro de Custo de Destino acima..." autocomplete="off" value="${medicaoDestinoAtual.replace(/"/g,'&quot;')}" oninput="bmMostrarDescricao(document.getElementById('trfdestino_medicao_hint'),this.value)">
+            <datalist id="trfdestino_medicao_dl"></datalist>
+            <div id="trfdestino_medicao_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
           </div>
         </div>
         <div style="font-size:.68rem;color:var(--text-muted);margin:-8px 0 12px">☝️ Deixe os dois Centros de Custo em branco pra uma transferência bancária comum. Se a conta de origem e a de destino forem a mesma, escolha Centros de Custo diferentes — é o que caracteriza a movimentação.</div>
@@ -11658,6 +11689,10 @@ function transferenciaAbrirModal(par) {
     const chk = document.getElementById('trfdestino_tem_divisaocc'); if (chk) chk.checked = true;
     aprovDivccToggle('trfdestino');
   }
+  // Pré-carrega o datalist/hint de medição dos dois lados quando já tem CC
+  // escolhido (edição de uma transferência existente) — pedido 13/10/2026.
+  if (ccOrigemAtual) trfAtualizarMedicaoPorCC('trforigem', ccOrigemAtual);
+  if (ccDestinoAtual) trfAtualizarMedicaoPorCC('trfdestino', ccDestinoAtual);
 }
 /* -- Mantém o "total a dividir" dos dois blocos de rateio (origem/destino)
    em dia com o campo Valor da transferência, pra conferência da soma
@@ -11670,6 +11705,38 @@ function trfSincronizarValorRateio() {
   aprovDivccRenderizar('trfdestino');
 }
 
+/* -- Nº Medição por lado (Origem/Destino) da Transferência — mesmo padrão de
+   pagAtualizarMedicaoPorCC (Contas a Pagar): ao escolher/digitar o Centro de
+   Custo daquele lado, busca as medições do contrato e alimenta o datalist +
+   o hint com as que estão em aberto. pfx é 'trforigem' ou 'trfdestino'
+   (mesmo prefixo usado pelo bloco de rateio — aprovDivccToggle já sabe
+   esconder este campo quando aquele lado estiver ratenado). Pedido
+   13/10/2026: "tem que ter a opção de medição tbm ao lado de centro de
+   custo de origem e destino". -- */
+async function trfAtualizarMedicaoPorCC(pfx, cc) {
+  const dl = document.getElementById(pfx + '_medicao_dl');
+  const hint = document.getElementById(pfx + '_medicao_hint');
+  if (!cc) { if (dl) dl.innerHTML = ''; if (hint) { hint.textContent = ''; hint.dataset.ccId = ''; } return; }
+  if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  const ccId = _ccIdPuro(cc);
+  let medicoes = [];
+  try { medicoes = await medicoesParaCC(ccId); } catch (e) { medicoes = []; }
+  const doCC = medicoes.sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  if (doCC.length) {
+    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao || ''} (${m.Status || ''})</option>`).join('');
+    const abertas = doCC.filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status));
+    if (hint) {
+      hint.textContent = abertas.length
+        ? `Medições em aberto: ${abertas.map(m => m.NumMedicao).join(', ')}.`
+        : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+      hint.dataset.ccId = ccId; hint.dataset.textoBase = hint.innerHTML;
+    }
+    return;
+  }
+  if (dl) dl.innerHTML = '';
+  if (hint) { hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.'; hint.dataset.ccId = ccId; hint.dataset.textoBase = hint.innerHTML; }
+}
+
 function transferenciaEmpresaAlterada() {
   const empresa = (document.getElementById('trf_empresa')||{}).value || RD_EMPRESAS[0];
   const opts = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
@@ -11680,6 +11747,13 @@ function transferenciaEmpresaAlterada() {
   const ccDestInp = document.getElementById('trf_cc_destino'); if (ccDestInp) ccDestInp.value = '';
   const ccOrigDl = document.getElementById('trf_cc_origem_dl'); if (ccOrigDl) ccOrigDl.innerHTML = ccDlOpts;
   const ccDestDl = document.getElementById('trf_cc_destino_dl'); if (ccDestDl) ccDestDl.innerHTML = ccDlOpts;
+  // Nº Medição depende do CC escolhido, que acabou de ser limpo acima —
+  // limpa junto (campo, datalist e hint dos dois lados).
+  ['trforigem','trfdestino'].forEach(pfx => {
+    const med = document.getElementById(pfx + '_medicao'); if (med) med.value = '';
+    const medDl = document.getElementById(pfx + '_medicao_dl'); if (medDl) medDl.innerHTML = '';
+    const medHint = document.getElementById(pfx + '_medicao_hint'); if (medHint) { medHint.textContent = ''; medHint.dataset.ccId = ''; }
+  });
   // Trocar de empresa invalida a divisão por Centro de Custo em andamento
   // (contratos são por empresa) — reseta os dois blocos de rateio.
   window._aprovEmpresa_trforigem = empresa;
@@ -11719,6 +11793,11 @@ async function transferenciaSalvar() {
   if (!rateioDestino.ok) return;
   const ccOrigem = rateioOrigem.ativo ? rateioOrigem.centroCusto : ccOrigemCampo;
   const ccDestino = rateioDestino.ativo ? rateioDestino.centroCusto : ccDestinoCampo;
+  // Nº Medição por lado (opcional) — pedido 13/10/2026. Só vale quando
+  // aquele lado NÃO está ratenado (cada linha do rateio já tem a própria
+  // medição, mesmo padrão de Contas a Pagar).
+  const medicaoOrigem = rateioOrigem.ativo ? '' : ((document.getElementById('trforigem_medicao')||{}).value || '').trim();
+  const medicaoDestino = rateioDestino.ativo ? '' : ((document.getElementById('trfdestino_medicao')||{}).value || '').trim();
 
   // A conta pode ser a mesma dos dois lados (ex: só realocando entre Centros
   // de Custo, sem movimentação bancária real) — nesse caso os CCs precisam
@@ -11747,7 +11826,7 @@ async function transferenciaSalvar() {
     ServicoId: '', ServicoDesc: '', Fornecedor: 'Transferência Interna', Beneficiario: '', Veiculo: '',
     CentroCusto: ccOrigem, Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: data, Banco: contaOrigem,
-    NumMedicao: '', Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
+    NumMedicao: medicaoOrigem, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
     Vencimento: data, Valor: valor, ValorTotal: valor, Status: 'Pago',
     NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: rateioOrigem.ativo ? rateioOrigem.divisaoCC : [],
     LancadoPor: lancadoPor, Descricao: descricaoBase,
@@ -11759,7 +11838,7 @@ async function transferenciaSalvar() {
     NaturezaEconomica: 'Não Operacional', Cliente: 'Transferência Interna', Descricao: descricaoBase,
     CentroCusto: ccDestino, Valor: valor, DataPrevista: data, FormaRecebimento: 'Transferência',
     ResponsavelLancamento: responsavel, DataRecebimento: data, Banco: contaDestino,
-    Status: 'Recebido', NumMedicao: '', NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
+    Status: 'Recebido', NumMedicao: medicaoDestino, NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
     OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
     ValorLiquido: valor, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
     LancadoPor: lancadoPor, TransferenciaId: transferenciaId, TransferenciaContraparte: contaOrigem,
@@ -15246,6 +15325,10 @@ function renderDespesasTab() {
              que ficava conciliação bancaria"). -->
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._bancosResumoEmpresa=window._rdEmpresaAtiva||RD_EMPRESAS[0];navigate('cadastro_bancos')">🏦 Contas Bancárias</button>
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._pagVindoDeDespesas=true;navigate('pagar')">💸 Contas a Pagar</button>
+        <!-- Pedido 13/10/2026: Despesas também ganha o atalho direto pro
+             cadastro de Fornecedores — já existia em Contas a Pagar e
+             Prestação de Contas, faltava aqui (mesma tabela compartilhada). -->
+        <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._fornVindoDe='despesas';navigate('fornecedores')">🏷️ Fornecedores</button>
         <!-- Card grande do topo (com o "63" enorme) foi removido de vez (pedido
              03/10/2026, 4ª correção: "esse botão grande em cima de prestação de
              contas com numero 63, pode excluir") — o quantitativo volta a
