@@ -3942,9 +3942,46 @@ function pageAmbiental() {
 // no campo "Lançado por" junto com todo mundo que já está cadastrado em
 // `users`, mesmo sem ter (ou precisar de) acesso próprio ao app.
 const PREST_LANCADORES_EXTRA = ['Levi Rabelo'];
+
+// Nomes dos colaboradores cadastrados na Gestão Documental (aba Colaboradores) —
+// pedido em 15/10/2026: trocar o "Lançado por" de texto livre por uma lista
+// suspensa com todo mundo já cadastrado no app, em vez de só quem já tem login.
+// NUNCA chamar gdCarregarDados() daqui — ela faz navigate('docs') incondicional
+// (ver comentário na própria função), o que tiraria o usuário da tela de
+// Prestação de Contas. Por isso lê direto de window._gdDados (ou do cache local,
+// se a página ainda não carregou os dados) e, se nada disso existir ainda,
+// prestGarantirColaboradoresCarregados() busca em segundo plano sem navegar.
+function prestColaboradoresNomes() {
+  let dados = window._gdDados;
+  if (!dados) {
+    try { const c = localStorage.getItem('gd_dados_cache'); if (c) dados = JSON.parse(c); } catch (e) {}
+  }
+  const colabs = (dados && dados.colaboradores) || [];
+  return colabs.filter(c => (c.situacao || 'ativo') !== 'inativo').map(c => c.nome).filter(Boolean);
+}
+
 function prestListaLancadores() {
+  const doColab = prestColaboradoresNomes();
   const doLogin = (typeof users === 'object' && users) ? Object.values(users).map(u => u.name) : [];
-  return [...new Set([...doLogin, ...PREST_LANCADORES_EXTRA])].filter(Boolean).sort();
+  return [...new Set([...doColab, ...doLogin, ...PREST_LANCADORES_EXTRA])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+function prestOpcoesLancadoPorHtml(selecionado) {
+  return prestListaLancadores().map(n => `<option value="${n}" ${n === selecionado ? 'selected' : ''}>${n}</option>`).join('');
+}
+
+async function prestGarantirColaboradoresCarregados() {
+  if (window._gdDados) return;
+  try {
+    const dados = await dbLer('GestaoDocumental');
+    if (Array.isArray(dados) && dados.length) window._gdDados = dados[0];
+  } catch (e) {}
+  const sel = document.getElementById('prest_lancadopor');
+  if (sel && window._gdDados) {
+    const atual = sel.value;
+    sel.innerHTML = '<option value="">Selecione...</option>' + prestOpcoesLancadoPorHtml(atual);
+    if (atual) sel.value = atual;
+  }
 }
 // Diz se um nome de "Lançado por" é de alguém sem login próprio (usa o login de
 // outra pessoa, ex.: estagiário) — usado pra destacar esses lançamentos em Contas
@@ -3964,7 +4001,7 @@ function prestNomeSugeridoLancadoPor() {
 }
 
 function pagePrestacao() {
-  setTimeout(()=>{ carregarFornecedoresListaPrest().then(()=>carregarPrestacoes()); carregarMunicipiosLista(); carregarBancosLista(); }, 200);
+  setTimeout(()=>{ carregarFornecedoresListaPrest().then(()=>carregarPrestacoes()); carregarMunicipiosLista(); carregarBancosLista(); prestGarantirColaboradoresCarregados(); }, 200);
   const isGestorFin = currentProfile==='diretoria'||currentProfile==='coordenador';
   return `
   <div class="page-header">
@@ -4062,8 +4099,8 @@ function pagePrestacao() {
         <div id="prest_fornecedor_municipio_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:3px"></div>
       </div>
       <div class="form-group">
-        <label>Nº NF / Cupom / Recibo</label>
-        <input type="text" id="prest_nf" placeholder="Ex: NF 001234 / Recibo 45">
+        <label>Descrição</label>
+        <input type="text" id="prest_descricao" placeholder="Descreva a despesa (ex: combustível viagem campo, hospedagem, alimentação...)">
       </div>
     </div>
 
@@ -4143,14 +4180,6 @@ function pagePrestacao() {
     </div>
     <div id="prest_parcelas_editor" style="display:none;margin-bottom:16px"></div>
 
-    <!-- Linha 5: Observação -->
-    <div class="form-row">
-      <div class="form-group" style="grid-column:span 2">
-        <label>Observação</label>
-        <input type="text" id="prest_obs" placeholder="Descreva a natureza da despesa (ex: combustível viagem campo, hospedagem, alimentação...)">
-      </div>
-    </div>
-
     <!-- Linha 5b: Lançado por — quem de fato preencheu este lançamento. Existe
          porque nem todo mundo que digita uma despesa aqui tem login próprio
          no sistema (ex.: estagiário usando o login de outra pessoa); esse
@@ -4158,8 +4187,10 @@ function pagePrestacao() {
     <div class="form-row">
       <div class="form-group" style="grid-column:span 2">
         <label>Lançado por</label>
-        <input list="prest_lancadopor_dl" id="prest_lancadopor" placeholder="Nome de quem está fazendo este lançamento" value="${prestNomeSugeridoLancadoPor().replace(/"/g, '&quot;')}">
-        <datalist id="prest_lancadopor_dl">${prestListaLancadores().map(n => `<option value="${n}">`).join('')}</datalist>
+        <select id="prest_lancadopor">
+          <option value="">Selecione...</option>
+          ${prestOpcoesLancadoPorHtml(prestNomeSugeridoLancadoPor())}
+        </select>
       </div>
     </div>
 
@@ -4854,10 +4885,9 @@ function coletarDadosPrestacao(validar=false) {
   const empresa=(document.getElementById('prest_empresa').value||'').trim();
   const cc=(document.getElementById('prest_cc').value||'').trim();
   const fornecedor=document.getElementById('prest_fornecedor_sel').value;
-  const nf=(document.getElementById('prest_nf').value||'').trim();
+  const descricao=(document.getElementById('prest_descricao').value||'').trim();
   const categoria=(document.getElementById('prest_categoria')||{}).value||'';
   const subcategoria=(document.getElementById('prest_subcategoria')||{}).value||'';
-  const obs=(document.getElementById('prest_obs').value||'').trim();
   const formaPgto=(document.getElementById('prest_forma_pgto')||{}).value||'';
   const parcelamento=(document.getElementById('prest_parcelamento')||{}).value||'avista';
   const numParcelas=parcelamento==='parcelado'?(parseInt(document.getElementById('prest_num_parcelas').value)||0):0;
@@ -4885,7 +4915,7 @@ function coletarDadosPrestacao(validar=false) {
   const base = {
     Title: (fornecedor||'Despesa')+' · '+(data||new Date().toLocaleDateString('pt-BR')),
     DataDespesa: data, Valor: valor, Empresa: empresa, CentroCusto: temDivisaoCC ? divisaoCC.map(d=>d.cc).join(' + ') : cc,
-    Fornecedor: fornecedor, Municipio: municipio, NumeroNF: nf, Observacoes: obs,
+    Fornecedor: fornecedor, Municipio: municipio, NumeroNF: '', Observacoes: descricao,
     Categoria: categoria, Subcategoria: subcategoria, NaturezaEconomica: rdNaturezaDeSubcategoria(subcategoria),
     FormaPagamento: formaPgto,
     Responsavel: window._currentUser?window._currentUser.name:'',
@@ -4931,7 +4961,7 @@ function prestMontarRegistrosParcelados(base, status) {
 }
 
 function limparFormPrestacao() {
-  ['prest_data','prest_valor','prest_nf','prest_obs','prest_num_parcelas','prest_venc_1parcela'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['prest_data','prest_valor','prest_descricao','prest_num_parcelas','prest_venc_1parcela'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const emp=document.getElementById('prest_empresa');if(emp)emp.selectedIndex=0;
   const cc=document.getElementById('prest_cc');if(cc)cc.innerHTML='<option value="">Selecione a empresa primeiro...</option>';
   const forn=document.getElementById('prest_fornecedor_input');if(forn)forn.value='';
@@ -5141,7 +5171,7 @@ async function carregarPrestacoes() {
       }
     }
 
-    const theadPrestHtml = '<thead><tr><th>Data</th><th>Lançado em</th><th>Fornecedor</th><th>Município</th><th>Empresa / CC</th><th>Pagamento</th><th>NF/Recibo</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead>';
+    const theadPrestHtml = '<thead><tr><th>Data</th><th>Lançado em</th><th>Fornecedor</th><th>Município</th><th>Empresa / CC</th><th>Pagamento</th><th>Descrição</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead>';
     const linhaPrest = i=>{
         const dias = diasDesde(i.DataLancamento);
         const atrasado = (i.Status === 'Ag. Financeiro' || i.Status === 'Ag. Aprovação Gestor') && dias !== null && dias > 3;
@@ -5155,7 +5185,7 @@ async function carregarPrestacoes() {
         <td style="font-size:.75rem">${i.Municipio||'—'}</td>
         <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa)||'—'}<br><span style="color:var(--text-muted)">${i.CentroCusto||''}</span></td>
         <td style="font-size:.72rem">${pgtoTxt}</td>
-        <td style="font-size:.75rem">${i.NumeroNF||'—'}${i.ComprovanteUrl?`<br><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.68rem">📎 Ver comprovante</a>`:''}</td>
+        <td style="font-size:.75rem">${i.Observacoes||i.NumeroNF||'—'}${i.ComprovanteUrl?`<br><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.68rem">📎 Ver comprovante</a>`:''}</td>
         <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></td>
         <td>
           <span class="status-pill ${scColor(i.Status)}">${i.Status||'—'}</span>
@@ -5212,12 +5242,11 @@ async function pcEditarPrestacao(id) {
   set('prest_fornecedor_sel', r.Fornecedor);
   const hint = document.getElementById('prest_fornecedor_municipio_hint');
   if (hint) hint.textContent = r.Municipio ? '📍 Município: ' + r.Municipio : '';
-  set('prest_nf', r.NumeroNF);
+  set('prest_descricao', r.Observacoes || r.NumeroNF || '');
   set('prest_subcategoria', r.Subcategoria);
   set('prest_subcategoria_input', r.Subcategoria);
   set('prest_categoria', r.Categoria || rdCategoriaDeSubcategoria(r.Subcategoria));
   set('prest_categoria_input', r.Categoria || rdCategoriaDeSubcategoria(r.Subcategoria));
-  set('prest_obs', r.Observacoes);
   set('prest_forma_pgto', r.FormaPagamento);
   set('prest_lancadopor', r.LancadoPor || r.EnviadoPor || r.Responsavel || '');
   // Cada parcela já é seu próprio registro em PrestacaoContas (mesmo padrão
@@ -5330,14 +5359,13 @@ async function exportarPrestacaoExcel() {
     'Centro de Custo': i.CentroCusto || '',
     'Categoria': i.Categoria || '',
     'Subcategoria': i.Subcategoria || '',
-    'NF/Recibo': i.NumeroNF || '',
+    'Descrição': i.Observacoes || i.NumeroNF || '',
     'Valor': i.Valor || 0,
     'Forma de Pagamento': i.FormaPagamento || '',
     'Parcelamento': i.Parcelamento === 'parcelado' ? (i.NumParcela ? ('parcela '+i.NumParcela+'/'+(i.TotalParcelas||i.NumParcelas||'')+' — '+(i.TipoParcelamento||'')) : ((i.NumParcelas||'')+'x — '+(i.TipoParcelamento||''))) : i.Parcelamento === 'faturado' ? 'Faturado' : 'À vista',
     'Status': i.Status || '',
     'Data de Pagamento': (i.Status==='Paga'&&i.DataPagamento) ? new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Motivo Devolução': i.MotivoReprovacao || '',
-    'Observações': i.Observacoes || '',
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
@@ -5799,12 +5827,11 @@ async function pcAbrirVisualizar(id) {
       ${linha('Data da Despesa', fmtData(i.DataDespesa))}
       ${linha('Forma de Pagamento', i.FormaPagamento||'—')}
       ${i.Parcelamento==='parcelado' ? linha('Parcelamento', i.NumParcela ? ('Parcela '+i.NumParcela+'/'+(i.TotalParcelas||i.NumParcelas||'?')+' — '+(i.TipoParcelamento||'')) : ((i.NumParcelas||'?')+'x — '+(i.TipoParcelamento||''))) : ''}
-      ${linha('NF/Recibo', i.NumeroNF||'—')}
+      ${linha('Descrição', i.Observacoes||i.NumeroNF||'—')}
       ${linha('Responsável', i.Responsavel||i.EnviadoPor||'—')}
       ${i.LancadoPor && i.LancadoPor !== i.Responsavel ? linha('Lançado por', i.LancadoPor) : ''}
       ${i.Conferido ? linha('Conferido por', i.ConferidoPor + (i.DataConferencia ? ' em ' + fmtData(i.DataConferencia) : '')) : ''}
       ${linha('Status', i.Status||'—')}
-      ${i.Observacoes ? linha('Observações', i.Observacoes) : ''}
       ${i.ComprovanteUrl ? `<div style="margin-top:8px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.8rem">📎 Ver comprovante</a></div>` : ''}
       ${acoesHtml}
     </div>`;
@@ -14516,7 +14543,38 @@ async function financeiroBuscarProvisoesDAS() {
   const provisoes = (todas || []).filter(r => r.Empresa === empresa && r.CompetenciaDAS === competencia && r.Subcategoria === 'Simples Nacional' && r.Provisorio === true);
   window._dasrProvisoes = provisoes;
   if (!provisoes.length) {
-    lista.innerHTML = '<div style="font-size:.8rem;color:var(--text-muted);padding:8px 0">Nenhuma provisão de DAS encontrada para essa empresa/competência.</div>';
+    // Antes de desistir, checa se existem NFs recebidas nessa empresa/competência que
+    // nunca geraram a provisão automática (caso clássico: NF importada de planilha já
+    // como "Recebido" — a provisão só é criada no momento em que o STATUS muda pra
+    // Recebido dentro do app, então uma NF que já chegou importada como Recebido nunca
+    // passa por essa transição e fica sem provisão — bug reportado em 15/10/2026,
+    // "coloquei o valor do DAS... e não acontece nada, não localiza nada"). _gdDasrAchouFaltantes
+    // guarda o resultado da checagem pra financeiroGerarProvisoesRetroativasDAS não ter
+    // que refazer a busca.
+    const receitas = await dbLerSeguro('Receitas').catch(() => []);
+    const jaProvisionadas = new Set((todas || [])
+      .filter(r => r.Empresa === empresa && r.Subcategoria === 'Simples Nacional' && r.NFOrigemId != null)
+      .map(r => r.NFOrigemId));
+    // "N/A" como NumeroNF não é nota fiscal de verdade (lançamento sem NF real,
+    // ex: transferência/reembolso registrado como Receita) — não entra na base do
+    // DAS. Descoberto em 15/10/2026 comparando com o extrato do PGDAS-D: a soma das
+    // NFs com número real batia exatamente com a "Receita Bruta do PA - Caixa"
+    // declarada, e incluir os "N/A" distorcia o rateio.
+    const faltantes = (receitas || []).filter(r =>
+      r.Empresa === empresa && r.Status === 'Recebido' &&
+      (r.NumeroNF || '').trim() && (r.NumeroNF || '').trim().toUpperCase() !== 'N/A' &&
+      (r.DataRecebimento || '').slice(0, 7) === competencia && !jaProvisionadas.has(r.Id)
+    );
+    window._dasrFaltantes = faltantes;
+    if (faltantes.length) {
+      lista.innerHTML = `
+        <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:10px 12px;font-size:.78rem;color:#92400e">
+          <strong>⚠️ ${faltantes.length} NF(s) recebida(s) em ${competencia} nunca geraram a provisão de DAS</strong> — provavelmente porque entraram no sistema já como "Recebido" (ex: importação de planilha), e a provisão só é criada automaticamente no momento em que o status muda pra Recebido dentro do app.
+          <div style="margin-top:8px"><button class="btn-primary" style="font-size:.76rem;padding:5px 10px" onclick="financeiroGerarProvisoesRetroativasDAS()">⚙️ Gerar as ${faltantes.length} provisão(ões) que faltam</button></div>
+        </div>`;
+    } else {
+      lista.innerHTML = '<div style="font-size:.8rem;color:var(--text-muted);padding:8px 0">Nenhuma provisão de DAS encontrada — e também não há nenhuma NF recebida dessa empresa nessa competência. Confira se a empresa e o mês selecionados são os certos (competência = mês em que a NF foi RECEBIDA, não o mês de vencimento do DAS).</div>';
+    }
     return;
   }
   const somaEstimada = provisoes.reduce((s, r) => s + (r.Valor || 0), 0);
@@ -14528,6 +14586,27 @@ async function financeiroBuscarProvisoesDAS() {
         <span style="font-weight:700">R$ ${rdNumeroParaMoeda(r.Valor || 0)}</span>
       </div>`).join('')}
     </div>`;
+}
+
+// -- Backfill: gera agora (de uma vez, pra todas as NFs achadas) a provisão de DAS
+// que deveria ter sido criada automaticamente quando cada NF foi marcada Recebido,
+// reaproveitando a mesma função usada no fluxo normal (financeiroGerarProvisaoImposto)
+// — pedido em 15/10/2026, depois de confirmar que NFs importadas de planilha já como
+// "Recebido" nunca passam pela transição de status que dispara a provisão automática. --
+async function financeiroGerarProvisoesRetroativasDAS() {
+  const faltantes = window._dasrFaltantes || [];
+  if (!faltantes.length) { showToast('⚠️ Nada para gerar — refaça a busca.'); return; }
+  showToast('🧮 Gerando ' + faltantes.length + ' provisão(ões)...');
+  let geradas = 0;
+  for (const r of faltantes) {
+    await financeiroGerarProvisaoImposto({
+      receitaId: r.Id, numeroNF: r.NumeroNF, cliente: r.Cliente, empresa: r.Empresa,
+      centroCusto: r.CentroCusto, valor: r.Valor, dataRecebimento: r.DataRecebimento,
+    });
+    geradas++;
+  }
+  showToast('✅ ' + geradas + ' provisão(ões) de DAS gerada(s) — buscando de novo...');
+  await financeiroBuscarProvisoesDAS();
 }
 
 async function financeiroConfirmarReconciliacaoDAS() {
@@ -64051,12 +64130,12 @@ function _gdSelectAcoesDocs(colabId, nomeEsc, docs, cIdx) {
     + `if(v==='acao:aso')gerarASO(${cIdx});`
     + `else if(v==='acao:epi')epiAbrirMenu(${cIdx});`
     + `else if(v==='acao:os')osPgrGerar(${cIdx});`
-    + `else if(v.indexOf('doc:')===0)gdAbrirModalDocColab('${colabId}','${nomeEsc}',parseInt(v.slice(4)));`;
+    + `else if(v.indexOf('doc:')===0)gdVisualizarDocColab('${colabId}',parseInt(v.slice(4)),${cIdx});`;
 
   return `<select onchange="${onchange}" onclick="event.stopPropagation()" style="font-size:.65rem;border:1px solid #e5e7eb;border-radius:12px;padding:2px 6px;color:#4b5563;background:#f9fafb;cursor:pointer;max-width:230px">`
     + `<option value="">⚙️ Ações e documentação (${docs.length})</option>`
     + (acoesOpts ? `<optgroup label="Ações rápidas">${acoesOpts}</optgroup>` : '')
-    + (docOpts ? `<optgroup label="Documentação (${docs.length})">${docOpts}</optgroup>` : '')
+    + (docOpts ? `<optgroup label="👁️ Visualizar documento (${docs.length})">${docOpts}</optgroup>` : '')
     + `</select>`;
 }
 
@@ -64113,8 +64192,14 @@ function _gdComputarListaColabsHtml() {
     const alertas = docs.filter(doc => ['alerta30', 'alerta90'].includes(gdStatusDocumento(doc))).length;
     const ok = docs.filter(doc => gdStatusDocumento(doc) === 'ok').length;
     const initials = colab.nome.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
-    const resumo = vencidos > 0 ? `<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">❌ ${vencidos} vencido(s)</span>`
-      : alertas > 0 ? `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">⚠️ ${alertas} atenção</span>`
+    // Badge agora é clicável quando há vencido/atenção — expande o card direto
+    // na tabela de documentos em vez de ficar inerte (bug reportado em 15/10/2026:
+    // "clico para visualizar esse vencido e não acontece nada" — antes era só um
+    // <span> estático dentro de um wrapper com stopPropagation, sem handler próprio).
+    const docTableId = 'gddoctbl_' + cIdx;
+    const resumoClick = `event.stopPropagation();const el=document.getElementById('${docTableId}');if(el)el.style.display=el.style.display==='none'?'block':'none';`;
+    const resumo = vencidos > 0 ? `<span onclick="${resumoClick}" title="Clique para ver o(s) documento(s) vencido(s)" style="cursor:pointer;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">❌ ${vencidos} vencido(s)</span>`
+      : alertas > 0 ? `<span onclick="${resumoClick}" title="Clique para ver o(s) documento(s) em atenção" style="cursor:pointer;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">⚠️ ${alertas} atenção</span>`
       : ok > 0 ? `<span style="background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">✅ ${ok} ok</span>`
       : `<span style="background:#f3f4f6;color:#6b7280;padding:2px 8px;border-radius:20px;font-size:.65rem;font-weight:700">— Sem docs</span>`;
     const expandido = (filtroKpi !== null || busca) ? 'block' : 'none';
@@ -64123,7 +64208,7 @@ function _gdComputarListaColabsHtml() {
       : `<table class="data-table" style="font-size:.78rem"><thead><tr><th>Tipo</th><th>Número</th><th>Emissão</th><th>Vencimento</th><th>Status</th><th></th></tr></thead><tbody>${
         docs.map((doc, dIdx) => {
           const st = gdStatusDocumento(doc);
-          const hl = (filtroKpi === 'vencido' && st === 'vencido') || (filtroKpi === 'alerta' && ['alerta30', 'alerta90'].includes(st));
+          const hl = st === 'vencido' || ['alerta30', 'alerta90'].includes(st);
           return `<tr${hl ? ' style="background:#fffbe6"' : ''}>
             <td><strong>${doc.tipo}</strong>${doc.obs ? `<div style="font-size:.65rem;color:var(--text-muted)">${doc.obs}</div>` : ''}</td>
             <td style="color:var(--text-muted)">${doc.numero || '—'}</td>
@@ -64169,7 +64254,7 @@ function _gdComputarListaColabsHtml() {
           <button class="btn-secondary" style="padding:4px 8px;font-size:.68rem;color:var(--red)" onclick="event.stopPropagation();gdExcluirColaborador(${cIdx})">🗑️</button>
         </div>
       </div>
-      <div style="display:${expandido};border-top:1px solid var(--border)">${tabelaDocs}</div>
+      <div id="${docTableId}" style="display:${expandido};border-top:1px solid var(--border)">${tabelaDocs}</div>
     </div>`;
   };
 
