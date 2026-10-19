@@ -47451,16 +47451,68 @@ const COL_RESIDUOS_LISTA = {
     'Solo contaminado',"EPC's contaminados",'Estopas contaminadas','Pó de serra contaminada',
     'Manta contaminada','Travesseiro absorvente contaminado','Lata de Tinta e Solvente',
     'Graxa','Sucata Contaminada','Sílica contaminada com óleo','Mercúrio',
-    'Embalagem de Produtos Químicos','Derivados de Petróleo','Outros Resíduos Classe I'
+    'Embalagem de Produtos Químicos','Derivados de Petróleo Líquido','Derivados de Petróleo Sólido',
+    'Efluente Caixa Separadora Água Óleo','Outros Resíduos Classe I'
   ],
   classeII: [
     'Papelão','Papel Branco','Plástico em Geral','Borracha e Pneus Inservíveis','Madeira',
     'Sucata de cabo de aço','Sucata de cabo de alumínio','Vidro em Geral','Lâmpada de LED',
-    'Escadas de alumínio e fibra','Cones',"EPI's em Geral",'Lacres',"EPC's",
+    'Escadas de alumínio','Escadas de fibra','Cones',"EPI's em Geral",'Lacres',"EPC's",
     'Sucata de Eletrônicos','Sucata de Ferro','Porcelana','Bolsas','Uniforme','Sílica',
     'Outros Resíduos Classe II'
   ]
 };
+
+/* -- Cadastro de Destinadores (empresas que recebem/destinam os resíduos) e seus
+      produtos/resíduos atendidos — pedido 16/10/2026: ao escolher o tipo de resíduo
+      no formulário de Coleta, puxar automático o destinador correspondente; quando
+      não houver um destinador cadastrado pra aquele tipo, o campo fica em branco
+      pra inserção manual. Fonte: tabela de preços/destinação passada pelo usuário. -- */
+const COL_DESTINADORES = [
+  {
+    nome: 'TL3 Engenharia',
+    cnpj: '45.665.785.0001/50',
+    produtos: [
+      'Cones', "EPC's", 'Escadas de fibra', 'Lacres', 'Lâmpada Fluorescente',
+      'Lâmpada de LED', 'Pilhas e Baterias', 'Sucata de Eletrônicos', 'Vidro em Geral'
+    ]
+  },
+  {
+    nome: 'Óleo Norte Comércio e Serviços',
+    cnpj: '49.044.489/0001-92',
+    produtos: [
+      'Derivados de Petróleo Líquido', 'Efluente Caixa Separadora Água Óleo',
+      'Embalagem de Produtos Químicos'
+    ]
+  },
+  {
+    nome: 'Faquimad',
+    cnpj: '17.095.387/0001-00',
+    produtos: [
+      "EPC's contaminados", "EPI's contaminados", "EPI's em Geral", 'Estopas contaminadas',
+      'Madeira', 'Manta contaminada', 'Papel Branco', 'Pó de serra contaminada',
+      'Travesseiro absorvente contaminado'
+    ]
+  },
+  {
+    nome: 'Metal Norte',
+    cnpj: '05.560.024/0001-19',
+    produtos: ['Papelão', 'Plástico em Geral', 'Sucata de cabo de alumínio', 'Sucata de Ferro']
+  }
+];
+
+const COL_TIPO_DESTINADOR_MAP = (() => {
+  const mapa = {};
+  COL_DESTINADORES.forEach(d => {
+    d.produtos.forEach(p => { mapa[p] = { nome: d.nome, cnpj: d.cnpj }; });
+  });
+  return mapa;
+})();
+
+function colDestinadorDoTipo(tipo) {
+  const info = COL_TIPO_DESTINADOR_MAP[tipo];
+  return info ? info.nome : '';
+}
 
 function colCampo(campo, valor) {
   window._colData[campo] = valor;
@@ -47489,7 +47541,7 @@ function colBuildResiduoDatalist() {
 
 function colAddLinhaResiduo() {
   if (!Array.isArray(window._colData.residuos)) window._colData.residuos = [];
-  window._colData.residuos.push({ classe: '', tipo: '', peso: '', unid: 'kg' });
+  window._colData.residuos.push({ classe: '', tipo: '', peso: '', unid: 'kg', destinador: '' });
   navigate('checklist_coleta');
 }
 
@@ -47511,6 +47563,19 @@ function colAtualizarResiduoTipo(idx, valor) {
     badge.style.background = classe==='I' ? '#fce8e8' : classe==='II' ? '#e6f5ed' : 'var(--surface)';
     badge.style.color = classe==='I' ? '#e03d3d' : classe==='II' ? '#2d8c5a' : 'var(--text-muted)';
   }
+  // Puxa automático o destinador cadastrado pra esse tipo de resíduo; quando não
+  // houver um correspondente, limpa o campo pra permitir preenchimento manual.
+  const destinador = colDestinadorDoTipo(valor);
+  window._colData.residuos[idx].destinador = destinador;
+  const destInput = document.getElementById('col-destinador-' + idx);
+  if (destInput) destInput.value = destinador;
+}
+
+/* -- Edição manual do destinador (quando não há um cadastrado pro tipo escolhido,
+      ou quando o usuário precisa corrigir/complementar o que foi auto-preenchido). -- */
+function colAtualizarResiduoDestinador(idx, valor) {
+  if (!window._colData.residuos[idx]) return;
+  window._colData.residuos[idx].destinador = valor;
 }
 
 /* -- Atualiza peso/unidade sem re-render completo — só recalcula o total exibido no topo. -- */
@@ -47718,11 +47783,41 @@ function renderColMiniDashboard() {
   `;
 }
 
+/* -- Modal de consulta: lista os destinadores cadastrados e os produtos/
+      resíduos que cada um atende. Só leitura — pra editar o cadastro,
+      é preciso alterar COL_DESTINADORES no código. -- */
+function colAbrirDestinadores() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'colDestinadoresModal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:640px;width:94vw;max-height:88vh">
+      <div class="modal-header">
+        <h2>🏭 Destinadores Cadastrados</h2>
+        <div class="modal-close" onclick="document.getElementById('colDestinadoresModal').remove()">✕</div>
+      </div>
+      <div class="modal-body" style="max-height:72vh;overflow-y:auto">
+        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Ao escolher o tipo de resíduo no formulário abaixo, o destinador correspondente é preenchido automaticamente com base nesse cadastro. Quando um tipo não está em nenhuma lista, o campo fica em branco para inserção manual.</div>
+        ${COL_DESTINADORES.map(dest => `
+        <div style="margin-bottom:14px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+          <div style="font-weight:700;font-size:.9rem;margin-bottom:2px">$${dest.nome}</div>
+          <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:8px">CNPJ: $${dest.cnpj}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            $${dest.produtos.map(p => `<span style="font-size:.7rem;padding:3px 8px;border-radius:12px;background:var(--surface);border:1px solid var(--border)">${p}</span>`).join('')}
+          </div>
+        </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
 function pageChecklistColeta() {
   const d = window._colData;
   if (!Array.isArray(d.residuos)) d.residuos = [];
   if (!Array.isArray(d.fotos)) d.fotos = [];
-  if (!d.residuos.length) d.residuos.push({ classe: 'I', tipo: '', peso: '', unid: 'kg' });
+  if (!d.residuos.length) d.residuos.push({ classe: 'I', tipo: '', peso: '', unid: 'kg', destinador: '' });
   if (window._colHistorico === null) carregarColetaHistorico();
 
   const tot = colCalcularTotais();
@@ -47778,14 +47873,18 @@ function pageChecklistColeta() {
   <div class="card" style="margin-bottom:16px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="margin:0">Resíduos Coletados</div>
-      <div id="col-total-kg-header" style="font-size:.85rem;font-weight:700;color:var(--green-main);font-family:'Mont',sans-serif">Total: ${tot.totalKg.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} kg</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button class="btn-secondary" style="font-size:.75rem" onclick="colAbrirDestinadores()">🏭 Destinadores</button>
+        <div id="col-total-kg-header" style="font-size:.85rem;font-weight:700;color:var(--green-main);font-family:'Mont',sans-serif">Total: ${tot.totalKg.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} kg</div>
+      </div>
     </div>
     <datalist id="col_dl_residuos">${colBuildResiduoDatalist()}</datalist>
     ${d.residuos.map((r, i) => `
-    <div style="display:grid;grid-template-columns:28px 1fr 74px 90px 70px 32px;gap:8px;align-items:center;margin-bottom:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+    <div style="display:grid;grid-template-columns:28px 1fr 70px 1fr 70px 64px 32px;gap:8px;align-items:center;margin-bottom:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
       <div style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-align:center">${i+1}</div>
       <input type="text" list="col_dl_residuos" value="${(r.tipo||'').replace(/"/g,'&quot;')}" oninput="colAtualizarResiduoTipo(${i},this.value)" placeholder="Buscar resíduo... (digite pra filtrar)" style="border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.75rem">
       <div id="col-classe-badge-${i}" style="text-align:center;font-size:.68rem;font-weight:700;padding:5px 4px;border-radius:6px;background:${r.classe==='I'?'#fce8e8':r.classe==='II'?'#e6f5ed':'var(--surface)'};color:${r.classe==='I'?'#e03d3d':r.classe==='II'?'#2d8c5a':'var(--text-muted)'}">${r.classe?'Classe '+r.classe:'—'}</div>
+      <input type="text" id="col-destinador-${i}" value="${(r.destinador||'').replace(/"/g,'&quot;')}" oninput="colAtualizarResiduoDestinador(${i},this.value)" placeholder="Destinador (auto)" style="border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.75rem">
       <input type="number" step="0.01" min="0" value="${r.peso||''}" oninput="colAtualizarResiduoNum(${i},'peso',this.value)" placeholder="Peso" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
       <select onchange="colAtualizarResiduoNum(${i},'unid',this.value)" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
         <option value="kg" ${r.unid==='kg'?'selected':''}>kg</option>
@@ -61836,6 +61935,13 @@ async function asoGerarPDF() {
     + '</td></tr></tbody></table>'
     + '</body></html>';
 
+  const _prazoAtualizado = await asoAtualizarPrazoColaborador(colab, tipoLabel, numeroAso);
+  if (_prazoAtualizado) {
+    showToast('📅 Gestão de Prazos atualizada — próximo ASO em ' + _prazoAtualizado.split('-').reverse().join('/'));
+  } else {
+    showToast('📅 Gestão de Prazos atualizada (ASO Demissional — sem próxima renovação).');
+  }
+
   document.getElementById('modal-aso').remove();
   const w = window.open('', '_blank', 'width=880,height=740,scrollbars=yes');
   if (!w) { showToast('⚠️ Permita pop-ups para gerar o ASO.'); return; }
@@ -65942,6 +66048,57 @@ function fmtDate(s) {
 async function save() {
   localStorage.setItem('exp_acoes2', JSON.stringify(acoes)); // cache local
   try { await dbSalvar('Prazos', acoes); } catch(e) { console.warn('[Prazos] Erro ao salvar OneDrive:', e); }
+}
+
+/* -- Integração automática: Gerador de ASO -> Gestão de Prazos (19/10/2026) --
+   Chamada pelo asoGerarPDF() sempre que um ASO é efetivamente gerado.
+   1) Fecha (status 'concluido') qualquer pendência de ASO em aberto desse
+      colaborador em Gestão de Prazos -- o exame que estava pendente acabou de
+      ser realizado agora.
+   2) Exceto quando o ASO é Demissional (colaborador está saindo, não há
+      próximo exame a acompanhar), cria uma nova pendência com vencimento
+      estimado em 1 ano (periodicidade padrão da maioria dos exames do PCMSO) --
+      ajustar manualmente na tela de Prazos se a função tiver periodicidade
+      diferente (ex.: GR mais alto, exposição a agentes específicos). */
+async function asoAtualizarPrazoColaborador(colab, tipoLabel, numeroAso) {
+  try {
+    const hojeISO = new Date().toISOString().slice(0, 10);
+    const nomeColab = (colab.nome || '').toLowerCase();
+
+    const abertas = acoes.filter(a =>
+      a.area === 'saude' && a.programa === 'ASO' &&
+      (a.colaborador || '').toLowerCase() === nomeColab &&
+      a.status !== 'concluido'
+    );
+    abertas.forEach(a => {
+      a.status = 'concluido';
+      a.dataConclusao = hojeISO;
+      a.obs = (a.obs ? a.obs + ' ' : '') + '✅ ASO Nº ' + numeroAso + ' gerado em ' + hojeISO + ' (' + tipoLabel + ').';
+    });
+
+    let prazoCriado = null;
+    if (tipoLabel !== 'Demissional') {
+      prazoCriado = new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10);
+      acoes.push({
+        id: uid(),
+        area: 'saude',
+        descricao: 'Renovar ASO — ' + colab.nome + ' (' + (colab.cargo || '') + ')',
+        programa: 'ASO',
+        colaborador: colab.nome,
+        tipo: 'Periódico',
+        responsavel: 'Tiago Tavares',
+        prazo: prazoCriado,
+        prioridade: 'Baixa',
+        status: 'pendente',
+        dataConclusao: null,
+        obs: 'Criado automaticamente ao gerar o ASO Nº ' + numeroAso + ' (' + tipoLabel + ') em ' + hojeISO + '. Vencimento estimado em 1 ano -- confirmar periodicidade real no PCMSO se a função exigir intervalo diferente.',
+        criadoEm: new Date().toISOString(),
+      });
+    }
+
+    await save();
+    return prazoCriado;
+  } catch(e) { console.warn('[ASO→Prazos] Falha ao atualizar Gestão de Prazos', e); return null; }
 }
 
 /* -- Seed dos ASOs 2026 da equipe Expedian --
