@@ -60611,6 +60611,41 @@ async function ncHidratarFoto(foto) {
       return foto;
     }
   }
+  // Formato de migração (fotos extraídas em lote direto do arquivo local
+  // sincronizado, sem passar pelo Graph — mesmo esquema de
+  // flashHidratarFoto/flashMigrarFotosAntigasParaOneDrive, usado em
+  // 20/10/2026 pra encolher o NotificacoesEnergisa.json de ~12,8MB): só tem
+  // o nome do arquivo, sem id/driveId. Busca por caminho em
+  // OD_FOLDERS.notificacoesFotos.
+  if (foto.nome) {
+    const chave = 'nome:' + foto.nome;
+    if (window._ncFotoHidratacaoCache[chave]) {
+      return Object.assign({}, foto, { dataUrl: window._ncFotoHidratacaoCache[chave] });
+    }
+    try {
+      const token = await getOneDriveToken();
+      if (!token) return foto;
+      const pasta = await _resolverRaizPara(OD_FOLDERS.notificacoesFotos, false, token);
+      if (!pasta) return foto;
+      const subId = await garantirPastaOneDrive(token, pasta.driveId, pasta.itemId, OD_FOLDERS.notificacoesFotos);
+      if (!subId) return foto;
+      const url = 'https://graph.microsoft.com/v1.0/drives/' + pasta.driveId + '/items/' + subId + ':/' + encodeURIComponent(foto.nome) + ':/content';
+      const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!resp.ok) { console.warn('[Notificação NC] Falha ao baixar foto (por nome)', foto.nome, resp.status); return foto; }
+      const blob = await resp.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      window._ncFotoHidratacaoCache[chave] = dataUrl;
+      return Object.assign({}, foto, { dataUrl });
+    } catch (e) {
+      console.warn('[Notificação NC] Erro ao hidratar foto (por nome):', e);
+      return foto;
+    }
+  }
   return foto;
 }
 async function ncHidratarFotos(fotos) {
