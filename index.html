@@ -1500,6 +1500,7 @@ function renderPage(id) {
     checklist_fornecedores: () => pageChecklistFornecedores(),
     checklist_obras: () => pageChecklistObras(),
     checklist_historico_obra: () => pageChecklistHistoricoObra(),
+    checklist_vao_a_vao: () => pageChecklistVaoAVao(),
     checklist_medicao: () => pageChecklistMedicao(),
     checklist_faturamento: () => pageChecklistFaturamento(),
     checklist_fauna: () => pageChecklistFauna(),
@@ -40375,6 +40376,7 @@ const FISCALIZACAO_ERO_CATALOGO = [
   { rota: 'checklist_fornecedores', icon: '🧾', titulo: 'Fornecedores', subtitulo: 'Documentação legal dos fornecedores instalados em cada circuito — Conforme/Não Conforme/N.A.' },
   { rota: 'checklist_obras', icon: '📋', titulo: 'Relatório Mensal de Obras', subtitulo: 'Entrega e aprovação do relatório mensal da empreiteira — prazo dia 10 (dia 5 até set/2026), com/sem ressalvas' },
   { rota: 'checklist_historico_obra', icon: '🕓', titulo: 'Histórico das Obras', subtitulo: 'Linha do tempo de acontecimentos e ações por circuito elétrico — kickoff, decisões, combinados...' },
+  { rota: 'checklist_vao_a_vao', icon: '📐', titulo: 'Checklist Vão a Vão', subtitulo: 'Vistoria ambiental detalhada por estrutura/vão (acesso, resíduos, erosão, supressão, corte seletivo), por circuito elétrico' },
 ];
 
 function pageFiscalizacaoEro() {
@@ -40393,6 +40395,360 @@ function pageFiscalizacaoEro() {
     </div>`).join('')}
   </div>`;
 }
+
+/* ================================================================
+   Checklist Vão a Vão — vistoria ambiental detalhada por
+   estrutura/vão, dentro de Fiscalização Ambiental ERO (pedido
+   20/10/2026). Mesmo padrão de persistência do Checklist Linha
+   (registro-resumo na tabela 'ChecklistVaoAVao' + snapshot completo
+   em Checklists/VaoAVao/dados/<Id>.json), mas o item avaliado aqui é
+   cada estrutura (AT) ou vão individual do traçado da linha, não o
+   trecho inteiro. Escopo inicial: só o circuito 'at2' (LDAT 138 kV
+   Pimenta Bueno / Espigão D'Oeste) já vem com as 211 estruturas/vãos
+   cadastradas (seed a partir do KMZ do projeto); os demais circuitos
+   abrem vazios até alguém cadastrar manualmente ou, no futuro, subir
+   um KMZ equivalente. -- */
+if (window._vavHistorico === undefined) window._vavHistorico = null;
+if (window._vavFrenteId === undefined) window._vavFrenteId = 'at2';
+if (window._vavData === undefined) window._vavData = null;
+if (window._vavCarregouFrente === undefined) window._vavCarregouFrente = false;
+if (window._vavRegistroAtualId === undefined) window._vavRegistroAtualId = null;
+if (window._vavExpandidoNum === undefined) window._vavExpandidoNum = null;
+if (window._vavFiltro === undefined) window._vavFiltro = '';
+if (window._vavSalvando === undefined) window._vavSalvando = false;
+
+const VAV_CRITERIOS = [
+  { key: 'acesso', label: 'Acesso' },
+  { key: 'residuos', label: 'Resíduos' },
+  { key: 'erosao', label: 'Erosão' },
+  { key: 'cursoHidrico', label: 'Curso Hídrico' },
+  { key: 'supressaoVegetal', label: 'Supressão Vegetal' },
+];
+
+async function vavCarregarHistorico() {
+  window._vavHistorico = (await dbLerSeguro('ChecklistVaoAVao')) || [];
+  navigate('checklist_vao_a_vao');
+}
+
+async function vavAbrirFrente(frenteId) {
+  window._vavFrenteId = frenteId;
+  window._vavCarregouFrente = false;
+  window._vavData = null;
+  window._vavExpandidoNum = null;
+  window._vavFiltro = '';
+  navigate('checklist_vao_a_vao');
+
+  const registro = (window._vavHistorico || []).find(r => r.frenteId === frenteId);
+  if (registro && registro.arquivoDados) {
+    const texto = await baixarArquivoCentral(registro.arquivoDados);
+    window._vavData = texto ? JSON.parse(texto) : { itens: [] };
+  } else {
+    window._vavData = { itens: [] };
+  }
+  window._vavRegistroAtualId = registro ? registro.Id : null;
+  window._vavCarregouFrente = true;
+  navigate('checklist_vao_a_vao');
+}
+
+function vavSituacao(item) {
+  const vals = VAV_CRITERIOS.map(c => item[c.key]);
+  if (vals.some(v => v === null || v === undefined)) return 'pendente';
+  if (vals.some(v => v === 'NC')) return 'nao_conforme';
+  return 'conforme';
+}
+
+function vavResumoConformidade(itens) {
+  return VAV_CRITERIOS.map(c => {
+    const vals = itens.map(it => it[c.key]);
+    return {
+      label: c.label,
+      C: vals.filter(v => v === 'C').length,
+      NC: vals.filter(v => v === 'NC').length,
+      NA: vals.filter(v => v === 'NA').length,
+      pendente: vals.filter(v => v === null || v === undefined).length,
+    };
+  });
+}
+
+function vavCampo(numero, campo, valor) {
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item) return;
+  item[campo] = valor;
+  navigate('checklist_vao_a_vao');
+}
+
+async function vavCarregarFoto(numero, event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item) return;
+  if (!item.fotos) item.fotos = [];
+  const vagas = Math.max(0, 6 - item.fotos.length);
+  if (!vagas) { showToast('⚠️ Esse item já tem o máximo de 6 fotos — remova alguma antes de adicionar mais.'); event.target.value = ''; return; }
+  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo 6 por item).');
+  for (const file of files.slice(0, vagas)) {
+    const { dataUrl } = await _eroRedimensionarFoto(file);
+    item.fotos.push(dataUrl);
+  }
+  event.target.value = '';
+  navigate('checklist_vao_a_vao');
+}
+
+function vavRemoverFoto(numero, idx) {
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item || !item.fotos) return;
+  item.fotos.splice(idx, 1);
+  navigate('checklist_vao_a_vao');
+}
+
+function vavExpandir(numero) {
+  window._vavExpandidoNum = (window._vavExpandidoNum === numero) ? null : numero;
+  navigate('checklist_vao_a_vao');
+}
+
+function vavFiltrar(valor) {
+  window._vavFiltro = valor;
+  navigate('checklist_vao_a_vao');
+}
+
+async function vavSalvar() {
+  if (window._vavSalvando) return;
+  window._vavSalvando = true;
+  const frente = FLASH_FRENTES.find(f => f.id === window._vavFrenteId);
+  const itens = (window._vavData && window._vavData.itens) || [];
+  const totalAT = itens.filter(i => i.tipo === 'AT').length;
+  const totalVAO = itens.filter(i => i.tipo === 'VAO').length;
+  const extensaoTotal = itens.reduce((s, i) => s + (i.extensaoM || 0), 0);
+  const avaliados = itens.filter(i => vavSituacao(i) !== 'pendente').length;
+  const qtdNaoConforme = itens.filter(i => vavSituacao(i) === 'nao_conforme').length;
+  const percentual = itens.length ? Math.round((avaliados / itens.length) * 100) : 0;
+
+  const meuId = window._vavRegistroAtualId || Date.now();
+  const registro = {
+    Id: meuId,
+    Title: 'Vão a Vão - ' + (frente ? frente.nome : window._vavFrenteId),
+    frenteId: window._vavFrenteId,
+    frenteNome: frente ? frente.nome : '',
+    totalEstruturas: totalAT,
+    totalVaos: totalVAO,
+    extensaoTotalM: Math.round(extensaoTotal * 10) / 10,
+    QtdNaoConforme: qtdNaoConforme,
+    Percentual: percentual + '%',
+    Status: percentual >= 100 ? 'Concluído' : 'Em andamento',
+    arquivoDados: 'Checklists/VaoAVao/dados/' + meuId + '.json',
+  };
+
+  showSyncStatus('Enviando para OneDrive...');
+  const novo = window._vavRegistroAtualId
+    ? (await dbAtualizar('ChecklistVaoAVao', meuId, registro)) ? registro : null
+    : await dbInserir('ChecklistVaoAVao', registro);
+
+  const blobDados = new Blob([JSON.stringify(window._vavData)], { type: 'application/json' });
+  await uploadParaOneDrive(blobDados, 'Checklists/VaoAVao/dados', meuId + '.json');
+
+  window._vavRegistroAtualId = meuId;
+  if (!Array.isArray(window._vavHistorico)) window._vavHistorico = [];
+  const idxHist = window._vavHistorico.findIndex(r => r.Id === meuId);
+  const registroSalvo = novo || { ...registro, Created: new Date().toISOString() };
+  if (idxHist >= 0) window._vavHistorico[idxHist] = registroSalvo;
+  else window._vavHistorico.unshift(registroSalvo);
+
+  window._vavSalvando = false;
+  if (novo) {
+    showSyncStatus('Sincronizado com OneDrive!', 'ok', 4000);
+    showToast('☁️ Checklist Vão a Vão salvo e sincronizado com o OneDrive!');
+  } else {
+    showSyncStatus('Sem conexão com o OneDrive', 'err', 4000);
+    showToast('⚠️ Salvo apenas neste dispositivo. Verifique o login com Microsoft e tente sincronizar de novo.');
+  }
+  navigate('checklist_vao_a_vao');
+}
+
+function vavBotoesTri(numero, campo, valorAtual) {
+  return ['C', 'NC', 'NA'].map(v => {
+    const ativo = valorAtual === v;
+    const cor = v === 'C' ? 'var(--green-mid)' : (v === 'NC' ? 'var(--red)' : '#9aa0ab');
+    return `<button type="button" onclick="vavCampo(${numero}, '${campo}', '${v}')"
+      style="flex:1;border:1px solid ${ativo ? cor : 'var(--border)'};background:${ativo ? cor : '#fff'};color:${ativo ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">${v}</button>`;
+  }).join('');
+}
+
+function vavTipoBadge(tipo) {
+  return tipo === 'AT'
+    ? `<span style="background:#5b4bbf;color:#fff;font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap">AT</span>`
+    : `<span style="background:#1f8fbf;color:#fff;font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap">VÃO</span>`;
+}
+
+function vavSituacaoBadge(situacao) {
+  if (situacao === 'conforme') return `<span style="background:var(--green-pale);color:var(--green-mid);font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:14px;white-space:nowrap">✔ Conforme</span>`;
+  if (situacao === 'nao_conforme') return `<span style="background:#fdecea;color:var(--red);font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:14px;white-space:nowrap">✖ Não Conforme</span>`;
+  return `<span style="background:#f3f4f6;color:var(--text-muted);font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:14px;white-space:nowrap">⏳ Pendente</span>`;
+}
+
+function vavRenderItemExpandido(item) {
+  const situacao = vavSituacao(item);
+  return `
+  <div class="card" style="margin-bottom:8px;border:1px solid var(--border)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;cursor:pointer" onclick="vavExpandir(${item.numero})">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        ${vavTipoBadge(item.tipo)}
+        <span style="font-weight:700;font-size:.82rem">Nº ${item.numero}</span>
+        <span style="font-size:.82rem">${item.estruturaVao}</span>
+        ${item.extensaoM != null ? `<span style="font-size:.74rem;color:var(--text-muted)">(${item.extensaoM.toLocaleString('pt-BR')} m)</span>` : ''}
+      </div>
+      ${vavSituacaoBadge(situacao)}
+    </div>
+
+    <div style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
+      ${VAV_CRITERIOS.map(c => `
+      <div>
+        <label style="display:block;font-size:.72rem;font-weight:600;margin-bottom:5px">${c.label}</label>
+        <div style="display:flex;gap:5px">${vavBotoesTri(item.numero, c.key, item[c.key])}</div>
+      </div>`).join('')}
+    </div>
+
+    <div style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+      <div class="form-group" style="margin:0"><label>Corte seletivo — dentro da faixa</label>
+        <input type="number" min="0" value="${item.corteDentro || 0}" oninput="vavCampo(${item.numero}, 'corteDentro', parseInt(this.value||0,10))"></div>
+      <div class="form-group" style="margin:0"><label>Corte seletivo — fora da faixa</label>
+        <input type="number" min="0" value="${item.corteFora || 0}" oninput="vavCampo(${item.numero}, 'corteFora', parseInt(this.value||0,10))"></div>
+      <div class="form-group" style="margin:0"><label>Plaqueteado?</label>
+        <div style="display:flex;gap:5px">
+          <button type="button" onclick="vavCampo(${item.numero}, 'plaqueteado', 'S')" style="flex:1;border:1px solid ${item.plaqueteado === 'S' ? 'var(--green-mid)' : 'var(--border)'};background:${item.plaqueteado === 'S' ? 'var(--green-mid)' : '#fff'};color:${item.plaqueteado === 'S' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">Sim</button>
+          <button type="button" onclick="vavCampo(${item.numero}, 'plaqueteado', 'N')" style="flex:1;border:1px solid ${item.plaqueteado === 'N' ? 'var(--red)' : 'var(--border)'};background:${item.plaqueteado === 'N' ? 'var(--red)' : '#fff'};color:${item.plaqueteado === 'N' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">Não</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+      <div class="form-group" style="margin:0"><label>Medição</label>
+        <input type="text" value="${(item.medicao || '').replace(/"/g, '&quot;')}" oninput="vavCampo(${item.numero}, 'medicao', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Data da vistoria</label>
+        <input type="date" value="${item.dataVistoria || ''}" onchange="vavCampo(${item.numero}, 'dataVistoria', this.value)"></div>
+      <div class="form-group" style="margin:0"><label>Responsável</label>
+        <select onchange="vavCampo(${item.numero}, 'responsavel', this.value)">
+          <option value="">-- Selecione --</option>
+          ${ERO_TECNICOS.map(t => `<option value="${t}" ${item.responsavel === t ? 'selected' : ''}>${t}</option>`).join('')}
+        </select></div>
+    </div>
+
+    <div class="form-group"><label>Observações / Não Conformidade</label>
+      <textarea style="min-height:60px" oninput="vavCampo(${item.numero}, 'observacoes', this.value)" placeholder="Descreva o que foi observado em campo...">${item.observacoes || ''}</textarea></div>
+    <div class="form-group"><label>Ação / Prazo</label>
+      <input type="text" value="${(item.acaoPrazo || '').replace(/"/g, '&quot;')}" oninput="vavCampo(${item.numero}, 'acaoPrazo', this.value)" placeholder="Ex.: Solicitar poda em 10 dias"></div>
+
+    <div class="form-group">
+      <label>Evidência (fotos) — ${(item.fotos || []).length}/6</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+        ${(item.fotos || []).map((f, idx) => `
+        <div style="position:relative">
+          <img src="${f}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:pointer" onclick="abrirFotoAmpliada('${f}')">
+          <button type="button" onclick="event.stopPropagation(); vavRemoverFoto(${item.numero}, ${idx})" title="Remover" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;background:var(--red);color:#fff;border:none;font-size:.6rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>
+        </div>`).join('')}
+      </div>
+      <label class="btn-secondary" style="display:inline-block;font-size:.74rem;padding:6px 12px;cursor:pointer">
+        📷 Adicionar foto
+        <input type="file" accept="image/*" multiple capture="environment" style="display:none" onchange="vavCarregarFoto(${item.numero}, event)">
+      </label>
+    </div>
+  </div>`;
+}
+
+function vavRenderItemColapsado(item) {
+  const situacao = vavSituacao(item);
+  return `
+  <div class="card" style="padding:9px 14px;margin-bottom:5px;cursor:pointer" onclick="vavExpandir(${item.numero})">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">
+        ${vavTipoBadge(item.tipo)}
+        <span style="font-weight:700;font-size:.78rem;white-space:nowrap">Nº ${item.numero}</span>
+        <span style="font-size:.78rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${item.estruturaVao}</span>
+      </div>
+      ${vavSituacaoBadge(situacao)}
+    </div>
+  </div>`;
+}
+
+function pageChecklistVaoAVao() {
+  if (window._vavHistorico === null) { vavCarregarHistorico(); }
+  if (window._vavHistorico && !window._vavCarregouFrente && window._vavData === null) { vavAbrirFrente(window._vavFrenteId); }
+
+  const header = `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div><h1>Checklist Vão a Vão</h1><p>Vistoria ambiental detalhada por estrutura/vão — Contrato 2025022101</p></div>
+    <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="form-group" style="margin:0;max-width:420px"><label>Circuito Elétrico / Frente</label>
+      <select onchange="vavAbrirFrente(this.value)">
+        ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${window._vavFrenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
+      </select>
+    </div>
+  </div>`;
+
+  if (!window._vavHistorico || !window._vavCarregouFrente || window._vavData === null) {
+    return header + `<div class="card"><div style="font-size:.85rem;color:var(--text-muted)">Carregando...</div></div>`;
+  }
+
+  const itens = window._vavData.itens || [];
+
+  if (!itens.length) {
+    return header + `
+    <div class="card" style="text-align:center;padding:30px 20px">
+      <div style="font-size:1.8rem;margin-bottom:8px">📐</div>
+      <div class="card-title" style="margin-bottom:6px">Nenhuma estrutura cadastrada ainda neste circuito</div>
+      <div style="font-size:.8rem;color:var(--text-muted)">Cadastre as estruturas/vãos (a partir do traçado KMZ do projeto) para começar a vistoria vão a vão deste circuito elétrico.</div>
+    </div>`;
+  }
+
+  const resumo = vavResumoConformidade(itens);
+  const avaliados = itens.filter(i => vavSituacao(i) !== 'pendente').length;
+  const qtdNC = itens.filter(i => vavSituacao(i) === 'nao_conforme').length;
+  const percentual = itens.length ? Math.round((avaliados / itens.length) * 100) : 0;
+  const totalAT = itens.filter(i => i.tipo === 'AT').length;
+  const totalVAO = itens.filter(i => i.tipo === 'VAO').length;
+  const extensaoTotal = itens.reduce((s, i) => s + (i.extensaoM || 0), 0);
+
+  const filtro = (window._vavFiltro || '').trim().toLowerCase();
+  const itensFiltrados = filtro
+    ? itens.filter(it => String(it.numero).includes(filtro) || (it.estruturaVao || '').toLowerCase().includes(filtro))
+    : itens;
+
+  return header + `
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title" style="margin-bottom:10px">📊 Resumo da Vistoria</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px">
+      <div><div style="font-size:.68rem;color:var(--text-muted)">Estruturas (AT)</div><div style="font-weight:700;font-size:1.1rem">${totalAT}</div></div>
+      <div><div style="font-size:.68rem;color:var(--text-muted)">Vãos</div><div style="font-weight:700;font-size:1.1rem">${totalVAO}</div></div>
+      <div><div style="font-size:.68rem;color:var(--text-muted)">Extensão total</div><div style="font-weight:700;font-size:1.1rem">${extensaoTotal.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m</div></div>
+      <div><div style="font-size:.68rem;color:var(--text-muted)">Vistoriado</div><div style="font-weight:700;font-size:1.1rem">${percentual}%</div></div>
+      <div><div style="font-size:.68rem;color:var(--text-muted)">Não Conformes</div><div style="font-weight:700;font-size:1.1rem;color:${qtdNC ? 'var(--red)' : 'inherit'}">${qtdNC}</div></div>
+    </div>
+    <table style="width:100%;font-size:.76rem;border-collapse:collapse">
+      <thead><tr style="text-align:left;color:var(--text-muted)"><th style="padding:4px 6px">Critério</th><th style="padding:4px 6px">C</th><th style="padding:4px 6px">NC</th><th style="padding:4px 6px">NA</th><th style="padding:4px 6px">Pendente</th></tr></thead>
+      <tbody>
+        ${resumo.map(r => `<tr style="border-top:1px solid var(--border)">
+          <td style="padding:5px 6px;font-weight:600">${r.label}</td>
+          <td style="padding:5px 6px;color:var(--green-mid);font-weight:700">${r.C}</td>
+          <td style="padding:5px 6px;color:var(--red);font-weight:700">${r.NC}</td>
+          <td style="padding:5px 6px;color:var(--text-muted)">${r.NA}</td>
+          <td style="padding:5px 6px;color:var(--text-muted)">${r.pendente}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+
+  <div style="position:sticky;top:8px;z-index:4;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--bg);padding:6px 0">
+    <input type="text" placeholder="🔎 Buscar por Nº ou estrutura/vão..." value="${window._vavFiltro || ''}" oninput="vavFiltrar(this.value)" style="flex:1;min-width:200px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.82rem">
+    <button class="btn-primary" onclick="vavSalvar()" ${window._vavSalvando ? 'disabled' : ''}>${window._vavSalvando ? 'Salvando...' : '💾 Salvar Vistoria'}</button>
+  </div>
+
+  <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">${itensFiltrados.length} de ${itens.length} itens${filtro ? ' (filtrado)' : ''}</div>
+
+  ${itensFiltrados.map(item => item.numero === window._vavExpandidoNum ? vavRenderItemExpandido(item) : vavRenderItemColapsado(item)).join('')}
+  `;
+}
+
 
 /* -- Hub "Financeiro": mesmo padrão do hub de Fiscalização Ambiental ERO acima
    (grade de cartões clicáveis, responsiva — colapsa pra 1 coluna em telas
