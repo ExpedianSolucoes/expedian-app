@@ -52699,6 +52699,7 @@ function ncFecharForm() {
 async function ncEditarRegistro(id) {
   const n = (window._ncHistorico || []).find(r => r.Id === id);
   if (!n) { showToast('⚠️ Registro não encontrado.'); return; }
+  await ncHidratarFotosProprias(n);
   await ncHidratarFotosReferenciadas(n.Fotos || []);
   window._ncData = {
     frenteId: n.FrenteId || FLASH_FRENTES[0].id,
@@ -53166,6 +53167,9 @@ async function ncSalvar(manterFormAberto) {
   if (!d.numero) d.numero = ncPreviewNumero();
   const frente = FLASH_FRENTES.find(f => f.id === d.frenteId);
   const editandoId = window._ncRegistroAtualId;
+  showSyncStatus('Enviando fotos...');
+  const fotosExternalizadas = await ncPrepararFotosParaSalvar(d.fotos || [], 'NC', d.data);
+  const atendFotosExternalizadas = await ncPrepararFotosParaSalvar(d.atendimentoFotos || [], 'NCAT', d.data);
   const registro = {
     Title: d.numero + ' — ' + (frente ? frente.nome : d.frenteId),
     FrenteId: d.frenteId, FrenteNome: frente ? frente.nome : d.frenteId, Empreiteira: frente ? frente.empreiteira : '',
@@ -53177,10 +53181,10 @@ async function ncSalvar(manterFormAberto) {
     Fundamentacao: d.fundamentacao, Acao: d.acao, Prazo: d.prazo, Severidade: d.severidade, Status: d.status,
     Fiscal: d.fiscal, Gestor: d.gestor,
     NcsExtras: (d.ncsExtras || []).map(nc => ({ descricao: nc.descricao, programa: nc.programa, acao: nc.acao })),
-    Fotos: d.fotos || [],
+    Fotos: fotosExternalizadas,
     AtendimentoData: d.atendimentoData, AtendimentoStatus: d.atendimentoStatus,
     AtendimentoPrazoStatus: ncCalcularStatusPrazoAtendimento(d.prazo, d.atendimentoData),
-    AtendimentoFotos: d.atendimentoFotos || [],
+    AtendimentoFotos: atendFotosExternalizadas,
   };
   showSyncStatus('Salvando notificação...');
   let ok;
@@ -53725,6 +53729,8 @@ function pageChecklistNotif() {
     <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
       <div style="font-size:.85rem;color:var(--text-muted)">Emita uma notificação sempre que uma não conformidade ambiental for identificada em campo.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${(window._ncHistorico || []).some(r => (r.Fotos || []).some(f => f && f.dataUrl) || (r.AtendimentoFotos || []).some(f => f && f.dataUrl)) ? `
+        <button class="btn-secondary" style="font-size:.75rem" onclick="ncMigrarFotosAntigasParaOneDrive()" title="Move as fotos que ainda estão embutidas nos registros antigos para arquivos separados no OneDrive, reduzindo bastante o tamanho do arquivo principal">🧹 Migrar fotos antigas</button>` : ''}
         <button class="btn-primary" onclick="ncAbrirNovo()">➕ Nova Notificação</button>
       </div>
     </div>
@@ -59493,6 +59499,7 @@ const OD_FOLDERS = {
   solicitacoes: 'Solicitacoes/Anexos',
   fornecedoresEnergisa: 'Energisa/FornecedoresLegais',
   flashReportsFotos: 'Energisa/FlashReports/Fotos',
+  notificacoesFotos: 'Energisa/Notificacoes/Fotos',
   roteiroFotos: 'Energisa/Roteiro/Fotos',
   flashReportsFaunaFotos: 'Fauna/FlashReports/Fotos',
   licenciamentoProcessos: 'Licenciamento/Processos',
@@ -60553,6 +60560,137 @@ async function flashMigrarFotosAntigasParaOneDrive() {
     showSyncStatus('Falha ao salvar', 'err', 5000);
   }
   navigate('checklist_flash');
+}
+
+/* =====================================================================
+   NOTIFICAÇÃO DE NC — fotos próprias (Fotos/AtendimentoFotos) externalizadas
+   pro OneDrive, mesmo esquema do Flash Report (pedido 20/10/2026, depois do
+   NotificacoesEnergisa.json chegar a 12,8MB e passar a falhar ao carregar —
+   "Unterminated string in JSON", download grande demais cortando no meio).
+   Até aqui essas fotos SEMPRE ficavam inline (nunca existiu externalização
+   pra elas, só pras referenciadas de um Flash Report via _refFrId/_refFoto).
+   Função mais próxima de referência: flashUploadFotoParaOneDrive/
+   flashHidratarFoto/flashPrepararFotosParaSalvar, logo acima. -- */
+async function ncUploadFotoParaOneDrive(dataUrl, nomeArquivo) {
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const resultado = await uploadParaOneDrive(blob, OD_FOLDERS.notificacoesFotos, nomeArquivo, { retornarNome: true, conflictBehavior: 'rename' });
+    if (!resultado || typeof resultado !== 'object') return null;
+    return { id: resultado.id, driveId: resultado.driveId, nome: resultado.nome, url: resultado.url };
+  } catch (e) {
+    console.warn('[Notificação NC] Falha ao enviar foto pro OneDrive:', e);
+    return null;
+  }
+}
+
+window._ncFotoHidratacaoCache = window._ncFotoHidratacaoCache || {};
+async function ncHidratarFoto(foto) {
+  if (!foto || foto.dataUrl) return foto;
+  if (foto.id && foto.driveId) {
+    const chave = foto.driveId + '/' + foto.id;
+    if (window._ncFotoHidratacaoCache[chave]) {
+      return Object.assign({}, foto, { dataUrl: window._ncFotoHidratacaoCache[chave] });
+    }
+    try {
+      const token = await getOneDriveToken();
+      if (!token) return foto;
+      const url = 'https://graph.microsoft.com/v1.0/drives/' + foto.driveId + '/items/' + foto.id + '/content';
+      const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!resp.ok) { console.warn('[Notificação NC] Falha ao baixar foto', foto.id, resp.status); return foto; }
+      const blob = await resp.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      window._ncFotoHidratacaoCache[chave] = dataUrl;
+      return Object.assign({}, foto, { dataUrl });
+    } catch (e) {
+      console.warn('[Notificação NC] Erro ao hidratar foto:', e);
+      return foto;
+    }
+  }
+  return foto;
+}
+async function ncHidratarFotos(fotos) {
+  if (!Array.isArray(fotos) || !fotos.length) return fotos || [];
+  return Promise.all(fotos.map(ncHidratarFoto));
+}
+/* -- Hidrata Fotos e AtendimentoFotos de UMA notificação, em lugar (mutação
+   in-place) — chamada ao abrir pra editar/exportar, igual flashHidratarFotosEmLugar. -- */
+async function ncHidratarFotosProprias(n) {
+  if (!n) return n;
+  if (Array.isArray(n.Fotos) && n.Fotos.length) {
+    const h = await ncHidratarFotos(n.Fotos);
+    for (let i = 0; i < n.Fotos.length; i++) n.Fotos[i] = h[i];
+  }
+  if (Array.isArray(n.AtendimentoFotos) && n.AtendimentoFotos.length) {
+    const h = await ncHidratarFotos(n.AtendimentoFotos);
+    for (let i = 0; i < n.AtendimentoFotos.length; i++) n.AtendimentoFotos[i] = h[i];
+  }
+  return n;
+}
+/* -- Envia fotos com dataUrl (recém tiradas/importadas nesta sessão) pro
+   OneDrive antes de salvar, trocando por referência {url,id,driveId,nome}.
+   Se o upload falhar, mantém inline — nunca perde a foto por causa disso. -- */
+async function ncPrepararFotosParaSalvar(fotos, prefixo, dataStr) {
+  if (!Array.isArray(fotos) || !fotos.length) return [];
+  return Promise.all(fotos.map(async (f, i) => {
+    if (!f || !f.dataUrl) return f;
+    const nomeArquivo = (prefixo || 'NC') + '_' + (dataStr || 'sem-data') + '_' + Date.now() + '_' + i + '.jpg';
+    const enviado = await ncUploadFotoParaOneDrive(f.dataUrl, nomeArquivo);
+    if (!enviado) {
+      console.warn('[Notificação NC] Falha ao enviar foto pro OneDrive, mantendo inline:', nomeArquivo);
+      return f;
+    }
+    return { desc: f.desc || '', horizontal: !!f.horizontal, url: enviado.url, id: enviado.id, driveId: enviado.driveId, nome: enviado.nome };
+  }));
+}
+/* -- Migração única (botão "🧹 Migrar fotos antigas", só aparece quando tem
+   algo pra migrar): extrai fotos já embutidas (dataUrl) das notificações já
+   salvas e manda pro OneDrive como arquivos separados — mesmo princípio de
+   flashMigrarFotosAntigasParaOneDrive, pra encolher de vez o
+   NotificacoesEnergisa.json (chegou a 12,8MB, causando falha de leitura —
+   "Unterminated string in JSON" — em 20/10/2026). -- */
+async function ncMigrarFotosAntigasParaOneDrive() {
+  showSyncStatus('Verificando notificações...');
+  const { lista, sucesso } = await dbLerComEtag('NotificacoesEnergisa');
+  if (!sucesso) { showToast('❌ Não consegui ler o histórico agora — tente de novo em instantes.'); showSyncStatus('', '', 1); return; }
+  const temFotoInline = r => (r.Fotos || []).some(f => f && f.dataUrl) || (r.AtendimentoFotos || []).some(f => f && f.dataUrl);
+  const pendentes = lista.filter(temFotoInline);
+  if (!pendentes.length) { showToast('✅ Nenhuma notificação com fotos embutidas — já está tudo externalizado.'); showSyncStatus('', '', 1); navigate('checklist_notif'); return; }
+  const totalFotos = pendentes.reduce((s, r) => s + (r.Fotos || []).filter(f => f && f.dataUrl).length + (r.AtendimentoFotos || []).filter(f => f && f.dataUrl).length, 0);
+  if (!confirm('Migrar fotos de ' + pendentes.length + ' notificação(ões) (' + totalFotos + ' fotos) para arquivos separados no OneDrive?\n\nIsso reduz bastante o tamanho do arquivo principal. Pode levar alguns minutos — não feche esta aba enquanto estiver rodando.')) return;
+
+  const migradas = {};
+  for (let i = 0; i < pendentes.length; i++) {
+    const r = pendentes[i];
+    showSyncStatus('Enviando fotos... (' + (i + 1) + '/' + pendentes.length + ')');
+    try {
+      const fotos = await ncPrepararFotosParaSalvar(r.Fotos || [], 'NC', r.Data);
+      const atendFotos = await ncPrepararFotosParaSalvar(r.AtendimentoFotos || [], 'NCAT', r.Data);
+      migradas[r.Id] = { fotos, atendFotos };
+    } catch (e) {
+      console.warn('[Notificação NC] Falha ao migrar fotos do registro', r.Id, e);
+    }
+  }
+
+  showSyncStatus('Salvando histórico atualizado...');
+  const { ok, lista: listaFinal } = await _dbGravarComRetry('NotificacoesEnergisa', listaFresca =>
+    listaFresca.map(r => migradas[r.Id] ? { ...r, Fotos: migradas[r.Id].fotos, AtendimentoFotos: migradas[r.Id].atendFotos } : r)
+  );
+
+  if (ok) {
+    window._ncHistorico = listaFinal;
+    try { localStorage.setItem('notif_historico_cache', JSON.stringify(listaFinal)); } catch (e) {}
+    showToast('✅ Fotos migradas! O arquivo principal deve ficar bem menor agora.');
+    showSyncStatus('Migração concluída!', 'ok', 3000);
+  } else {
+    showToast('⚠️ As fotos já foram enviadas ao OneDrive, mas não consegui salvar o histórico agora. Rode a migração de novo em instantes.');
+    showSyncStatus('Falha ao salvar', 'err', 5000);
+  }
+  navigate('checklist_notif');
 }
 
 /* -- Flash Report Fauna: mesmo esquema acima (fotos em arquivo próprio no
