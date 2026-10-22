@@ -1435,7 +1435,7 @@ function navigate(pageId) {
   renderPage(pageId);
   if (window.innerWidth <= 768) closeSidebar();
   // Registrar atividade para o painel do gestor geral
-  registrarAtividade(pageId, title);
+  registrarAtividade(pageId, title, entrandoDeOutraPagina);
 }
 
 function switchProfile(profile) {
@@ -29240,10 +29240,26 @@ async function registrarPresenca(user) {
   }
 }
 
-// Registrar navegação entre páginas (chamado no navigate)
-async function registrarAtividade(pageId, titulo) {
+// Registrar navegação entre páginas (chamado no navigate). "entrandoDeOutraPagina"
+// (pedido 22/10/2026, incidente "formulário abre e some" no Vão a Vão): antes isso
+// gravava no OneDrive (tabela AtividadeApp — 1 leitura + 1 escrita da tabela
+// inteira) a CADA chamada de navigate(), inclusive re-renderizações dentro da
+// MESMA tela — e várias telas (Vão a Vão, Despesas, Gestão Documental...) chamam
+// navigate() a cada clique/campo editado só pra redesenhar o estado local, sem
+// trocar de página de verdade. Numa vistoria de 211 itens isso virava centenas de
+// gravações na AtividadeApp em poucos minutos, estourando o limite de requisições
+// do Microsoft Graph (HTTP 429 "activityLimitReached") — e, uma vez throttled,
+// TODAS as chamadas ao OneDrive passavam a falhar junto, inclusive o carregamento
+// de dados de telas normais (não só o Vão a Vão). Agora só grava de verdade ao
+// entrar numa página DIFERENTE (o registro local via saveLocal continua
+// instantâneo e sempre roda), com um piso extra de 10s entre gravações reais —
+// essa tela é só um painel de presença pro gestor geral, não precisa de precisão
+// de segundo a segundo.
+let _atividadeUltimaGravacaoEm = 0;
+const ATIVIDADE_INTERVALO_MIN_MS = 10000;
+async function registrarAtividade(pageId, titulo, entrandoDeOutraPagina) {
   if (!window._currentUser) return;
-  // Salvar last_activity no IndexedDB
+  // Salvar last_activity no IndexedDB — sempre, mesmo sem gravar no OneDrive agora.
   const reg = {
     usuario: window._currentUser.name,
     perfil: window._currentUser.profile,
@@ -29252,6 +29268,10 @@ async function registrarAtividade(pageId, titulo) {
     timestamp: new Date().toISOString(),
   };
   saveLocal('activity_' + window._currentUser.name, JSON.stringify(reg));
+  if (!entrandoDeOutraPagina) return;
+  const agora = Date.now();
+  if (agora - _atividadeUltimaGravacaoEm < ATIVIDADE_INTERVALO_MIN_MS) return;
+  _atividadeUltimaGravacaoEm = agora;
   // Grava no OneDrive (AtividadeApp) de forma não-bloqueante, pra "Online agora" e o
   // histórico de atividade refletirem navegação real entre páginas, não só o login.
   if (navigator.onLine) {
