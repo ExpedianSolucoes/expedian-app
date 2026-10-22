@@ -40448,7 +40448,7 @@ if (window._vavErro === undefined) window._vavErro = false;
    apontamento desse tipo:
      'tri'    -> Conforme/Não Conforme/N.A. (os 5 critérios ambientais)
      'corte'  -> Dentro da faixa / Fora da faixa
-     'simnao' -> Sim / Não (Plaqueteado)
+     'simnao' -> Sim / Não (sem nenhum tipo usando este modo no momento — Plaqueteado, que usava, foi removido em 22/10/2026 a pedido do Tiago; modo mantido pronto pra reuso futuro)
    -- */
 const VAV_TIPOS_OCORRENCIA = [
   { key: 'acesso', label: 'Acesso', modo: 'tri' },
@@ -40457,7 +40457,6 @@ const VAV_TIPOS_OCORRENCIA = [
   { key: 'cursoHidrico', label: 'Curso Hídrico', modo: 'tri' },
   { key: 'supressaoVegetal', label: 'Supressão Vegetal', modo: 'tri' },
   { key: 'corteSeletivo', label: 'Corte Seletivo (dentro/fora da faixa)', modo: 'corte' },
-  { key: 'plaqueteado', label: 'Plaqueteado', modo: 'simnao' },
 ];
 const VAV_TIPO_INFO = VAV_TIPOS_OCORRENCIA.reduce((acc, t) => { acc[t.key] = t; return acc; }, {});
 /* -- Limite de fotos por apontamento: bem maior que o padrão de 4 por
@@ -40466,6 +40465,32 @@ const VAV_TIPO_INFO = VAV_TIPOS_OCORRENCIA.reduce((acc, t) => { acc[t.key] = t; 
    própria evidência fotográfica. Ajustar aqui se precisar de mais ou
    menos — ver nota sobre peso do arquivo no doc do projeto. -- */
 const VAV_MAX_FOTOS_OCORRENCIA = 12;
+
+/* -- Fundamentos legais de referência por item vistoriado, usados na seção
+   "Fundamentos Legais" do PDF do comissionamento (pedido 22/10/2026). Mistura
+   normas federais de aplicação geral com o mesmo mapa de programas ambientais
+   já usado em Notificação de NC (NC_PROGRAMA_LEGISLACAO, declarado bem mais
+   abaixo no arquivo), reaproveitado onde o enquadramento é o mesmo (Resíduos
+   -> PGRS, Erosão -> Áreas Degradadas, Supressão Vegetal -> Supressão
+   Vegetal). Acesso, Curso Hídrico e Corte Seletivo não têm equivalente
+   direto naquele mapa e recebem referência própria aqui. É um
+   embasamento de caráter geral — a aplicação a cada ocorrência específica e a
+   eventuais condicionantes da Licença Ambiental vigente deve ser revisada
+   pela equipe técnica responsável (ver parágrafo de ressalva logo após a
+   tabela de Fundamentos Legais no PDF). -- */
+const VAV_TIPO_LEGISLACAO_FIXA = {
+  acesso: 'Condicionantes da Licença Ambiental referentes à conservação de acessos e ao controle de processos erosivos associados; Lei Federal nº 12.651/2012, art. 66 (recuperação de áreas degradadas), quando aplicável.',
+  cursoHidrico: "Lei Federal nº 12.651/2012, arts. 4º a 8º (Áreas de Preservação Permanente ao longo de cursos d'água); Resoluções CONAMA nº 302/2002 e nº 303/2002 (parâmetros de Área de Preservação Permanente).",
+  corteSeletivo: 'NBR 5422/ABNT (distâncias de segurança e faixa de servidão em linhas de transmissão); condicionante de licença referente à manutenção da faixa de servidão; Lei Federal nº 12.651/2012, quando houver vegetação nativa na faixa.',
+};
+// Tipos que reaproveitam o mapa NC_PROGRAMA_LEGISLACAO (mesma taxonomia de
+// "programas ambientais" usada em Notificação de NC) em vez de texto próprio.
+const VAV_TIPO_LEGISLACAO_PROGRAMA = { residuos: '03 - PGRS', erosao: '09 - Áreas Degradadas', supressaoVegetal: '07 - Supressão Vegetal' };
+function vavLegislacaoPorTipo(tipoKey) {
+  if (VAV_TIPO_LEGISLACAO_FIXA[tipoKey]) return VAV_TIPO_LEGISLACAO_FIXA[tipoKey];
+  const prog = VAV_TIPO_LEGISLACAO_PROGRAMA[tipoKey];
+  return prog && typeof NC_PROGRAMA_LEGISLACAO !== 'undefined' ? NC_PROGRAMA_LEGISLACAO[prog] : null;
+}
 
 async function vavCarregarHistorico(semNavegar) {
   window._vavHistorico = (await dbLerSeguro('ChecklistVaoAVao')) || [];
@@ -40514,9 +40539,10 @@ function vavMigrarOcorrencias(data) {
       if (valor === 'NC' && item.observacoes) oc.descricaoNC = item.observacoes;
       novasOcorrencias.push(oc);
     });
-    if (item.plaqueteado === 'S' || item.plaqueteado === 'N') {
-      novasOcorrencias.push({ tipo: 'plaqueteado', plaqueteadoValor: item.plaqueteado, fotos: [] });
-    }
+    // Plaqueteado foi removido da lista suspensa em 22/10/2026 (pedido do
+    // Tiago) — o campo antigo item.plaqueteado (47/211 itens respondidos)
+    // deixou de ser migrado pra uma ocorrência; continua intacto e arquivado
+    // no JSON, como os demais campos legados, só não é mais lido pela tela.
     item.ocorrencias = novasOcorrencias.concat(item.ocorrencias || []);
     item._ocorrenciasMigradas = true;
   });
@@ -40584,6 +40610,12 @@ async function vavAbrirFrente(frenteId) {
    apontamento ambiental ou se algum ainda não foi respondido; não conforme
    se qualquer um for NC; conforme se todos os respondidos forem C/N.A. -- */
 function vavSituacao(item) {
+  // Situação Geral manual (pedido 22/10/2026) tem prioridade sobre o cálculo
+  // automático pelos apontamentos tri — o técnico pode classificar a
+  // estrutura/vão diretamente, inclusive quando os apontamentos lançados não
+  // cobrem tudo que foi observado em campo (ex.: só Corte Seletivo, que não é
+  // do tipo "tri" e nunca faria a situação sair de "pendente").
+  if (item.situacaoGeral === 'conforme' || item.situacaoGeral === 'nao_conforme') return item.situacaoGeral;
   const ambientais = (item.ocorrencias || []).filter(o => VAV_TIPO_INFO[o.tipo] && VAV_TIPO_INFO[o.tipo].modo === 'tri');
   if (!ambientais.length) return 'pendente';
   if (ambientais.some(o => !o.situacao)) return 'pendente';
@@ -40605,13 +40637,12 @@ function vavResumoConformidade(itens) {
   });
 }
 
-function vavResumoCorteEPlaqueteado(itens) {
-  let corteDentro = 0, corteFora = 0, plaqSim = 0, plaqNao = 0;
+function vavResumoCorte(itens) {
+  let corteDentro = 0, corteFora = 0;
   itens.forEach(it => (it.ocorrencias || []).forEach(o => {
     if (o.tipo === 'corteSeletivo') { if (o.corteTipo === 'dentro') corteDentro++; else if (o.corteTipo === 'fora') corteFora++; }
-    if (o.tipo === 'plaqueteado') { if (o.plaqueteadoValor === 'S') plaqSim++; else if (o.plaqueteadoValor === 'N') plaqNao++; }
   }));
-  return { corteDentro, corteFora, plaqSim, plaqNao };
+  return { corteDentro, corteFora };
 }
 
 function vavCampo(numero, campo, valor) {
@@ -40619,6 +40650,19 @@ function vavCampo(numero, campo, valor) {
   if (!item) return;
   item[campo] = valor;
   navigate('checklist_vao_a_vao');
+}
+
+/* -- Mesma coisa que vavCampo, mas sem re-renderizar a tela (pedido 22/10/2026,
+   reportado como "a observação está limitada por letra, quando digito uma letra
+   ela já para" — causa: oninput chamando vavCampo a cada tecla, que chama
+   navigate() e refaz o innerHTML inteiro da lista, derrubando o foco do campo.
+   Usada nos campos de texto livre (textarea/input), que não precisam atualizar
+   nada mais na tela a cada tecla digitada — mesmo padrão já usado em
+   flashCampo/medCampo em outros módulos do app. -- */
+function vavCampoSilencioso(numero, campo, valor) {
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item) return;
+  item[campo] = valor;
 }
 
 /* -- CRUD de apontamentos (ocorrências) dentro de um item. -- */
@@ -40648,6 +40692,12 @@ function vavOcorrenciaCampo(numero, idx, campo, valor) {
   if (!oc) return;
   oc[campo] = valor;
   navigate('checklist_vao_a_vao');
+}
+
+function vavOcorrenciaCampoSilencioso(numero, idx, campo, valor) {
+  const oc = vavOcorrenciaPorIdx(numero, idx);
+  if (!oc) return;
+  oc[campo] = valor;
 }
 
 /* -- Fotos por apontamento (substituiu as fotos por critério de minutos
@@ -40721,6 +40771,77 @@ function vavFotosOcorrenciaHtml(item, oc, idx, label) {
   </div>`;
 }
 
+/* -- Fotos gerais do item, fora da lista suspensa (pedido 22/10/2026: "opção
+   de incluir fotos fora dos itens da lista suspensa") — mesmo padrão visual de
+   arrastar-e-soltar/clicar das fotos por apontamento, só que amarradas direto
+   ao item (estrutura/vão) em vez de a um apontamento específico. Útil pra foto
+   geral da área/torre que não se encaixa em nenhum item da lista suspensa. -- */
+async function vavCarregarFotoGeral(numero, event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item) { event.target.value = ''; return; }
+  if (!item.fotosGerais) item.fotosGerais = [];
+  const vagas = Math.max(0, VAV_MAX_FOTOS_OCORRENCIA - item.fotosGerais.length);
+  if (!vagas) { showToast('⚠️ Essa estrutura/vão já tem o máximo de ' + VAV_MAX_FOTOS_OCORRENCIA + ' fotos gerais — remova alguma antes de adicionar mais.'); event.target.value = ''; return; }
+  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo ' + VAV_MAX_FOTOS_OCORRENCIA + ').');
+  for (const file of files.slice(0, vagas)) {
+    const { dataUrl } = await _eroRedimensionarFoto(file);
+    item.fotosGerais.push(dataUrl);
+  }
+  event.target.value = '';
+  navigate('checklist_vao_a_vao');
+}
+
+function vavRemoverFotoGeral(numero, fotoIdx) {
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item || !item.fotosGerais) return;
+  item.fotosGerais.splice(fotoIdx, 1);
+  navigate('checklist_vao_a_vao');
+}
+
+function vavDropFotosGeral(numero, event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item) return;
+  const dt = event.dataTransfer;
+  const files = Array.from((dt && dt.files) || []).filter(f => f.type && f.type.indexOf('image/') === 0);
+  if (!files.length) return;
+  if (!item.fotosGerais) item.fotosGerais = [];
+  const vagas = Math.max(0, VAV_MAX_FOTOS_OCORRENCIA - item.fotosGerais.length);
+  if (!vagas) { showToast('⚠️ Essa estrutura/vão já tem o máximo de ' + VAV_MAX_FOTOS_OCORRENCIA + ' fotos gerais — remova alguma antes de arrastar mais.'); return; }
+  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo ' + VAV_MAX_FOTOS_OCORRENCIA + ').');
+  Promise.all(files.slice(0, vagas).map(file => _eroRedimensionarFoto(file).then(({ dataUrl }) => { item.fotosGerais.push(dataUrl); })))
+    .then(() => navigate('checklist_vao_a_vao'));
+}
+
+function vavFotosGeraisHtml(item) {
+  const fotos = item.fotosGerais || [];
+  const max = VAV_MAX_FOTOS_OCORRENCIA;
+  return `
+  <div style="margin-top:4px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;border-radius:8px;border:2px dashed transparent;transition:background-color .15s,border-color .15s,box-shadow .15s"
+    ondragover="event.preventDefault();event.stopPropagation();this.style.backgroundColor='var(--green-pale)';this.style.borderColor='var(--green-main)';this.style.boxShadow='0 0 0 4px rgba(45,140,90,.18)'"
+    ondragleave="this.style.backgroundColor='';this.style.borderColor='transparent';this.style.boxShadow=''"
+    ondrop="this.style.backgroundColor='';this.style.borderColor='transparent';this.style.boxShadow='';vavDropFotosGeral(${item.numero},event)">
+    <span style="font-size:.58rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);white-space:nowrap">📷 Fotos gerais (fora da lista suspensa) <span style="opacity:.7;text-transform:none;font-weight:400">(ou arraste aqui)</span> ${fotos.length}/${max}</span>
+    ${fotos.map((f, fi) => `
+    <div style="position:relative;flex-shrink:0">
+      <div style="width:40px;height:40px;border-radius:8px;border:2px solid var(--green-main);overflow:hidden;cursor:pointer" onclick="abrirFotoAmpliada('${f}')">
+        <img src="${f}" style="width:100%;height:100%;object-fit:cover">
+      </div>
+      <button type="button" onclick="event.stopPropagation();vavRemoverFotoGeral(${item.numero},${fi})" title="Remover" style="position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;border:none;font-size:.55rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>
+    </div>`).join('')}
+    ${fotos.length < max ? `
+    <label style="cursor:pointer;display:block;flex-shrink:0" title="Adicionar foto">
+      <div style="width:40px;height:40px;border-radius:8px;border:2px dashed var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center">
+        <span style="font-size:1rem;opacity:.5">📷</span>
+      </div>
+      <input type="file" accept="image/*" multiple style="display:none" onchange="vavCarregarFotoGeral(${item.numero},event)">
+    </label>` : ''}
+  </div>`;
+}
+
 function vavBotoesTriOcorrencia(numero, idx, valorAtual) {
   return ['C', 'NC', 'NA'].map(v => {
     const ativo = valorAtual === v;
@@ -40758,7 +40879,7 @@ function vavRenderOcorrencia(item, oc, idx) {
       ${oc.situacao === 'NC' ? `
       <div class="form-group" style="margin:0 0 8px 0">
         <label style="font-size:.7rem">Descrição da não conformidade</label>
-        <textarea style="min-height:50px;font-size:.8rem" oninput="vavOcorrenciaCampo(${item.numero}, ${idx}, 'descricaoNC', this.value)" placeholder="Descreva o que foi observado em campo...">${oc.descricaoNC || ''}</textarea>
+        <textarea style="min-height:50px;font-size:.8rem" oninput="vavOcorrenciaCampoSilencioso(${item.numero}, ${idx}, 'descricaoNC', this.value)" placeholder="Descreva o que foi observado em campo...">${oc.descricaoNC || ''}</textarea>
       </div>` : ''}
     `;
     fotosLabel = oc.situacao === 'NC' ? '📷 Fotos de evidência da não conformidade' : '📷 Fotos da área';
@@ -40767,12 +40888,6 @@ function vavRenderOcorrencia(item, oc, idx) {
       <div style="display:flex;gap:5px;margin-bottom:8px;max-width:280px">
         <button type="button" onclick="vavOcorrenciaCampo(${item.numero}, ${idx}, 'corteTipo', 'dentro')" style="flex:1;border:1px solid ${oc.corteTipo === 'dentro' ? 'var(--green-mid)' : 'var(--border)'};background:${oc.corteTipo === 'dentro' ? 'var(--green-mid)' : '#fff'};color:${oc.corteTipo === 'dentro' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 4px;font-size:.72rem;font-weight:700;cursor:pointer">Dentro da faixa</button>
         <button type="button" onclick="vavOcorrenciaCampo(${item.numero}, ${idx}, 'corteTipo', 'fora')" style="flex:1;border:1px solid ${oc.corteTipo === 'fora' ? 'var(--amber)' : 'var(--border)'};background:${oc.corteTipo === 'fora' ? 'var(--amber)' : '#fff'};color:${oc.corteTipo === 'fora' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 4px;font-size:.72rem;font-weight:700;cursor:pointer">Fora da faixa</button>
-      </div>`;
-  } else if (info.modo === 'simnao') {
-    camposHtml = `
-      <div style="display:flex;gap:5px;margin-bottom:8px;max-width:220px">
-        <button type="button" onclick="vavOcorrenciaCampo(${item.numero}, ${idx}, 'plaqueteadoValor', 'S')" style="flex:1;border:1px solid ${oc.plaqueteadoValor === 'S' ? 'var(--green-mid)' : 'var(--border)'};background:${oc.plaqueteadoValor === 'S' ? 'var(--green-mid)' : '#fff'};color:${oc.plaqueteadoValor === 'S' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">Sim</button>
-        <button type="button" onclick="vavOcorrenciaCampo(${item.numero}, ${idx}, 'plaqueteadoValor', 'N')" style="flex:1;border:1px solid ${oc.plaqueteadoValor === 'N' ? 'var(--red)' : 'var(--border)'};background:${oc.plaqueteadoValor === 'N' ? 'var(--red)' : '#fff'};color:${oc.plaqueteadoValor === 'N' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">Não</button>
       </div>`;
   }
 
@@ -40868,6 +40983,20 @@ function vavRenderItemExpandido(item) {
         : `<div style="font-size:.76rem;color:var(--text-muted);padding:6px 2px">Nenhum apontamento ainda — escolha um item na lista acima e clique em "➕ Adicionar".</div>`}
     </div>
 
+    <div style="margin-top:14px;border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--surface2)" onclick="event.stopPropagation()">
+      <label style="font-size:.78rem;font-weight:700;display:block;margin-bottom:6px">Situação Geral da Estrutura/Vão</label>
+      <div style="display:flex;gap:5px;max-width:280px;margin-bottom:8px">
+        <button type="button" onclick="vavCampo(${item.numero}, 'situacaoGeral', 'conforme')" style="flex:1;border:1px solid ${item.situacaoGeral === 'conforme' ? 'var(--green-mid)' : 'var(--border)'};background:${item.situacaoGeral === 'conforme' ? 'var(--green-mid)' : '#fff'};color:${item.situacaoGeral === 'conforme' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:7px 4px;font-size:.74rem;font-weight:700;cursor:pointer">✔ Conforme</button>
+        <button type="button" onclick="vavCampo(${item.numero}, 'situacaoGeral', 'nao_conforme')" style="flex:1;border:1px solid ${item.situacaoGeral === 'nao_conforme' ? 'var(--red)' : 'var(--border)'};background:${item.situacaoGeral === 'nao_conforme' ? 'var(--red)' : '#fff'};color:${item.situacaoGeral === 'nao_conforme' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:7px 4px;font-size:.74rem;font-weight:700;cursor:pointer">✖ Não Conforme</button>
+      </div>
+      ${item.situacaoGeral === 'nao_conforme' ? `
+      <div class="form-group" style="margin:0 0 8px 0">
+        <label style="font-size:.7rem">Descrição geral da não conformidade</label>
+        <textarea style="min-height:50px;font-size:.8rem" oninput="vavCampoSilencioso(${item.numero}, 'descricaoGeralNC', this.value)" placeholder="Descreva de forma geral o que foi observado nesta estrutura/vão...">${item.descricaoGeralNC || ''}</textarea>
+      </div>` : ''}
+      ${vavFotosGeraisHtml(item)}
+    </div>
+
     <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px" onclick="event.stopPropagation()">
       <div class="form-group" style="margin:0"><label>Data da vistoria</label>
         <input type="date" value="${item.dataVistoria || ''}" onchange="vavCampo(${item.numero}, 'dataVistoria', this.value)"></div>
@@ -40879,9 +41008,9 @@ function vavRenderItemExpandido(item) {
     </div>
 
     <div class="form-group" onclick="event.stopPropagation()"><label>Observações gerais</label>
-      <textarea style="min-height:60px" oninput="vavCampo(${item.numero}, 'observacoes', this.value)" placeholder="Observações gerais sobre esta estrutura/vão (opcional — cada apontamento Não Conforme já tem sua própria descrição acima)...">${item.observacoes || ''}</textarea></div>
+      <textarea style="min-height:60px" oninput="vavCampoSilencioso(${item.numero}, 'observacoes', this.value)" placeholder="Observações gerais sobre esta estrutura/vão (opcional — cada apontamento Não Conforme já tem sua própria descrição acima)...">${item.observacoes || ''}</textarea></div>
     <div class="form-group" onclick="event.stopPropagation()"><label>Ação / Prazo</label>
-      <input type="text" value="${(item.acaoPrazo || '').replace(/"/g, '&quot;')}" oninput="vavCampo(${item.numero}, 'acaoPrazo', this.value)" placeholder="Ex.: Solicitar poda em 10 dias"></div>
+      <input type="text" value="${(item.acaoPrazo || '').replace(/"/g, '&quot;')}" oninput="vavCampoSilencioso(${item.numero}, 'acaoPrazo', this.value)" placeholder="Ex.: Solicitar poda em 10 dias"></div>
 
   </div>`;
 }
@@ -40954,7 +41083,7 @@ function pageChecklistVaoAVao() {
   }
 
   const resumo = vavResumoConformidade(itens);
-  const corteEPlaq = vavResumoCorteEPlaqueteado(itens);
+  const corteResumo = vavResumoCorte(itens);
   const avaliados = itens.filter(i => vavSituacao(i) !== 'pendente').length;
   const qtdNC = itens.filter(i => vavSituacao(i) === 'nao_conforme').length;
   const percentual = itens.length ? Math.round((avaliados / itens.length) * 100) : 0;
@@ -40990,8 +41119,7 @@ function pageChecklistVaoAVao() {
       </tbody>
     </table>
     <div style="margin-top:10px;font-size:.74rem;color:var(--text-muted)">
-      ✂️ Corte Seletivo: <b style="color:var(--text-primary)">${corteEPlaq.corteDentro}</b> dentro da faixa · <b style="color:var(--text-primary)">${corteEPlaq.corteFora}</b> fora da faixa
-      &nbsp;&nbsp;·&nbsp;&nbsp; 🏷️ Plaqueteado: <b style="color:var(--text-primary)">${corteEPlaq.plaqSim}</b> sim · <b style="color:var(--text-primary)">${corteEPlaq.plaqNao}</b> não
+      ✂️ Corte Seletivo: <b style="color:var(--text-primary)">${corteResumo.corteDentro}</b> dentro da faixa · <b style="color:var(--text-primary)">${corteResumo.corteFora}</b> fora da faixa
     </div>
   </div>
 
@@ -41015,6 +41143,15 @@ function pageChecklistVaoAVao() {
    fotos. Itens sem nenhum apontamento aparecem como "Nenhum apontamento
    registrado ainda", sem gastar espaço com fotos. Pode demorar alguns
    segundos com muitas fotos — é gerado no próprio navegador. -- */
+/* -- Exportar PDF completo do comissionamento (pedido 22/10/2026, reformulado
+   no mesmo dia para formato de relatório técnico — capa, sumário, apresentação,
+   identificação do empreendimento, objetivo, metodologia, fundamentos legais,
+   resumo consolidado e registros por estrutura/vão — mesmo padrão visual/
+   estrutural do Relatório Mensal de Fiscalização (painelGeralGerarRelatorioMensal),
+   reaproveitando os mesmos helpers (_relMarcaDagua/_relParagrafo/_relTabela/
+   _relTabelaIdentificacao/_relTabelaLegal/_garantirFonteMont) e o mesmo
+   CONTRATO_ENERGISA_OBRAS usado nos outros relatórios do módulo ERO. Pode
+   demorar alguns segundos com muitas fotos — é gerado no próprio navegador. -- */
 async function vavExportarPDF() {
   const itens = (window._vavData && window._vavData.itens) || [];
   if (!itens.length) { showToast('⚠️ Nada para exportar — esse circuito não tem estruturas/vãos cadastrados.'); return; }
@@ -41022,13 +41159,13 @@ async function vavExportarPDF() {
   await _garantirJsPDF();
 
   const frente = FLASH_FRENTES.find(f => f.id === window._vavFrenteId);
+  const dc = CONTRATO_ENERGISA_OBRAS;
   const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
-  const pageW = 21.0, pageH = 29.7;
-  const titulo = 'COMISSIONAMENTO AMBIENTAL VÃO A VÃO';
-  const subtitulo = (frente ? frente.nome + ' — ' + frente.empreiteira : window._vavFrenteId) + ' · Contrato 2025022101 · Porto Velho — RO';
-  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
-  let y = 2.1;
-  const ML = 1.2, CW = pageW - 2.4;
+  _garantirFonteMont(doc);
+  const pageW = 21.0, pageH = 29.7, ML = 1.4, CW = pageW - 2.8;
+  const titulo = 'COMISSIONAMENTO AMBIENTAL';
+  const subtitulo = (frente ? frente.nome + ' — ' + frente.empreiteira : window._vavFrenteId) + ' · Contrato ' + dc.numero + ' · Porto Velho — RO';
+  const dataEmissao = new Date().toLocaleDateString('pt-BR');
 
   const avaliados = itens.filter(i => vavSituacao(i) !== 'pendente').length;
   const qtdNC = itens.filter(i => vavSituacao(i) === 'nao_conforme').length;
@@ -41036,11 +41173,143 @@ async function vavExportarPDF() {
   const totalAT = itens.filter(i => i.tipo === 'AT').length;
   const totalVAO = itens.filter(i => i.tipo === 'VAO').length;
   const extensaoTotal = itens.reduce((s, i) => s + (i.extensaoM || 0), 0);
-  const corteEPlaq = vavResumoCorteEPlaqueteado(itens);
+  const corteResumo = vavResumoCorte(itens);
+  const resumo = vavResumoConformidade(itens);
 
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(63, 38, 31);
-  doc.text('Resumo Geral', ML, y + 0.3);
-  y += 0.6;
+  // ===== CAPA (mesmo layout do Relatório Mensal: fundo branco, marca d'água,
+  // logo centralizada, título marrom, subtítulo verde e tabela de identificação) =====
+  doc.setFillColor(255, 255, 255);
+  doc.rect(0, 0, pageW, pageH, 'F');
+  _relMarcaDagua(doc, pageW, pageH);
+  try { doc.addImage(EXPEDIAN_LOGO_HOR_B64, 'PNG', (pageW - 6) / 2, 2.6, 6, 2.1); } catch(ex) {}
+  doc.setDrawColor(63, 38, 31); doc.setLineWidth(0.04);
+  doc.line(pageW / 2 - 3.2, 5.2, pageW / 2 + 3.2, 5.2);
+  doc.setFont('Mont', 'bold'); doc.setFontSize(18); doc.setTextColor(63, 38, 31);
+  doc.text('COMISSIONAMENTO AMBIENTAL', pageW / 2, 8.3, { align: 'center' });
+  doc.text('VÃO A VÃO', pageW / 2, 9.15, { align: 'center' });
+  doc.setFont('Mont', 'bold'); doc.setFontSize(13); doc.setTextColor(90, 150, 80);
+  doc.text(frente ? frente.nome : (window._vavFrenteId || ''), pageW / 2, 10.4, { align: 'center' });
+
+  const capaLinhas = [
+    ['Nº', 'Comissionamento — ' + dataEmissao],
+    ['Empreendimento', frente ? frente.nome : '—'],
+    ['Empreiteira Executora', frente ? frente.empreiteira : '—'],
+    ['Empreendedor', dc.contratante.nome + ' — CNPJ ' + dc.contratante.cnpj],
+    ['Contrato Expedian', dc.numero],
+    ['Extensão Total Vistoriada', extensaoTotal.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' m'],
+    ['Estruturas / Vãos', totalAT + ' estrutura(s) · ' + totalVAO + ' vão(s)'],
+  ];
+  let yCapa = 12.2;
+  const capaColEsqW = CW * 0.34, capaColDirW = CW - capaColEsqW;
+  capaLinhas.forEach(([label, valor]) => {
+    doc.setFont('Mont', 'normal'); doc.setFontSize(9.5);
+    const wrap = doc.splitTextToSize(String(valor == null ? '—' : valor), capaColDirW - 0.24);
+    const rowH = 0.4 * Math.max(wrap.length, 1) + 0.2;
+    doc.setDrawColor(63, 38, 31); doc.setLineWidth(0.015);
+    doc.rect(ML, yCapa, capaColEsqW, rowH);
+    doc.rect(ML + capaColEsqW, yCapa, capaColDirW, rowH);
+    doc.setFont('Mont', 'bold'); doc.setFontSize(9.5); doc.setTextColor(63, 38, 31);
+    doc.text(label, ML + 0.14, yCapa + 0.32);
+    doc.setFont('Mont', 'normal'); doc.setFontSize(9.5); doc.setTextColor(40, 40, 40);
+    wrap.forEach((l, li) => doc.text(l, ML + capaColEsqW + 0.14, yCapa + 0.32 + li * 0.4));
+    yCapa += rowH;
+  });
+  doc.setFont('Mont', 'normal'); doc.setFontSize(9); doc.setTextColor(90, 90, 90);
+  doc.text('Elaborado por Expedian Soluções Ambientais', pageW / 2, pageH - 2.6, { align: 'center' });
+  doc.text('Porto Velho – RO, ' + dataEmissao, pageW / 2, pageH - 2.15, { align: 'center' });
+
+  // ===== SUMÁRIO — títulos agora, nº de página real num 2º passe no final =====
+  doc.addPage();
+  const paginaSumario = doc.internal.getNumberOfPages();
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  doc.setFont('Mont', 'bold'); doc.setFontSize(13); doc.setTextColor(63, 38, 31);
+  doc.text('SUMÁRIO', ML, 2.3);
+  const secoesSumario = [
+    '1. Apresentação',
+    '2. Identificação do Empreendimento',
+    '3. Objetivo',
+    '4. Metodologia',
+    '5. Fundamentos Legais',
+    '6. Resumo Consolidado da Vistoria',
+    '7. Registros por Estrutura/Vão',
+  ];
+  const sumarioYs = [];
+  let ySum = 3.3;
+  secoesSumario.forEach(t => {
+    doc.setFont('Mont', 'normal'); doc.setFontSize(10); doc.setTextColor(30, 30, 30);
+    doc.text(t, ML, ySum);
+    sumarioYs.push(ySum);
+    ySum += 0.65;
+  });
+  const paginasSecoes = [];
+
+  // ===== 1. APRESENTAÇÃO =====
+  let y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('Mont', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('1. APRESENTAÇÃO', ML, y); y += 0.6;
+  y = _relParagrafo(doc, y, pageW, pageH, ML, CW, titulo, subtitulo,
+    'A Expedian Soluções Ambientais foi contratada pela ' + dc.contratante.nome + ' para a prestação de serviços de consultoria e fiscalização ambiental de obras e instalações do setor elétrico, conforme Contrato nº ' + dc.numero + '. O presente relatório apresenta o Comissionamento Ambiental "vão a vão" do empreendimento "' + (frente ? frente.nome : '') + '" (' + (frente ? frente.empreiteira : '') + '), consistindo na vistoria individualizada de cada estrutura e vão do circuito elétrico quanto aos aspectos ambientais aplicáveis, com registro fotográfico e classificação de conformidade por ocorrência observada.');
+
+  // ===== 2. IDENTIFICAÇÃO DO EMPREENDIMENTO =====
+  if (y > pageH - 6) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('Mont', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('2. IDENTIFICAÇÃO DO EMPREENDIMENTO', ML, y); y += 0.55;
+  const identLinhas = [
+    ['Empreendimento', frente ? frente.nome : '—'],
+    ['Empreiteira Executora', frente ? frente.empreiteira : '—'],
+    ['Contratante', dc.contratante.nome + ' — CNPJ ' + dc.contratante.cnpj],
+    ['Contrato Expedian', dc.numero],
+    ['Objeto do Contrato', dc.objeto],
+    ['Extensão Total Vistoriada', extensaoTotal.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' m'],
+    ['Data de Emissão deste Relatório', dataEmissao],
+  ];
+  y = _relTabelaIdentificacao(doc, y, pageW, pageH, ML, CW, titulo, subtitulo, identLinhas);
+
+  // ===== 3. OBJETIVO =====
+  if (y > pageH - 5) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('Mont', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('3. OBJETIVO', ML, y); y += 0.6;
+  y = _relParagrafo(doc, y, pageW, pageH, ML, CW, titulo, subtitulo,
+    'O presente Comissionamento Ambiental tem por objetivo verificar, estrutura a estrutura e vão a vão, o atendimento aos requisitos ambientais aplicáveis à implantação e operação do circuito elétrico "' + (frente ? frente.nome : '') + '", subsidiando a identificação de não conformidades, a definição de ações corretivas e o acompanhamento do cumprimento das condicionantes ambientais e dos programas ambientais aplicáveis ao empreendimento.');
+
+  // ===== 4. METODOLOGIA =====
+  if (y > pageH - 5) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('Mont', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('4. METODOLOGIA', ML, y); y += 0.6;
+  y = _relParagrafo(doc, y, pageW, pageH, ML, CW, titulo, subtitulo,
+    'A vistoria foi realizada de forma individualizada para cada estrutura (torre/AT) e vão do circuito elétrico, por meio de inspeção visual em campo conduzida por técnico(s) habilitado(s) da Expedian Soluções Ambientais. Para cada estrutura/vão, o técnico selecionou, a partir de lista padronizada, os aspectos ambientais efetivamente observáveis no local — Acesso, Resíduos, Erosão, Curso Hídrico, Supressão Vegetal e Corte Seletivo de vegetação (dentro ou fora da faixa de servidão) —, podendo registrar mais de uma ocorrência do mesmo aspecto ou de aspectos distintos numa mesma estrutura/vão, conforme a necessidade observada em campo.');
+  y = _relParagrafo(doc, y, pageW, pageH, ML, CW, titulo, subtitulo,
+    'Cada ocorrência registrada foi classificada, conforme sua natureza, como Conforme (C), Não Conforme (NC) ou Não Aplicável (N.A.) — para os aspectos ambientais stricto sensu —, ou enquadrada nas opções específicas de Corte Seletivo (dentro/fora da faixa), sempre acompanhada de registro fotográfico. Nas ocorrências classificadas como Não Conforme, foi exigido o preenchimento de descrição textual do observado em campo; nas estruturas/vãos sem ocorrências não conformes, o registro fotográfico se limita à evidência geral da área. Adicionalmente, cada estrutura/vão recebeu uma classificação de Situação Geral (Conforme/Não Conforme) atribuída pelo técnico responsável com base no conjunto de ocorrências observadas e no seu julgamento técnico em campo, a qual prevalece sobre a agregação automática das ocorrências quando divergente.');
+
+  // ===== 5. FUNDAMENTOS LEGAIS =====
+  if (y > pageH - 5) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); }
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('Mont', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('5. FUNDAMENTOS LEGAIS', ML, y); y += 0.6;
+  const baseLegalFixa = [
+    'Lei Federal nº 6.938/1981 — Política Nacional do Meio Ambiente.',
+    'Resolução CONAMA nº 237/1997 — Licenciamento Ambiental.',
+    'Lei Federal nº 12.651/2012 — Código Florestal.',
+    'Lei Federal nº 9.605/1998 — Lei de Crimes Ambientais.',
+  ];
+  const tiposUsados = Array.from(new Set(itens.flatMap(it => (it.ocorrencias || []).map(o => o.tipo))));
+  const legislacaoEspecifica = tiposUsados
+    .map(t => ({ label: (VAV_TIPO_INFO[t] || {}).label || t, leg: vavLegislacaoPorTipo(t) }))
+    .filter(x => !!x.leg)
+    .map(x => x.label + ' — ' + x.leg);
+  y = _relTabelaLegal(doc, y, pageW, pageH, ML, CW, titulo, subtitulo, baseLegalFixa.concat(legislacaoEspecifica));
+  y = _relParagrafo(doc, y, pageW, pageH, ML, CW, titulo, subtitulo,
+    'O embasamento legal acima tem caráter geral e de referência, aplicável aos aspectos efetivamente vistoriados neste comissionamento. Recomenda-se a revisão pela equipe técnica/jurídica responsável quanto à adequação às condicionantes específicas da Licença Ambiental vigente do empreendimento e ao enquadramento de cada ocorrência registrada em campo.');
+
+  // ===== 6. RESUMO CONSOLIDADO DA VISTORIA =====
+  y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('Mont', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('6. RESUMO CONSOLIDADO DA VISTORIA', ML, y); y += 0.55;
   const stats = [
     ['Estruturas (AT)', String(totalAT)],
     ['Vãos', String(totalVAO)],
@@ -41053,16 +41322,25 @@ async function vavExportarPDF() {
     const x = ML + i * colW;
     doc.setFillColor(245, 247, 244); doc.setDrawColor(215, 220, 210); doc.setLineWidth(0.02);
     doc.roundedRect(x, y, colW - 0.15, 1.0, 0.08, 0.08, 'FD');
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(100, 120, 95);
+    doc.setFont('Mont', 'bold'); doc.setFontSize(6.5); doc.setTextColor(100, 120, 95);
     doc.text(doc.splitTextToSize(s[0].toUpperCase(), colW - 0.5), x + 0.18, y + 0.3);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(40, 40, 40);
+    doc.setFont('Mont', 'bold'); doc.setFontSize(12); doc.setTextColor(40, 40, 40);
     doc.text(s[1], x + 0.18, y + 0.82);
   });
   y += 1.3;
-
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(70, 70, 70);
-  doc.text('Corte seletivo: ' + corteEPlaq.corteDentro + ' dentro da faixa · ' + corteEPlaq.corteFora + ' fora da faixa    Plaqueteado: ' + corteEPlaq.plaqSim + ' sim · ' + corteEPlaq.plaqNao + ' não', ML, y);
+  y = _relTabela(doc, y, pageW, pageH, ML, CW, titulo, subtitulo,
+    [{ label: 'ASPECTO AMBIENTAL', w: 0.4 }, { label: 'C', w: 0.15 }, { label: 'NC', w: 0.15 }, { label: 'N.A.', w: 0.15 }, { label: 'PENDENTE', w: 0.15 }],
+    resumo.map(r => [r.label, String(r.C), String(r.NC), String(r.NA), String(r.pendente)]));
+  if (y > pageH - 2.2) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  doc.setFont('Mont', 'normal'); doc.setFontSize(8.5); doc.setTextColor(70, 70, 70);
+  doc.text('Corte seletivo: ' + corteResumo.corteDentro + ' dentro da faixa · ' + corteResumo.corteFora + ' fora da faixa', ML, y);
   y += 0.6;
+
+  // ===== 7. REGISTROS POR ESTRUTURA/VÃO =====
+  y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+  paginasSecoes.push(doc.internal.getNumberOfPages());
+  doc.setFont('Mont', 'bold'); doc.setFontSize(12); doc.setTextColor(63, 38, 31);
+  doc.text('7. REGISTROS POR ESTRUTURA/VÃO', ML, y); y += 0.55;
 
   function quebrarSeNecessario(altura) { if (y + altura > pageH - 2.0) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); }
 
@@ -41072,24 +41350,37 @@ async function vavExportarPDF() {
 
     quebrarSeNecessario(1.0);
     const headerH = 0.75;
-    const bg = situacao === 'nao_conforme' ? [253, 236, 234] : [245, 247, 244];
+    const bg = situacao === 'nao_conforme' ? [253, 236, 234] : situacao === 'conforme' ? [245, 247, 244] : [248, 248, 248];
     doc.setFillColor(bg[0], bg[1], bg[2]); doc.setDrawColor(215, 220, 210); doc.setLineWidth(0.02);
     doc.roundedRect(ML, y, CW, headerH, 0.06, 0.06, 'FD');
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(63, 38, 31);
+    doc.setFont('Mont', 'bold'); doc.setFontSize(9.5); doc.setTextColor(63, 38, 31);
     doc.text((item.tipo === 'AT' ? 'ESTRUTURA' : 'VÃO') + ' Nº ' + item.numero + ' — ' + (item.estruturaVao || ''), ML + 0.2, y + 0.3);
     const situLabel = situacao === 'conforme' ? 'CONFORME' : situacao === 'nao_conforme' ? 'NÃO CONFORME' : 'PENDENTE';
     const situCor = situacao === 'conforme' ? [45, 140, 90] : situacao === 'nao_conforme' ? [224, 61, 61] : [140, 140, 140];
     doc.setTextColor(situCor[0], situCor[1], situCor[2]);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
+    doc.setFont('Mont', 'bold'); doc.setFontSize(8);
     doc.text(situLabel, ML + CW - 0.2, y + 0.3, { align: 'right' });
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(90, 90, 90);
+    doc.setFont('Mont', 'normal'); doc.setFontSize(7.5); doc.setTextColor(90, 90, 90);
     doc.text((item.extensaoM != null ? item.extensaoM.toLocaleString('pt-BR') + ' m · ' : '') + (item.dataVistoria ? new Date(item.dataVistoria + 'T12:00').toLocaleDateString('pt-BR') : 'sem data') + (item.responsavel ? ' · ' + item.responsavel : ''), ML + 0.2, y + 0.58);
     y += headerH + 0.15;
 
+    if (item.situacaoGeral === 'nao_conforme' && item.descricaoGeralNC) {
+      quebrarSeNecessario(0.4);
+      doc.setFont('Mont', 'bold'); doc.setFontSize(8); doc.setTextColor(224, 61, 61);
+      doc.text('Situação Geral — Não Conforme:', ML + 0.2, y + 0.22); y += 0.33;
+      const linhasDesc = doc.splitTextToSize(item.descricaoGeralNC, CW - 0.8);
+      linhasDesc.forEach(l => {
+        quebrarSeNecessario(0.32);
+        doc.setFont('Mont', 'normal'); doc.setFontSize(8); doc.setTextColor(90, 90, 90);
+        doc.text(l, ML + 0.4, y + 0.2); y += 0.3;
+      });
+      y += 0.1;
+    }
+
     if (!ocs.length) {
       quebrarSeNecessario(0.5);
-      doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(140, 140, 140);
-      doc.text('Nenhum apontamento registrado ainda.', ML + 0.2, y + 0.25);
+      doc.setFont('Mont', 'italic'); doc.setFontSize(8); doc.setTextColor(140, 140, 140);
+      doc.text('Nenhum apontamento registrado na lista suspensa.', ML + 0.2, y + 0.25);
       y += 0.5;
     } else {
       ocs.forEach(oc => {
@@ -41097,22 +41388,21 @@ async function vavExportarPDF() {
         let valorTxt = '—';
         if (info.modo === 'tri') valorTxt = oc.situacao === 'C' ? 'Conforme' : oc.situacao === 'NC' ? 'Não Conforme' : oc.situacao === 'NA' ? 'N/A' : 'Pendente';
         else if (info.modo === 'corte') valorTxt = oc.corteTipo === 'dentro' ? 'Dentro da faixa' : oc.corteTipo === 'fora' ? 'Fora da faixa' : '—';
-        else if (info.modo === 'simnao') valorTxt = oc.plaqueteadoValor === 'S' ? 'Sim' : oc.plaqueteadoValor === 'N' ? 'Não' : '—';
 
         quebrarSeNecessario(0.55);
         const rotulo = '• ' + info.label + ': ';
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(40, 40, 40);
+        doc.setFont('Mont', 'bold'); doc.setFontSize(8.5); doc.setTextColor(40, 40, 40);
         doc.text(rotulo, ML + 0.3, y + 0.25);
         const corVal = oc.situacao === 'NC' ? [224, 61, 61] : [40, 40, 40];
-        doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(corVal[0], corVal[1], corVal[2]);
+        doc.setFont('Mont', 'normal'); doc.setFontSize(8.5); doc.setTextColor(corVal[0], corVal[1], corVal[2]);
         doc.text(valorTxt, ML + 0.3 + doc.getTextWidth(rotulo) + 0.05, y + 0.25);
         y += 0.4;
 
         if (oc.situacao === 'NC' && oc.descricaoNC) {
-          const lines = doc.splitTextToSize(oc.descricaoNC, CW - 0.8);
-          lines.forEach(l => {
+          const linhas = doc.splitTextToSize(oc.descricaoNC, CW - 0.8);
+          linhas.forEach(l => {
             quebrarSeNecessario(0.35);
-            doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(90, 90, 90);
+            doc.setFont('Mont', 'normal'); doc.setFontSize(8); doc.setTextColor(90, 90, 90);
             doc.text(l, ML + 0.5, y + 0.22);
             y += 0.32;
           });
@@ -41136,13 +41426,41 @@ async function vavExportarPDF() {
         }
       });
     }
+
+    const fotosGerais = item.fotosGerais || [];
+    if (fotosGerais.length) {
+      quebrarSeNecessario(0.4);
+      doc.setFont('Mont', 'bold'); doc.setFontSize(8.5); doc.setTextColor(40, 40, 40);
+      doc.text('Fotos gerais da área:', ML + 0.3, y + 0.25); y += 0.4;
+      const COLS = 6, gapX = 0.12;
+      const fW = (CW - 0.6 - gapX * (COLS - 1)) / COLS;
+      const fH = fW;
+      let col2 = 0;
+      quebrarSeNecessario(fH + 0.2);
+      fotosGerais.forEach(foto => {
+        if (col2 >= COLS) { col2 = 0; y += fH + 0.15; quebrarSeNecessario(fH + 0.2); }
+        const xf = ML + 0.5 + col2 * (fW + gapX);
+        try { doc.addImage(foto, 'JPEG', xf, y, fW, fH); } catch (ex) { try { doc.addImage(foto, 'PNG', xf, y, fW, fH); } catch (ex2) {} }
+        doc.setDrawColor(200, 200, 200); doc.setLineWidth(0.015); doc.rect(xf, y, fW, fH);
+        col2++;
+      });
+      y += fH + 0.25;
+    }
+
     y += 0.25;
+  });
+
+  // ===== 2º passe: volta no Sumário e escreve o nº de página real de cada seção =====
+  doc.setPage(paginaSumario);
+  secoesSumario.forEach((secTitulo, i) => {
+    doc.setFont('Mont', 'normal'); doc.setFontSize(10); doc.setTextColor(90, 90, 90);
+    doc.text(String(paginasSecoes[i]), pageW - ML, sumarioYs[i], { align: 'right' });
   });
 
   _pdfNumerarPaginas(doc, pageW, pageH);
   const nomeArq = 'Comissionamento_VaoAVao_' + (frente ? frente.nome.replace(/[^a-zA-Z0-9]+/g, '_') : window._vavFrenteId) + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
   doc.save(nomeArq);
-  showToast('✅ PDF gerado!');
+  showToast('✅ PDF do comissionamento gerado!');
 }
 
 
