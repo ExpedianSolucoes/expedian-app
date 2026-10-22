@@ -40417,7 +40417,21 @@ function pageFiscalizacaoEro() {
    Pimenta Bueno / Espigão D'Oeste) já vem com as 211 estruturas/vãos
    cadastradas (seed a partir do KMZ do projeto); os demais circuitos
    abrem vazios até alguém cadastrar manualmente ou, no futuro, subir
-   um KMZ equivalente. -- */
+   um KMZ equivalente.
+
+   Reestruturado em 22/10/2026 (2ª mudança do dia): em vez de 5
+   critérios ambientais fixos sempre visíveis + campos fixos de Corte
+   Seletivo/Plaqueteado/Medição, o técnico agora escolhe numa lista
+   suspensa o que vistoriar (Acesso, Resíduos, Erosão, Curso Hídrico,
+   Supressão Vegetal, Corte Seletivo, Plaqueteado) e adiciona quantos
+   "apontamentos" (ocorrências) precisar por torre/vão — inclusive
+   repetindo o mesmo tipo mais de uma vez na mesma estrutura, se houver
+   mais de um ponto do mesmo problema. Cada apontamento já nasce com
+   sua própria área de fotos; quando marcado Não Conforme, abre campo
+   de descrição da não conformidade; quando Conforme, só a área de
+   fotos da área. O campo Medição foi removido (nunca teve uso real).
+   Ver vavMigrarOcorrencias() pra como os dados antigos (211 itens, 59
+   já tinham critério avaliado) foram convertidos sem perda. -- */
 if (window._vavHistorico === undefined) window._vavHistorico = null;
 if (window._vavFrenteId === undefined) window._vavFrenteId = 'at2';
 if (window._vavData === undefined) window._vavData = null;
@@ -40429,20 +40443,29 @@ if (window._vavSalvando === undefined) window._vavSalvando = false;
 if (window._vavCarregando === undefined) window._vavCarregando = false;
 if (window._vavErro === undefined) window._vavErro = false;
 
-const VAV_CRITERIOS = [
-  { key: 'acesso', label: 'Acesso' },
-  { key: 'residuos', label: 'Resíduos' },
-  { key: 'erosao', label: 'Erosão' },
-  { key: 'cursoHidrico', label: 'Curso Hídrico' },
-  { key: 'supressaoVegetal', label: 'Supressão Vegetal' },
+/* -- Tipos de apontamento disponíveis na lista suspensa (pedido
+   22/10/2026). `modo` decide quais campos aparecem ao adicionar um
+   apontamento desse tipo:
+     'tri'    -> Conforme/Não Conforme/N.A. (os 5 critérios ambientais)
+     'corte'  -> Dentro da faixa / Fora da faixa
+     'simnao' -> Sim / Não (Plaqueteado)
+   -- */
+const VAV_TIPOS_OCORRENCIA = [
+  { key: 'acesso', label: 'Acesso', modo: 'tri' },
+  { key: 'residuos', label: 'Resíduos', modo: 'tri' },
+  { key: 'erosao', label: 'Erosão', modo: 'tri' },
+  { key: 'cursoHidrico', label: 'Curso Hídrico', modo: 'tri' },
+  { key: 'supressaoVegetal', label: 'Supressão Vegetal', modo: 'tri' },
+  { key: 'corteSeletivo', label: 'Corte Seletivo (dentro/fora da faixa)', modo: 'corte' },
+  { key: 'plaqueteado', label: 'Plaqueteado', modo: 'simnao' },
 ];
-/* -- Limite de fotos por criterio (pedido 22/10/2026): bem maior que o
-   padrao de 4 por pergunta usado no Flash Report/Checklist de Linha/ERO,
-   porque aqui a foto e por criterio (Acesso, Residuos, Erosao, Curso
-   Hidrico, Supressao Vegetal) dentro de cada uma das 211 estruturas/vaos,
-   nao por pergunta de um checklist unico. Ajustar aqui se precisar de
-   mais ou menos -- ver nota sobre peso do arquivo no doc do projeto. -- */
-const VAV_MAX_FOTOS_CRITERIO = 12;
+const VAV_TIPO_INFO = VAV_TIPOS_OCORRENCIA.reduce((acc, t) => { acc[t.key] = t; return acc; }, {});
+/* -- Limite de fotos por apontamento: bem maior que o padrão de 4 por
+   pergunta usado no Flash Report/Checklist de Linha/ERO, porque aqui
+   uma única estrutura pode ter vários apontamentos, cada um com sua
+   própria evidência fotográfica. Ajustar aqui se precisar de mais ou
+   menos — ver nota sobre peso do arquivo no doc do projeto. -- */
+const VAV_MAX_FOTOS_OCORRENCIA = 12;
 
 async function vavCarregarHistorico(semNavegar) {
   window._vavHistorico = (await dbLerSeguro('ChecklistVaoAVao')) || [];
@@ -40458,6 +40481,46 @@ async function vavCarregarHistorico(semNavegar) {
 async function vavAtualizar() {
   await vavCarregarHistorico(true);
   await vavAbrirFrente(window._vavFrenteId);
+}
+
+/* -- Migração pro modelo de apontamentos/ocorrências (pedido 22/10/2026):
+   antes cada item tinha os 5 critérios ambientais fixos (acesso, residuos,
+   erosao, cursoHidrico, supressaoVegetal) sempre visíveis, mais os campos
+   corteDentro/corteFora/plaqueteado/medicao fixos. Agora o técnico escolhe
+   numa lista suspensa o que vistoriar e adiciona quantos "apontamentos"
+   precisar por torre/vão (inclusive repetidos — ex: 2 pontos de erosão na
+   mesma torre) — cada apontamento já nasce com sua própria área de fotos.
+   Converte os dados antigos em ocorrências equivalentes, sem perder nada:
+   confirmado em produção antes de migrar que, dos 211 itens, 59 já tinham
+   algum critério avaliado e 47 tinham Plaqueteado respondido; corteDentro/
+   corteFora e medicao estavam sempre vazios/zerados (nada a migrar deles).
+   O texto de observações antigo (campo único por item) é copiado pra
+   dentro da descrição de cada apontamento Não Conforme daquele item (pode
+   duplicar se o item tinha mais de um critério NC — preferível a arriscar
+   perder a informação de qual critério ela descrevia) E continua intacto
+   no campo "Observações gerais" do item, sem ser apagado. Roda uma única
+   vez por item (flag `_ocorrenciasMigradas`); os campos antigos continuam
+   no JSON, só não são mais usados pela tela. -- */
+function vavMigrarOcorrencias(data) {
+  const itens = (data && data.itens) || [];
+  itens.forEach(item => {
+    if (item._ocorrenciasMigradas) return;
+    const criteriosAmbientais = ['acesso', 'residuos', 'erosao', 'cursoHidrico', 'supressaoVegetal'];
+    const novasOcorrencias = [];
+    criteriosAmbientais.forEach(key => {
+      const valor = item[key];
+      if (valor === undefined || valor === null || valor === '') return;
+      const oc = { tipo: key, situacao: valor, fotos: [] };
+      if (valor === 'NC' && item.observacoes) oc.descricaoNC = item.observacoes;
+      novasOcorrencias.push(oc);
+    });
+    if (item.plaqueteado === 'S' || item.plaqueteado === 'N') {
+      novasOcorrencias.push({ tipo: 'plaqueteado', plaqueteadoValor: item.plaqueteado, fotos: [] });
+    }
+    item.ocorrencias = novasOcorrencias.concat(item.ocorrencias || []);
+    item._ocorrenciasMigradas = true;
+  });
+  return data;
 }
 
 async function vavAbrirFrente(frenteId) {
@@ -40486,13 +40549,13 @@ async function vavAbrirFrente(frenteId) {
 
   const registro = (window._vavHistorico || []).find(r => r.frenteId === frenteId);
   if (registro && registro.arquivoDados) {
-    // Falha de rede/OneDrive ao baixar o snapshot (JSON com até 6 fotos por item)
-    // NÃO pode virar "arquivo vazio" — antes, qualquer hiccup fazia a vistoria já
-    // preenchida sumir da tela e mostrar "Nenhuma estrutura cadastrada" (reportado
-    // 22/10/2026: "abre e some o formulário", em dias de conexão instável). Agora
-    // tenta mais uma vez (hiccup comum costuma passar na 2ª tentativa) e, se mesmo
-    // assim falhar, mostra erro explícito com botão de tentar de novo em vez de
-    // fingir que não há dados — nada é apagado, o arquivo no OneDrive não é tocado.
+    // Falha de rede/OneDrive ao baixar o snapshot NÃO pode virar "arquivo vazio"
+    // — antes, qualquer hiccup fazia a vistoria já preenchida sumir da tela e
+    // mostrar "Nenhuma estrutura cadastrada" (reportado 22/10/2026: "abre e some
+    // o formulário", em dias de conexão instável). Agora tenta mais uma vez
+    // (hiccup comum costuma passar na 2ª tentativa) e, se mesmo assim falhar,
+    // mostra erro explícito com botão de tentar de novo em vez de fingir que não
+    // há dados — nada é apagado, o arquivo no OneDrive não é tocado.
     let texto = await baixarArquivoCentral(registro.arquivoDados);
     if (texto === null) texto = await baixarArquivoCentral(registro.arquivoDados);
     if (texto === null) {
@@ -40500,7 +40563,7 @@ async function vavAbrirFrente(frenteId) {
       window._vavData = { itens: [] };
     } else {
       try {
-        window._vavData = JSON.parse(texto);
+        window._vavData = vavMigrarOcorrencias(JSON.parse(texto));
       } catch (e) {
         console.warn('[VAV] JSON inválido em', registro.arquivoDados, e);
         window._vavErro = true;
@@ -40516,24 +40579,39 @@ async function vavAbrirFrente(frenteId) {
   navigate('checklist_vao_a_vao');
 }
 
+/* -- Situação geral da torre/vão, calculada a partir dos apontamentos
+   ambientais (tipo 'tri') já lançados: pendente se ainda não tem nenhum
+   apontamento ambiental ou se algum ainda não foi respondido; não conforme
+   se qualquer um for NC; conforme se todos os respondidos forem C/N.A. -- */
 function vavSituacao(item) {
-  const vals = VAV_CRITERIOS.map(c => item[c.key]);
-  if (vals.some(v => v === null || v === undefined)) return 'pendente';
-  if (vals.some(v => v === 'NC')) return 'nao_conforme';
+  const ambientais = (item.ocorrencias || []).filter(o => VAV_TIPO_INFO[o.tipo] && VAV_TIPO_INFO[o.tipo].modo === 'tri');
+  if (!ambientais.length) return 'pendente';
+  if (ambientais.some(o => !o.situacao)) return 'pendente';
+  if (ambientais.some(o => o.situacao === 'NC')) return 'nao_conforme';
   return 'conforme';
 }
 
 function vavResumoConformidade(itens) {
-  return VAV_CRITERIOS.map(c => {
-    const vals = itens.map(it => it[c.key]);
+  return VAV_TIPOS_OCORRENCIA.filter(t => t.modo === 'tri').map(t => {
+    const ocs = [];
+    itens.forEach(it => (it.ocorrencias || []).forEach(o => { if (o.tipo === t.key) ocs.push(o); }));
     return {
-      label: c.label,
-      C: vals.filter(v => v === 'C').length,
-      NC: vals.filter(v => v === 'NC').length,
-      NA: vals.filter(v => v === 'NA').length,
-      pendente: vals.filter(v => v === null || v === undefined).length,
+      label: t.label,
+      C: ocs.filter(o => o.situacao === 'C').length,
+      NC: ocs.filter(o => o.situacao === 'NC').length,
+      NA: ocs.filter(o => o.situacao === 'NA').length,
+      pendente: ocs.filter(o => !o.situacao).length,
     };
   });
+}
+
+function vavResumoCorteEPlaqueteado(itens) {
+  let corteDentro = 0, corteFora = 0, plaqSim = 0, plaqNao = 0;
+  itens.forEach(it => (it.ocorrencias || []).forEach(o => {
+    if (o.tipo === 'corteSeletivo') { if (o.corteTipo === 'dentro') corteDentro++; else if (o.corteTipo === 'fora') corteFora++; }
+    if (o.tipo === 'plaqueteado') { if (o.plaqueteadoValor === 'S') plaqSim++; else if (o.plaqueteadoValor === 'N') plaqNao++; }
+  }));
+  return { corteDentro, corteFora, plaqSim, plaqNao };
 }
 
 function vavCampo(numero, campo, valor) {
@@ -40543,98 +40621,170 @@ function vavCampo(numero, campo, valor) {
   navigate('checklist_vao_a_vao');
 }
 
-function vavFotosCriterio(item, criterioKey) {
-  if (!item.fotosCriterio) item.fotosCriterio = {};
-  if (!item.fotosCriterio[criterioKey]) item.fotosCriterio[criterioKey] = [];
-  return item.fotosCriterio[criterioKey];
+/* -- CRUD de apontamentos (ocorrências) dentro de um item. -- */
+function vavAdicionarOcorrencia(numero, tipo) {
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item) return;
+  if (!item.ocorrencias) item.ocorrencias = [];
+  item.ocorrencias.push({ tipo, fotos: [] });
+  navigate('checklist_vao_a_vao');
 }
 
-/* -- Fotos por criterio (pedido 22/10/2026): no Checklist Vao a Vao cada
-   estrutura/vao tem 5 criterios (Acesso, Residuos, Erosao, Curso Hidrico,
-   Supressao Vegetal), avaliados separadamente -- entao as fotos agora
-   acompanham o criterio especifico que esta sendo apontado, nao o item
-   inteiro. Mesmo padrao visual de arrastar-e-soltar/clicar do Checklist de
-   Linha e Subestacao (ERO), mas sem o limite fixo de 4 por pergunta: aqui
-   cabem ate VAV_MAX_FOTOS_CRITERIO fotos por criterio, porque uma unica
-   estrutura pode ter bem mais evidencia fotografica que uma pergunta de
-   checklist normal. O input nao usa capture="environment" de proposito --
-   abre o seletor padrao do dispositivo (camera OU galeria), como pedido. -- */
-async function vavCarregarFotoCriterio(numero, criterioKey, event) {
+function vavRemoverOcorrencia(numero, idx) {
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item || !item.ocorrencias) return;
+  item.ocorrencias.splice(idx, 1);
+  navigate('checklist_vao_a_vao');
+}
+
+function vavOcorrenciaPorIdx(numero, idx) {
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item || !item.ocorrencias) return null;
+  return item.ocorrencias[idx] || null;
+}
+
+function vavOcorrenciaCampo(numero, idx, campo, valor) {
+  const oc = vavOcorrenciaPorIdx(numero, idx);
+  if (!oc) return;
+  oc[campo] = valor;
+  navigate('checklist_vao_a_vao');
+}
+
+/* -- Fotos por apontamento (substituiu as fotos por critério de minutos
+   atrás, no mesmo pedido 22/10/2026): mesmo padrão visual de arrastar-e-
+   soltar/clicar do Checklist de Linha e Subestação (ERO), sem o limite
+   fixo de 4 por pergunta. O input não usa capture="environment" de
+   propósito — abre o seletor padrão do dispositivo (câmera OU galeria). -- */
+async function vavCarregarFotoOcorrencia(numero, idx, event) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
-  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
-  if (!item) { event.target.value = ''; return; }
-  const fotos = vavFotosCriterio(item, criterioKey);
-  const vagas = Math.max(0, VAV_MAX_FOTOS_CRITERIO - fotos.length);
-  if (!vagas) { showToast('⚠️ Esse critério já tem o máximo de ' + VAV_MAX_FOTOS_CRITERIO + ' fotos — remova alguma antes de adicionar mais.'); event.target.value = ''; return; }
-  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo ' + VAV_MAX_FOTOS_CRITERIO + ' por critério).');
+  const oc = vavOcorrenciaPorIdx(numero, idx);
+  if (!oc) { event.target.value = ''; return; }
+  if (!oc.fotos) oc.fotos = [];
+  const vagas = Math.max(0, VAV_MAX_FOTOS_OCORRENCIA - oc.fotos.length);
+  if (!vagas) { showToast('⚠️ Esse apontamento já tem o máximo de ' + VAV_MAX_FOTOS_OCORRENCIA + ' fotos — remova alguma antes de adicionar mais.'); event.target.value = ''; return; }
+  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo ' + VAV_MAX_FOTOS_OCORRENCIA + ' por apontamento).');
   for (const file of files.slice(0, vagas)) {
     const { dataUrl } = await _eroRedimensionarFoto(file);
-    fotos.push(dataUrl);
+    oc.fotos.push(dataUrl);
   }
   event.target.value = '';
   navigate('checklist_vao_a_vao');
 }
 
-function vavRemoverFotoCriterio(numero, criterioKey, idx) {
-  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
-  if (!item) return;
-  const fotos = vavFotosCriterio(item, criterioKey);
-  fotos.splice(idx, 1);
+function vavRemoverFotoOcorrencia(numero, idx, fotoIdx) {
+  const oc = vavOcorrenciaPorIdx(numero, idx);
+  if (!oc || !oc.fotos) return;
+  oc.fotos.splice(fotoIdx, 1);
   navigate('checklist_vao_a_vao');
 }
 
-function vavDropFotosCriterio(numero, criterioKey, event) {
+function vavDropFotosOcorrencia(numero, idx, event) {
   event.preventDefault();
   event.stopPropagation();
-  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
-  if (!item) return;
+  const oc = vavOcorrenciaPorIdx(numero, idx);
+  if (!oc) return;
   const dt = event.dataTransfer;
   const files = Array.from((dt && dt.files) || []).filter(f => f.type && f.type.indexOf('image/') === 0);
   if (!files.length) return;
-  const fotos = vavFotosCriterio(item, criterioKey);
-  const vagas = Math.max(0, VAV_MAX_FOTOS_CRITERIO - fotos.length);
-  if (!vagas) { showToast('⚠️ Esse critério já tem o máximo de ' + VAV_MAX_FOTOS_CRITERIO + ' fotos — remova alguma antes de arrastar mais.'); return; }
-  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo ' + VAV_MAX_FOTOS_CRITERIO + ' por critério).');
-  Promise.all(files.slice(0, vagas).map(file => _eroRedimensionarFoto(file).then(({ dataUrl }) => { fotos.push(dataUrl); })))
+  if (!oc.fotos) oc.fotos = [];
+  const vagas = Math.max(0, VAV_MAX_FOTOS_OCORRENCIA - oc.fotos.length);
+  if (!vagas) { showToast('⚠️ Esse apontamento já tem o máximo de ' + VAV_MAX_FOTOS_OCORRENCIA + ' fotos — remova alguma antes de arrastar mais.'); return; }
+  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo ' + VAV_MAX_FOTOS_OCORRENCIA + ' por apontamento).');
+  Promise.all(files.slice(0, vagas).map(file => _eroRedimensionarFoto(file).then(({ dataUrl }) => { oc.fotos.push(dataUrl); })))
     .then(() => navigate('checklist_vao_a_vao'));
 }
 
-function vavFotosCriterioHtml(item, criterio) {
-  const key = criterio.key;
-  const fotos = (item.fotosCriterio && item.fotosCriterio[key]) || [];
-  const max = VAV_MAX_FOTOS_CRITERIO;
+function vavFotosOcorrenciaHtml(item, oc, idx, label) {
+  const fotos = oc.fotos || [];
+  const max = VAV_MAX_FOTOS_OCORRENCIA;
   return `
-  <div style="margin-top:8px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;border-radius:8px;border:2px dashed transparent;transition:background-color .15s,border-color .15s,box-shadow .15s"
+  <div style="margin-top:4px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;border-radius:8px;border:2px dashed transparent;transition:background-color .15s,border-color .15s,box-shadow .15s"
     ondragover="event.preventDefault();event.stopPropagation();this.style.backgroundColor='var(--green-pale)';this.style.borderColor='var(--green-main)';this.style.boxShadow='0 0 0 4px rgba(45,140,90,.18)'"
     ondragleave="this.style.backgroundColor='';this.style.borderColor='transparent';this.style.boxShadow=''"
-    ondrop="this.style.backgroundColor='';this.style.borderColor='transparent';this.style.boxShadow='';vavDropFotosCriterio(${item.numero},'${key}',event)">
-    <span style="font-size:.58rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);white-space:nowrap">📷 <span style="opacity:.7;text-transform:none;font-weight:400">(ou arraste aqui)</span> ${fotos.length}/${max}</span>
-    ${fotos.map((f, idx) => `
+    ondrop="this.style.backgroundColor='';this.style.borderColor='transparent';this.style.boxShadow='';vavDropFotosOcorrencia(${item.numero},${idx},event)">
+    <span style="font-size:.58rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);white-space:nowrap">${label} <span style="opacity:.7;text-transform:none;font-weight:400">(ou arraste aqui)</span> ${fotos.length}/${max}</span>
+    ${fotos.map((f, fi) => `
     <div style="position:relative;flex-shrink:0">
       <div style="width:40px;height:40px;border-radius:8px;border:2px solid var(--green-main);overflow:hidden;cursor:pointer" onclick="abrirFotoAmpliada('${f}')">
         <img src="${f}" style="width:100%;height:100%;object-fit:cover">
       </div>
-      <button type="button" onclick="event.stopPropagation();vavRemoverFotoCriterio(${item.numero},'${key}',${idx})" title="Remover" style="position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;border:none;font-size:.55rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>
+      <button type="button" onclick="event.stopPropagation();vavRemoverFotoOcorrencia(${item.numero},${idx},${fi})" title="Remover" style="position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;border:none;font-size:.55rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>
     </div>`).join('')}
     ${fotos.length < max ? `
     <label style="cursor:pointer;display:block;flex-shrink:0" title="Adicionar foto">
       <div style="width:40px;height:40px;border-radius:8px;border:2px dashed var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center">
         <span style="font-size:1rem;opacity:.5">📷</span>
       </div>
-      <input type="file" accept="image/*" multiple style="display:none" onchange="vavCarregarFotoCriterio(${item.numero},'${key}',event)">
+      <input type="file" accept="image/*" multiple style="display:none" onchange="vavCarregarFotoOcorrencia(${item.numero},${idx},event)">
     </label>` : ''}
   </div>`;
 }
 
-function vavExpandir(numero) {
-  window._vavExpandidoNum = (window._vavExpandidoNum === numero) ? null : numero;
-  navigate('checklist_vao_a_vao');
+function vavBotoesTriOcorrencia(numero, idx, valorAtual) {
+  return ['C', 'NC', 'NA'].map(v => {
+    const ativo = valorAtual === v;
+    const cor = v === 'C' ? 'var(--green-mid)' : (v === 'NC' ? 'var(--red)' : '#9aa0ab');
+    return `<button type="button" onclick="vavOcorrenciaCampo(${numero}, ${idx}, 'situacao', '${v}')"
+      style="flex:1;border:1px solid ${ativo ? cor : 'var(--border)'};background:${ativo ? cor : '#fff'};color:${ativo ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">${v}</button>`;
+  }).join('');
 }
 
-function vavFiltrar(valor) {
-  window._vavFiltro = valor;
-  navigate('checklist_vao_a_vao');
+function vavTipoBadge(tipo) {
+  return tipo === 'AT'
+    ? `<span style="background:#5b4bbf;color:#fff;font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap">AT</span>`
+    : `<span style="background:#1f8fbf;color:#fff;font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap">VÃO</span>`;
+}
+
+function vavSituacaoBadge(situacao) {
+  if (situacao === 'conforme') return `<span style="background:var(--green-pale);color:var(--green-mid);font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:14px;white-space:nowrap">✔ Conforme</span>`;
+  if (situacao === 'nao_conforme') return `<span style="background:#fdecea;color:var(--red);font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:14px;white-space:nowrap">✖ Não Conforme</span>`;
+  return `<span style="background:#f3f4f6;color:var(--text-muted);font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:14px;white-space:nowrap">⏳ Pendente</span>`;
+}
+
+/* -- Card de um apontamento já adicionado: campos específicos do tipo
+   (tri C/NC/N.A., Dentro/Fora da faixa, ou Sim/Não), descrição da não
+   conformidade (só aparece quando NC) e área de fotos (pedido 22/10/2026:
+   "quando não conforme abrir campo para descrição... quando conforme só
+   abrir campo para postar algumas fotos da área"). -- */
+function vavRenderOcorrencia(item, oc, idx) {
+  const info = VAV_TIPO_INFO[oc.tipo] || { label: oc.tipo, modo: 'tri' };
+  let camposHtml = '';
+  let fotosLabel = '📷 Fotos da área';
+
+  if (info.modo === 'tri') {
+    camposHtml = `
+      <div style="display:flex;gap:5px;margin-bottom:8px;max-width:220px">${vavBotoesTriOcorrencia(item.numero, idx, oc.situacao)}</div>
+      ${oc.situacao === 'NC' ? `
+      <div class="form-group" style="margin:0 0 8px 0">
+        <label style="font-size:.7rem">Descrição da não conformidade</label>
+        <textarea style="min-height:50px;font-size:.8rem" oninput="vavOcorrenciaCampo(${item.numero}, ${idx}, 'descricaoNC', this.value)" placeholder="Descreva o que foi observado em campo...">${oc.descricaoNC || ''}</textarea>
+      </div>` : ''}
+    `;
+    fotosLabel = oc.situacao === 'NC' ? '📷 Fotos de evidência da não conformidade' : '📷 Fotos da área';
+  } else if (info.modo === 'corte') {
+    camposHtml = `
+      <div style="display:flex;gap:5px;margin-bottom:8px;max-width:280px">
+        <button type="button" onclick="vavOcorrenciaCampo(${item.numero}, ${idx}, 'corteTipo', 'dentro')" style="flex:1;border:1px solid ${oc.corteTipo === 'dentro' ? 'var(--green-mid)' : 'var(--border)'};background:${oc.corteTipo === 'dentro' ? 'var(--green-mid)' : '#fff'};color:${oc.corteTipo === 'dentro' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 4px;font-size:.72rem;font-weight:700;cursor:pointer">Dentro da faixa</button>
+        <button type="button" onclick="vavOcorrenciaCampo(${item.numero}, ${idx}, 'corteTipo', 'fora')" style="flex:1;border:1px solid ${oc.corteTipo === 'fora' ? 'var(--amber)' : 'var(--border)'};background:${oc.corteTipo === 'fora' ? 'var(--amber)' : '#fff'};color:${oc.corteTipo === 'fora' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 4px;font-size:.72rem;font-weight:700;cursor:pointer">Fora da faixa</button>
+      </div>`;
+  } else if (info.modo === 'simnao') {
+    camposHtml = `
+      <div style="display:flex;gap:5px;margin-bottom:8px;max-width:220px">
+        <button type="button" onclick="vavOcorrenciaCampo(${item.numero}, ${idx}, 'plaqueteadoValor', 'S')" style="flex:1;border:1px solid ${oc.plaqueteadoValor === 'S' ? 'var(--green-mid)' : 'var(--border)'};background:${oc.plaqueteadoValor === 'S' ? 'var(--green-mid)' : '#fff'};color:${oc.plaqueteadoValor === 'S' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">Sim</button>
+        <button type="button" onclick="vavOcorrenciaCampo(${item.numero}, ${idx}, 'plaqueteadoValor', 'N')" style="flex:1;border:1px solid ${oc.plaqueteadoValor === 'N' ? 'var(--red)' : 'var(--border)'};background:${oc.plaqueteadoValor === 'N' ? 'var(--red)' : '#fff'};color:${oc.plaqueteadoValor === 'N' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">Não</button>
+      </div>`;
+  }
+
+  return `
+  <div style="border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--surface2)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">
+      <label style="font-size:.78rem;font-weight:700">${info.label}</label>
+      <button type="button" onclick="vavRemoverOcorrencia(${item.numero}, ${idx})" title="Remover apontamento" style="border:none;background:none;color:var(--red);font-size:.68rem;font-weight:700;cursor:pointer;white-space:nowrap">✕ remover</button>
+    </div>
+    ${camposHtml}
+    ${vavFotosOcorrenciaHtml(item, oc, idx, fotosLabel)}
+  </div>`;
 }
 
 async function vavSalvar() {
@@ -40690,27 +40840,6 @@ async function vavSalvar() {
   navigate('checklist_vao_a_vao');
 }
 
-function vavBotoesTri(numero, campo, valorAtual) {
-  return ['C', 'NC', 'NA'].map(v => {
-    const ativo = valorAtual === v;
-    const cor = v === 'C' ? 'var(--green-mid)' : (v === 'NC' ? 'var(--red)' : '#9aa0ab');
-    return `<button type="button" onclick="vavCampo(${numero}, '${campo}', '${v}')"
-      style="flex:1;border:1px solid ${ativo ? cor : 'var(--border)'};background:${ativo ? cor : '#fff'};color:${ativo ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">${v}</button>`;
-  }).join('');
-}
-
-function vavTipoBadge(tipo) {
-  return tipo === 'AT'
-    ? `<span style="background:#5b4bbf;color:#fff;font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap">AT</span>`
-    : `<span style="background:#1f8fbf;color:#fff;font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap">VÃO</span>`;
-}
-
-function vavSituacaoBadge(situacao) {
-  if (situacao === 'conforme') return `<span style="background:var(--green-pale);color:var(--green-mid);font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:14px;white-space:nowrap">✔ Conforme</span>`;
-  if (situacao === 'nao_conforme') return `<span style="background:#fdecea;color:var(--red);font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:14px;white-space:nowrap">✖ Não Conforme</span>`;
-  return `<span style="background:#f3f4f6;color:var(--text-muted);font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:14px;white-space:nowrap">⏳ Pendente</span>`;
-}
-
 function vavRenderItemExpandido(item) {
   const situacao = vavSituacao(item);
   return `
@@ -40725,33 +40854,21 @@ function vavRenderItemExpandido(item) {
       ${vavSituacaoBadge(situacao)}
     </div>
 
-    <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
-      ${VAV_CRITERIOS.map(c => `
-      <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface2)">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-          <label style="font-size:.74rem;font-weight:700">${c.label}</label>
-          <div style="display:flex;gap:5px;min-width:140px;max-width:220px;flex:1">${vavBotoesTri(item.numero, c.key, item[c.key])}</div>
-        </div>
-        ${vavFotosCriterioHtml(item, c)}
-      </div>`).join('')}
+    <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 10px" onclick="event.stopPropagation()">
+      <label style="font-size:.72rem;font-weight:600;white-space:nowrap">Item a vistoriar:</label>
+      <select id="vav-sel-tipo-${item.numero}" style="flex:1;min-width:160px">
+        ${VAV_TIPOS_OCORRENCIA.map(t => `<option value="${t.key}">${t.label}</option>`).join('')}
+      </select>
+      <button type="button" class="btn-secondary" onclick="vavAdicionarOcorrencia(${item.numero}, document.getElementById('vav-sel-tipo-${item.numero}').value)">➕ Adicionar</button>
     </div>
 
-    <div style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-      <div class="form-group" style="margin:0"><label>Corte seletivo — dentro da faixa</label>
-        <input type="number" min="0" value="${item.corteDentro || 0}" oninput="vavCampo(${item.numero}, 'corteDentro', parseInt(this.value||0,10))"></div>
-      <div class="form-group" style="margin:0"><label>Corte seletivo — fora da faixa</label>
-        <input type="number" min="0" value="${item.corteFora || 0}" oninput="vavCampo(${item.numero}, 'corteFora', parseInt(this.value||0,10))"></div>
-      <div class="form-group" style="margin:0"><label>Plaqueteado?</label>
-        <div style="display:flex;gap:5px">
-          <button type="button" onclick="vavCampo(${item.numero}, 'plaqueteado', 'S')" style="flex:1;border:1px solid ${item.plaqueteado === 'S' ? 'var(--green-mid)' : 'var(--border)'};background:${item.plaqueteado === 'S' ? 'var(--green-mid)' : '#fff'};color:${item.plaqueteado === 'S' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">Sim</button>
-          <button type="button" onclick="vavCampo(${item.numero}, 'plaqueteado', 'N')" style="flex:1;border:1px solid ${item.plaqueteado === 'N' ? 'var(--red)' : 'var(--border)'};background:${item.plaqueteado === 'N' ? 'var(--red)' : '#fff'};color:${item.plaqueteado === 'N' ? '#fff' : 'var(--text-muted)'};border-radius:8px;padding:6px 0;font-size:.72rem;font-weight:700;cursor:pointer">Não</button>
-        </div>
-      </div>
+    <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px" onclick="event.stopPropagation()">
+      ${(item.ocorrencias || []).length
+        ? (item.ocorrencias || []).map((oc, idx) => vavRenderOcorrencia(item, oc, idx)).join('')
+        : `<div style="font-size:.76rem;color:var(--text-muted);padding:6px 2px">Nenhum apontamento ainda — escolha um item na lista acima e clique em "➕ Adicionar".</div>`}
     </div>
 
-    <div style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-      <div class="form-group" style="margin:0"><label>Medição</label>
-        <input type="text" value="${(item.medicao || '').replace(/"/g, '&quot;')}" oninput="vavCampo(${item.numero}, 'medicao', this.value)"></div>
+    <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px" onclick="event.stopPropagation()">
       <div class="form-group" style="margin:0"><label>Data da vistoria</label>
         <input type="date" value="${item.dataVistoria || ''}" onchange="vavCampo(${item.numero}, 'dataVistoria', this.value)"></div>
       <div class="form-group" style="margin:0"><label>Responsável</label>
@@ -40761,9 +40878,9 @@ function vavRenderItemExpandido(item) {
         </select></div>
     </div>
 
-    <div class="form-group"><label>Observações / Não Conformidade</label>
-      <textarea style="min-height:60px" oninput="vavCampo(${item.numero}, 'observacoes', this.value)" placeholder="Descreva o que foi observado em campo...">${item.observacoes || ''}</textarea></div>
-    <div class="form-group"><label>Ação / Prazo</label>
+    <div class="form-group" onclick="event.stopPropagation()"><label>Observações gerais</label>
+      <textarea style="min-height:60px" oninput="vavCampo(${item.numero}, 'observacoes', this.value)" placeholder="Observações gerais sobre esta estrutura/vão (opcional — cada apontamento Não Conforme já tem sua própria descrição acima)...">${item.observacoes || ''}</textarea></div>
+    <div class="form-group" onclick="event.stopPropagation()"><label>Ação / Prazo</label>
       <input type="text" value="${(item.acaoPrazo || '').replace(/"/g, '&quot;')}" oninput="vavCampo(${item.numero}, 'acaoPrazo', this.value)" placeholder="Ex.: Solicitar poda em 10 dias"></div>
 
   </div>`;
@@ -40784,19 +40901,26 @@ function vavRenderItemColapsado(item) {
   </div>`;
 }
 
+function vavExpandir(numero) {
+  window._vavExpandidoNum = (window._vavExpandidoNum === numero) ? null : numero;
+  navigate('checklist_vao_a_vao');
+}
+
+function vavFiltrar(valor) {
+  window._vavFiltro = valor;
+  navigate('checklist_vao_a_vao');
+}
+
 function pageChecklistVaoAVao() {
   if (window._vavHistorico === null) { vavCarregarHistorico(); }
   if (window._vavHistorico && !window._vavCarregouFrente && window._vavData === null && !window._vavCarregando) { vavAbrirFrente(window._vavFrenteId); }
 
   const header = `
-  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
-    <div><h1>Comissionamento Ambiental Vão a Vão</h1><p>Vistoria ambiental detalhada por estrutura/vão — Contrato 2025022101</p></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn-secondary" onclick="vavAtualizar()" title="Buscar os dados mais recentes do OneDrive">🔄 Atualizar</button>
-      <button class="btn-secondary" onclick="navigate('checklist_fiscalizacao_ero')">← Fiscalização Ambiental ERO</button>
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px">
+    <div>
+      <h1>📐 Checklist Vão a Vão</h1>
+      <p>Comissionamento Ambiental — vistoria detalhada por estrutura/vão</p>
     </div>
-  </div>
-  <div class="card" style="margin-bottom:16px">
     <div class="form-group" style="margin:0;max-width:420px"><label>Circuito Elétrico / Frente</label>
       <select onchange="vavAbrirFrente(this.value)">
         ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${window._vavFrenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
@@ -40830,6 +40954,7 @@ function pageChecklistVaoAVao() {
   }
 
   const resumo = vavResumoConformidade(itens);
+  const corteEPlaq = vavResumoCorteEPlaqueteado(itens);
   const avaliados = itens.filter(i => vavSituacao(i) !== 'pendente').length;
   const qtdNC = itens.filter(i => vavSituacao(i) === 'nao_conforme').length;
   const percentual = itens.length ? Math.round((avaliados / itens.length) * 100) : 0;
@@ -40864,11 +40989,16 @@ function pageChecklistVaoAVao() {
         </tr>`).join('')}
       </tbody>
     </table>
+    <div style="margin-top:10px;font-size:.74rem;color:var(--text-muted)">
+      ✂️ Corte Seletivo: <b style="color:var(--text-primary)">${corteEPlaq.corteDentro}</b> dentro da faixa · <b style="color:var(--text-primary)">${corteEPlaq.corteFora}</b> fora da faixa
+      &nbsp;&nbsp;·&nbsp;&nbsp; 🏷️ Plaqueteado: <b style="color:var(--text-primary)">${corteEPlaq.plaqSim}</b> sim · <b style="color:var(--text-primary)">${corteEPlaq.plaqNao}</b> não
+    </div>
   </div>
 
   <div style="position:sticky;top:8px;z-index:4;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--bg);padding:6px 0">
     <input type="text" placeholder="🔎 Buscar por Nº ou estrutura/vão..." value="${window._vavFiltro || ''}" oninput="vavFiltrar(this.value)" style="flex:1;min-width:200px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.82rem">
     <button class="btn-primary" onclick="vavSalvar()" ${window._vavSalvando ? 'disabled' : ''}>${window._vavSalvando ? 'Salvando...' : '💾 Salvar Vistoria'}</button>
+    <button class="btn-secondary" style="background:var(--brand-brown,#3F261F);color:#fff" onclick="vavExportarPDF()">🖨️ Exportar PDF completo</button>
   </div>
 
   <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">${itensFiltrados.length} de ${itens.length} itens${filtro ? ' (filtrado)' : ''}</div>
@@ -40876,6 +41006,145 @@ function pageChecklistVaoAVao() {
   ${itensFiltrados.map(item => item.numero === window._vavExpandidoNum ? vavRenderItemExpandido(item) : vavRenderItemColapsado(item)).join('')}
   `;
 }
+
+/* -- Exportar PDF completo do comissionamento (pedido 22/10/2026): gera,
+   com jsPDF (mesmo motor e cabeçalho/rodapé padrão usado em todo o app —
+   ver _pdfCabecalhoRodape/_pdfNovaPagina/_pdfNumerarPaginas), um PDF com o
+   resumo geral do circuito seguido de uma seção por estrutura/vão, listando
+   cada apontamento (tipo, resultado, descrição da NC quando houver) e suas
+   fotos. Itens sem nenhum apontamento aparecem como "Nenhum apontamento
+   registrado ainda", sem gastar espaço com fotos. Pode demorar alguns
+   segundos com muitas fotos — é gerado no próprio navegador. -- */
+async function vavExportarPDF() {
+  const itens = (window._vavData && window._vavData.itens) || [];
+  if (!itens.length) { showToast('⚠️ Nada para exportar — esse circuito não tem estruturas/vãos cadastrados.'); return; }
+  showToast('🔄 Gerando PDF do comissionamento completo... pode levar alguns segundos.');
+  await _garantirJsPDF();
+
+  const frente = FLASH_FRENTES.find(f => f.id === window._vavFrenteId);
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'COMISSIONAMENTO AMBIENTAL VÃO A VÃO';
+  const subtitulo = (frente ? frente.nome + ' — ' + frente.empreiteira : window._vavFrenteId) + ' · Contrato 2025022101 · Porto Velho — RO';
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.2, CW = pageW - 2.4;
+
+  const avaliados = itens.filter(i => vavSituacao(i) !== 'pendente').length;
+  const qtdNC = itens.filter(i => vavSituacao(i) === 'nao_conforme').length;
+  const percentual = itens.length ? Math.round((avaliados / itens.length) * 100) : 0;
+  const totalAT = itens.filter(i => i.tipo === 'AT').length;
+  const totalVAO = itens.filter(i => i.tipo === 'VAO').length;
+  const extensaoTotal = itens.reduce((s, i) => s + (i.extensaoM || 0), 0);
+  const corteEPlaq = vavResumoCorteEPlaqueteado(itens);
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(63, 38, 31);
+  doc.text('Resumo Geral', ML, y + 0.3);
+  y += 0.6;
+  const stats = [
+    ['Estruturas (AT)', String(totalAT)],
+    ['Vãos', String(totalVAO)],
+    ['Extensão total', extensaoTotal.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' m'],
+    ['Vistoriado', percentual + '%'],
+    ['Não Conformes', String(qtdNC)],
+  ];
+  const colW = CW / stats.length;
+  stats.forEach((s, i) => {
+    const x = ML + i * colW;
+    doc.setFillColor(245, 247, 244); doc.setDrawColor(215, 220, 210); doc.setLineWidth(0.02);
+    doc.roundedRect(x, y, colW - 0.15, 1.0, 0.08, 0.08, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(100, 120, 95);
+    doc.text(doc.splitTextToSize(s[0].toUpperCase(), colW - 0.5), x + 0.18, y + 0.3);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(40, 40, 40);
+    doc.text(s[1], x + 0.18, y + 0.82);
+  });
+  y += 1.3;
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(70, 70, 70);
+  doc.text('Corte seletivo: ' + corteEPlaq.corteDentro + ' dentro da faixa · ' + corteEPlaq.corteFora + ' fora da faixa    Plaqueteado: ' + corteEPlaq.plaqSim + ' sim · ' + corteEPlaq.plaqNao + ' não', ML, y);
+  y += 0.6;
+
+  function quebrarSeNecessario(altura) { if (y + altura > pageH - 2.0) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); }
+
+  itens.forEach(item => {
+    const situacao = vavSituacao(item);
+    const ocs = item.ocorrencias || [];
+
+    quebrarSeNecessario(1.0);
+    const headerH = 0.75;
+    const bg = situacao === 'nao_conforme' ? [253, 236, 234] : [245, 247, 244];
+    doc.setFillColor(bg[0], bg[1], bg[2]); doc.setDrawColor(215, 220, 210); doc.setLineWidth(0.02);
+    doc.roundedRect(ML, y, CW, headerH, 0.06, 0.06, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(63, 38, 31);
+    doc.text((item.tipo === 'AT' ? 'ESTRUTURA' : 'VÃO') + ' Nº ' + item.numero + ' — ' + (item.estruturaVao || ''), ML + 0.2, y + 0.3);
+    const situLabel = situacao === 'conforme' ? 'CONFORME' : situacao === 'nao_conforme' ? 'NÃO CONFORME' : 'PENDENTE';
+    const situCor = situacao === 'conforme' ? [45, 140, 90] : situacao === 'nao_conforme' ? [224, 61, 61] : [140, 140, 140];
+    doc.setTextColor(situCor[0], situCor[1], situCor[2]);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
+    doc.text(situLabel, ML + CW - 0.2, y + 0.3, { align: 'right' });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(90, 90, 90);
+    doc.text((item.extensaoM != null ? item.extensaoM.toLocaleString('pt-BR') + ' m · ' : '') + (item.dataVistoria ? new Date(item.dataVistoria + 'T12:00').toLocaleDateString('pt-BR') : 'sem data') + (item.responsavel ? ' · ' + item.responsavel : ''), ML + 0.2, y + 0.58);
+    y += headerH + 0.15;
+
+    if (!ocs.length) {
+      quebrarSeNecessario(0.5);
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(140, 140, 140);
+      doc.text('Nenhum apontamento registrado ainda.', ML + 0.2, y + 0.25);
+      y += 0.5;
+    } else {
+      ocs.forEach(oc => {
+        const info = VAV_TIPO_INFO[oc.tipo] || { label: oc.tipo };
+        let valorTxt = '—';
+        if (info.modo === 'tri') valorTxt = oc.situacao === 'C' ? 'Conforme' : oc.situacao === 'NC' ? 'Não Conforme' : oc.situacao === 'NA' ? 'N/A' : 'Pendente';
+        else if (info.modo === 'corte') valorTxt = oc.corteTipo === 'dentro' ? 'Dentro da faixa' : oc.corteTipo === 'fora' ? 'Fora da faixa' : '—';
+        else if (info.modo === 'simnao') valorTxt = oc.plaqueteadoValor === 'S' ? 'Sim' : oc.plaqueteadoValor === 'N' ? 'Não' : '—';
+
+        quebrarSeNecessario(0.55);
+        const rotulo = '• ' + info.label + ': ';
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(40, 40, 40);
+        doc.text(rotulo, ML + 0.3, y + 0.25);
+        const corVal = oc.situacao === 'NC' ? [224, 61, 61] : [40, 40, 40];
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(corVal[0], corVal[1], corVal[2]);
+        doc.text(valorTxt, ML + 0.3 + doc.getTextWidth(rotulo) + 0.05, y + 0.25);
+        y += 0.4;
+
+        if (oc.situacao === 'NC' && oc.descricaoNC) {
+          const lines = doc.splitTextToSize(oc.descricaoNC, CW - 0.8);
+          lines.forEach(l => {
+            quebrarSeNecessario(0.35);
+            doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(90, 90, 90);
+            doc.text(l, ML + 0.5, y + 0.22);
+            y += 0.32;
+          });
+        }
+
+        const fotos = oc.fotos || [];
+        if (fotos.length) {
+          const COLS = 6, gapX = 0.12;
+          const fW = (CW - 0.6 - gapX * (COLS - 1)) / COLS;
+          const fH = fW;
+          let col2 = 0;
+          quebrarSeNecessario(fH + 0.2);
+          fotos.forEach(foto => {
+            if (col2 >= COLS) { col2 = 0; y += fH + 0.15; quebrarSeNecessario(fH + 0.2); }
+            const xf = ML + 0.5 + col2 * (fW + gapX);
+            try { doc.addImage(foto, 'JPEG', xf, y, fW, fH); } catch (ex) { try { doc.addImage(foto, 'PNG', xf, y, fW, fH); } catch (ex2) {} }
+            doc.setDrawColor(200, 200, 200); doc.setLineWidth(0.015); doc.rect(xf, y, fW, fH);
+            col2++;
+          });
+          y += fH + 0.25;
+        }
+      });
+    }
+    y += 0.25;
+  });
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  const nomeArq = 'Comissionamento_VaoAVao_' + (frente ? frente.nome.replace(/[^a-zA-Z0-9]+/g, '_') : window._vavFrenteId) + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
+  doc.save(nomeArq);
+  showToast('✅ PDF gerado!');
+}
+
 
 
 /* -- Hub "Financeiro": mesmo padrão do hub de Fiscalização Ambiental ERO acima
