@@ -40406,6 +40406,7 @@ if (window._vavRegistroAtualId === undefined) window._vavRegistroAtualId = null;
 if (window._vavExpandidoNum === undefined) window._vavExpandidoNum = null;
 if (window._vavFiltro === undefined) window._vavFiltro = '';
 if (window._vavSalvando === undefined) window._vavSalvando = false;
+if (window._vavErro === undefined) window._vavErro = false;
 
 const VAV_CRITERIOS = [
   { key: 'acesso', label: 'Acesso' },
@@ -40435,14 +40436,34 @@ async function vavAbrirFrente(frenteId) {
   window._vavFrenteId = frenteId;
   window._vavCarregouFrente = false;
   window._vavData = null;
+  window._vavErro = false;
   window._vavExpandidoNum = null;
   window._vavFiltro = '';
   navigate('checklist_vao_a_vao');
 
   const registro = (window._vavHistorico || []).find(r => r.frenteId === frenteId);
   if (registro && registro.arquivoDados) {
-    const texto = await baixarArquivoCentral(registro.arquivoDados);
-    window._vavData = texto ? JSON.parse(texto) : { itens: [] };
+    // Falha de rede/OneDrive ao baixar o snapshot (JSON com até 6 fotos por item)
+    // NÃO pode virar "arquivo vazio" — antes, qualquer hiccup fazia a vistoria já
+    // preenchida sumir da tela e mostrar "Nenhuma estrutura cadastrada" (reportado
+    // 22/10/2026: "abre e some o formulário", em dias de conexão instável). Agora
+    // tenta mais uma vez (hiccup comum costuma passar na 2ª tentativa) e, se mesmo
+    // assim falhar, mostra erro explícito com botão de tentar de novo em vez de
+    // fingir que não há dados — nada é apagado, o arquivo no OneDrive não é tocado.
+    let texto = await baixarArquivoCentral(registro.arquivoDados);
+    if (texto === null) texto = await baixarArquivoCentral(registro.arquivoDados);
+    if (texto === null) {
+      window._vavErro = true;
+      window._vavData = { itens: [] };
+    } else {
+      try {
+        window._vavData = JSON.parse(texto);
+      } catch (e) {
+        console.warn('[VAV] JSON inválido em', registro.arquivoDados, e);
+        window._vavErro = true;
+        window._vavData = { itens: [] };
+      }
+    }
   } else {
     window._vavData = { itens: [] };
   }
@@ -40692,6 +40713,16 @@ function pageChecklistVaoAVao() {
 
   if (!window._vavHistorico || !window._vavCarregouFrente || window._vavData === null) {
     return header + `<div class="card"><div style="font-size:.85rem;color:var(--text-muted)">Carregando...</div></div>`;
+  }
+
+  if (window._vavErro) {
+    return header + `
+    <div class="card" style="text-align:center;padding:30px 20px;border-left:4px solid var(--red)">
+      <div style="font-size:1.8rem;margin-bottom:8px">⚠️</div>
+      <div class="card-title" style="margin-bottom:6px">Não foi possível carregar os dados deste circuito</div>
+      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:14px">Falha temporária de conexão com o OneDrive — a vistoria já preenchida NÃO foi apagada, só não carregou agora. Tente novamente.</div>
+      <button class="btn-primary" onclick="vavAbrirFrente(window._vavFrenteId)">🔄 Tentar novamente</button>
+    </div>`;
   }
 
   const itens = window._vavData.itens || [];
