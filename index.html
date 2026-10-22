@@ -40426,6 +40426,7 @@ if (window._vavRegistroAtualId === undefined) window._vavRegistroAtualId = null;
 if (window._vavExpandidoNum === undefined) window._vavExpandidoNum = null;
 if (window._vavFiltro === undefined) window._vavFiltro = '';
 if (window._vavSalvando === undefined) window._vavSalvando = false;
+if (window._vavCarregando === undefined) window._vavCarregando = false;
 if (window._vavErro === undefined) window._vavErro = false;
 
 const VAV_CRITERIOS = [
@@ -40453,6 +40454,21 @@ async function vavAtualizar() {
 }
 
 async function vavAbrirFrente(frenteId) {
+  // Guarda de reentrância (causa raiz real do incidente 22/10/2026, achada só
+  // depois de acessar o app ao vivo e ver "Maximum call stack size exceeded" no
+  // console — o "stack overflow" que aparecia às vezes dentro do MSAL era esse
+  // mesmo problema, não um bug da biblioteca): o navigate() logo abaixo
+  // re-renderiza a tela, e o TOPO de pageChecklistVaoAVao() dispara
+  // vavAbrirFrente() de novo sempre que _vavCarregouFrente ainda está false e
+  // _vavData ainda está null — exatamente o estado que ESTE MESMO navigate()
+  // acabou de deixar, ANTES do primeiro await. Sem essa guarda, cada chamada de
+  // vavAbrirFrente virava uma recursão síncrona infinita (navigate →
+  // pageChecklistVaoAVao → vavAbrirFrente → navigate → ...) até estourar a pilha
+  // de chamadas do navegador — e isso podia acontecer no meio de qualquer coisa
+  // que também estivesse na pilha nesse instante (inclusive o MSAL buscando
+  // token), daí o erro de "stack overflow" parecer vir de lugares aleatórios.
+  if (window._vavCarregando) return;
+  window._vavCarregando = true;
   window._vavFrenteId = frenteId;
   window._vavCarregouFrente = false;
   window._vavData = null;
@@ -40489,6 +40505,7 @@ async function vavAbrirFrente(frenteId) {
   }
   window._vavRegistroAtualId = registro ? registro.Id : null;
   window._vavCarregouFrente = true;
+  window._vavCarregando = false;
   navigate('checklist_vao_a_vao');
 }
 
@@ -40713,7 +40730,7 @@ function vavRenderItemColapsado(item) {
 
 function pageChecklistVaoAVao() {
   if (window._vavHistorico === null) { vavCarregarHistorico(); }
-  if (window._vavHistorico && !window._vavCarregouFrente && window._vavData === null) { vavAbrirFrente(window._vavFrenteId); }
+  if (window._vavHistorico && !window._vavCarregouFrente && window._vavData === null && !window._vavCarregando) { vavAbrirFrente(window._vavFrenteId); }
 
   const header = `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
