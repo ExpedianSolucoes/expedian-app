@@ -40436,6 +40436,13 @@ const VAV_CRITERIOS = [
   { key: 'cursoHidrico', label: 'Curso Hídrico' },
   { key: 'supressaoVegetal', label: 'Supressão Vegetal' },
 ];
+/* -- Limite de fotos por criterio (pedido 22/10/2026): bem maior que o
+   padrao de 4 por pergunta usado no Flash Report/Checklist de Linha/ERO,
+   porque aqui a foto e por criterio (Acesso, Residuos, Erosao, Curso
+   Hidrico, Supressao Vegetal) dentro de cada uma das 211 estruturas/vaos,
+   nao por pergunta de um checklist unico. Ajustar aqui se precisar de
+   mais ou menos -- ver nota sobre peso do arquivo no doc do projeto. -- */
+const VAV_MAX_FOTOS_CRITERIO = 12;
 
 async function vavCarregarHistorico(semNavegar) {
   window._vavHistorico = (await dbLerSeguro('ChecklistVaoAVao')) || [];
@@ -40536,28 +40543,88 @@ function vavCampo(numero, campo, valor) {
   navigate('checklist_vao_a_vao');
 }
 
-async function vavCarregarFoto(numero, event) {
+function vavFotosCriterio(item, criterioKey) {
+  if (!item.fotosCriterio) item.fotosCriterio = {};
+  if (!item.fotosCriterio[criterioKey]) item.fotosCriterio[criterioKey] = [];
+  return item.fotosCriterio[criterioKey];
+}
+
+/* -- Fotos por criterio (pedido 22/10/2026): no Checklist Vao a Vao cada
+   estrutura/vao tem 5 criterios (Acesso, Residuos, Erosao, Curso Hidrico,
+   Supressao Vegetal), avaliados separadamente -- entao as fotos agora
+   acompanham o criterio especifico que esta sendo apontado, nao o item
+   inteiro. Mesmo padrao visual de arrastar-e-soltar/clicar do Checklist de
+   Linha e Subestacao (ERO), mas sem o limite fixo de 4 por pergunta: aqui
+   cabem ate VAV_MAX_FOTOS_CRITERIO fotos por criterio, porque uma unica
+   estrutura pode ter bem mais evidencia fotografica que uma pergunta de
+   checklist normal. O input nao usa capture="environment" de proposito --
+   abre o seletor padrao do dispositivo (camera OU galeria), como pedido. -- */
+async function vavCarregarFotoCriterio(numero, criterioKey, event) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
   const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
-  if (!item) return;
-  if (!item.fotos) item.fotos = [];
-  const vagas = Math.max(0, 6 - item.fotos.length);
-  if (!vagas) { showToast('⚠️ Esse item já tem o máximo de 6 fotos — remova alguma antes de adicionar mais.'); event.target.value = ''; return; }
-  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo 6 por item).');
+  if (!item) { event.target.value = ''; return; }
+  const fotos = vavFotosCriterio(item, criterioKey);
+  const vagas = Math.max(0, VAV_MAX_FOTOS_CRITERIO - fotos.length);
+  if (!vagas) { showToast('⚠️ Esse critério já tem o máximo de ' + VAV_MAX_FOTOS_CRITERIO + ' fotos — remova alguma antes de adicionar mais.'); event.target.value = ''; return; }
+  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo ' + VAV_MAX_FOTOS_CRITERIO + ' por critério).');
   for (const file of files.slice(0, vagas)) {
     const { dataUrl } = await _eroRedimensionarFoto(file);
-    item.fotos.push(dataUrl);
+    fotos.push(dataUrl);
   }
   event.target.value = '';
   navigate('checklist_vao_a_vao');
 }
 
-function vavRemoverFoto(numero, idx) {
+function vavRemoverFotoCriterio(numero, criterioKey, idx) {
   const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
-  if (!item || !item.fotos) return;
-  item.fotos.splice(idx, 1);
+  if (!item) return;
+  const fotos = vavFotosCriterio(item, criterioKey);
+  fotos.splice(idx, 1);
   navigate('checklist_vao_a_vao');
+}
+
+function vavDropFotosCriterio(numero, criterioKey, event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const item = ((window._vavData || {}).itens || []).find(it => it.numero === numero);
+  if (!item) return;
+  const dt = event.dataTransfer;
+  const files = Array.from((dt && dt.files) || []).filter(f => f.type && f.type.indexOf('image/') === 0);
+  if (!files.length) return;
+  const fotos = vavFotosCriterio(item, criterioKey);
+  const vagas = Math.max(0, VAV_MAX_FOTOS_CRITERIO - fotos.length);
+  if (!vagas) { showToast('⚠️ Esse critério já tem o máximo de ' + VAV_MAX_FOTOS_CRITERIO + ' fotos — remova alguma antes de arrastar mais.'); return; }
+  if (files.length > vagas) showToast('⚠️ Só cabem ' + vagas + ' foto(s) aqui — as demais foram ignoradas (máximo ' + VAV_MAX_FOTOS_CRITERIO + ' por critério).');
+  Promise.all(files.slice(0, vagas).map(file => _eroRedimensionarFoto(file).then(({ dataUrl }) => { fotos.push(dataUrl); })))
+    .then(() => navigate('checklist_vao_a_vao'));
+}
+
+function vavFotosCriterioHtml(item, criterio) {
+  const key = criterio.key;
+  const fotos = (item.fotosCriterio && item.fotosCriterio[key]) || [];
+  const max = VAV_MAX_FOTOS_CRITERIO;
+  return `
+  <div style="margin-top:8px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;border-radius:8px;border:2px dashed transparent;transition:background-color .15s,border-color .15s,box-shadow .15s"
+    ondragover="event.preventDefault();event.stopPropagation();this.style.backgroundColor='var(--green-pale)';this.style.borderColor='var(--green-main)';this.style.boxShadow='0 0 0 4px rgba(45,140,90,.18)'"
+    ondragleave="this.style.backgroundColor='';this.style.borderColor='transparent';this.style.boxShadow=''"
+    ondrop="this.style.backgroundColor='';this.style.borderColor='transparent';this.style.boxShadow='';vavDropFotosCriterio(${item.numero},'${key}',event)">
+    <span style="font-size:.58rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);white-space:nowrap">📷 <span style="opacity:.7;text-transform:none;font-weight:400">(ou arraste aqui)</span> ${fotos.length}/${max}</span>
+    ${fotos.map((f, idx) => `
+    <div style="position:relative;flex-shrink:0">
+      <div style="width:40px;height:40px;border-radius:8px;border:2px solid var(--green-main);overflow:hidden;cursor:pointer" onclick="abrirFotoAmpliada('${f}')">
+        <img src="${f}" style="width:100%;height:100%;object-fit:cover">
+      </div>
+      <button type="button" onclick="event.stopPropagation();vavRemoverFotoCriterio(${item.numero},'${key}',${idx})" title="Remover" style="position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;border:none;font-size:.55rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2">✕</button>
+    </div>`).join('')}
+    ${fotos.length < max ? `
+    <label style="cursor:pointer;display:block;flex-shrink:0" title="Adicionar foto">
+      <div style="width:40px;height:40px;border-radius:8px;border:2px dashed var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center">
+        <span style="font-size:1rem;opacity:.5">📷</span>
+      </div>
+      <input type="file" accept="image/*" multiple style="display:none" onchange="vavCarregarFotoCriterio(${item.numero},'${key}',event)">
+    </label>` : ''}
+  </div>`;
 }
 
 function vavExpandir(numero) {
@@ -40658,11 +40725,14 @@ function vavRenderItemExpandido(item) {
       ${vavSituacaoBadge(situacao)}
     </div>
 
-    <div style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
+    <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
       ${VAV_CRITERIOS.map(c => `
-      <div>
-        <label style="display:block;font-size:.72rem;font-weight:600;margin-bottom:5px">${c.label}</label>
-        <div style="display:flex;gap:5px">${vavBotoesTri(item.numero, c.key, item[c.key])}</div>
+      <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface2)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <label style="font-size:.74rem;font-weight:700">${c.label}</label>
+          <div style="display:flex;gap:5px;min-width:140px;max-width:220px;flex:1">${vavBotoesTri(item.numero, c.key, item[c.key])}</div>
+        </div>
+        ${vavFotosCriterioHtml(item, c)}
       </div>`).join('')}
     </div>
 
@@ -40696,20 +40766,6 @@ function vavRenderItemExpandido(item) {
     <div class="form-group"><label>Ação / Prazo</label>
       <input type="text" value="${(item.acaoPrazo || '').replace(/"/g, '&quot;')}" oninput="vavCampo(${item.numero}, 'acaoPrazo', this.value)" placeholder="Ex.: Solicitar poda em 10 dias"></div>
 
-    <div class="form-group">
-      <label>Evidência (fotos) — ${(item.fotos || []).length}/6</label>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-        ${(item.fotos || []).map((f, idx) => `
-        <div style="position:relative">
-          <img src="${f}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:pointer" onclick="abrirFotoAmpliada('${f}')">
-          <button type="button" onclick="event.stopPropagation(); vavRemoverFoto(${item.numero}, ${idx})" title="Remover" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;background:var(--red);color:#fff;border:none;font-size:.6rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>
-        </div>`).join('')}
-      </div>
-      <label class="btn-secondary" style="display:inline-block;font-size:.74rem;padding:6px 12px;cursor:pointer">
-        📷 Adicionar foto
-        <input type="file" accept="image/*" multiple capture="environment" style="display:none" onchange="vavCarregarFoto(${item.numero}, event)">
-      </label>
-    </div>
   </div>`;
 }
 
