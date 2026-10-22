@@ -1546,19 +1546,6 @@ function renderPage(id) {
 function pageDashboard() {
   setTimeout(() => carregarDashboard(), 150);
   return `
-  <div class="card" style="margin-bottom:16px">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px">
-      <div class="card-title" style="margin:0">📅 Calendário Mensal — <span id="dash-calendario-titulo">—</span></div>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <button class="btn-secondary" style="padding:5px 10px;font-size:.75rem" onclick="dashCalNavegar(-1)">◀</button>
-        <button class="btn-secondary" style="padding:5px 10px;font-size:.75rem" onclick="dashCalIrHoje()">Hoje</button>
-        <button class="btn-secondary" style="padding:5px 10px;font-size:.75rem" onclick="dashCalNavegar(1)">▶</button>
-        <button class="btn-primary" style="padding:5px 12px;font-size:.75rem" onclick="navigate('agenda')">📆 Ver Agenda completa</button>
-      </div>
-    </div>
-    <div id="dash-calendario-grid"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando eventos...</div></div>
-  </div>
-
   <div class="section-title">Financeiro</div>
   <div class="kpi-grid">
     <div class="kpi-card green"><div class="kpi-label">Contas a Receber</div><div class="kpi-value" id="kpi-receber">—</div><div class="kpi-sub" id="kpi-receber-sub">carregando...</div><div class="kpi-icon">💰</div></div>
@@ -1600,45 +1587,19 @@ function pageDashboard() {
       </div>
       <div id="dash-veicular-livres"><div style="color:var(--text-muted);font-size:.82rem">Carregando...</div></div>
     </div>
+  </div>
+
+  <div class="section-title">Gestão Documental</div>
+  <div class="kpi-grid">
+    <div class="kpi-card red" style="cursor:pointer" onclick="navigate('docs')" title="Ver Gestão Documental"><div class="kpi-label">Docs. Vencidos</div><div class="kpi-value" id="kpi-gd-vencido">—</div><div class="kpi-sub" id="kpi-gd-vencido-sub">carregando...</div><div class="kpi-icon">❌</div></div>
+    <div class="kpi-card amber" style="cursor:pointer" onclick="navigate('docs')" title="Ver Gestão Documental"><div class="kpi-label">Docs. em Atenção</div><div class="kpi-value" id="kpi-gd-atencao">—</div><div class="kpi-sub" id="kpi-gd-atencao-sub">carregando...</div><div class="kpi-icon">⚠️</div></div>
+  </div>
+  <div class="card" style="margin-top:16px;border-left:4px solid var(--red)">
+    <div class="card-title">📁 Documentos da Empresa — Vencidos e a Vencer</div>
+    <div id="dash-gd-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   </div>`;
 }
 
-
-/* -- Calendário mensal da página inicial (dashboard) — reaproveita a mesma
-   grade de mês já usada na Agenda (agendaRenderMes), com uma data de
-   referência própria (não mexe na navegação da página Agenda). -- */
-if (!window._dashCalRef) window._dashCalRef = new Date().toISOString().slice(0, 10);
-
-function dashCalNavegar(direcao) {
-  const d = new Date(window._dashCalRef + 'T00:00:00');
-  d.setMonth(d.getMonth() + direcao);
-  window._dashCalRef = d.toISOString().slice(0, 10);
-  renderDashCalendario();
-}
-
-function dashCalIrHoje() {
-  window._dashCalRef = new Date().toISOString().slice(0, 10);
-  renderDashCalendario();
-}
-
-function renderDashCalendario() {
-  const el = document.getElementById('dash-calendario-grid');
-  if (!el) return;
-  const lbl = document.getElementById('dash-calendario-titulo');
-  const refDate = new Date(window._dashCalRef + 'T00:00:00');
-  if (lbl) {
-    const texto = refDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-    lbl.textContent = texto.charAt(0).toUpperCase() + texto.slice(1);
-  }
-  const items = Array.isArray(AGENDA_DADOS) ? AGENDA_DADOS : [];
-  // agendaRenderMes lê a data de referência da variável global AGENDA_DATA_REF
-  // (usada pela página Agenda) — troca temporariamente, gera o HTML e devolve
-  // o valor original, pra não bagunçar a navegação da Agenda de verdade.
-  const backupRef = AGENDA_DATA_REF;
-  AGENDA_DATA_REF = window._dashCalRef;
-  el.innerHTML = agendaRenderMes(items);
-  AGENDA_DATA_REF = backupRef;
-}
 
 /* == INDICADOR DE SYNC == */
 function showSyncStatus(msg, state, duration) {
@@ -1692,9 +1653,6 @@ function iniciarDashRefresh() {
 
 async function carregarDashboard() {
   const set = (id, v) => { const e = document.getElementById(id); if(e) e.textContent = v; };
-
-  // Calendário mensal (topo da página inicial) — carrega em paralelo, não bloqueia os KPIs
-  agendaCarregar().then(() => renderDashCalendario()).catch(e => console.warn('[Dashboard] Falha ao carregar calendário mensal:', e));
 
   try {
     const [aprs, eros, prests, contas, receber] = await Promise.all([
@@ -1808,6 +1766,37 @@ async function carregarDashboard() {
             <span class="status-pill green" style="font-size:.65rem">${r.Percentual||r.percentual||'✅'}</span>
           </div>`).join('');
       }
+    }
+    // Gestão Documental — documentos da empresa vencidos / a vencer (inclui Seguros)
+    try {
+      await gdCarregarDados();
+      const docsEmp = (window._gdDados && window._gdDados.docsEmpresa) || [];
+      const gdVencidos = docsEmp.filter(doc => gdStatusDocumento(doc) === 'vencido');
+      const gdAtencao  = docsEmp.filter(doc => ['alerta30','alerta90'].includes(gdStatusDocumento(doc)));
+      set('kpi-gd-vencido',     gdVencidos.length);
+      set('kpi-gd-vencido-sub', gdVencidos.length ? 'requer ação imediata' : 'nenhum');
+      set('kpi-gd-atencao',     gdAtencao.length);
+      set('kpi-gd-atencao-sub', gdAtencao.length ? 'vencendo em breve' : 'nenhum');
+      const gdDiv = document.getElementById('dash-gd-lista');
+      if (gdDiv) {
+        const gdDestaque = [...gdVencidos, ...gdAtencao]
+          .sort((a,b) => (a.vencimento||'9999-99-99').localeCompare(b.vencimento||'9999-99-99'))
+          .slice(0, 6);
+        gdDiv.innerHTML = gdDestaque.length === 0
+          ? '<div style="color:var(--text-muted);font-size:.82rem;padding:10px">Nenhum documento vencido ou em atenção.</div>'
+          : gdDestaque.map(doc => {
+              const stg = gdStatusDocumento(doc);
+              const cor = stg === 'vencido' ? 'red' : 'amber';
+              return `<div class="alert-item">
+                <div class="dot ${cor}"></div>
+                <div class="name" style="font-size:.82rem"><strong>${doc.tipo}</strong>${doc.numero?' · '+doc.numero:''}</div>
+                <div class="meta">${doc.valor?('💰 '+doc.valor+' · '):''}${(doc.obs||'').slice(0,80)}</div>
+                <span class="status-pill ${cor}" style="font-size:.65rem">${gdStatusBadge(stg,gdDiasStr(doc.vencimento))}</span>
+              </div>`;
+            }).join('');
+      }
+    } catch(e) {
+      console.warn('[Dashboard] Erro Gestão Documental:', e);
     }
   } catch(e) { console.warn('carregarDashboard:', e); }
 }
@@ -61380,6 +61369,96 @@ const GD_SEED_EMPRESA = [
   { tipo:'Ação — PASST', numero:'PASST-2026-10', emissao:'2026-10-01', vencimento:'2026-10-31', obs:'Outubro — Auditoria Final | Resp: SSMA' },
   { tipo:'Ação — PASST', numero:'PASST-2026-11', emissao:'2026-11-01', vencimento:'2026-11-30', obs:'Novembro — Revisão de Indicadores SST | Resp: SSMA / Diretoria' },
   { tipo:'Ação — PASST', numero:'PASST-2026-12', emissao:'2026-12-01', vencimento:'2026-12-31', obs:'Dezembro — Revisão Geral e Planejamento 2027 | Resp: SSMA / Diretoria' },
+
+  // ─── Seguros — levantamento da pasta "04 - FINANCEIRO\Seguros e Plano de Saúde" (22/10/2026) ───
+  {
+    tipo: 'Apólice de Seguro',
+    numero: '0982.00.10-451.062-3',
+    emissao: '2026-05-08',
+    vencimento: '2027-05-07',
+    valor: 'R$ 107,36/mês estimado (11 vidas)',
+    obs: 'Seguro de Vida em Grupo + Acidentes Pessoais — Porto Seguro | Renovação (aditivo) — pendente "De Acordo" assinado | Capitais reajustados por IPCA | Engesol',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: 'PSAUDE-BRADESCO-2026',
+    emissao: '',
+    vencimento: '',
+    valor: 'R$ 4.896,79/mês (R$ 58.761,48/ano) — 6 pessoas, plano Enfermaria',
+    obs: 'A CONFIRMAR — Plano de Saúde Bradesco Saúde: item destacado na planilha de cotações da Engesol. Vigência e escolha final do plano ainda não confirmadas por falta de apólice/contrato na pasta.',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: '1005100007110',
+    emissao: '2026-10-29',
+    vencimento: '2027-10-29',
+    valor: 'R$ 4.349,18 (10x cartão ~R$ 435,00)',
+    obs: 'Seguro de Responsabilidade Civil Geral — Fator Seguradora | Renovação | LMG R$ 1.400.000,00 | Corretor: Mutuus',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: 'RC-PROF-AXA-2025-2026',
+    emissao: '2025-10-29',
+    vencimento: '2026-10-29',
+    valor: 'R$ 9.901,69 (apólice anterior, 4x R$ 2.475,42) — renovação 2026/2027 NÃO localizada',
+    obs: 'ALERTA CRÍTICO — Seguro de Responsabilidade Civil Profissional (E&O), Axa: a apólice anterior vence em 29/10/2026 e a renovação 2026-2027 ainda não foi emitida/confirmada (só há um questionário de renovação na pasta). Verificar urgentemente com o corretor para evitar lacuna de cobertura.',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: '131 0004400941',
+    emissao: '2025-10-31',
+    vencimento: '2026-10-31',
+    valor: 'R$ 4.991,40 (6x R$ 831,90)',
+    obs: 'Seguro de Responsabilidade Civil por Riscos Ambientais — Tokio Marine | LMG R$ 100.000,00 | Corretor: Mutuus | Vencendo em breve — iniciar renovação',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: '0843.990.0244.053421.0001.000000',
+    emissao: '2025-12-30',
+    vencimento: '2026-12-30',
+    valor: 'R$ 5.863,07 (10x R$ 586,31)',
+    obs: 'Seguro de veículo — VW Saveiro RSX7A36 | Bradesco Auto/RE | Franquia R$ 4.090,53 | Corretor: Invicta',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: '15941200',
+    emissao: '2026-01-21',
+    vencimento: '2027-01-21',
+    valor: 'R$ 5.485,02 (12x R$ 457,01)',
+    obs: 'Seguro de veículo — Caminhão Tanque RKS3C14 | Tokio Marine | Renovação Congênere | Franquia R$ 8.297,00',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: '15935463',
+    emissao: '2026-01-17',
+    vencimento: '2027-01-17',
+    valor: 'R$ 3.859,22 (10x R$ 385,84)',
+    obs: 'Seguro de veículo — Strada 0km UAO4H80 | Tokio Marine | Seguro novo | Garantia 0km até 16/07/2026',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: '39416443',
+    emissao: '2026-10-10',
+    vencimento: '2027-10-10',
+    valor: 'R$ 7.882,74 (10x ~R$ 788,00)',
+    obs: 'Seguro de veículo — Caminhão Baú BDG3G34 (placa real BDB3G34) | Tokio Marine | Renovação | Franquia parcial R$ 7.921,00',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: '15951508',
+    emissao: '2026-03-06',
+    vencimento: '2027-03-06',
+    valor: 'R$ 4.528,01 (10x ~R$ 453,00)',
+    obs: 'Seguro de veículo — Mobi Like UAP1J40 | Tokio Marine | Seguro novo',
+  },
+  {
+    tipo: 'Apólice de Seguro',
+    numero: '39412676',
+    emissao: '2026-09-29',
+    vencimento: '2027-09-29',
+    valor: 'R$ 7.275,29 (10x ~R$ 727,00)',
+    obs: 'Seguro de veículo — Strada Freedom UAO0I86 | Tokio Marine | Seguro novo | Garantia 0km até 28/03/2027',
+  },
 ];
 const GD_DOCS_COLAB_TIPOS = [
   'ASO','CNH','NR-35 (Trabalho em Altura)','NR-33 (Espaço Confinado)',
@@ -61776,6 +61855,7 @@ function gdAbrirModalDocEmpresa(idx) {
         <div class="form-group"><label>Data de Vencimento</label><input type="date" id="gd-fVencimento" value="${doc?doc.vencimento||'':''}"></div>
       </div>
       <div class="form-group"><label>Número / Referência</label><input id="gd-fNumero" value="${doc?doc.numero||'':''}" placeholder="Ex: LO-2024/001"></div>
+      <div class="form-group"><label>Valor</label><input id="gd-fValor" value="${doc?doc.valor||'':''}" placeholder="Ex: R$ 5.000,00 (anual) ou 10x R$ 500,00"></div>
       <div class="form-group"><label>Observações</label><textarea id="gd-fObs" rows="2" style="width:100%">${doc?doc.obs||'':''}</textarea></div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
         <button class="btn-secondary" onclick="gdFecharModal()">Cancelar</button>
@@ -61789,7 +61869,9 @@ async function gdSalvarDocEmpresa(idx) {
   const tipoSel = document.getElementById('gd-fTipo').value;
   const tipo = tipoSel === '__outro' ? document.getElementById('gd-fOutro').value.trim() : tipoSel;
   if (!tipo) { showToast('⚠️ Informe o tipo de documento.'); return; }
-  const doc = { tipo, emissao:document.getElementById('gd-fEmissao').value, vencimento:document.getElementById('gd-fVencimento').value, numero:document.getElementById('gd-fNumero').value.trim(), obs:document.getElementById('gd-fObs').value.trim() };
+  // Preserva campos não editados no formulário (ex.: acoes de um plano SST) em vez de sobrescrever o doc do zero.
+  const existente = (idx!==null&&idx!==undefined) ? (window._gdDados.docsEmpresa[idx]||{}) : {};
+  const doc = { ...existente, tipo, emissao:document.getElementById('gd-fEmissao').value, vencimento:document.getElementById('gd-fVencimento').value, numero:document.getElementById('gd-fNumero').value.trim(), valor:document.getElementById('gd-fValor').value.trim(), obs:document.getElementById('gd-fObs').value.trim() };
   if (idx!==null&&idx!==undefined) window._gdDados.docsEmpresa[idx]=doc; else window._gdDados.docsEmpresa.push(doc);
   gdFecharModal(); await gdSalvar(); showToast('💾 Documento salvo!'); navigate('docs');
 }
@@ -65028,6 +65110,7 @@ function pageGestaoDocumental() {
     { key: 'bem-estar', label: '🌿 Programa Bem-Estar', icon: '💚', tipos: ['Programa Bem-Estar','Ação — Bem-Estar'] },
     { key: 'aet',       label: '🪑 AET — Análise Ergonômica', icon: '🔬', tipos: ['AET - Análise Ergonômica'] },
     { key: 'passt',     label: '🦺 PASST — Plano Anual de SST', icon: '📅', tipos: ['PASST - Plano Anual SST','Ação — PASST'] },
+    { key: 'seguros',   label: '🛟 Seguros — Veículos, RC e Vida/Saúde', icon: '🛟', tipos: ['Apólice de Seguro'] },
     { key: 'outros',    label: '📁 Outros Documentos', icon: '📄', tipos: null }, // null = tudo que não entrou acima
   ];
   const tiposAgrupados = GRUPOS_EMPRESA.flatMap(g => g.tipos||[]);
@@ -65075,6 +65158,7 @@ function pageGestaoDocumental() {
                   <span style="font-size:.95rem;font-weight:800;color:#1e3a5f;min-width:52px">${doc.tipo}</span>
                   <span style="font-size:.72rem;color:var(--text-muted);flex:1">${doc.numero||''}</span>
                   <span style="font-size:.70rem;color:var(--text-muted);white-space:nowrap">📅 ${vencFmt}</span>
+                  ${doc.valor?`<span style="font-size:.70rem;color:var(--green-main);font-weight:700;white-space:nowrap">💰 ${doc.valor}</span>`:''}
                   <span style="background:${stBg};color:${stColor};font-size:.65rem;font-weight:700;padding:2px 8px;border-radius:12px;white-space:nowrap">${gdStatusBadge(st,gdDiasStr(doc.vencimento))}</span>
                   ${progressBar}
                   <button class="btn-secondary" style="padding:2px 7px;font-size:.65rem;margin-left:4px" onclick="event.stopPropagation();gdAbrirModalDocEmpresa(${realIdx})">✏️</button>
@@ -65095,6 +65179,7 @@ function pageGestaoDocumental() {
               <td style="font-size:.75rem;color:var(--text-muted)">${doc.numero||'—'}</td>
               <td style="font-size:.75rem">${doc.emissao?new Date(doc.emissao+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
               <td style="font-size:.75rem">${doc.vencimento?new Date(doc.vencimento+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
+              <td style="font-size:.75rem;color:var(--green-main);font-weight:700">${doc.valor||'—'}</td>
               <td>${gdStatusBadge(st,gdDiasStr(doc.vencimento))}</td>
               <td style="font-size:.72rem;color:var(--text-muted);max-width:200px;white-space:normal">${doc.obs||''}</td>
               <td style="white-space:nowrap">
@@ -65103,7 +65188,7 @@ function pageGestaoDocumental() {
               </td>
             </tr>`;
           }).join('');
-          conteudoGrupo = `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tipo</th><th>Número</th><th>Emissão</th><th>Vencimento</th><th>Status</th><th>Obs.</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+          conteudoGrupo = `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tipo</th><th>Número</th><th>Emissão</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Obs.</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
         }
         return `
           <div class="card" style="margin-bottom:10px;padding:0;overflow:hidden">
