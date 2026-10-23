@@ -27614,6 +27614,8 @@ async function ctSociosCarregar() {
   if (!window._ctSociosMes) window._ctSociosMes = new Date().toISOString().slice(0, 7);
   const mesEl = document.getElementById('ct-socios-mes');
   if (mesEl) mesEl.value = window._ctSociosMes;
+  const empresaEl = document.getElementById('ct-socios-empresa');
+  if (empresaEl) empresaEl.value = window._ctSociosEmpresa || '';
   await ctCarregarFinanceiro();
   await ctSociosPagamentosCarregar(window._ctSociosMes);
   ctSociosRenderizar();
@@ -27625,14 +27627,25 @@ async function ctSociosMudarMes(v) {
   ctSociosRenderizar();
 }
 
+// Filtro por empresa — pedido em 23/10/2026: "opção de escolher empresa".
+// Não precisa recarregar nada do servidor: _ctReceitas já é carregado pro
+// grupo todo (ctCarregarFinanceiro), o filtro de empresa só muda o que
+// ctSociosRenderizar enxerga em itensMes. '' = Todas as empresas (padrão).
+function ctSociosMudarEmpresa(v) {
+  window._ctSociosEmpresa = v || '';
+  ctSociosRenderizar();
+}
+
 // Só conta receita de Centro de Custo de CONTRATO (categoria "Prestação de
 // Serviços" no cadastro de CCs) — pedido em 19/09/2026: "não considerar
 // centro de custos consolidado, apenas centro de custos de contratos". Os
 // CCs "Consolidado - <empresa>"/Reserva/Frota são categoria "Outros
 // recebimentos" no cadastro (centrosCustoData) e ficam de fora do cálculo da
 // Bolsa de Gestão e do detalhamento. Receita sem CC cadastrado (legado) não
-// é bloqueada — só exclui quando o CC existe e está claramente fora da
-// categoria de contrato.
+// é bloqueada por esta função — só exclui quando o CC existe e está
+// claramente fora da categoria de contrato. (A partir de 23/10/2026, quem
+// bloqueia receita sem contrato de fato é o filtro de Nº de Medição em
+// ctSociosRenderizar, abaixo — ver comentário ali.)
 function ctSociosCCEhContrato(centroCusto) {
   const ccId = _ccIdPuro(centroCusto);
   if (!ccId) return true;
@@ -27656,12 +27669,28 @@ function ctSociosRenderizar() {
   if (_ctReceitas === null) { cont.innerHTML = 'Carregando…'; return; }
   const cfg = ctSociosConfigAtual();
   const mes = window._ctSociosMes || new Date().toISOString().slice(0, 7);
+  const empresaFiltro = window._ctSociosEmpresa || '';
   // Detalhamento por contrato/medição — pedido em 19/09/2026: mostrar de onde vem
   // cada valor do mês, igual a planilha original fazia linha a linha por medição
   // (uma linha por Receita "Recebida" no mês, com CC/Nº Med. de origem). A
   // Receita Recebida do mês (base da Bolsa de Gestão) é a soma dos MESMOS itens
   // desta lista — já filtrados pra só contrato — não uma soma à parte.
-  const itensMes = (_ctReceitas || []).filter(r => r.Status === 'Recebido' && (r.DataRecebimento || r.DataEmissao || '').slice(0, 7) === mes && ctSociosCCEhContrato(r.CentroCusto))
+  // Ajustado em 23/10/2026: "deve ser trago somente contratos com medição" —
+  // agora só entra Receita com Nº de Medição (boletim) preenchido; "Receita
+  // avulsa" (sem CC e/ou sem Nº Med., que antes passava por não ter CC
+  // cadastrado) fica de fora do cálculo e do detalhamento. Também aceita o
+  // filtro opcional por empresa (seletor no cabeçalho do card).
+  // CORRIGIDO em 23/10/2026, mesmo dia: o filtro de Nº de Medição por si só
+  // não bastava — achamos em setembro/2026 resgate de CDB e 3 transferências
+  // internas (R$ 82.972,43) que tinham entrado no cálculo só por não terem CC
+  // cadastrado, categorias que o DRE/EBITDA já exclui via
+  // RC_CATEGORIAS_FORA_FATURAMENTO (Transferencias entre contas, Reembolsos,
+  // Receitas Financeiras, Aportes, Financiamentos) mas que a Remuneração dos
+  // Sócios nunca checava. Agora exclui pela MESMA lista usada no resto do
+  // financeiro, em vez de confiar só no Nº de Medição como proxy — dupla
+  // proteção: mesmo que um lançamento dessas categorias venha um dia com Nº de
+  // Medição preenchido por engano, continua fora do cálculo.
+  const itensMes = (_ctReceitas || []).filter(r => r.Status === 'Recebido' && (r.DataRecebimento || r.DataEmissao || '').slice(0, 7) === mes && !RC_CATEGORIAS_FORA_FATURAMENTO.includes(r.Categoria) && ctSociosCCEhContrato(r.CentroCusto) && !!(r.NumMedicao || '').toString().trim() && (!empresaFiltro || r.Empresa === empresaFiltro))
     .sort((a, b) => (a.DataRecebimento || a.DataEmissao || '').localeCompare(b.DataRecebimento || b.DataEmissao || '') || (a.CentroCusto || '').localeCompare(b.CentroCusto || '', 'pt-BR'));
   const receitaMes = itensMes.reduce((s, r) => s + ctSociosValorLiquido(r), 0);
   const socios = cfg.Socios || [];
@@ -27739,6 +27768,117 @@ function ctSociosRenderizar() {
         </table>
       </div>
     </details>`}`;
+}
+
+/* -- Exportar PDF da Remuneração dos Sócios — pedido em 23/10/2026 (junto com
+   o filtro de medição e o seletor de empresa). Mesmo padrão de relatório já
+   usado em bancosResumoMensalExportarPDF: monta um HTML próprio pra
+   impressão/PDF (window.open + print, sem depender de jsPDF) com o mesmo
+   cabeçalho/rodapé com a marca da empresa (CONC_EMPRESA_DADOS,
+   concLogoOuNomeHtml). Usa os MESMOS dados já calculados pelo último
+   ctSociosRenderizar (window._ctSociosItensMes/_ctSociosReceitaMes/_ctSociosBolsa)
+   — não recalcula nada, então reflete exatamente o que está na tela,
+   inclusive o filtro de mês/empresa ativo. Sem empresa selecionada
+   ("Todas"), usa a marca da Expedian (holding do grupo) no cabeçalho, igual
+   o fallback de bancosResumoMensalExportarPDF. -- */
+function ctSociosExportarPDF() {
+  const cfg = ctSociosConfigAtual();
+  const socios = cfg.Socios || [];
+  if (!socios.length) { showToast('⚠️ Nenhum sócio configurado ainda.'); return; }
+  const mes = window._ctSociosMes || new Date().toISOString().slice(0, 7);
+  const empresaFiltro = window._ctSociosEmpresa || '';
+  const itensMes = window._ctSociosItensMes || [];
+  const receitaMes = window._ctSociosReceitaMes || 0;
+  const bolsa = window._ctSociosBolsa || 0;
+  const pagamentos = window._ctSociosPagamentos || [];
+  const somaTetos = socios.reduce((s, x) => s + (Number(x.teto) || 0), 0);
+  const valoresCalc = window._ctSociosValoresCalc || {};
+
+  const fmt = (v) => (Number(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const fmtMesLabel = (m) => { const [a, mm] = m.split('-'); return new Date(Number(a), Number(mm) - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }); };
+  const emp = CONC_EMPRESA_DADOS[empresaFiltro] || CONC_EMPRESA_DADOS['Expedian'];
+  const nomeArquivo = ('Remuneracao dos Socios - ' + (empresaFiltro || 'Grupo Expedian') + ' - ' + fmtMesLabel(mes)).replace(/[\\\/:*?"<>|]/g, '');
+
+  const sociosLinhasHtml = socios.map(s => {
+    const pct = somaTetos > 0 ? (Number(s.teto) || 0) / somaTetos : 0;
+    const valor = bolsa * pct;
+    const pag = pagamentos.find(p => p.Socio === s.nome);
+    return `<tr>
+      <td style="font-weight:700">${s.nome}</td>
+      <td style="text-align:right">${fmt(s.teto || 0)}</td>
+      <td style="text-align:right">${(pct * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</td>
+      <td style="text-align:right;font-weight:700">${fmt(valor)}</td>
+      <td style="text-align:right">${pag ? ('Pago em ' + (pag.DataPagamento || '').split('-').reverse().join('/') + ' — ' + fmt(pag.Valor || 0)) : 'Não pago'}</td>
+    </tr>`;
+  }).join('');
+
+  const detalheLinhasHtml = itensMes.length ? itensMes.map(r => {
+    const valorLiq = ctSociosValorLiquido(r);
+    const pctR = receitaMes > 0 ? valorLiq / receitaMes : 0;
+    const gestaoR = bolsa * pctR;
+    const dataRec = (r.DataRecebimento || r.DataEmissao || '').split('-').reverse().join('/');
+    return `<tr>
+      <td>${r.CentroCusto || '—'}</td>
+      <td>${r.Empresa || '—'}</td>
+      <td>${r.NumMedicao || '—'}</td>
+      <td>${dataRec || '—'}</td>
+      <td style="text-align:right">${fmt(valorLiq)}</td>
+      <td style="text-align:right">${(pctR * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</td>
+      <td style="text-align:right;font-weight:700">${fmt(gestaoR)}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="7" style="text-align:center;color:#999">Nenhum recebimento com medição no mês.</td></tr>';
+
+  const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${nomeArquivo}</title>
+  <style>
+    @page { size: A4; margin: 15mm 12mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { font-family: Arial, sans-serif; font-size: 10.5pt; color: #222; min-height: 100vh; display: flex; flex-direction: column; }
+    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid ${emp.cor}; padding-bottom: 14px; margin-bottom: 18px; }
+    .header .empresa { text-align: right; font-size: 8.5pt; color: #555; line-height: 1.5; }
+    .titulo { font-size: 16pt; font-weight: 900; color: ${emp.cor}; margin-bottom: 4px; text-transform: capitalize; }
+    .kpis { display: flex; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+    .kpi { flex: 1; min-width: 140px; background: #f4f4f4; border-radius: 8px; padding: 10px 12px; }
+    .kpi .label { font-size: 7.5pt; color: #666; text-transform: uppercase; margin-bottom: 4px; }
+    .kpi .valor { font-size: 12pt; font-weight: 900; color: #222; }
+    .subtitulo { font-size: 10.5pt; font-weight: 700; color: ${emp.cor}; margin: 16px 0 8px; }
+    table { width: 100%; border-collapse: collapse; margin: 6px 0 14px; }
+    th { background: ${emp.cor}; color: #fff; padding: 7px 8px; text-align: left; font-size: 8.5pt; }
+    td { padding: 5px 8px; border-bottom: 1px solid #ddd; font-size: 8.5pt; }
+    tfoot td { border-top: 2px solid #999; border-bottom: none; font-weight: 900; }
+    .footer { margin-top: auto; padding-top: 24px; }
+    .footer-inner { border-top: 1px solid #ccc; padding-top: 10px; text-align: center; font-size: 8pt; color: #777; }
+    @media print { .no-print { display: none; } }
+  </style></head>
+  <body>
+    <div class="header">
+      <div>${concLogoOuNomeHtml(emp)}</div>
+      <div class="empresa">
+        <b>${emp.razaoSocial}</b><br>${emp.cnpj}<br>${emp.endereco}<br>${emp.telefone}${emp.email ? ' · ' + emp.email : ''}
+      </div>
+    </div>
+    <div class="titulo">Remuneração dos Sócios — ${fmtMesLabel(mes)}</div>
+    <div style="font-size:9.5pt;color:#555;margin-bottom:14px">Empresa: <b>${empresaFiltro || 'Todas as empresas do grupo'}</b> &nbsp;·&nbsp; Somente contratos com Nº de Medição (boletim) preenchido.</div>
+    <div class="kpis">
+      <div class="kpi"><div class="label">Receita Líquida Recebida</div><div class="valor">${fmt(receitaMes)}</div></div>
+      <div class="kpi"><div class="label">Bolsa de Gestão do Mês</div><div class="valor">${fmt(bolsa)}</div></div>
+      <div class="kpi"><div class="label">% Teto Configurado</div><div class="valor">${(cfg.TetoPercentual || 0).toLocaleString('pt-BR')}%</div></div>
+    </div>
+    <div class="subtitulo">Por Sócio</div>
+    <table><thead><tr><th>Sócio</th><th style="text-align:right">Teto Individual</th><th style="text-align:right">% do Total</th><th style="text-align:right">Recebe no Mês</th><th style="text-align:right">Pagamento</th></tr></thead>
+    <tbody>${sociosLinhasHtml}</tbody></table>
+    <div class="subtitulo">Detalhamento por Contrato e Medição (${itensMes.length} recebimento${itensMes.length === 1 ? '' : 's'})</div>
+    <table><thead><tr><th>Contrato / Centro de Custo</th><th>Empresa</th><th>Nº Med.</th><th>Data Receb.</th><th style="text-align:right">R$ Líquido</th><th style="text-align:right">% do Mês</th><th style="text-align:right">Gestão (R$)</th></tr></thead>
+    <tbody>${detalheLinhasHtml}</tbody>
+    <tfoot><tr><td colspan="4">TOTAL</td><td style="text-align:right">${fmt(receitaMes)}</td><td style="text-align:right">100%</td><td style="text-align:right">${fmt(bolsa)}</td></tr></tfoot>
+    </table>
+    <div class="footer"><div class="footer-inner">${emp.razaoSocial} &nbsp;·&nbsp; Gerado em ${new Date().toLocaleDateString('pt-BR')}</div></div>
+  </body></html>`;
+  const win = window.open('', '_blank');
+  if (win) { win.document.write(htmlContent); win.document.close(); }
+  else showToast('⚠️ Permita pop-ups para visualizar o relatório.');
 }
 
 function ctSociosAbrirConfig() {
@@ -27987,13 +28127,18 @@ function pageContratos() {
   <div class="card" style="padding:16px;margin-top:20px">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:4px">
       <div class="card-title">🧮 Remuneração dos Sócios — por Receita Recebida no mês</div>
-      <div style="display:flex;gap:8px;align-items:center">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <input type="month" id="ct-socios-mes" onchange="ctSociosMudarMes(this.value)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
+        <select id="ct-socios-empresa" onchange="ctSociosMudarEmpresa(this.value)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);font-size:.8rem;background:var(--surface)">
+          <option value="">🏢 Todas as empresas</option>
+          ${RD_EMPRESAS.map(e => `<option value="${e}" ${window._ctSociosEmpresa === e ? 'selected' : ''}>🏢 ${e}</option>`).join('')}
+        </select>
         <button class="btn-secondary" onclick="ctSociosAbrirConfig()" style="font-size:.75rem;padding:6px 10px">⚙️ Configurar tetos</button>
         <button class="btn-primary" onclick="ctSociosAbrirPagamento()" style="font-size:.75rem;padding:6px 10px">💳 Registrar Pagamentos</button>
+        <button class="btn-secondary" onclick="ctSociosExportarPDF()" style="font-size:.75rem;padding:6px 10px">📄 Exportar PDF</button>
       </div>
     </div>
-    <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:12px">Bolsa de gestão do mês = MENOR valor entre (Receita Líquida recebida no mês × % teto) e (soma dos tetos individuais) — depois repartida entre os sócios na proporção do teto de cada um. Receita Líquida = Valor Líquido do recebimento (ou bruto menos ISS retido e outras retenções, mesmo critério do DRE). Calculado ao vivo a partir das Receitas com status "Recebido" e Centro de Custo de contrato (Consolidado/Reserva/Frota não entram), ordenado por data de recebimento.</div>
+    <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:12px">Bolsa de gestão do mês = MENOR valor entre (Receita Líquida recebida no mês × % teto) e (soma dos tetos individuais) — depois repartida entre os sócios na proporção do teto de cada um. Receita Líquida = Valor Líquido do recebimento (ou bruto menos ISS retido e outras retenções, mesmo critério do DRE). Calculado ao vivo a partir das Receitas com status "Recebido", Centro de Custo de contrato (Consolidado/Reserva/Frota não entram) e Nº de Medição (boletim) preenchido — receita avulsa sem medição não entra. Ordenado por data de recebimento. Use o seletor de empresa pra ver só uma empresa do grupo.</div>
     <div id="ct-socios-conteudo">Carregando…</div>
   </div>
 
