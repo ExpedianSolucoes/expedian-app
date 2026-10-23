@@ -7905,6 +7905,16 @@ function aprovDivccRemover(pfx, i) {
   window[key].splice(i, 1);
   aprovDivccRenderizar(pfx);
 }
+// Edita o valor de uma linha já adicionada ao rateio, sem precisar remover e
+// adicionar de novo (pedido Tiago 23/10/2026: "quando lançar os valores
+// devem ficar editaveis caso precise ajustar").
+function aprovDivccEditarValor(pfx, i, valorStr) {
+  const key = '_aprovDivisaoCC_' + pfx;
+  const itens = window[key] || [];
+  if (!itens[i]) return;
+  itens[i].valor = rdMoedaParaNumero(valorStr);
+  aprovDivccRenderizar(pfx);
+}
 function aprovDivccRenderizar(pfx) {
   const lista = document.getElementById(pfx + '_divisaocc_lista');
   const totalEl = document.getElementById(pfx + '_divisaocc_total');
@@ -7914,7 +7924,7 @@ function aprovDivccRenderizar(pfx) {
   lista.innerHTML = itens.map((d, i) => `
     <div style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:6px 10px;border-radius:8px;font-size:.8rem">
       <span style="flex:1">🧩 ${d.cc}${d.medicao ? ` <span style="color:var(--text-muted)">— Medição ${d.medicao}</span>` : ''}</span>
-      <span style="font-weight:700">R$ ${rdNumeroParaMoeda(d.valor)}</span>
+      <input type="text" value="R$ ${rdNumeroParaMoeda(d.valor)}" oninput="rdFormatarMoedaInput(this)" onchange="aprovDivccEditarValor('${pfx}',${i},this.value)" style="width:110px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-size:.8rem;font-weight:700;text-align:right">
       <span style="cursor:pointer;color:var(--text-muted)" onclick="aprovDivccRemover('${pfx}',${i})" title="Remover">✕</span>
     </div>`).join('') || '<div style="font-size:.75rem;color:var(--text-muted)">Nenhum Centro de Custo adicionado ainda.</div>';
   const soma = itens.reduce((s, d) => s + (d.valor || 0), 0);
@@ -11906,7 +11916,7 @@ async function transferenciaSalvar() {
    diretamente (função crítica já em produção) — duplica o mesmo formato de
    registro aqui de propósito, pra não arriscar mexer nela. -- */
 async function _bancosRealocarEntreCCs(opts) {
-  const { empresa, conta, ccOrigem, ccDestino, medicaoOrigem, medicaoDestino, valor, data, responsavel, obs } = opts;
+  const { empresa, conta, ccOrigem, ccDestino, medicaoOrigem, medicaoDestino, valor, data, responsavel, obs, divisaoCCOrigem, divisaoCCDestino } = opts;
   const lancadoPor = window._currentUser ? window._currentUser.name : '';
   const transferenciaId = 'TRF-' + Date.now();
   const descricaoBase = obs || ('Realocação entre Centros de Custo — ' + conta + ' (CC: ' + (ccOrigem || '—') + ' → ' + (ccDestino || '—') + ')');
@@ -11919,7 +11929,7 @@ async function _bancosRealocarEntreCCs(opts) {
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: data, Banco: conta,
     NumMedicao: medicaoOrigem, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
     Vencimento: data, Valor: valor, ValorTotal: valor, Status: 'Pago',
-    NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: [],
+    NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: divisaoCCOrigem || [],
     LancadoPor: lancadoPor, Descricao: descricaoBase,
     TransferenciaId: transferenciaId, TransferenciaContraparte: conta,
   };
@@ -11933,7 +11943,7 @@ async function _bancosRealocarEntreCCs(opts) {
     OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
     ValorLiquido: valor, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
     LancadoPor: lancadoPor, TransferenciaId: transferenciaId, TransferenciaContraparte: conta,
-    DivisaoCC: [],
+    DivisaoCC: divisaoCCDestino || [],
   };
   const okDespesa = await dbInserir('Despesas', despesa);
   const okReceita = await dbInserir('Receitas', receita);
@@ -12052,6 +12062,17 @@ function aplicacaoEmpresaAlterada() {
     const med = document.getElementById(pfx + '_medicao'); if (med) med.value = '';
     const medDl = document.getElementById(pfx + '_medicao_dl'); if (medDl) medDl.innerHTML = '';
   });
+  // Rateio por CC também invalida ao trocar de empresa (contratos são por
+  // empresa) — mesmo padrão de transferenciaEmpresaAlterada().
+  window._aprovEmpresa_aplorigem = empresa;
+  window._aprovEmpresa_apldestino = empresa;
+  window._aprovDivisaoCC_aplorigem = [];
+  window._aprovDivisaoCC_apldestino = [];
+  ['aplorigem','apldestino'].forEach(pfx => {
+    const chk = document.getElementById(pfx + '_tem_divisaocc');
+    if (chk) chk.checked = false;
+    aprovDivccToggle(pfx);
+  });
 }
 // Formulário de Nova Aplicação (sem id) ou Editar Aplicação (com id) — abre
 // como uma segunda janela por cima da tela de histórico (aplicacaoAbrirModal),
@@ -12126,8 +12147,16 @@ async function aplicacaoAbrirForm(id, empresaPre, bancoPre) {
             <datalist id="apldestino_medicao_dl"></datalist>
           </div>
         </div>
+        <!-- Rateio entre mais de um Centro de Custo/Medição por lado (pedido
+             Tiago 23/10/2026: "que nem tempos dentro de transferencia entre
+             contas, ratedos em outros centros de custos e podendo usar mais
+             de um centro de custo no mesmo rateio e BM diferentes ou ate
+             mesmo igual") — mesmo componente genérico já usado em
+             Transferência/Contas a Pagar/Prestação de Contas. -->
+        ${aprovDivccBlocoHtml('aplorigem', 'Ratear a Origem entre mais de um Centro de Custo/Medição')}
+        ${aprovDivccBlocoHtml('apldestino', 'Ratear o Destino entre mais de um Centro de Custo/Medição')}
         <div class="form-row">
-          <div class="form-group"><label>Valor</label><input type="text" id="apl_valor" placeholder="R$ 0,00" value="${registro ? rdNumeroParaMoeda(registro.Valor||0) : ''}" oninput="rdFormatarMoedaInput(this)"></div>
+          <div class="form-group"><label>Valor</label><input type="text" id="apl_valor" placeholder="R$ 0,00" value="${registro ? rdNumeroParaMoeda(registro.Valor||0) : ''}" oninput="rdFormatarMoedaInput(this);aplSincronizarValorRateio()"></div>
           <div class="form-group"><label>Data</label><input type="date" id="apl_data" value="${registro ? registro.DataLancamento : new Date().toISOString().slice(0,10)}"></div>
         </div>
         <div class="form-group" style="margin-bottom:12px">
@@ -12145,6 +12174,23 @@ async function aplicacaoAbrirForm(id, empresaPre, bancoPre) {
       </div>
     </div>`;
   document.body.appendChild(modal);
+  // Estado do rateio (aprovDivcc*, ver bloco no topo do arquivo) — zera a
+  // cada abertura do modal, mesmo padrão de transferenciaAbrirModal().
+  window._aprovEmpresa_aplorigem = empresa;
+  window._aprovEmpresa_apldestino = empresa;
+  window._aprovDivisaoCC_aplorigem = [];
+  window._aprovDivisaoCC_apldestino = [];
+  window._aprovValorTotal_aplorigem = registro ? (registro.Valor || 0) : 0;
+  window._aprovValorTotal_apldestino = registro ? (registro.Valor || 0) : 0;
+}
+// Mantém o "total a dividir" dos dois blocos de rateio da Aplicação em dia
+// com o campo Valor, mesmo padrão de trfSincronizarValorRateio() (Transferência).
+function aplSincronizarValorRateio() {
+  const valor = rdMoedaParaNumero((document.getElementById('apl_valor')||{}).value);
+  window._aprovValorTotal_aplorigem = valor;
+  window._aprovValorTotal_apldestino = valor;
+  aprovDivccRenderizar('aplorigem');
+  aprovDivccRenderizar('apldestino');
 }
 async function aplicacaoSalvar() {
   const empresa = (document.getElementById('apl_empresa')||{}).value || '';
@@ -12154,10 +12200,10 @@ async function aplicacaoSalvar() {
   const data = (document.getElementById('apl_data')||{}).value || '';
   const responsavel = (document.getElementById('apl_responsavel')||{}).value || '';
   const obs = (document.getElementById('apl_obs')||{}).value.trim() || '';
-  const ccOrigem = (document.getElementById('apl_cc_origem')||{}).value.trim() || '';
-  const ccDestino = (document.getElementById('apl_cc_destino')||{}).value.trim() || '';
-  const medicaoOrigem = (document.getElementById('aplorigem_medicao')||{}).value.trim() || '';
-  const medicaoDestino = (document.getElementById('apldestino_medicao')||{}).value.trim() || '';
+  const ccOrigemCampo = (document.getElementById('apl_cc_origem')||{}).value.trim() || '';
+  const ccDestinoCampo = (document.getElementById('apl_cc_destino')||{}).value.trim() || '';
+  const medicaoOrigemCampo = (document.getElementById('aplorigem_medicao')||{}).value.trim() || '';
+  const medicaoDestinoCampo = (document.getElementById('apldestino_medicao')||{}).value.trim() || '';
 
   if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
   if (!subcategoria) { showToast('⚠️ Selecione o tipo de aplicação.'); return; }
@@ -12165,6 +12211,17 @@ async function aplicacaoSalvar() {
   if (!valor) { showToast('⚠️ Informe o valor.'); return; }
   if (!data) { showToast('⚠️ Informe a data.'); return; }
   if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
+
+  // Rateio entre mais de um Centro de Custo/Medição por lado (pedido Tiago
+  // 23/10/2026) — mesmo componente/validação já usado em Transferência.
+  const rateioOrigem = aprovDivccValidarEColher('aplorigem', valor);
+  if (!rateioOrigem.ok) return;
+  const rateioDestino = aprovDivccValidarEColher('apldestino', valor);
+  if (!rateioDestino.ok) return;
+  const ccOrigem = rateioOrigem.ativo ? rateioOrigem.centroCusto : ccOrigemCampo;
+  const ccDestino = rateioDestino.ativo ? rateioDestino.centroCusto : ccDestinoCampo;
+  const medicaoOrigem = rateioOrigem.ativo ? '' : medicaoOrigemCampo;
+  const medicaoDestino = rateioDestino.ativo ? '' : medicaoDestinoCampo;
 
   const editandoId = window._aplEditandoId || null;
 
@@ -12174,7 +12231,7 @@ async function aplicacaoSalvar() {
   // por pergunta direta: aparece na aba Transferências, não como Aplicação).
   if (!editandoId && ccOrigem && ccDestino && ccOrigem !== ccDestino) {
     showSyncStatus('Registrando realocação entre Centros de Custo...');
-    const ok = await _bancosRealocarEntreCCs({ empresa, conta: banco, ccOrigem, ccDestino, medicaoOrigem, medicaoDestino, valor, data, responsavel, obs });
+    const ok = await _bancosRealocarEntreCCs({ empresa, conta: banco, ccOrigem, ccDestino, medicaoOrigem, medicaoDestino, valor, data, responsavel, obs, divisaoCCOrigem: rateioOrigem.ativo ? rateioOrigem.divisaoCC : [], divisaoCCDestino: rateioDestino.ativo ? rateioDestino.divisaoCC : [] });
     showToast(ok ? '✅ Realocação registrada como Transferência interna!' : ('❌ Falha ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
     showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
     if (ok) {
@@ -12189,6 +12246,7 @@ async function aplicacaoSalvar() {
   }
 
   const cc = ccDestino || ccOrigem;
+  const divisaoCCFinal = ccDestino ? (rateioDestino.ativo ? rateioDestino.divisaoCC : []) : (rateioOrigem.ativo ? rateioOrigem.divisaoCC : []);
   const categoria = 'Aplicações Financeiras';
   const lancadoPor = window._currentUser ? window._currentUser.name : '';
   const descricao = obs || ('Aplicação Financeira · ' + subcategoria);
@@ -12204,7 +12262,7 @@ async function aplicacaoSalvar() {
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: data, Banco: banco,
     NumMedicao: medicaoDestino || medicaoOrigem, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
     Vencimento: data, Valor: valor, ValorTotal: valor, Status: 'Pago',
-    NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: [],
+    NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: divisaoCCFinal,
     LancadoPor: lancadoPor, Descricao: descricao,
   };
   const ok = editandoId ? await dbAtualizar('Despesas', editandoId, dados) : await dbInserir('Despesas', dados);
@@ -12280,8 +12338,12 @@ function resgateAbrirModal(empresaPre, bancoPre) {
             <datalist id="rsgdestino_medicao_dl"></datalist>
           </div>
         </div>
+        <!-- Rateio entre mais de um Centro de Custo/Medição por lado (pedido
+             Tiago 23/10/2026, mesmo componente já usado em Transferência). -->
+        ${aprovDivccBlocoHtml('rsgorigem', 'Ratear a Origem entre mais de um Centro de Custo/Medição')}
+        ${aprovDivccBlocoHtml('rsgdestino', 'Ratear o Destino entre mais de um Centro de Custo/Medição')}
         <div class="form-row">
-          <div class="form-group"><label>Valor</label><input type="text" id="rsg_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this)"></div>
+          <div class="form-group"><label>Valor</label><input type="text" id="rsg_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rsgSincronizarValorRateio()"></div>
           <div class="form-group"><label>Data</label><input type="date" id="rsg_data" value="${new Date().toISOString().slice(0,10)}"></div>
         </div>
         <div class="form-group" style="margin-bottom:12px">
@@ -12299,6 +12361,23 @@ function resgateAbrirModal(empresaPre, bancoPre) {
       </div>
     </div>`;
   document.body.appendChild(modal);
+  // Estado do rateio (aprovDivcc*) — zera a cada abertura do modal, mesmo
+  // padrão de transferenciaAbrirModal()/aplicacaoAbrirForm().
+  window._aprovEmpresa_rsgorigem = empresa;
+  window._aprovEmpresa_rsgdestino = empresa;
+  window._aprovDivisaoCC_rsgorigem = [];
+  window._aprovDivisaoCC_rsgdestino = [];
+  window._aprovValorTotal_rsgorigem = 0;
+  window._aprovValorTotal_rsgdestino = 0;
+}
+// Mantém o "total a dividir" dos dois blocos de rateio do Resgate em dia
+// com o campo Valor — mesmo padrão de aplSincronizarValorRateio().
+function rsgSincronizarValorRateio() {
+  const valor = rdMoedaParaNumero((document.getElementById('rsg_valor')||{}).value);
+  window._aprovValorTotal_rsgorigem = valor;
+  window._aprovValorTotal_rsgdestino = valor;
+  aprovDivccRenderizar('rsgorigem');
+  aprovDivccRenderizar('rsgdestino');
 }
 function resgateEmpresaAlterada() {
   const empresa = (document.getElementById('rsg_empresa')||{}).value || RD_EMPRESAS[0];
@@ -12313,6 +12392,16 @@ function resgateEmpresaAlterada() {
     const med = document.getElementById(pfx + '_medicao'); if (med) med.value = '';
     const medDl = document.getElementById(pfx + '_medicao_dl'); if (medDl) medDl.innerHTML = '';
   });
+  // Rateio por CC também invalida ao trocar de empresa.
+  window._aprovEmpresa_rsgorigem = empresa;
+  window._aprovEmpresa_rsgdestino = empresa;
+  window._aprovDivisaoCC_rsgorigem = [];
+  window._aprovDivisaoCC_rsgdestino = [];
+  ['rsgorigem','rsgdestino'].forEach(pfx => {
+    const chk = document.getElementById(pfx + '_tem_divisaocc');
+    if (chk) chk.checked = false;
+    aprovDivccToggle(pfx);
+  });
 }
 async function resgateSalvar() {
   const empresa = (document.getElementById('rsg_empresa')||{}).value || '';
@@ -12322,10 +12411,10 @@ async function resgateSalvar() {
   const data = (document.getElementById('rsg_data')||{}).value || '';
   const responsavel = (document.getElementById('rsg_responsavel')||{}).value || '';
   const obs = (document.getElementById('rsg_obs')||{}).value.trim() || '';
-  const ccOrigem = (document.getElementById('rsg_cc_origem')||{}).value.trim() || '';
-  const ccDestino = (document.getElementById('rsg_cc_destino')||{}).value.trim() || '';
-  const medicaoOrigem = (document.getElementById('rsgorigem_medicao')||{}).value.trim() || '';
-  const medicaoDestino = (document.getElementById('rsgdestino_medicao')||{}).value.trim() || '';
+  const ccOrigemCampo = (document.getElementById('rsg_cc_origem')||{}).value.trim() || '';
+  const ccDestinoCampo = (document.getElementById('rsg_cc_destino')||{}).value.trim() || '';
+  const medicaoOrigemCampo = (document.getElementById('rsgorigem_medicao')||{}).value.trim() || '';
+  const medicaoDestinoCampo = (document.getElementById('rsgdestino_medicao')||{}).value.trim() || '';
 
   if (!empresa) { showToast('⚠️ Selecione a empresa.'); return; }
   if (!subcategoria) { showToast('⚠️ Selecione o tipo de resgate.'); return; }
@@ -12334,12 +12423,23 @@ async function resgateSalvar() {
   if (!data) { showToast('⚠️ Informe a data.'); return; }
   if (!responsavel) { showToast('⚠️ Selecione o responsável pelo lançamento.'); return; }
 
+  // Rateio entre mais de um Centro de Custo/Medição por lado (pedido Tiago
+  // 23/10/2026) — mesmo componente/validação já usado em Transferência.
+  const rateioOrigem = aprovDivccValidarEColher('rsgorigem', valor);
+  if (!rateioOrigem.ok) return;
+  const rateioDestino = aprovDivccValidarEColher('rsgdestino', valor);
+  if (!rateioDestino.ok) return;
+  const ccOrigem = rateioOrigem.ativo ? rateioOrigem.centroCusto : ccOrigemCampo;
+  const ccDestino = rateioDestino.ativo ? rateioDestino.centroCusto : ccDestinoCampo;
+  const medicaoOrigem = rateioOrigem.ativo ? '' : medicaoOrigemCampo;
+  const medicaoDestino = rateioDestino.ativo ? '' : medicaoDestinoCampo;
+
   // Origem E Destino preenchidos = não é um resgate de verdade voltando pra
   // conta corrente, é realocação entre Centros de Custo da MESMA conta —
   // vira Transferência interna (pedido Tiago 23/10/2026, confirmado).
   if (ccOrigem && ccDestino && ccOrigem !== ccDestino) {
     showSyncStatus('Registrando realocação entre Centros de Custo...');
-    const ok = await _bancosRealocarEntreCCs({ empresa, conta: banco, ccOrigem, ccDestino, medicaoOrigem, medicaoDestino, valor, data, responsavel, obs });
+    const ok = await _bancosRealocarEntreCCs({ empresa, conta: banco, ccOrigem, ccDestino, medicaoOrigem, medicaoDestino, valor, data, responsavel, obs, divisaoCCOrigem: rateioOrigem.ativo ? rateioOrigem.divisaoCC : [], divisaoCCDestino: rateioDestino.ativo ? rateioDestino.divisaoCC : [] });
     showToast(ok ? '✅ Realocação registrada como Transferência interna!' : ('❌ Falha ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
     showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
     if (ok) {
@@ -12352,6 +12452,7 @@ async function resgateSalvar() {
   }
 
   const cc = ccOrigem || ccDestino;
+  const divisaoCCFinal = ccOrigem ? (rateioOrigem.ativo ? rateioOrigem.divisaoCC : []) : (rateioDestino.ativo ? rateioDestino.divisaoCC : []);
   const categoria = 'Receitas Financeiras';
   const lancadoPor = window._currentUser ? window._currentUser.name : '';
   const descricao = obs || ('Resgate · ' + subcategoria);
@@ -12365,7 +12466,7 @@ async function resgateSalvar() {
     CentroCusto: cc, Valor: valor, DataPrevista: data, FormaRecebimento: 'Transferência',
     ResponsavelLancamento: responsavel, DataRecebimento: data, Banco: banco,
     Status: 'Recebido', NumMedicao: medicaoOrigem || medicaoDestino, NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
-    OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '',
+    OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '', DivisaoCC: divisaoCCFinal,
     ValorLiquido: valor, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
     LancadoPor: lancadoPor,
   };
@@ -12644,7 +12745,7 @@ function transferenciasFiltrar() {
         <td style="font-size:.75rem;color:var(--text-muted)">${base.ResponsavelLancamento || '—'}</td>
         <td style="font-size:.75rem;color:var(--text-muted)">${base.Descricao || '—'}</td>
         <td style="font-size:.72rem;color:var(--text-muted)">${base.LancadoPor || '—'}</td>
-        <td style="white-space:nowrap"><button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="transferenciaEditar('${p.id}')">✏️ Editar</button> <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="transferenciaExcluir('${p.id}')">🗑️ Excluir</button></td>
+        <td style="white-space:nowrap"><button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="transferenciaVisualizar('${p.id}')">👁️ Visualizar</button> <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="transferenciaEditar('${p.id}')">✏️ Editar</button> <button class="btn-secondary" style="padding:4px 10px;font-size:.72rem" onclick="transferenciaExcluir('${p.id}')">🗑️ Excluir</button></td>
       </tr>`;
     }).join('') + '</tbody></table>';
 }
@@ -12662,6 +12763,18 @@ async function transferenciaExcluir(transferenciaId) {
   carregarTransferencias();
 }
 
+/* -- "👁️ Visualizar" na lista de Transferências (pedido Tiago 23/10/2026:
+   "colocar opção de visualizar sem precisar clicar no lápis para abrir o
+   formulario") — reaproveita rdVisualizarDespesa()/rcVisualizarReceita(),
+   que já mostram os dois lados (Origem/Destino, CC, Medição, rateio) quando
+   o registro tem TransferenciaId, sem precisar abrir o formulário de edição. -- */
+function transferenciaVisualizar(transferenciaId) {
+  const par = (window._trfPares || []).find(p => p.id === transferenciaId);
+  if (!par) { showToast('⚠️ Transferência não encontrada.'); return; }
+  if (par.saida) { rdVisualizarDespesa(par.saida.Id); return; }
+  if (par.entrada) { rcVisualizarReceita(par.entrada.Id); return; }
+  showToast('⚠️ Transferência sem lançamento pra visualizar.');
+}
 /* -- "✏️ Editar" na lista de Transferências (pedido 04/10/2026: "tbm tem
    que colocar opção de editar em transferencia") — reabre o mesmo modal de
    lançamento (transferenciaAbrirModal) já preenchido com os dados do par
@@ -41855,6 +41968,324 @@ function dashFinMudarEmpresa(valor) {
   navigate(currentPage);
 }
 
+async function dashInicioCarregar() {
+  const kpiEl = document.getElementById('dashini-kpi-receita-bruta');
+  if (!kpiEl) return; // seção não está montada (perfil sem acesso, por ex.)
+  try {
+    if (typeof Chart === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const [despesasTodas, receitasTodas, contasPagarTodas, bancosTodos] = await Promise.all([
+      dbLerSeguro('Despesas').catch(() => []),
+      dbLerSeguro('Receitas').catch(() => []),
+      dbLerSeguro('ContasPagar').catch(() => []),
+      dbLerSeguro('Bancos').catch(() => []),
+    ]);
+
+    const empresaFiltro = window._dashFinEmpresa || '';
+    const despesas = empresaFiltro ? despesasTodas.filter(d => normalizarEmpresa(d.Empresa) === empresaFiltro) : despesasTodas;
+    const receitas = empresaFiltro ? receitasTodas.filter(r => normalizarEmpresa(r.Empresa) === empresaFiltro) : receitasTodas;
+    const contasPagar = empresaFiltro ? contasPagarTodas.filter(c => normalizarEmpresa(c.Empresa) === empresaFiltro) : contasPagarTodas;
+    const bancosFiltrados = empresaFiltro ? bancosTodos.filter(b => normalizarEmpresa(b.Empresa) === empresaFiltro) : bancosTodos;
+
+    // "Ano todo" (padrão) = jan-dez do ano corrente, igual à aba Início da
+    // planilha; o filtro de mês específico já existente mais acima na
+    // página (mesmo input usado pelo painel de EBITDA/DRE) estreita pra 1
+    // mês só quando preenchido.
+    const mesEspecifico = window._dashFinMesEspecifico || '';
+    const anoAtual = new Date().getFullYear();
+    const mesesDoAno = [];
+    for (let m = 0; m < 12; m++) mesesDoAno.push(anoAtual + '-' + String(m + 1).padStart(2, '0'));
+    const mesesNoPeriodo = mesEspecifico ? [mesEspecifico] : mesesDoAno;
+    const chaveMesIni = (dataStr) => (dataStr || '').slice(0, 7);
+
+    // Receita Bruta/Líquida (Recebida) — mesma exclusão de categorias "fora
+    // de faturamento" já usada no resto do app (Transferências, Reembolsos,
+    // Receitas Financeiras, Aportes, Financiamentos); Despesas Pagas — mesma
+    // regra do DRE Simplificado (só Operacional/Não Operacional, exclui
+    // Transferências entre Contas, Patrimônio, Aplicação Financeira etc.).
+    const rBrutaPorMes = {}, rLiquidaPorMes = {}, dPagaPorMes = {}, transfPorMes = {};
+    mesesDoAno.forEach(k => { rBrutaPorMes[k] = 0; rLiquidaPorMes[k] = 0; dPagaPorMes[k] = 0; transfPorMes[k] = 0; });
+    (receitas || []).forEach(r => {
+      if (r.Status !== 'Recebido') return;
+      const k = chaveMesIni(r.DataEmissao || r.DataPrevista);
+      const liquido = bancosValorLiquidoReceita(r);
+      if (r.Categoria === 'Transferencias entre contas') {
+        if (k in transfPorMes) transfPorMes[k] += liquido;
+        return;
+      }
+      if (RC_CATEGORIAS_FORA_FATURAMENTO.includes(r.Categoria)) return;
+      if (!(k in rBrutaPorMes)) return;
+      rBrutaPorMes[k] += Number(r.Valor) || 0;
+      rLiquidaPorMes[k] += liquido;
+    });
+    (despesas || []).forEach(d => {
+      if (d.Status !== 'Pago') return;
+      if (d.Categoria === 'Transferencias entre contas') return; // já contado do lado da receita (mesmo valor nas duas pontas)
+      if (d.NaturezaEconomica !== 'Operacional' && d.NaturezaEconomica !== 'Não Operacional') return; // Patrimônio/Aporte/Aplicação Financeira — não é despesa do período
+      const k = chaveMesIni(d.DataLancamento);
+      if (!(k in dPagaPorMes)) return;
+      dPagaPorMes[k] += Number(d.Valor) || 0;
+    });
+
+    const nomesMesIni = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+    let acumuladoIni = 0;
+    const linhasMes = mesesDoAno.map(k => {
+      const resultado = rLiquidaPorMes[k] - dPagaPorMes[k];
+      acumuladoIni += resultado;
+      const margem = rLiquidaPorMes[k] > 0 ? (resultado / rLiquidaPorMes[k]) * 100 : 0;
+      const mes = parseInt(k.slice(5, 7), 10);
+      return {
+        chave: k, label: nomesMesIni[mes - 1] + '/' + k.slice(2, 4),
+        receitaBruta: rBrutaPorMes[k], receitaLiquida: rLiquidaPorMes[k], despesaPaga: dPagaPorMes[k],
+        resultado, acumulado: acumuladoIni, margem, transf: transfPorMes[k],
+      };
+    });
+    const linhasNoPeriodo = linhasMes.filter(l => mesesNoPeriodo.includes(l.chave));
+    const totalReceitaBruta = linhasNoPeriodo.reduce((s, l) => s + l.receitaBruta, 0);
+    const totalReceitaLiquida = linhasNoPeriodo.reduce((s, l) => s + l.receitaLiquida, 0);
+    const totalDespesaPaga = linhasNoPeriodo.reduce((s, l) => s + l.despesaPaga, 0);
+    const totalResultado = totalReceitaLiquida - totalDespesaPaga;
+    const totalMargem = totalReceitaLiquida > 0 ? (totalResultado / totalReceitaLiquida) * 100 : 0;
+
+    // Saldo em Bancos — soma do Saldo Real (Conta Corrente + Aplicado,
+    // posição atual) de TODOS os bancos filtrados, mesma conta usada na
+    // página Contas Bancárias (bancosCalcularSaldoReal).
+    const hojeISO = new Date().toISOString().slice(0, 10);
+    const saldoBancosTotal = (bancosFiltrados || []).reduce((s, b) =>
+      s + bancosCalcularSaldoReal(b.Title, b.Empresa, despesasTodas, receitasTodas, b.SaldoInicial, hojeISO), 0);
+
+    // A Receber / Recebimentos Vencidos — posição ATUAL (não respeita
+    // período, só empresa — igual à planilha).
+    let aReceberAVencer = 0, recebimentosVencidos = 0;
+    (receitas || []).forEach(r => {
+      const v = bancosValorLiquidoReceita(r);
+      if (r.Status === 'Recebido' || r.Status === 'Cancelado') return;
+      if (r.Status === 'Em atraso') recebimentosVencidos += v;
+      else aReceberAVencer += v;
+    });
+
+    // A Pagar / Pagamentos Vencidos / Vence em 7 dias — posição ATUAL, a
+    // partir de ContasPagar (fila de aprovação/pagamento), igual ao resto
+    // do Dashboard Financeiro já usa pro Fluxo de Caixa Projetado.
+    const hojeP = new Date(); hojeP.setHours(0, 0, 0, 0);
+    const em7dias = new Date(hojeP.getTime() + 7 * 86400000);
+    let aPagarAVencer = 0, pagamentosVencidos = 0, venceEm7Dias = 0;
+    (contasPagar || []).forEach(c => {
+      if (c.Status === 'Pago' || c.Status === 'Rejeitada') return;
+      const v = Number(c.Valor) || 0;
+      if (calcularStatusVencimento(c.Vencimento) === 'Em atraso') { pagamentosVencidos += v; return; }
+      aPagarAVencer += v;
+      if (c.Vencimento) {
+        const dv = new Date(c.Vencimento + 'T00:00:00');
+        if (dv >= hojeP && dv <= em7dias) venceEm7Dias += v;
+      }
+    });
+
+    const contratosAtivos = (centrosCustoData || []).filter(c =>
+      (!empresaFiltro || normalizarEmpresa(c.empresa) === empresaFiltro) && c.status === 'ativo').length;
+
+    // Top 10 Contratos (Centro de Custo) por Receita × Despesa — acumulado
+    // do ano corrente, só filtro de empresa (igual à tabela "Por Contrato"
+    // da planilha, "acumulado 2026").
+    const receitaPorCCIni = {}, despesaPorCCIni = {};
+    (receitas || []).forEach(r => {
+      if (r.Status === 'Cancelado') return;
+      const k = chaveMesIni(r.DataEmissao || r.DataPrevista);
+      if (!mesesDoAno.includes(k)) return;
+      const id = _ccIdPuro(r.CentroCusto);
+      if (id) receitaPorCCIni[id] = (receitaPorCCIni[id] || 0) + (Number(r.Valor) || 0);
+    });
+    (despesas || []).forEach(d => {
+      if (d.Categoria === 'Transferencias entre contas') return;
+      const k = chaveMesIni(d.DataLancamento);
+      if (!mesesDoAno.includes(k)) return;
+      const add = (id, v) => { if (id) despesaPorCCIni[id] = (despesaPorCCIni[id] || 0) + v; };
+      if (d.DivisaoCC && d.DivisaoCC.length) d.DivisaoCC.forEach(div => add(_ccIdPuro(div.cc), Number(div.valor) || 0));
+      else add(_ccIdPuro(d.CentroCusto), Number(d.Valor) || 0);
+    });
+    const nomeDoCCIni = (id) => { const c = (centrosCustoData || []).find(x => x.id === id); return c ? (id + ' · ' + c.contrato) : id; };
+    const todosCCsIni = [...new Set([...Object.keys(receitaPorCCIni), ...Object.keys(despesaPorCCIni)])];
+    const contratosOrdenados = todosCCsIni
+      .map(id => ({ id, receita: receitaPorCCIni[id] || 0, despesa: despesaPorCCIni[id] || 0 }))
+      .sort((a, b) => b.receita - a.receita).slice(0, 10);
+
+    // Receitas por Categoria (recebidas, no período) e Top 10 Despesas por
+    // Categoria (pagas, no período) — mesmo período das KPIs acima.
+    const receitaCatIni = {};
+    (receitas || []).forEach(r => {
+      if (r.Status !== 'Recebido') return;
+      const k = chaveMesIni(r.DataEmissao || r.DataPrevista);
+      if (!mesesNoPeriodo.includes(k)) return;
+      const cat = r.Categoria || 'Sem categoria';
+      receitaCatIni[cat] = (receitaCatIni[cat] || 0) + bancosValorLiquidoReceita(r);
+    });
+    const receitaCatOrdenada = Object.entries(receitaCatIni).sort((a, b) => b[1] - a[1]);
+
+    const despesaCatIni = {};
+    (despesas || []).forEach(d => {
+      if (d.Status !== 'Pago') return;
+      if (d.Categoria === 'Transferencias entre contas') return;
+      if (d.NaturezaEconomica !== 'Operacional' && d.NaturezaEconomica !== 'Não Operacional') return;
+      const k = chaveMesIni(d.DataLancamento);
+      if (!mesesNoPeriodo.includes(k)) return;
+      const cat = d.Categoria || 'Sem categoria';
+      despesaCatIni[cat] = (despesaCatIni[cat] || 0) + (Number(d.Valor) || 0);
+    });
+    const despesaCatOrdenada = Object.entries(despesaCatIni).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+    // --- Renderização: KPIs ---
+    const fmtIni = (v) => 'R$ ' + (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const setTxtIni = (id, v, cor) => { const e = document.getElementById(id); if (e) { e.textContent = v; if (cor) e.style.color = cor; } };
+    setTxtIni('dashini-kpi-receita-bruta', fmtIni(totalReceitaBruta));
+    setTxtIni('dashini-kpi-receita-liquida', fmtIni(totalReceitaLiquida));
+    setTxtIni('dashini-kpi-despesas', fmtIni(totalDespesaPaga));
+    setTxtIni('dashini-kpi-resultado', fmtIni(totalResultado), totalResultado >= 0 ? 'var(--green-main)' : 'var(--red)');
+    setTxtIni('dashini-kpi-margem', totalMargem.toFixed(1) + '%', totalMargem >= 0 ? 'var(--green-main)' : 'var(--red)');
+    setTxtIni('dashini-kpi-saldo-bancos', fmtIni(saldoBancosTotal), saldoBancosTotal >= 0 ? 'var(--green-main)' : 'var(--red)');
+    setTxtIni('dashini-kpi-a-receber', fmtIni(aReceberAVencer));
+    setTxtIni('dashini-kpi-receb-vencidos', fmtIni(recebimentosVencidos), recebimentosVencidos > 0 ? 'var(--red)' : null);
+    setTxtIni('dashini-kpi-a-pagar', fmtIni(aPagarAVencer));
+    setTxtIni('dashini-kpi-pag-vencidos', fmtIni(pagamentosVencidos), pagamentosVencidos > 0 ? 'var(--red)' : null);
+    setTxtIni('dashini-kpi-vence-7d', fmtIni(venceEm7Dias));
+    setTxtIni('dashini-kpi-contratos-ativos', String(contratosAtivos));
+
+    // --- Renderização: tabela Mês a Mês ---
+    const tabelaEl = document.getElementById('dashini-mes-tabela');
+    if (tabelaEl) {
+      const totLinha = {
+        receitaBruta: linhasMes.reduce((s, l) => s + l.receitaBruta, 0),
+        receitaLiquida: linhasMes.reduce((s, l) => s + l.receitaLiquida, 0),
+        despesaPaga: linhasMes.reduce((s, l) => s + l.despesaPaga, 0),
+        transf: linhasMes.reduce((s, l) => s + l.transf, 0),
+      };
+      const totResultadoTab = totLinha.receitaLiquida - totLinha.despesaPaga;
+      const totMargemTab = totLinha.receitaLiquida > 0 ? (totResultadoTab / totLinha.receitaLiquida) * 100 : 0;
+      const corNum = (v) => v >= 0 ? 'var(--green-main)' : 'var(--red)';
+      tabelaEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:.78rem;white-space:nowrap">
+        <thead><tr style="text-align:right;border-bottom:1px solid var(--border)">
+          <th style="padding:6px 10px;text-align:left">Mês</th>
+          <th style="padding:6px 10px">Receita Bruta</th>
+          <th style="padding:6px 10px">Receita Líquida</th>
+          <th style="padding:6px 10px">Despesas Pagas</th>
+          <th style="padding:6px 10px">Resultado</th>
+          <th style="padding:6px 10px">Resultado Acumulado</th>
+          <th style="padding:6px 10px">Margem %</th>
+          <th style="padding:6px 10px">Transf. entre Contas</th>
+        </tr></thead>
+        <tbody>
+          ${linhasMes.map(l => `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:6px 10px;text-align:left;font-weight:600">${l.label}</td>
+            <td style="padding:6px 10px;text-align:right">${fmtIni(l.receitaBruta)}</td>
+            <td style="padding:6px 10px;text-align:right">${fmtIni(l.receitaLiquida)}</td>
+            <td style="padding:6px 10px;text-align:right">${fmtIni(l.despesaPaga)}</td>
+            <td style="padding:6px 10px;text-align:right;font-weight:600;color:${corNum(l.resultado)}">${fmtIni(l.resultado)}</td>
+            <td style="padding:6px 10px;text-align:right;color:${corNum(l.acumulado)}">${fmtIni(l.acumulado)}</td>
+            <td style="padding:6px 10px;text-align:right;color:${corNum(l.margem)}">${l.margem.toFixed(1)}%</td>
+            <td style="padding:6px 10px;text-align:right;color:var(--text-muted)">${fmtIni(l.transf)}</td>
+          </tr>`).join('')}
+        </tbody>
+        <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
+          <td style="padding:6px 10px;text-align:left">TOTAL</td>
+          <td style="padding:6px 10px;text-align:right">${fmtIni(totLinha.receitaBruta)}</td>
+          <td style="padding:6px 10px;text-align:right">${fmtIni(totLinha.receitaLiquida)}</td>
+          <td style="padding:6px 10px;text-align:right">${fmtIni(totLinha.despesaPaga)}</td>
+          <td style="padding:6px 10px;text-align:right;color:${corNum(totResultadoTab)}">${fmtIni(totResultadoTab)}</td>
+          <td style="padding:6px 10px;text-align:right">—</td>
+          <td style="padding:6px 10px;text-align:right;color:${corNum(totMargemTab)}">${totMargemTab.toFixed(1)}%</td>
+          <td style="padding:6px 10px;text-align:right">${fmtIni(totLinha.transf)}</td>
+        </tr></tfoot>
+      </table>`;
+    }
+
+    // --- Renderização: gráficos ---
+    window._dashIniCharts = window._dashIniCharts || {};
+    Object.values(window._dashIniCharts).forEach(c => { try { c.destroy(); } catch (e) {} });
+    window._dashIniCharts = {};
+
+    const corVerdeIni = '#28a745', corVermelhoIni = '#dc3545', corAzulIni = '#0d6efd';
+    const paletaCategoriasIni = ['#28a745', '#0d6efd', '#e0a800', '#dc3545', '#6f42c1', '#20c997', '#fd7e14', '#6610f2', '#adb5bd'];
+
+    const ctxMes = document.getElementById('dashini-chart-mes');
+    if (ctxMes) {
+      window._dashIniCharts.mes = new Chart(ctxMes, {
+        type: 'bar',
+        data: {
+          labels: linhasMes.map(l => l.label),
+          datasets: [
+            { type: 'bar', label: 'Receita Líquida', data: linhasMes.map(l => l.receitaLiquida), backgroundColor: corVerdeIni },
+            { type: 'bar', label: 'Despesas', data: linhasMes.map(l => l.despesaPaga), backgroundColor: corVermelhoIni },
+            { type: 'line', label: 'Resultado Acumulado', data: linhasMes.map(l => l.acumulado), borderColor: corAzulIni, backgroundColor: corAzulIni, borderWidth: 2, pointRadius: 2, tension: .3 },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } },
+          scales: { y: { ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } } },
+        },
+      });
+    }
+
+    const ctxContratos = document.getElementById('dashini-chart-contratos');
+    if (ctxContratos) {
+      window._dashIniCharts.contratos = new Chart(ctxContratos, {
+        type: 'bar',
+        data: {
+          labels: contratosOrdenados.map(c => nomeDoCCIni(c.id)),
+          datasets: [
+            { label: 'Receita', data: contratosOrdenados.map(c => c.receita), backgroundColor: corVerdeIni },
+            { label: 'Despesa', data: contratosOrdenados.map(c => c.despesa), backgroundColor: corVermelhoIni },
+          ],
+        },
+        options: {
+          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } },
+          scales: { x: { ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } } },
+        },
+      });
+    }
+
+    const ctxReceitasCat = document.getElementById('dashini-chart-receitas-cat');
+    if (ctxReceitasCat) {
+      window._dashIniCharts.receitasCat = new Chart(ctxReceitasCat, {
+        type: 'doughnut',
+        data: {
+          labels: receitaCatOrdenada.map(([c]) => c),
+          datasets: [{ data: receitaCatOrdenada.map(([, v]) => v), backgroundColor: paletaCategoriasIni }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'right', labels: { boxWidth: 12, font: { size: 10 } } },
+            tooltip: { callbacks: { label: (ctx) => ctx.label + ': R$ ' + Number(ctx.parsed).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) } } },
+        },
+      });
+    }
+
+    const ctxDespesasCat = document.getElementById('dashini-chart-despesas-cat');
+    if (ctxDespesasCat) {
+      window._dashIniCharts.despesasCat = new Chart(ctxDespesasCat, {
+        type: 'bar',
+        data: {
+          labels: despesaCatOrdenada.map(([c]) => c),
+          datasets: [{ label: 'Despesa', data: despesaCatOrdenada.map(([, v]) => v), backgroundColor: corAzulIni }],
+        },
+        options: {
+          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { x: { ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } } },
+        },
+      });
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
 async function dashFinCarregar() {
   const painel = document.getElementById('dashfin-painel');
   if (!painel) return;
@@ -42381,7 +42812,7 @@ function pageDashboardFinanceiro() {
     </div>`;
   }
   const nMeses = window._dashFinMeses || 12;
-  setTimeout(() => dashFinCarregar(), 150);
+  setTimeout(() => { dashFinCarregar(); dashInicioCarregar(); }, 150);
   // Pedido em 18/09/2026: quando uma empresa específica do grupo está
   // selecionada (não "Todas as empresas"), o Painel ganha a identidade
   // visual dela — mesma cor de marca e logo já usadas na Proposta Comercial
@@ -42411,6 +42842,49 @@ function pageDashboardFinanceiro() {
         <option value="">🏢 Todas as empresas</option>
         ${RD_EMPRESAS.map(emp => `<option value="${emp}" ${window._dashFinEmpresa === emp ? 'selected' : ''}>🏢 ${emp}</option>`).join('')}
       </select>
+    </div>
+  </div>
+
+  <div class="card" style="padding:16px;margin-bottom:20px;border:2px solid var(--border)">
+    <div class="card-title" style="margin-bottom:2px">🏠 Visão Início — regime de caixa</div>
+    <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:14px">
+      Espelha a aba 🏠 Início da planilha Financeiro. Usa os mesmos filtros de Empresa/Mês específico ali no topo da página — sem mês específico selecionado, mostra o ano todo (jan-dez).
+    </div>
+    <div class="kpi-grid" style="margin-bottom:14px">
+      <div class="kpi-card green"><div class="kpi-label">Receita Bruta Recebida<br><span style="font-weight:400;font-size:.62rem">no período</span></div><div class="kpi-value" id="dashini-kpi-receita-bruta" style="font-size:1.05rem">—</div><div class="kpi-icon">💰</div></div>
+      <div class="kpi-card green"><div class="kpi-label">Receita Líquida Recebida<br><span style="font-weight:400;font-size:.62rem">após ISS e descontos</span></div><div class="kpi-value" id="dashini-kpi-receita-liquida" style="font-size:1.05rem">—</div><div class="kpi-icon">💵</div></div>
+      <div class="kpi-card red"><div class="kpi-label">Despesas Pagas<br><span style="font-weight:400;font-size:.62rem">no período</span></div><div class="kpi-value" id="dashini-kpi-despesas" style="font-size:1.05rem">—</div><div class="kpi-icon">💸</div></div>
+      <div class="kpi-card blue"><div class="kpi-label">Resultado de Caixa<br><span style="font-weight:400;font-size:.62rem">receita líquida − despesas</span></div><div class="kpi-value" id="dashini-kpi-resultado" style="font-size:1.05rem">—</div><div class="kpi-icon">⚖️</div></div>
+      <div class="kpi-card amber"><div class="kpi-label">Margem de Caixa<br><span style="font-weight:400;font-size:.62rem">resultado ÷ receita líquida</span></div><div class="kpi-value" id="dashini-kpi-margem" style="font-size:1.05rem">—</div><div class="kpi-icon">📐</div></div>
+      <div class="kpi-card blue"><div class="kpi-label">Saldo em Bancos<br><span style="font-weight:400;font-size:.62rem">contas + aplicações (posição atual)</span></div><div class="kpi-value" id="dashini-kpi-saldo-bancos" style="font-size:1.05rem">—</div><div class="kpi-icon">🏦</div></div>
+    </div>
+    <div class="kpi-grid" style="margin-bottom:14px">
+      <div class="kpi-card green"><div class="kpi-label">A Receber<br><span style="font-weight:400;font-size:.62rem">em aberto, no prazo</span></div><div class="kpi-value" id="dashini-kpi-a-receber" style="font-size:1.05rem">—</div><div class="kpi-icon">📥</div></div>
+      <div class="kpi-card red"><div class="kpi-label">Recebimentos Vencidos<br><span style="font-weight:400;font-size:.62rem">cobrar clientes</span></div><div class="kpi-value" id="dashini-kpi-receb-vencidos" style="font-size:1.05rem">—</div><div class="kpi-icon">⚠️</div></div>
+      <div class="kpi-card amber"><div class="kpi-label">A Pagar<br><span style="font-weight:400;font-size:.62rem">em aberto, no prazo</span></div><div class="kpi-value" id="dashini-kpi-a-pagar" style="font-size:1.05rem">—</div><div class="kpi-icon">📤</div></div>
+      <div class="kpi-card red"><div class="kpi-label">Pagamentos Vencidos<br><span style="font-weight:400;font-size:.62rem">atenção</span></div><div class="kpi-value" id="dashini-kpi-pag-vencidos" style="font-size:1.05rem">—</div><div class="kpi-icon">🔴</div></div>
+      <div class="kpi-card amber"><div class="kpi-label">Vence nos próx. 7 dias<br><span style="font-weight:400;font-size:.62rem">pagamentos a programar</span></div><div class="kpi-value" id="dashini-kpi-vence-7d" style="font-size:1.05rem">—</div><div class="kpi-icon">⏳</div></div>
+      <div class="kpi-card blue"><div class="kpi-label">Contratos Ativos<br><span style="font-weight:400;font-size:.62rem">em 📋 Contratos</span></div><div class="kpi-value" id="dashini-kpi-contratos-ativos" style="font-size:1.05rem">—</div><div class="kpi-icon">📋</div></div>
+    </div>
+    <div style="font-size:.78rem;font-weight:700;margin:14px 0 6px">📅 Mês a Mês — regime de caixa (filtro de empresa aplicado; período não se aplica)</div>
+    <div id="dashini-mes-tabela" style="overflow-x:auto;margin-bottom:16px"></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px">
+      <div class="card" style="padding:16px;grid-column:1/-1">
+        <div class="card-title" style="margin-bottom:10px">Receita Líquida × Despesas × Resultado Acumulado (mês a mês)</div>
+        <div style="position:relative;height:280px"><canvas id="dashini-chart-mes"></canvas></div>
+      </div>
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:10px">Top 10 Contratos — Receita × Despesa</div>
+        <div style="position:relative;height:280px"><canvas id="dashini-chart-contratos"></canvas></div>
+      </div>
+      <div class="card" style="padding:16px">
+        <div class="card-title" style="margin-bottom:10px">Receitas por Categoria</div>
+        <div style="position:relative;height:280px"><canvas id="dashini-chart-receitas-cat"></canvas></div>
+      </div>
+      <div class="card" style="padding:16px;grid-column:1/-1">
+        <div class="card-title" style="margin-bottom:10px">Top 10 Despesas por Categoria</div>
+        <div style="position:relative;height:280px"><canvas id="dashini-chart-despesas-cat"></canvas></div>
+      </div>
     </div>
   </div>
 
@@ -45008,7 +45482,7 @@ async function bancosResumoCarregar() {
           const saldo = v.receita - v.despesa;
           const saldoReal = bancosCalcularSaldoReal(b.Title, empresa, despesas, receitas, b.SaldoInicial, hojeISO);
           return `<tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:8px;font-weight:600;cursor:pointer" onclick="bancosVerHistoricoAplicacoes('${b.Title.replace(/'/g, "\\'")}','${empresa}')" title="Clique pra ver Conta Corrente x Aplicado">🏦 ${b.Title}</td>
+            <td style="padding:8px;font-weight:600;cursor:pointer" onclick="bancosVerHistoricoAplicacoes('${b.Title.replace(/'/g, "\\'")}','${empresa}')" title="Clique pra ver Conta Corrente x Aplicado">${b.Tipo === 'Aplicação' ? '🟣' : '🏦'} ${b.Title}${b.Tipo === 'Aplicação' ? ` <span style='font-size:.62rem;font-weight:400;color:#6f42c1;border:1px solid #6f42c1;border-radius:6px;padding:1px 5px;margin-left:4px'>Aplicação</span>` : ''}</td>
             <td style="padding:8px;text-align:right;color:var(--green-main)">${fmt(v.receita)}</td>
             <td style="padding:8px;text-align:right;color:#dc3545">${fmt(v.despesa)}</td>
             <td style="padding:8px;text-align:right;font-weight:700;color:${saldo >= 0 ? 'var(--green-main)' : '#dc3545'}">${fmt(saldo)}</td>
@@ -45382,7 +45856,7 @@ function bancosAbrirForm(id) {
     if (titulo) titulo.textContent = '✏️ Editar Banco';
     if (btn) btn.textContent = '💾 Salvar Alterações';
     const set = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = v || ''; };
-    set('bancos_nome', b.Title); set('bancos_empresa', b.Empresa);
+    set('bancos_nome', b.Title); set('bancos_empresa', b.Empresa); set('bancos_tipo', b.Tipo || 'Conta');
     const saldoEl = document.getElementById('bancos_saldo_inicial');
     if (saldoEl) saldoEl.value = b.SaldoInicial ? Number(b.SaldoInicial).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '';
   } else {
@@ -45392,6 +45866,7 @@ function bancosAbrirForm(id) {
     if (setSel) setSel.value = window._bancosResumoEmpresa || RD_EMPRESAS[0];
     const nomeEl = document.getElementById('bancos_nome'); if (nomeEl) nomeEl.value = '';
     const saldoEl = document.getElementById('bancos_saldo_inicial'); if (saldoEl) saldoEl.value = '';
+    const tipoEl = document.getElementById('bancos_tipo'); if (tipoEl) tipoEl.value = 'Conta';
   }
   if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -45409,7 +45884,8 @@ async function bancosSalvar() {
   const jaExiste = _bancosCache.some(b => b.Id !== editandoId && normalizarEmpresa(b.Empresa) === normalizarEmpresa(empresa) && (b.Title||'').toLowerCase() === nome.toLowerCase());
   if (jaExiste) { showToast('⚠️ Já existe esse banco cadastrado para essa empresa!'); return; }
   const saldoInicial = rdMoedaParaNumero((document.getElementById('bancos_saldo_inicial')||{}).value);
-  const dados = { Title: nome, Empresa: empresa, SaldoInicial: saldoInicial };
+  const tipo = (document.getElementById('bancos_tipo')||{}).value || 'Conta';
+  const dados = { Title: nome, Empresa: empresa, SaldoInicial: saldoInicial, Tipo: tipo };
   let ok;
   if (editandoId) {
     ok = await dbAtualizar('Bancos', editandoId, dados);
@@ -45484,6 +45960,12 @@ function pageCadastroBancos() {
         <div class="form-group"><label>Nome do Banco/Conta</label><input type="text" id="bancos_nome" placeholder="Ex.: Sicoob 5024"></div>
         <div class="form-group"><label>Empresa</label>
           <select id="bancos_empresa">${RD_EMPRESAS.map(emp => `<option value="${emp}">${emp}</option>`).join('')}</select>
+        </div>
+        <div class="form-group"><label>Tipo</label>
+          <select id="bancos_tipo" title="Conta: conta corrente do dia a dia. Aplicação: conta/sub-conta de investimento (CDB, fundos, consórcio, Icatu etc.) — mesma distinção usada na planilha (_Listas › Cadastro de Contas).">
+            <option value="Conta">🏦 Conta</option>
+            <option value="Aplicação">🟣 Aplicação</option>
+          </select>
         </div>
         <div class="form-group"><label>Saldo Inicial (em 31/12/2025)</label><input type="text" inputmode="decimal" id="bancos_saldo_inicial" placeholder="R$ 0,00" title="Quanto tinha nessa conta em 31/12/2025 (fechamento do ano) — usado como base pro Saldo Real e as visões mês a mês/dia a dia" oninput="rdFormatarMoedaInput(this)"></div>
       </div>
