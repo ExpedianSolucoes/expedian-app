@@ -8055,45 +8055,114 @@ function aprovDivccRemover(pfx, i) {
   window[key].splice(i, 1);
   aprovDivccRenderizar(pfx);
 }
-// Edita o valor de uma linha já adicionada ao rateio, sem precisar remover e
-// adicionar de novo (pedido Tiago 23/10/2026: "quando lançar os valores
-// devem ficar editaveis caso precise ajustar").
-function aprovDivccEditarValor(pfx, i, valorStr) {
+// Cada linha já adicionada ao rateio tem Centro de Custo, Medição e Valor
+// como campos SEPARADOS e editáveis direto na linha — sem precisar remover
+// e readicionar pra corrigir um só deles (pedido Tiago 26/10/2026: "campo
+// de medição nao pode ficar junto com contrato pois se quiser editar eu
+// tenho que apagar... cada um tem que ficar em campos separados para
+// edição"). Mesmo padrão já usado em Nova Despesa (ver rdRenderizarDivisaoCC/
+// rdDivccFiltrarCCsRow) — só parametrizado por pfx em vez de fixo em 'rd'.
+function aprovDivccAtualizarCampo(pfx, i, campo, valor) {
   const key = '_aprovDivisaoCC_' + pfx;
-  const itens = window[key] || [];
-  if (!itens[i]) return;
-  itens[i].valor = rdMoedaParaNumero(valorStr);
-  aprovDivccRenderizar(pfx);
+  const itens = window[key];
+  if (!itens || !itens[i]) return;
+  itens[i][campo] = campo === 'valor' ? (parseFloat(valor) || 0) : valor;
+  aprovDivccAtualizarTotais(pfx);
+}
+function aprovDivccFiltrarCCsRow(pfx, i, texto) {
+  const dd = document.getElementById(pfx + '_divcc_cc_dropdown_' + i);
+  aprovDivccAtualizarCampo(pfx, i, 'cc', texto);
+  if (!dd) return;
+  const t = (texto || '').trim().toLowerCase();
+  const disponiveis = aprovDivccCCsDisponiveis(pfx);
+  const matches = (t ? disponiveis.filter(c => (c.id + ' ' + c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0, 40);
+  let html = matches.map(c => {
+    const label = (c.id + ' · ' + c.contrato).replace(/'/g, "\\'");
+    return '<div onclick="aprovDivccSelecionarCCRow(\'' + pfx + '\',' + i + ',\'' + label + '\')" style="padding:8px 12px;cursor:pointer;font-size:.82rem;border-bottom:1px solid var(--border)" ' +
+      'onmouseover="this.style.background=\'var(--surface2)\'" onmouseout="this.style.background=\'\'">' +
+      '<strong>' + c.id + '</strong> <span style="color:var(--text-muted)">· ' + c.contrato + '</span>' +
+      '</div>';
+  }).join('');
+  if (!html) html = '<div style="padding:10px 12px;font-size:.8rem;color:var(--text-muted)">Nenhum centro de custo encontrado.</div>';
+  dd.innerHTML = html;
+  dd.style.display = 'block';
+}
+function aprovDivccFecharDropdownCCRow(pfx, i) {
+  const dd = document.getElementById(pfx + '_divcc_cc_dropdown_' + i);
+  if (dd) dd.style.display = 'none';
+}
+function aprovDivccSelecionarCCRow(pfx, i, valor) {
+  const inp = document.getElementById(pfx + '_divcc_cc_input_' + i); if (inp) inp.value = valor;
+  aprovDivccAtualizarCampo(pfx, i, 'cc', valor);
+  aprovDivccFecharDropdownCCRow(pfx, i);
+  aprovDivccAtualizarMedicaoPorCCRow(pfx, i, valor);
+}
+async function aprovDivccAtualizarMedicaoPorCCRow(pfx, i, cc) {
+  const dl = document.getElementById(pfx + '_divcc_medicao_dl_row_' + i);
+  const hint = document.getElementById(pfx + '_divcc_medicao_hint_row_' + i);
+  if (!cc) { if (dl) dl.innerHTML = ''; if (hint) { hint.textContent = ''; } return; }
+  if (hint) hint.textContent = 'Buscando medições deste contrato...';
+  const ccId = _ccIdPuro(cc);
+  let medicoes = [];
+  try { medicoes = await medicoesParaCC(ccId); } catch (e) { medicoes = []; }
+  const doCC = medicoes.sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  if (doCC.length) {
+    if (dl) dl.innerHTML = doCC.map(m => `<option value="${m.NumMedicao}">${m.NumMedicao} — ${m.Descricao || ''} (${m.Status || ''})</option>`).join('');
+    const abertas = doCC.filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status));
+    if (hint) hint.textContent = abertas.length
+      ? `Medições em aberto: ${abertas.map(m => m.NumMedicao).join(', ')}.`
+      : `Todas as ${doCC.length} medições deste contrato já estão faturadas/concluídas.`;
+    return;
+  }
+  if (dl) dl.innerHTML = '';
+  if (hint) hint.textContent = 'Nenhuma medição formal cadastrada — pode deixar em branco ou digitar livremente.';
+}
+function aprovDivccAtualizarTotais(pfx) {
+  const totalEl = document.getElementById(pfx + '_divisaocc_total');
+  if (!totalEl) return;
+  const itens = window['_aprovDivisaoCC_' + pfx] || [];
+  const soma = itens.reduce((s, d) => s + (d.valor || 0), 0);
+  const valorTotalAtual = window['_aprovValorTotal_' + pfx] || 0;
+  const diff = Math.round((valorTotalAtual - soma) * 100) / 100;
+  if (!valorTotalAtual) {
+    totalEl.style.color = 'var(--text-muted)';
+    totalEl.textContent = `Dividido: R$ ${rdNumeroParaMoeda(soma)} — informe o Valor para conferir.`;
+  } else if (Math.abs(diff) < 0.01) {
+    totalEl.style.color = 'var(--green-main)';
+    totalEl.textContent = `✅ Dividido: R$ ${rdNumeroParaMoeda(soma)} de R$ ${rdNumeroParaMoeda(valorTotalAtual)} — bate certinho.`;
+  } else {
+    totalEl.style.color = 'var(--red)';
+    totalEl.textContent = diff > 0
+      ? `⚠️ Faltam R$ ${rdNumeroParaMoeda(diff)} para completar o valor (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`
+      : `⚠️ Divisão passou R$ ${rdNumeroParaMoeda(Math.abs(diff))} do valor (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`;
+  }
 }
 function aprovDivccRenderizar(pfx) {
   const lista = document.getElementById(pfx + '_divisaocc_lista');
-  const totalEl = document.getElementById(pfx + '_divisaocc_total');
   if (!lista) return;
   const key = '_aprovDivisaoCC_' + pfx;
   const itens = window[key] || [];
   lista.innerHTML = itens.map((d, i) => `
-    <div style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:6px 10px;border-radius:8px;font-size:.8rem">
-      <span style="flex:1">🧩 ${d.cc}${d.medicao ? ` <span style="color:var(--text-muted)">— Medição ${d.medicao}</span>` : ''}</span>
-      <input type="text" value="R$ ${rdNumeroParaMoeda(d.valor)}" oninput="rdFormatarMoedaInput(this)" onchange="aprovDivccEditarValor('${pfx}',${i},this.value)" style="width:110px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-size:.8rem;font-weight:700;text-align:right">
-      <span style="cursor:pointer;color:var(--text-muted)" onclick="aprovDivccRemover('${pfx}',${i})" title="Remover">✕</span>
+    <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface)">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start">
+        <div style="position:relative;flex:2 1 200px;min-width:160px">
+          <input type="text" id="${pfx}_divcc_cc_input_${i}" value="${(d.cc||'').replace(/"/g,'&quot;')}" placeholder="Centro de Custo — digite para buscar..." autocomplete="off"
+            oninput="aprovDivccFiltrarCCsRow('${pfx}',${i},this.value)" onfocus="aprovDivccFiltrarCCsRow('${pfx}',${i},this.value)" onblur="setTimeout(()=>aprovDivccFecharDropdownCCRow('${pfx}',${i}),150)"
+            style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;box-sizing:border-box">
+          <div id="${pfx}_divcc_cc_dropdown_${i}" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:200px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+        </div>
+        <input type="text" id="${pfx}_divcc_medicao_row_${i}" list="${pfx}_divcc_medicao_dl_row_${i}" value="${(d.medicao||'').replace(/"/g,'&quot;')}" placeholder="Nº Medição (opcional)"
+          oninput="aprovDivccAtualizarCampo('${pfx}',${i},'medicao',this.value);bmMostrarDescricao(document.getElementById('${pfx}_divcc_medicao_hint_row_${i}'),this.value)"
+          style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;flex:0.7 1 90px;min-width:90px">
+        <datalist id="${pfx}_divcc_medicao_dl_row_${i}"></datalist>
+        <input type="text" value="R$ ${rdNumeroParaMoeda(d.valor)}" oninput="rdFormatarMoedaInput(this);aprovDivccAtualizarCampo('${pfx}',${i},'valor',rdMoedaParaNumero(this.value))"
+          style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);font-size:.8rem;font-weight:700;text-align:right;width:110px;flex:0 0 110px">
+        <span style="cursor:pointer;color:var(--text-muted);padding:6px 2px" onclick="aprovDivccRemover('${pfx}',${i})" title="Remover">✕</span>
+      </div>
+      <div id="${pfx}_divcc_medicao_hint_row_${i}" style="font-size:.66rem;color:var(--text-muted);margin-top:4px"></div>
     </div>`).join('') || '<div style="font-size:.75rem;color:var(--text-muted)">Nenhum Centro de Custo adicionado ainda.</div>';
-  const soma = itens.reduce((s, d) => s + (d.valor || 0), 0);
-  const valorTotalAtual = window['_aprovValorTotal_' + pfx] || 0;
-  const diff = Math.round((valorTotalAtual - soma) * 100) / 100;
-  if (totalEl) {
-    if (!valorTotalAtual) {
-      totalEl.style.color = 'var(--text-muted)';
-      totalEl.textContent = `Dividido: R$ ${rdNumeroParaMoeda(soma)} — informe o Valor para conferir.`;
-    } else if (Math.abs(diff) < 0.01) {
-      totalEl.style.color = 'var(--green-main)';
-      totalEl.textContent = `✅ Dividido: R$ ${rdNumeroParaMoeda(soma)} de R$ ${rdNumeroParaMoeda(valorTotalAtual)} — bate certinho.`;
-    } else {
-      totalEl.style.color = 'var(--red)';
-      totalEl.textContent = diff > 0
-        ? `⚠️ Faltam R$ ${rdNumeroParaMoeda(diff)} para completar o valor (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`
-        : `⚠️ Divisão passou R$ ${rdNumeroParaMoeda(Math.abs(diff))} do valor (R$ ${rdNumeroParaMoeda(valorTotalAtual)}).`;
-    }
-  }
+  itens.forEach((d, i) => { if (d.cc) aprovDivccAtualizarMedicaoPorCCRow(pfx, i, d.cc); });
+  aprovDivccAtualizarTotais(pfx);
 }
 /* -- HTML reutilizável do bloco de rateio, embutido nos modais de aprovação. -- */
 function aprovDivccBlocoHtml(pfx, rotulo) {
