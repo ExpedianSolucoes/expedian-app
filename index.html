@@ -5134,7 +5134,9 @@ async function carregarPrestacoes() {
             <button class="btn-primary" style="padding:2px 6px;font-size:.65rem" onclick="pcAbrirVisualizar(${i.Id})">✅ Aprovar</button>
             <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="devolverPrestacaoFinanceiro(${i.Id})">↩️ Indeferir</button>`:''}
           ${i.Status==='Aprovada'&&currentProfile==='diretoria'?`
-            ${(i.Parcelamento==='parcelado'&&i.EnviadoContasPagar)?`<button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="navigate('pagar')">💳 Ver em Contas a Pagar</button>`:`<button class="btn-primary" style="padding:2px 6px;font-size:.65rem;background:var(--green-main)" onclick="pcAbrirVisualizar(${i.Id})">💳 Registrar Pagamento</button>`}
+            ${i.EnviadoContasPagar?`<button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="navigate('pagar')">💳 Ver em Contas a Pagar</button>`:`
+              <button class="btn-primary" style="padding:2px 6px;font-size:.65rem;background:var(--green-main)" onclick="pcAbrirVisualizar(${i.Id})">💳 Registrar Pagamento</button>
+              ${i.Parcelamento!=='parcelado'?`<button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="pcAbrirEnviarContasPagar(${i.Id})">📤 Enviar p/ Contas a Pagar</button>`:''}`}
             <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="pcEditarPrestacao(${i.Id})">✏️ Editar</button>`:''}
           ${podeAgirGestorLegado?`
             <button class="btn-primary" style="padding:2px 6px;font-size:.65rem" onclick="aprovarPrestacaoGestor(${i.Id})">✅ Aprovar (fluxo antigo)</button>
@@ -5768,6 +5770,105 @@ async function _enviarPrestacaoParaContasPagar(pc) {
   }
   if (idsGerados.length) {
     await dbAtualizar('PrestacaoContas', pc.Id, { EnviadoContasPagar: true, ContasPagarIds: idsGerados });
+  }
+}
+
+/* -- Envio MANUAL pra Contas a Pagar de uma Prestação de Contas aprovada À
+   VISTA (ainda não paga) — diferente do envio automático acima, que só
+   cobre parcelado. Pedido Tiago 26/10/2026: "em prestação de contas se eu
+   quiser enviar para contas a pagar, tem como quando se tratar de uma
+   despesas que ainda vai ser paga? e opção caso queira anexar arquivo".
+   Pede a data de Vencimento (Prestação de Contas não tem esse campo, só
+   Data da Despesa) e deixa anexar um comprovante/boleto novo — se não
+   anexar, mantém o comprovante que já estava na Prestação de Contas. -- */
+async function pcAbrirEnviarContasPagar(id) {
+  const existente = document.getElementById('pc-enviar-pagar-modal'); if (existente) existente.remove();
+  const lista = await dbLer('PrestacaoContas');
+  const pc = lista.find(r => Number(r.Id) === Number(id));
+  if (!pc) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+  if (pc.EnviadoContasPagar) { showToast('⚠️ Esse lançamento já foi enviado para Contas a Pagar.'); return; }
+  const fmtMoeda = v => 'R$ ' + (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const modal = document.createElement('div');
+  modal.id = 'pc-enviar-pagar-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-weight:800;font-size:1rem">📤 Enviar para Contas a Pagar</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('pc-enviar-pagar-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">${pc.Fornecedor||'—'} · ${fmtMoeda(pc.Valor)} — já aprovada, ainda não paga. Enviando, o pagamento passa a ser controlado em Contas a Pagar (com vencimento e lembrete no Outlook), igual já acontece com os lançamentos parcelados.</div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label>Vencimento</label>
+        <input type="date" id="pc_enviar_pagar_vencimento" value="${new Date().toISOString().split('T')[0]}">
+      </div>
+      <div class="form-group" style="margin-bottom:6px">
+        <label>Anexar comprovante/boleto (opcional)</label>
+        <input type="file" id="pc_enviar_pagar_anexo" accept="application/pdf,image/*">
+        <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">${pc.ComprovanteNome ? ('Se não anexar nada, mantém o comprovante atual: ' + pc.ComprovanteNome) : 'Nenhum comprovante atual — pode anexar agora ou enviar sem.'}</div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('pc-enviar-pagar-modal').remove()">Cancelar</button>
+        <button class="btn-primary" id="pc-enviar-pagar-btn-confirmar" style="flex:1;background:var(--blue)" onclick="pcConfirmarEnviarContasPagar(${id})">📤 Enviar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+async function pcConfirmarEnviarContasPagar(id) {
+  const btnEl = document.getElementById('pc-enviar-pagar-btn-confirmar');
+  if (btnEl && btnEl.disabled) return;
+  const vencimento = (document.getElementById('pc_enviar_pagar_vencimento')||{}).value;
+  if (!vencimento) { showToast('⚠️ Informe a data de Vencimento.'); return; }
+  const lista = await dbLer('PrestacaoContas');
+  const pc = lista.find(r => Number(r.Id) === Number(id));
+  if (!pc) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
+  if (pc.EnviadoContasPagar) { showToast('⚠️ Esse lançamento já foi enviado para Contas a Pagar.'); return; }
+
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = ' Enviando...'; }
+  try {
+    let comprovanteUrl = pc.ComprovanteUrl || '';
+    let comprovanteNome = pc.ComprovanteNome || '';
+    const anexoInput = document.getElementById('pc_enviar_pagar_anexo');
+    const file = anexoInput && anexoInput.files[0];
+    if (file) {
+      showSyncStatus('Enviando comprovante ao OneDrive...');
+      const nomeDesejado = financeiroGerarNomeComprovante(vencimento, pc.Valor, pc.Fornecedor, file.name);
+      const resultado = await uploadComprovanteComNomeOriginal(file, OD_FOLDERS.contasPagar, nomeDesejado);
+      if (resultado) {
+        showSyncStatus('Comprovante enviado!', 'ok', 3000);
+        comprovanteUrl = typeof resultado.url === 'string' ? resultado.url : '';
+        comprovanteNome = resultado.nome;
+      } else {
+        showSyncStatus('Falha ao enviar comprovante', 'err', 5000);
+        showToast('⚠️ Não foi possível enviar o novo comprovante — vou enviar com o comprovante anterior (se houver).');
+      }
+    }
+
+    const cpDados = {
+      Fornecedor: pc.Fornecedor || '', Descricao: pc.Observacoes || '', Empresa: pc.Empresa || '',
+      CentroCusto: pc.CentroCusto || '', Categoria: pc.Categoria || '', Subcategoria: pc.Subcategoria || '',
+      NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(pc.Subcategoria || '') : ''),
+      FormaPagamento: pc.FormaPagamento || '',
+      Observacao: `Convertido de Prestação de Contas${pc.Fornecedor ? (' — ' + pc.Fornecedor) : ''}`,
+      NumeroBoleto: '', EnviadoFinanceiro: true, LancadoPor: pc.LancadoPor || pc.EnviadoPor || '',
+      NumMedicao: (pc.DivisaoCC && pc.DivisaoCC.length) ? '' : (pc.NumMedicao || ''),
+      ComprovanteUrl: comprovanteUrl, ComprovanteNome: comprovanteNome,
+      DivisaoCC: pc.DivisaoCC || [],
+      Title: (pc.Fornecedor || 'Prestação de Contas') + ' · ' + vencimento,
+      Vencimento: vencimento, Valor: pc.Valor, Parcelamento: 'avista',
+      Status: calcularStatusVencimento(vencimento),
+      PrestacaoContasId: pc.Id, OrigemPrestacaoContas: true,
+    };
+    const rOutlookPC = await cpCriarEventoOutlook(cpDados, null);
+    cpDados.OutlookEventId = rOutlookPC.id;
+    const novoCP = await dbInserir('ContasPagar', cpDados);
+    if (!novoCP || !novoCP.Id) { showToast('❌ Erro ao enviar para Contas a Pagar.'); return; }
+    await dbAtualizar('PrestacaoContas', pc.Id, { EnviadoContasPagar: true, ContasPagarIds: [novoCP.Id] });
+    showToast('✅ Enviado para Contas a Pagar — o pagamento agora é controlado por lá.');
+    const m = document.getElementById('pc-enviar-pagar-modal'); if (m) m.remove();
+    setTimeout(() => { carregarPrestacoes(); if (typeof carregarContasPagar === 'function') carregarContasPagar(); }, 600);
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '📤 Enviar'; }
   }
 }
 
