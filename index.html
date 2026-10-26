@@ -12705,20 +12705,133 @@ async function aplicacaoSalvar() {
   }
 }
 
+// Lista de subcategorias de Resgate (também usada pelo filtro do histórico
+// em resgateCarregarHistorico — mantenha as duas em sincronia se adicionar
+// um novo tipo de resgate).
+const RESGATE_SUBCATEGORIAS = ['Resgate de CDB','Resgate de Fundos','Resgate de Renda Fixa','Resgate de Capital Social / Cota-Capital','Outros Resgates'];
+
+// Tela de Histórico de Resgates (pedido Tiago 26/10/2026: "na aba resgate
+// deve ter historico de resgates realizados" / "semelhante o que na
+// aplicação") — mesmo padrão de aplicacaoAbrirModal/aplicacaoCarregarHistorico:
+// esta função abre a LISTA (filtrada por Empresa), com um botão "Novo
+// Lançamento" que abre o formulário de verdade (resgateAbrirForm) por cima.
 function resgateAbrirModal(empresaPre, bancoPre) {
+  // Atalho: quando vem de um botão de uma conta específica (ex.: "Resgate
+  // dessa conta" em Contas Bancárias), já indicando qual banco, pula a tela
+  // de histórico e abre o formulário direto — mesmo comportamento de antes
+  // de existir o histórico, só pra esses atalhos por conta.
+  if (bancoPre) { resgateAbrirForm(null, empresaPre, bancoPre); return; }
   const empresa = empresaPre || window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  const subs = ['Resgate de CDB','Resgate de Fundos','Resgate de Renda Fixa','Resgate de Capital Social / Cota-Capital','Outros Resgates'];
+  const existente = document.getElementById('resgateModal'); if (existente) existente.remove();
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'resgateModal';
   modal.innerHTML = `
-    <div class="modal-box" style="max-width:520px">
+    <div class="modal-box" style="max-width:720px;max-height:88vh;overflow-y:auto">
       <div class="modal-header">
-        <h2>🟡 Resgate de Aplicação</h2>
+        <h2>🟡 Resgates de Aplicação</h2>
         <div class="modal-close" onclick="document.getElementById('resgateModal').remove()">✕</div>
       </div>
       <div class="modal-body">
-        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Lança automaticamente uma Receita (entrada) na conta escolhida, categoria "Receitas Financeiras".</div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:180px">
+            <label>Empresa</label>
+            <select id="rsg_hist_empresa" onchange="resgateCarregarHistorico()">
+              ${RD_EMPRESAS.map(e => `<option value="${e}" ${e===empresa?'selected':''}>${e}</option>`).join('')}
+            </select>
+          </div>
+          <button class="btn-primary" style="white-space:nowrap" onclick="resgateAbrirForm()">➕ Novo Lançamento</button>
+        </div>
+        <div id="rsg-historico"><div style="color:var(--text-muted);font-size:.8rem;padding:8px 0">Carregando...</div></div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  resgateCarregarHistorico();
+}
+// Histórico dos resgates já registrados (Receitas, Categoria "Receitas
+// Financeiras" e Subcategoria de resgate), filtrado pela empresa escolhida
+// no select desta tela — mesmo padrão de aplicacaoCarregarHistorico(). Cada
+// linha tem 👁️ (ver), ✏️ (editar, abre resgateAbrirForm já preenchido) e
+// 🗑️ (excluir).
+async function resgateCarregarHistorico() {
+  const el = document.getElementById('rsg-historico');
+  if (!el) return;
+  const empresa = (document.getElementById('rsg_hist_empresa')||{}).value || window._rdEmpresaAtiva || RD_EMPRESAS[0];
+  const fmtR = v => 'R$ ' + (Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  try {
+    const todas = await dbLerSeguro('Receitas');
+    let itens = todas.filter(r => r.Categoria === 'Receitas Financeiras' && RESGATE_SUBCATEGORIAS.includes(r.Subcategoria) && r.Empresa === empresa);
+    itens.sort((a,b) => (b.DataRecebimento||b.DataEmissao||'').localeCompare(a.DataRecebimento||a.DataEmissao||''));
+    itens = itens.slice(0, 60);
+    window._rsgHistoricoPorId = {}; itens.forEach(i => { window._rsgHistoricoPorId[i.Id] = i; });
+    if (!itens.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:8px 0">Nenhum resgate registrado ainda para essa empresa.</div>'; return; }
+    el.innerHTML = '<table class="data-table" style="font-size:.76rem"><thead><tr><th>Data</th><th>Tipo</th><th>Conta</th><th>CC/Medição</th><th>Valor</th><th>Responsável</th><th></th></tr></thead><tbody>' +
+      itens.map(i => {
+        const dataRef = i.DataRecebimento || i.DataEmissao;
+        const dataFmt = dataRef ? new Date(dataRef+'T00:00:00').toLocaleDateString('pt-BR') : '—';
+        return `<tr>
+          <td style="white-space:nowrap">${dataFmt}</td>
+          <td>${i.Subcategoria||'—'}</td>
+          <td>${i.Banco||'—'}</td>
+          <td style="color:var(--text-muted);font-size:.72rem">${i.CentroCusto||'—'}</td>
+          <td style="font-weight:700;white-space:nowrap">${fmtR(i.Valor)}</td>
+          <td style="color:var(--text-muted)">${i.ResponsavelLancamento||'—'}</td>
+          <td style="white-space:nowrap">
+            <button type="button" style="border:none;background:transparent;cursor:pointer;font-size:.85rem" title="Visualizar" onclick="rcVisualizarReceita(${i.Id})">👁️</button>
+            <button type="button" style="border:none;background:transparent;cursor:pointer;font-size:.85rem" title="Editar" onclick="resgateAbrirForm(${i.Id})">✏️</button>
+            <button type="button" style="border:none;background:transparent;cursor:pointer;font-size:.85rem" title="Excluir" onclick="resgateExcluir(${i.Id})">🗑️</button>
+          </td>
+        </tr>`;
+      }).join('') + '</tbody></table>';
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:8px 0">Não foi possível carregar o histórico agora.</div>';
+  }
+}
+// Excluir um Resgate direto da tela de histórico — mesmo mecanismo de
+// aplicacaoExcluir (o lançamento é uma Receita de verdade, Categoria
+// "Receitas Financeiras"), só que atualiza a lista desta tela
+// (resgateCarregarHistorico) em vez da tabela de Receitas, que pode nem
+// estar aberta atrás deste modal.
+async function resgateExcluir(id) {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Exclusão restrita à Diretoria.'); return; }
+  const i = (window._rsgHistoricoPorId || {})[id];
+  const desc = i ? ((i.Subcategoria||'Resgate de Aplicação') + ' · ' + (i.Banco||'') + ' · R$ ' + (i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})) : ('#' + id);
+  if (!confirm(`Excluir o lançamento "${desc}"? Essa ação não pode ser desfeita.`)) return;
+  showSyncStatus('Excluindo lançamento...');
+  const { ok } = await dbRemover('Receitas', id);
+  showToast(ok ? '🗑️ Lançamento excluído.' : '❌ Erro ao excluir.');
+  showSyncStatus(ok ? 'Excluído!' : 'Falha ao excluir', ok ? 'ok' : 'err', ok ? 2500 : 5000);
+  if (ok) resgateCarregarHistorico();
+}
+// Formulário de Novo Resgate (sem id) ou Editar Resgate (com id) — abre como
+// uma segunda janela por cima da tela de histórico (resgateAbrirModal), que
+// continua ali atrás — mesmo padrão de aplicacaoAbrirForm(). Salvar ou
+// Cancelar só fecha esta janela; a tela de histórico atrás é quem recebe a
+// lista atualizada (resgateSalvar chama resgateCarregarHistorico() de novo
+// antes de fechar).
+async function resgateAbrirForm(id, empresaPre, bancoPre) {
+  window._rsgEditandoId = id || null;
+  let registro = null;
+  if (id) {
+    registro = (window._rsgHistoricoPorId || {})[id];
+    if (!registro) { try { const todos = await dbLerSeguro('Receitas'); registro = todos.find(r => r.Id === id); } catch(e) {} }
+    if (!registro) { showToast('⚠️ Resgate não encontrado (recarregue).'); return; }
+  }
+  const empresa = registro ? registro.Empresa : (empresaPre || (document.getElementById('rsg_hist_empresa')||{}).value || window._rdEmpresaAtiva || RD_EMPRESAS[0]);
+  const subs = RESGATE_SUBCATEGORIAS;
+  const existente = document.getElementById('resgateFormModal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'resgateFormModal';
+  modal.style.zIndex = '600';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:520px">
+      <div class="modal-header">
+        <h2>${registro ? '✏️ Editar Resgate' : '🟡 Resgate de Aplicação'}</h2>
+        <div class="modal-close" onclick="document.getElementById('resgateFormModal').remove()">✕</div>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">${registro ? 'Corrigindo um lançamento já registrado — ajuste os campos e clique em "Salvar Alteração".' : 'Lança automaticamente uma Receita (entrada) na conta escolhida, categoria "Receitas Financeiras".'}</div>
         <div class="form-group" style="margin-bottom:12px">
           <label>Empresa</label>
           <select id="rsg_empresa" onchange="resgateEmpresaAlterada()">
@@ -12728,11 +12841,11 @@ function resgateAbrirModal(empresaPre, bancoPre) {
         <div class="form-row">
           <div class="form-group">
             <label>Tipo de Resgate</label>
-            <select id="rsg_subcategoria">${subs.map(s => `<option>${s}</option>`).join('')}</select>
+            <select id="rsg_subcategoria">${subs.map(s => `<option ${registro && registro.Subcategoria===s?'selected':''}>${s}</option>`).join('')}</select>
           </div>
           <div class="form-group">
             <label>Conta (entra o dinheiro)</label>
-            <select id="rsg_banco">${bancosDaEmpresa(empresa).map(b => `<option ${b===bancoPre?'selected':''}>${b}</option>`).join('')}</select>
+            <select id="rsg_banco">${bancosDaEmpresa(empresa).map(b => `<option ${registro ? (registro.Banco===b?'selected':'') : (b===bancoPre?'selected':'')}>${b}</option>`).join('')}</select>
           </div>
         </div>
         <!-- Centro de Custo — Origem/Destino (pedido Tiago 23/10/2026, mesmo
@@ -12743,7 +12856,7 @@ function resgateAbrirModal(empresaPre, bancoPre) {
         <div class="form-row">
           <div class="form-group">
             <label>Centro de Custo — Origem <span style="font-size:.7rem;color:var(--text-muted)">(opcional)</span></label>
-            <input type="text" id="rsg_cc_origem" list="rsg_cc_origem_dl" placeholder="Ex: Frota - Saveiro..." autocomplete="off" oninput="trfAtualizarMedicaoPorCC('rsgorigem',this.value)" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem">
+            <input type="text" id="rsg_cc_origem" list="rsg_cc_origem_dl" placeholder="Ex: Frota - Saveiro..." autocomplete="off" value="${registro ? (registro.CentroCusto||'').replace(/"/g,'&quot;') : ''}" oninput="trfAtualizarMedicaoPorCC('rsgorigem',this.value)" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:.85rem">
             <datalist id="rsg_cc_origem_dl">${_trfOpcoesCCDatalist(empresa)}</datalist>
           </div>
           <div class="form-group">
@@ -12769,20 +12882,20 @@ function resgateAbrirModal(empresaPre, bancoPre) {
         ${aprovDivccBlocoHtml('rsgorigem', 'Ratear a Origem entre mais de um Centro de Custo/Medição')}
         ${aprovDivccBlocoHtml('rsgdestino', 'Ratear o Destino entre mais de um Centro de Custo/Medição')}
         <div class="form-row">
-          <div class="form-group"><label>Valor</label><input type="text" id="rsg_valor" placeholder="R$ 0,00" oninput="rdFormatarMoedaInput(this);rsgSincronizarValorRateio()"></div>
-          <div class="form-group"><label>Data</label><input type="date" id="rsg_data" value="${new Date().toISOString().slice(0,10)}"></div>
+          <div class="form-group"><label>Valor</label><input type="text" id="rsg_valor" placeholder="R$ 0,00" value="${registro ? rdNumeroParaMoeda(registro.Valor||0) : ''}" oninput="rdFormatarMoedaInput(this);rsgSincronizarValorRateio()"></div>
+          <div class="form-group"><label>Data</label><input type="date" id="rsg_data" value="${registro ? (registro.DataRecebimento || registro.DataEmissao || new Date().toISOString().slice(0,10)) : new Date().toISOString().slice(0,10)}"></div>
         </div>
         <div class="form-group" style="margin-bottom:12px">
           <label>Responsável pelo Lançamento</label>
           <select id="rsg_responsavel">
             <option value="">Selecione...</option>
-            ${_servicosResponsaveisDiretoria().map(r => `<option>${r}</option>`).join('')}
+            ${_servicosResponsaveisDiretoria().map(r => `<option ${registro && registro.ResponsavelLancamento===r?'selected':''}>${r}</option>`).join('')}
           </select>
         </div>
-        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="rsg_obs" placeholder="Ex: resgate para cobrir despesa..."></div>
+        <div class="form-group" style="margin-bottom:16px"><label>Observação (opcional)</label><input type="text" id="rsg_obs" placeholder="Ex: resgate para cobrir despesa..." value="${(registro && !(registro.Descricao||'').startsWith('Resgate · ')) ? (registro.Descricao||'') : ''}"></div>
         <div style="display:flex;gap:10px">
-          <button class="btn-primary" onclick="resgateSalvar()">✅ Registrar Resgate</button>
-          <button class="btn-secondary" onclick="document.getElementById('resgateModal').remove()">Cancelar</button>
+          <button class="btn-primary" onclick="resgateSalvar()">${registro ? '💾 Salvar Alteração' : '✅ Registrar Resgate'}</button>
+          <button class="btn-secondary" onclick="document.getElementById('resgateFormModal').remove()">Cancelar</button>
         </div>
       </div>
     </div>`;
@@ -12793,8 +12906,8 @@ function resgateAbrirModal(empresaPre, bancoPre) {
   window._aprovEmpresa_rsgdestino = empresa;
   window._aprovDivisaoCC_rsgorigem = [];
   window._aprovDivisaoCC_rsgdestino = [];
-  window._aprovValorTotal_rsgorigem = 0;
-  window._aprovValorTotal_rsgdestino = 0;
+  window._aprovValorTotal_rsgorigem = registro ? (registro.Valor || 0) : 0;
+  window._aprovValorTotal_rsgdestino = registro ? (registro.Valor || 0) : 0;
 }
 // Mantém o "total a dividir" dos dois blocos de rateio do Resgate em dia
 // com o campo Valor — mesmo padrão de aplSincronizarValorRateio().
@@ -12860,10 +12973,13 @@ async function resgateSalvar() {
   const medicaoOrigem = rateioOrigem.ativo ? '' : medicaoOrigemCampo;
   const medicaoDestino = rateioDestino.ativo ? '' : medicaoDestinoCampo;
 
-  // Origem E Destino preenchidos = não é um resgate de verdade voltando pra
-  // conta corrente, é realocação entre Centros de Custo da MESMA conta —
-  // vira Transferência interna (pedido Tiago 23/10/2026, confirmado).
-  if (ccOrigem && ccDestino && ccOrigem !== ccDestino) {
+  const editandoId = window._rsgEditandoId || null;
+
+  // Origem E Destino preenchidos, num lançamento NOVO (não edição) = não é
+  // um resgate de verdade voltando pra conta corrente, é realocação entre
+  // Centros de Custo da MESMA conta — vira Transferência interna (pedido
+  // Tiago 23/10/2026, confirmado).
+  if (!editandoId && ccOrigem && ccDestino && ccOrigem !== ccDestino) {
     showSyncStatus('Registrando realocação entre Centros de Custo...');
     const ok = await _bancosRealocarEntreCCs({ empresa, conta: banco, ccOrigem, ccDestino, medicaoOrigem, medicaoDestino, valor, data, responsavel, obs, divisaoCCOrigem: rateioOrigem.ativo ? rateioOrigem.divisaoCC : [], divisaoCCDestino: rateioDestino.ativo ? rateioDestino.divisaoCC : [] });
     showToast(ok ? '✅ Realocação registrada como Transferência interna!' : ('❌ Falha ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
@@ -12872,7 +12988,7 @@ async function resgateSalvar() {
       if (typeof carregarDespesas === 'function') carregarDespesas();
       if (typeof carregarReceitas === 'function') carregarReceitas();
       if (typeof carregarTransferencias === 'function') carregarTransferencias();
-      const modalEl = document.getElementById('resgateModal'); if (modalEl) modalEl.remove();
+      const modalEl = document.getElementById('resgateFormModal'); if (modalEl) modalEl.remove();
     }
     return;
   }
@@ -12883,7 +12999,7 @@ async function resgateSalvar() {
   const lancadoPor = window._currentUser ? window._currentUser.name : '';
   const descricao = obs || ('Resgate · ' + subcategoria);
 
-  showSyncStatus('Registrando resgate...');
+  showSyncStatus(editandoId ? 'Salvando alteração...' : 'Registrando resgate...');
   const dados = {
     Title: 'Resgate · ' + subcategoria + ' · ' + data,
     DataEmissao: data, Categoria: categoria, Subcategoria: subcategoria,
@@ -12896,12 +13012,17 @@ async function resgateSalvar() {
     ValorLiquido: valor, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
     LancadoPor: lancadoPor,
   };
-  const ok = await dbInserir('Receitas', dados);
-  showToast(ok ? '✅ Resgate registrado!' : ('❌ Falha ao registrar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
-  showSyncStatus(ok ? 'Resgate registrado!' : 'Falha ao registrar', ok ? 'ok' : 'err', ok?3000:5000);
+  const ok = editandoId ? await dbAtualizar('Receitas', editandoId, dados) : await dbInserir('Receitas', dados);
+  showToast(ok ? (editandoId ? '✅ Resgate atualizado!' : '✅ Resgate registrado!') : ('❌ Falha ao salvar.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():'')));
+  showSyncStatus(ok ? 'Salvo!' : 'Falha ao salvar', ok ? 'ok' : 'err', ok?3000:5000);
   if (ok) {
-    const modalEl = document.getElementById('resgateModal'); if (modalEl) modalEl.remove();
+    window._rsgEditandoId = null;
     if (typeof carregarReceitas === 'function') carregarReceitas();
+    const formEl = document.getElementById('resgateFormModal'); if (formEl) formEl.remove();
+    // Volta pra tela de histórico (se ainda estiver aberta atrás) já filtrada
+    // pela empresa do lançamento salvo, e com a lista atualizada.
+    const histEmpresaSel = document.getElementById('rsg_hist_empresa');
+    if (histEmpresaSel) { histEmpresaSel.value = empresa; resgateCarregarHistorico(); }
   }
 }
 
@@ -36312,14 +36433,71 @@ function vistAoTrocarEmpreendimento() {
   var blocoSimples = document.getElementById('vist-campos-status-simples');
   if (blocoLS) blocoLS.style.display = combinado ? '' : 'none';
   if (blocoSimples) blocoSimples.style.display = combinado ? 'none' : '';
+  var reg = MEA_DADOS.find(function(x){ return (x.empreendimento||'').toLowerCase() === nome.toLowerCase(); });
+  var v = (reg && reg.vistoria) || {};
   if (combinado) {
-    var reg = MEA_DADOS.find(function(x){ return (x.empreendimento||'').toLowerCase() === nome.toLowerCase(); });
-    var v = (reg && reg.vistoria) || {};
     document.getElementById('vist-status-linha').value = v.statusLinha || 'pendente';
     document.getElementById('vist-status-subestacao').value = v.statusSubestacao || 'pendente';
     vistAtualizarConsolidado();
   } else {
     vistToggleCampos();
+  }
+  vistAplicarTravaRealizada(reg, combinado);
+}
+
+/* -- Trava de "Vistoria já Realizada" (pedido Tiago 26/10/2026): "quando o
+   empreendimento tiver no semestre ja com status de vistoria realizada,
+   nao deixar colocar ele novamente em nova programação e atentar quando se
+   tratar de linha e subestação em um so empreendimento que pode ser que a
+   subestação ou linha esteje com vistoria pronta e o outro nao". Só entra
+   em ação no fluxo de "+ Nova Vistoria" (campo #vist-id vazio) — abrir pelo
+   ✏️ da lista (id já preenchido) continua 100% livre, é o jeito de corrigir
+   um status errado. Empreendimento misto: cada lado (Linha/Subestação) é
+   travado independente — se só um dos dois já foi Realizado, o outro
+   continua programável normalmente. -- */
+function vistAplicarTravaRealizada(reg, combinado) {
+  var aviso = document.getElementById('vist-aviso-realizada');
+  var btnSalvar = document.getElementById('vist-btn-salvar');
+  var selLinha = document.getElementById('vist-status-linha');
+  var selSub = document.getElementById('vist-status-subestacao');
+  var selSimples = document.getElementById('vist-status');
+  if (selLinha) selLinha.disabled = false;
+  if (selSub) selSub.disabled = false;
+  if (selSimples) selSimples.disabled = false;
+  if (!aviso || !btnSalvar) return;
+  var modoNovo = !document.getElementById('vist-id').value;
+  if (!modoNovo || !reg) {
+    aviso.style.display = 'none';
+    btnSalvar.disabled = false; btnSalvar.style.opacity = '';
+    return;
+  }
+  var v = reg.vistoria || {};
+  if (combinado) {
+    var linhaPronta = v.statusLinha === 'realizada';
+    var subPronta = v.statusSubestacao === 'realizada';
+    if (linhaPronta && subPronta) {
+      aviso.style.display = '';
+      aviso.innerHTML = '<div style="background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#664d03">⚠️ <b>Linha e Subestação já estão com Vistoria Realizada</b> neste ciclo. Pra corrigir, abra pelo ✏️ na lista em vez de "+ Nova Vistoria".</div>';
+      btnSalvar.disabled = true; btnSalvar.style.opacity = '.5';
+    } else if (linhaPronta || subPronta) {
+      aviso.style.display = '';
+      aviso.innerHTML = '<div style="background:#e7f1ff;border:1px solid #b6d4fe;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#084298">ℹ️ ' + (linhaPronta ? '⚡ Linha' : '🏭 Subestação') + ' já está com Vistoria Realizada neste ciclo — esse lado ficou travado aqui. Só ' + (linhaPronta ? '🏭 Subestação' : '⚡ Linha') + ' pode ser programada.</div>';
+      if (linhaPronta && selLinha) selLinha.disabled = true;
+      if (subPronta && selSub) selSub.disabled = true;
+      btnSalvar.disabled = false; btnSalvar.style.opacity = '';
+    } else {
+      aviso.style.display = 'none';
+      btnSalvar.disabled = false; btnSalvar.style.opacity = '';
+    }
+  } else {
+    if (v.status === 'realizada') {
+      aviso.style.display = '';
+      aviso.innerHTML = '<div style="background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#664d03">⚠️ <b>Esse empreendimento já está com Vistoria Realizada</b> neste ciclo. Pra corrigir, abra pelo ✏️ na lista em vez de "+ Nova Vistoria".</div>';
+      btnSalvar.disabled = true; btnSalvar.style.opacity = '.5';
+    } else {
+      aviso.style.display = 'none';
+      btnSalvar.disabled = false; btnSalvar.style.opacity = '';
+    }
   }
 }
 
@@ -36999,6 +37177,8 @@ function pageVistoriasERO() {
           <datalist id="vist-empreendimento-dl"></datalist>
         </div>
 
+        <div id="vist-aviso-realizada" style="display:none;margin-bottom:14px"></div>
+
         <div id="vist-campos-linhasede" style="display:none">
           <div class="form-row">
             <div class="form-group"><label>⚡ Status da Linha</label>
@@ -37066,7 +37246,7 @@ function pageVistoriasERO() {
 
         <div class="form-actions" style="justify-content:flex-end;display:flex;gap:8px">
           <button class="btn-secondary" onclick="vistFecharModal()">Cancelar</button>
-          <button class="btn-primary" onclick="vistSalvarModal()">💾 Salvar</button>
+          <button class="btn-primary" id="vist-btn-salvar" onclick="vistSalvarModal()">💾 Salvar</button>
         </div>
       </div>
     </div>
