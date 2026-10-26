@@ -14938,6 +14938,24 @@ async function financeiroGerarProvisoesRetroativasDAS() {
   await financeiroBuscarProvisoesDAS();
 }
 
+/* -- Pedido Tiago 26/10/2026 ("nao consigo fazer como um lançamento unico e
+   dentro dele dividir os valores correspondente de cada nota com seu
+   respectivo centro de custo e bm, assim ja como fazemos ao lançar uma
+   despesa em que é dividida com mais de um centro de custos"): antes,
+   confirmar a reconciliação atualizava as N provisões já existentes (1
+   lançamento de Contas a Pagar por NF). Agora CONSOLIDA tudo num único
+   lançamento de Contas a Pagar — o detalhamento por NF (Centro de
+   Custo+Nº de Medição+valor rateado) vai pro campo DivisaoCC, o MESMO
+   padrão já usado em Despesa/Transferência pra rateio por Centro de
+   Custo (ver aprovDivccAdicionar/aprovDivccRenderizar) — então o
+   lançamento consolidado já abre com o rateio pronto em "👁️ Visualizar",
+   igual qualquer outro lançamento dividido por CC. Linhas com o mesmo
+   Centro de Custo+Medição (acontece quando 1 NF foi recebida em mais de
+   uma medição) são somadas numa única linha, pelo mesmo motivo que o
+   editor de rateio não deixa cadastrar 2 linhas iguais. As N provisões
+   originais são excluídas depois de criado o lançamento consolidado — um
+   histórico com a origem de cada valor (Id/NF/CC/Medição) fica salvo em
+   HistoricoConsolidacaoDAS, só pra auditoria (não aparece em nenhuma tela). -- */
 async function financeiroConfirmarReconciliacaoDAS() {
   const provisoes = window._dasrProvisoes || [];
   if (!provisoes.length) { showToast('⚠️ Busque as provisões antes de confirmar.'); return; }
@@ -14948,22 +14966,52 @@ async function financeiroConfirmarReconciliacaoDAS() {
   const banco = (document.getElementById('dasr_banco')||{}).value;
   if (marcarPago && (!dataPag || !banco)) { showToast('⚠️ Informe data e banco do pagamento, ou desmarque a opção.'); return; }
 
+  const empresa = (document.getElementById('dasr_empresa')||{}).value;
+  const competencia = (document.getElementById('dasr_competencia')||{}).value;
   const somaEstimada = provisoes.reduce((s, r) => s + (r.Valor || 0), 0);
-  showToast('💾 Distribuindo...');
+  showToast('💾 Consolidando...');
+
+  const divisaoMap = new Map();
+  const historico = [];
   for (const r of provisoes) {
     const proporcao = somaEstimada > 0 ? (r.Valor || 0) / somaEstimada : (1 / provisoes.length);
     const valorReal_i = Math.round(valorReal * proporcao * 100) / 100;
-    const campos = { Valor: valorReal_i, Provisorio: false, DASValorRealTotal: valorReal };
-    if (marcarPago) {
-      campos.Status = 'Pago'; campos.DataPagamento = dataPag; campos.BancoPagamento = banco;
-      campos.PagoPor = window._currentUser ? window._currentUser.name : '';
-    }
-    await dbAtualizar('ContasPagar', r.Id, campos);
-    if (marcarPago) await pagSincronizarDespesa(r.Id, dataPag, banco).catch(() => {});
+    const cc = r.CentroCusto || '';
+    const medicao = r.NumMedicao || '';
+    const chave = cc + '|||' + medicao;
+    if (divisaoMap.has(chave)) divisaoMap.get(chave).valor = Math.round((divisaoMap.get(chave).valor + valorReal_i) * 100) / 100;
+    else divisaoMap.set(chave, { cc, medicao, valor: valorReal_i });
+    historico.push({ ContasPagarIdOriginal: r.Id, NFOrigemId: r.NFOrigemId, NumeroNFOrigem: r.NumeroNFOrigem, CentroCusto: cc, NumMedicao: medicao, Valor: valorReal_i });
   }
-  showToast('✅ DAS distribuído entre ' + provisoes.length + ' nota(s)!');
+  const divisaoCC = Array.from(divisaoMap.values());
+  const ccsUnicos = Array.from(new Set(divisaoCC.map(d => d.cc))).filter(Boolean);
+  const numerosNF = Array.from(new Set(provisoes.map(r => r.NumeroNFOrigem).filter(Boolean)));
+  const vencimento = provisoes[0].Vencimento || '';
+
+  const dados = {
+    Title: 'DAS (Simples Nacional) — Competência ' + competencia,
+    Fornecedor: 'DAS — Simples Nacional',
+    Descricao: 'Imposto Simples Nacional sobre ' + numerosNF.length + ' NF(s) recebida(s) em ' + competencia + ' (rateio por Centro de Custo/Medição)',
+    Empresa: empresa, CentroCusto: ccsUnicos.join(' + '),
+    Categoria: 'Impostos', Subcategoria: 'Simples Nacional', NaturezaEconomica: rdNaturezaDeSubcategoria('Simples Nacional'),
+    Vencimento: vencimento, Valor: valorReal, Status: marcarPago ? 'Pago' : calcularStatusVencimento(vencimento),
+    Parcelamento: 'avista', LancadoPor: window._currentUser ? window._currentUser.name : '',
+    Provisorio: false, CompetenciaDAS: competencia, DASValorRealTotal: valorReal,
+    NumMedicao: '', DivisaoCC: divisaoCC, HistoricoConsolidacaoDAS: historico,
+  };
+  if (marcarPago) {
+    dados.Status = 'Pago'; dados.DataPagamento = dataPag; dados.BancoPagamento = banco;
+    dados.PagoPor = window._currentUser ? window._currentUser.name : '';
+  }
+  const novo = await dbInserir('ContasPagar', dados);
+  if (!novo || !novo.Id) { showToast('❌ Erro ao consolidar o DAS.'); return; }
+  // As N provisões viram esse único lançamento — exclui as originais.
+  for (const r of provisoes) await dbRemover('ContasPagar', r.Id).catch(() => {});
+  if (marcarPago) await pagSincronizarDespesa(novo.Id, dataPag, banco).catch(() => {});
+  showToast('✅ DAS consolidado num único lançamento, rateado entre ' + divisaoCC.length + ' Centro(s) de Custo/Medição!');
   const m = document.getElementById('fin-das-modal'); if (m) m.remove();
   carregarContasPagar();
+  carregarPagarPendentesDespesas();
 }
 
 /* ===== Notas Fiscais =====
