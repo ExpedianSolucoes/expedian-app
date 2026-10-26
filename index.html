@@ -10091,7 +10091,7 @@ async function carregarContasPagar() {
     // junto com a aprovação em lote, pra seleção nunca ficar "presa" em
     // itens que não fazem mais sentido selecionar.
     if (window._pagSelecionados instanceof Set) {
-      const idsAtuais = new Set(items.filter(r => r.Status === 'Aguardando Aprovação').map(r => r.Id));
+      const idsAtuais = new Set(items.filter(r => pagGrupoSelecao(r.Status)).map(r => r.Id));
       Array.from(window._pagSelecionados).forEach(id => { if (!idsAtuais.has(id)) window._pagSelecionados.delete(id); });
     } else { window._pagSelecionados = new Set(); }
 
@@ -10099,20 +10099,24 @@ async function carregarContasPagar() {
     const statusColor = (s) => s==='Pago'?'green':s==='Em atraso'||s==='Rejeitada'?'red':s==='Vence hoje'||s==='Vence em breve'?'amber':s==='Aguardando Aprovação'||s==='Aprovado — Aguardando Pagamento'?'blue':'amber';
     const isDir = currentProfile === 'diretoria';
     const nSelBar = window._pagSelecionados ? window._pagSelecionados.size : 0;
+    // Pedido Tiago 26/10/2026 ("pq em contas a pagar nao consigo selecionar
+    // os DAS?"): a barra agora cobre 2 grupos de seleção — "Aguardando
+    // Aprovação" (ação: aprovar em lote, como já era) e lançamentos que
+    // pulam a aprovação e já nascem prontos pra pagar (ação: registrar
+    // pagamento em lote) — ver pagGrupoSelecao/pagAtualizarBarraSelecao, que
+    // monta os botões certos dentro de #pag-bulk-acoes conforme o grupo.
     const barraSelecaoHtml = isDir ? `<div id="pag-bulk-bar" style="display:${nSelBar?'flex':'none'};align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:10px">
       <span id="pag-bulk-texto" style="font-size:.8rem;font-weight:700"></span>
-      <button id="pag-bulk-btn" class="btn-primary" style="font-size:.76rem;padding:5px 10px" onclick="pagAprovarSelecionados()">✅ Aprovar selecionados</button>
-      <button id="pag-bulk-btn-excluir" class="btn-secondary" style="font-size:.76rem;padding:5px 10px;color:var(--red);border-color:var(--red)" onclick="pagExcluirSelecionados()">🗑️ Excluir selecionados</button>
-      <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="pagLimparSelecao()">✕ Limpar seleção</button>
+      <span id="pag-bulk-acoes" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"></span>
     </div>` : '';
-    el.innerHTML = barraSelecaoHtml + '<div style="overflow-x:auto"><table class="data-table"><thead><tr>' + (isDir?'<th style="width:26px"><input type="checkbox" id="pag-chk-todos" title="Selecionar todas as \'Aguardando Aprovação\' visíveis" onchange="pagToggleTodos(this.checked)"></th>':'') + '<th>Empresa</th><th>Fornecedor</th><th>Lançado em</th><th>Descrição</th><th>CC</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
+    el.innerHTML = barraSelecaoHtml + '<div style="overflow-x:auto"><table class="data-table"><thead><tr>' + (isDir?'<th style="width:26px"><input type="checkbox" id="pag-chk-todos" title="Selecionar todas as selecionáveis visíveis" onchange="pagToggleTodos(this.checked)"></th>':'') + '<th>Empresa</th><th>Fornecedor</th><th>Lançado em</th><th>Descrição</th><th>CC</th><th>Pagamento</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>'+
       items.map(i=>{
         const pgtoTxt = i.Parcelamento==='parcelado'
           ? (i.GrupoCompraId
               ? `<span style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="pagVerHistoricoCompra(${i.Id})" title="Ver histórico das demais parcelas deste lançamento">${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}</span>`
               : `${i.FormaPagamento||''} · ${i.NumParcela||'?'}/${i.TotalParcelas||'?'}`)
           : (i.FormaPagamento||'—');
-        const podeSelecionar = isDir && i.Status === 'Aguardando Aprovação';
+        const podeSelecionar = isDir && !!pagGrupoSelecao(i.Status);
         const marcado = podeSelecionar && window._pagSelecionados && window._pagSelecionados.has(i.Id);
         return `<tr>
           ${isDir?`<td>${podeSelecionar?`<input type="checkbox" class="pag-chk-item" data-id="${i.Id}" ${marcado?'checked':''} onchange="pagToggleItem(${i.Id}, this.checked)">`:''}</td>`:''}
@@ -10142,14 +10146,28 @@ async function carregarContasPagar() {
   } catch(e){el.innerHTML='<div style="color:var(--text-muted);font-size:.85rem;padding:12px">Erro ao carregar.</div>';}
 }
 
-/* -- Aprovação em lote — pedido em 21/09/2026 ("teria como colocar a opção
-   de aprovar mais de um pagamento no dia"): cada checkbox só aparece em
-   linhas "Aguardando Aprovação" (mesmo status que já mostra o botão
-   individual "✅ Aprovar"), e só pra Diretoria. Aprovar em lote agenda cada
-   lançamento pra sua PRÓPRIA data de vencimento já cadastrada (sem abrir um
-   formulário por item) — quem precisar de outra data, rateio por mais de um
-   Centro de Custo/Medição, ou quiser rejeitar, continua usando "👁️
-   Visualizar" num item por vez, igual já funcionava. -- */
+/* -- Seleção em lote (Contas a Pagar) — pedido em 21/09/2026 ("teria como
+   colocar a opção de aprovar mais de um pagamento no dia") pra "Aguardando
+   Aprovação", e ampliada em 26/10/2026 ("pq em contas a pagar nao consigo
+   selecionar os DAS?") pros lançamentos que pulam a aprovação e nascem
+   direto com status por vencimento (Pendente/Vence hoje/Vence em
+   breve/Em atraso) ou já "Aprovado — Aguardando Pagamento" — como as
+   provisões de DAS reconciliadas, que até então só podiam ser pagas uma a
+   uma em "👁️ Visualizar" > "💳 Registrar Pagamento". Dois grupos de
+   seleção, nunca misturados numa mesma seleção (ver pagAtualizarBarraSelecao):
+     'aprovar' → igual já era, abre pagAprovarSelecionados.
+     'pagar'   → novo, abre pagAbrirPagamentoEmLote (pede 1 Data + 1 Banco
+                 pra aplicar em todos, mesma empresa, e reaproveita o mesmo
+                 fluxo de pagConfirmarPagamento item a item: marca Pago,
+                 sincroniza Despesa, remove lembrete do Outlook). -- */
+function pagEhStatusPagavel(status) {
+  return ['Aprovado — Aguardando Pagamento', 'Pendente', 'Vence hoje', 'Vence em breve', 'Em atraso'].includes(status);
+}
+function pagGrupoSelecao(status) {
+  if (status === 'Aguardando Aprovação') return 'aprovar';
+  if (pagEhStatusPagavel(status)) return 'pagar';
+  return null;
+}
 function pagToggleItem(id, checked) {
   if (!(window._pagSelecionados instanceof Set)) window._pagSelecionados = new Set();
   if (checked) window._pagSelecionados.add(id); else window._pagSelecionados.delete(id);
@@ -10157,7 +10175,7 @@ function pagToggleItem(id, checked) {
 }
 function pagToggleTodos(checked) {
   if (!(window._pagSelecionados instanceof Set)) window._pagSelecionados = new Set();
-  const idsVisiveis = (window._pagFiltradas||[]).filter(r=>r.Status==='Aguardando Aprovação').map(r=>r.Id);
+  const idsVisiveis = (window._pagFiltradas||[]).filter(r=>pagGrupoSelecao(r.Status)).map(r=>r.Id);
   idsVisiveis.forEach(id => { if (checked) window._pagSelecionados.add(id); else window._pagSelecionados.delete(id); });
   document.querySelectorAll('.pag-chk-item').forEach(chk => { chk.checked = checked; });
   pagAtualizarBarraSelecao();
@@ -10178,6 +10196,93 @@ function pagAtualizarBarraSelecao() {
   const soma = itens.reduce((s,r)=>s+(r.Valor||0),0);
   const txt = document.getElementById('pag-bulk-texto');
   if (txt) txt.textContent = n + ' selecionado' + (n===1?'':'s') + ' · R$ ' + soma.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const acoesEl = document.getElementById('pag-bulk-acoes');
+  if (!acoesEl) return;
+  const grupos = new Set(itens.map(r => pagGrupoSelecao(r.Status)));
+  if (grupos.size > 1) {
+    acoesEl.innerHTML = `<span style="font-size:.74rem;color:var(--red)">⚠️ Misturou "Aguardando Aprovação" com lançamentos prontos pra pagamento — desmarque um dos grupos pra habilitar a ação em lote.</span>
+      <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="pagLimparSelecao()">✕ Limpar seleção</button>`;
+    return;
+  }
+  const grupo = Array.from(grupos)[0];
+  let acaoBtn = '';
+  if (grupo === 'aprovar') {
+    acaoBtn = `<button id="pag-bulk-btn" class="btn-primary" style="font-size:.76rem;padding:5px 10px" onclick="pagAprovarSelecionados()">✅ Aprovar selecionados</button>`;
+  } else if (grupo === 'pagar') {
+    const empresas = new Set(itens.map(r => normalizarEmpresa(r.Empresa) || r.Empresa || ''));
+    if (empresas.size > 1) {
+      acaoBtn = `<span style="font-size:.74rem;color:var(--red)">⚠️ Selecione lançamentos de uma única empresa pra registrar pagamento em lote (o banco é por empresa).</span>`;
+    } else {
+      acaoBtn = `<button id="pag-bulk-btn-pagar" class="btn-primary" style="font-size:.76rem;padding:5px 10px;background:var(--green-main)" onclick="pagAbrirPagamentoEmLote()">💳 Registrar pagamento em lote</button>`;
+    }
+  }
+  acoesEl.innerHTML = acaoBtn +
+    `<button id="pag-bulk-btn-excluir" class="btn-secondary" style="font-size:.76rem;padding:5px 10px;color:var(--red);border-color:var(--red)" onclick="pagExcluirSelecionados()">🗑️ Excluir selecionados</button>
+     <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="pagLimparSelecao()">✕ Limpar seleção</button>`;
+}
+/* -- Registrar Pagamento em lote — pedido Tiago 26/10/2026. Pede 1 Data de
+   Pagamento + 1 Banco pra aplicar em todos os selecionados do grupo 'pagar'
+   (mesma empresa — ver pagAtualizarBarraSelecao), e reaproveita o mesmo
+   fluxo de pagConfirmarPagamento (marca Pago, sincroniza Despesa, remove
+   lembrete do Outlook) item a item, com progresso tipo pagAprovarSelecionados. -- */
+function pagAbrirPagamentoEmLote() {
+  const ids = Array.from(window._pagSelecionados || []);
+  if (!ids.length) return;
+  const itens = (window._pagFiltradas||[]).filter(r => ids.includes(r.Id));
+  if (!itens.length) return;
+  const soma = itens.reduce((s,r)=>s+(r.Valor||0),0);
+  const empresaRef = itens[0].Empresa;
+  const bancos = pagBancosDaEmpresa(empresaRef);
+  const existente = document.getElementById('pag-lote-modal'); if (existente) existente.remove();
+  const modal = document.createElement('div');
+  modal.id = 'pag-lote-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:420px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="font-weight:800;font-size:1rem;margin-bottom:12px">💳 Registrar Pagamento em Lote</div>
+      <div style="font-size:.82rem;color:var(--text-muted);margin-bottom:14px">${ids.length} lançamento(s) · R$ ${soma.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} · ${normalizarEmpresa(empresaRef)||empresaRef||'—'}<br>A mesma data e banco serão aplicados a todos.</div>
+      <div class="form-row">
+        <div class="form-group"><label>Data do Pagamento</label><input type="date" id="pagl_data_pagamento" value="${new Date().toISOString().split('T')[0]}"></div>
+        <div class="form-group"><label>Banco</label>
+          <select id="pagl_banco">
+            <option value="">Selecione...</option>
+            ${bancos.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn-primary" id="pagl-btn-confirmar" style="flex:1" onclick="pagConfirmarPagamentoEmLote()">💾 Confirmar Pagamento</button>
+        <button class="btn-secondary" style="flex:1" onclick="document.getElementById('pag-lote-modal').remove()">Cancelar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+async function pagConfirmarPagamentoEmLote() {
+  const dataPag = (document.getElementById('pagl_data_pagamento')||{}).value;
+  const banco = (document.getElementById('pagl_banco')||{}).value;
+  if (!dataPag) { showToast('⚠️ Informe a data do pagamento.'); return; }
+  if (!banco) { showToast('⚠️ Selecione o banco.'); return; }
+  const ids = Array.from(window._pagSelecionados || []);
+  if (!ids.length) return;
+  const btn = document.getElementById('pagl-btn-confirmar');
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  let ok = 0, falhas = 0;
+  for (let idx = 0; idx < ids.length; idx++) {
+    const id = ids[idx];
+    if (btn) btn.innerHTML = '<span class="btn-spinner"></span> Registrando ' + (idx+1) + '/' + ids.length + '...';
+    const res = await dbAtualizar('ContasPagar', id, { Status: 'Pago', DataPagamento: dataPag, BancoPagamento: banco, PagoPor: window._currentUser ? window._currentUser.name : '' }).catch(() => false);
+    if (res) {
+      await pagSincronizarDespesa(id, dataPag, banco);
+      const reg = (window._pagFiltradas||[]).find(r=>r.Id===id);
+      if (reg && reg.OutlookEventId) cpExcluirEventoOutlook(reg.OutlookEventId);
+      ok++;
+    } else falhas++;
+  }
+  window._pagSelecionados = new Set();
+  const m = document.getElementById('pag-lote-modal'); if (m) m.remove();
+  showToast(falhas ? `✅ ${ok} pagamento(s) registrado(s), ⚠️ ${falhas} falharam${syncErrorDetalhe()}` : `✅ ${ok} pagamento(s) registrado(s)!`);
+  setTimeout(() => { carregarContasPagar(); carregarPagarPendentesDespesas(); atualizarBadgeNotificacoes(); }, 600);
 }
 async function pagAprovarSelecionados() {
   const ids = Array.from(window._pagSelecionados || []);
