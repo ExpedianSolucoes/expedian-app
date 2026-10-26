@@ -4012,6 +4012,16 @@ function pagePrestacao() {
     <button class="btn-secondary" onclick="${window._prestVindoDeDespesas ? "window._prestVindoDeDespesas=false;window._rdTab='despesas';navigate('receitas_despesas')" : "navigate('financeiro')"}">← ${window._prestVindoDeDespesas ? 'Despesas' : 'Financeiro'}</button>
     <button id="prest-form-toggle-btn" class="btn-primary" onclick="pcToggleFormNovo()">➕ Nova Despesa</button>
     <button class="btn-secondary" onclick="window._fornVindoDe='prestacao';navigate('fornecedores')">🏷️ Fornecedores</button>
+    <!-- KPIs na mesma linha dos botões (pedido Tiago 26/10/2026: "colocar os
+         cards de total de lançamentos aguardando, aprovados e indeferidas, na
+         mesma linha de botão despesa, nova despesa e fornecedores"). -->
+    <div class="kpi-grid" style="flex:1;min-width:260px;margin-bottom:0">
+      <div class="kpi-card blue" id="pc-kpi-card-total" onclick="pcFiltrarKpi('')" style="cursor:pointer" title="Ver todos os lançamentos"><div class="kpi-label">Total de Lançamentos</div><div class="kpi-value" id="pc-kpi-total">—</div><div class="kpi-icon">📑</div></div>
+      <div class="kpi-card amber" id="pc-kpi-card-pendentes" onclick="pcFiltrarKpi('pendentes')" style="cursor:pointer" title="Filtrar: aguardando o Financeiro"><div class="kpi-label">Aguardando Financeiro</div><div class="kpi-value" id="pc-kpi-pendentes">—</div><div class="kpi-icon">⏳</div></div>
+      <div class="kpi-card green" id="pc-kpi-card-aprovadas" onclick="pcFiltrarKpi('aprovadas')" style="cursor:pointer" title="Filtrar: aprovadas"><div class="kpi-label">Aprovadas</div><div class="kpi-value" id="pc-kpi-aprovadas">—</div><div class="kpi-icon">✅</div></div>
+      <div class="kpi-card red" id="pc-kpi-card-devolvidas" onclick="pcFiltrarKpi('devolvidas')" style="cursor:pointer" title="Filtrar: devolvidas"><div class="kpi-label">Devolvidas</div><div class="kpi-value" id="pc-kpi-devolvidas">—</div><div class="kpi-icon">↩️</div></div>
+      ${isGestorFin ? `<div class="kpi-card amber" id="pc-kpi-card-estagiario" onclick="pcFiltrarKpi('estagiario')" style="cursor:pointer" title="Filtrar: lançamentos feitos por quem não tem login próprio (ex: estagiário)"><div class="kpi-label">Do Estagiário</div><div class="kpi-value" id="pc-kpi-estagiario">—</div><div class="kpi-icon">🎓</div></div>` : ''}
+    </div>
   </div>
 
   <div id="prest-form-container" style="display:none;margin-bottom:24px">
@@ -4225,16 +4235,6 @@ function pagePrestacao() {
     </div>
   </div>
 
-  <!-- KPIs (clicáveis, filtram a lista abaixo) -->
-  <div class="kpi-grid" style="margin-bottom:20px">
-    <div class="kpi-card blue" id="pc-kpi-card-total" onclick="pcFiltrarKpi('')" style="cursor:pointer" title="Ver todos os lançamentos"><div class="kpi-label">Total de Lançamentos</div><div class="kpi-value" id="pc-kpi-total">—</div><div class="kpi-icon">📑</div></div>
-    <div class="kpi-card amber" id="pc-kpi-card-pendentes" onclick="pcFiltrarKpi('pendentes')" style="cursor:pointer" title="Filtrar: aguardando o Financeiro"><div class="kpi-label">Aguardando Financeiro</div><div class="kpi-value" id="pc-kpi-pendentes">—</div><div class="kpi-icon">⏳</div></div>
-    <div class="kpi-card green" id="pc-kpi-card-aprovadas" onclick="pcFiltrarKpi('aprovadas')" style="cursor:pointer" title="Filtrar: aprovadas"><div class="kpi-label">Aprovadas</div><div class="kpi-value" id="pc-kpi-aprovadas">—</div><div class="kpi-icon">✅</div></div>
-    <div class="kpi-card red" id="pc-kpi-card-devolvidas" onclick="pcFiltrarKpi('devolvidas')" style="cursor:pointer" title="Filtrar: devolvidas"><div class="kpi-label">Devolvidas</div><div class="kpi-value" id="pc-kpi-devolvidas">—</div><div class="kpi-icon">↩️</div></div>
-    ${isGestorFin ? `<div class="kpi-card amber" id="pc-kpi-card-estagiario" onclick="pcFiltrarKpi('estagiario')" style="cursor:pointer" title="Filtrar: lançamentos feitos por quem não tem login próprio (ex: estagiário)"><div class="kpi-label">Do Estagiário</div><div class="kpi-value" id="pc-kpi-estagiario">—</div><div class="kpi-icon">🎓</div></div>` : ''}
-  </div>
-
-  <div id="prest-dashboard-colab"></div>
 
   <!-- LISTA DE PRESTAÇÕES — colapsável (lista suspensa) -->
   <details class="card">
@@ -5044,72 +5044,6 @@ async function carregarPrestacoes() {
     setActiveKpi('pc-kpi-card-aprovadas', PC_FILTRO_KPI==='aprovadas', '#28a745');
     setActiveKpi('pc-kpi-card-devolvidas', PC_FILTRO_KPI==='devolvidas', '#dc3545');
     setActiveKpi('pc-kpi-card-estagiario', PC_FILTRO_KPI==='estagiario', '#e0a800');
-
-    // Dashboard por Colaborador — só pra Diretoria/Coordenador; um colaborador
-    // já só enxerga as próprias prestações (filtro logo acima), então pra ele
-    // essa tabela seria só uma linha repetindo o que os KPIs já mostram.
-    const elDashColab = document.getElementById('prest-dashboard-colab');
-    if (elDashColab) {
-      if (!isGestor) {
-        elDashColab.innerHTML = '';
-      } else {
-        const porColab = {};
-        items.forEach(r => {
-          const nome = r.Responsavel || r.EnviadoPor || '—';
-          if (!porColab[nome]) porColab[nome] = { pago: 0, aprovada: 0, pendente: 0, devolvida: 0 };
-          const v = Number(r.Valor) || 0;
-          // "Paga" aqui só pega registro legado que ainda não foi removido
-          // (ver pcSincronizarDespesa) — daqui pra frente uma prestação some
-          // da tabela assim que é paga, então o "Pago" de cada colaborador
-          // é somado a partir de Despesas logo abaixo (bloco _despesasPc).
-          if (r.Status === 'Paga' && !r.DespesaId) porColab[nome].pago += v;
-          else if (r.Status === 'Aprovada') porColab[nome].aprovada += v;
-          else if (r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor') porColab[nome].pendente += v;
-          else if (r.Status === 'Devolvida' || r.Status === 'Suspensa') porColab[nome].devolvida += v;
-        });
-        // Pedido Tiago 11/10/2026: "a partir do momento que foi aprovado não
-        // tem pq aparecer em prestação de contas, fica somente em despesas"
-        // — pcSincronizarDespesa agora EXCLUI o registro de Prestação de
-        // Contas assim que ele vira Despesa, em vez de só marcar DespesaId.
-        // Pra não perder o histórico de "Pago" por colaborador (que antes
-        // vinha só da linha acima, com Status==='Paga'), soma aqui o mesmo
-        // valor a partir das Despesas geradas por Prestação de Contas
-        // (OrigemPrestacaoContas===true), usando o mesmo nome gravado em
-        // ResponsavelLancamento (= Responsavel/EnviadoPor da prestação
-        // original — ver pcSincronizarDespesa).
-        try {
-          const despesasPc = (await dbLerSeguro('Despesas')).filter(d => d.OrigemPrestacaoContas);
-          despesasPc.forEach(d => {
-            const nome = d.ResponsavelLancamento || '—';
-            if (!porColab[nome]) porColab[nome] = { pago: 0, aprovada: 0, pendente: 0, devolvida: 0 };
-            porColab[nome].pago += Number(d.Valor) || 0;
-          });
-        } catch (e) { console.warn('[Prestação] Falha ao somar Despesas de prestações já pagas no Dashboard por Colaborador:', e); }
-        const linhasColab = Object.entries(porColab)
-          .sort((a,b) => (b[1].pago+b[1].aprovada+b[1].pendente+b[1].devolvida) - (a[1].pago+a[1].aprovada+a[1].pendente+a[1].devolvida));
-        const fmtBRLpc = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2,maximumFractionDigits:2});
-        elDashColab.innerHTML = !linhasColab.length ? '' : `
-        <details class="card" style="margin-bottom:20px">
-          <summary class="card-title" style="margin-bottom:0;cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px">▶ 👤 Dashboard por Colaborador <span class="badge">${linhasColab.length}</span></summary>
-          <div style="overflow-x:auto;margin-top:14px">
-          <table class="data-table">
-            <thead><tr><th>Colaborador</th><th style="text-align:right">Pago</th><th style="text-align:right">Aprovada (a pagar)</th><th style="text-align:right">Pendente</th><th style="text-align:right">Devolvida</th><th style="text-align:right">Total</th></tr></thead>
-            <tbody>
-              ${linhasColab.map(([nome,v]) => `
-              <tr>
-                <td style="font-size:.8rem;font-weight:600">${nome}</td>
-                <td style="text-align:right;color:var(--green-main);font-weight:700">${fmtBRLpc(v.pago)}</td>
-                <td style="text-align:right;color:var(--blue);font-weight:700">${v.aprovada?fmtBRLpc(v.aprovada):'—'}</td>
-                <td style="text-align:right;color:#b07700">${v.pendente?fmtBRLpc(v.pendente):'—'}</td>
-                <td style="text-align:right;color:var(--red)">${v.devolvida?fmtBRLpc(v.devolvida):'—'}</td>
-                <td style="text-align:right;font-weight:800;font-family:'Mont',sans-serif">${fmtBRLpc(v.pago+v.aprovada+v.pendente+v.devolvida)}</td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-          </div>
-        </details>`;
-      }
-    }
 
     // Filtros de busca
     const fMes = (document.getElementById('prest_filtro_mes')||{}).value||'';
@@ -9660,7 +9594,7 @@ async function pagConfirmarAgendamento(id) {
   // Se aberto a partir da Central de Aprovações (lista embutida lá desde
   // 23/09/2026), atualiza aquela lista também — carregarContasPagar() é um
   // no-op fora da aba Contas a Pagar (não acha #lista-pagar).
-  setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); if (document.getElementById('aprov-lista-pagar')) carregarAprovacoes(); }, 600);
+  setTimeout(() => { carregarContasPagar(); carregarPagarPendentesDespesas(); atualizarBadgeNotificacoes(); if (document.getElementById('aprov-lista-pagar')) carregarAprovacoes(); }, 600);
 }
 
 async function pagRejeitarConta(id) {
@@ -9677,7 +9611,7 @@ async function pagRejeitarConta(id) {
   if (ok) { const reg = (window._pagFiltradas||[]).find(r=>r.Id===id); if (reg && reg.OutlookEventId) cpExcluirEventoOutlook(reg.OutlookEventId); }
   showToast(ok ? '↩️ Conta rejeitada.' : ('❌ Erro' + syncErrorDetalhe()));
   const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
-  setTimeout(() => { carregarContasPagar(); atualizarBadgeNotificacoes(); if (document.getElementById('aprov-lista-pagar')) carregarAprovacoes(); }, 600);
+  setTimeout(() => { carregarContasPagar(); carregarPagarPendentesDespesas(); atualizarBadgeNotificacoes(); if (document.getElementById('aprov-lista-pagar')) carregarAprovacoes(); }, 600);
 }
 
 async function pagConfirmarPagamento(id) {
@@ -9696,7 +9630,7 @@ async function pagConfirmarPagamento(id) {
   if (ok) { const reg = (window._pagFiltradas||[]).find(r=>r.Id===id); if (reg && reg.OutlookEventId) cpExcluirEventoOutlook(reg.OutlookEventId); }
   showToast(ok ? '✅ Pagamento registrado!' : ('❌ Erro' + syncErrorDetalhe()));
   const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
-  setTimeout(() => carregarContasPagar(), 600);
+  setTimeout(() => { carregarContasPagar(); carregarPagarPendentesDespesas(); }, 600);
 }
 
 // Ao marcar uma Conta a Pagar como Paga, gera automaticamente o lançamento
@@ -10271,6 +10205,7 @@ async function pagAprovarSelecionados() {
   window._pagSelecionados = new Set();
   showToast(falhas ? `✅ ${ok} aprovado(s), ⚠️ ${falhas} falharam${syncErrorDetalhe()}` : `✅ ${ok} pagamento(s) aprovado(s) e agendado(s)!`);
   carregarContasPagar();
+  carregarPagarPendentesDespesas();
   atualizarBadgeNotificacoes();
 }
 
@@ -11322,7 +11257,7 @@ function pageReceitasDespesas() {
   }
   const tab = window._rdTab || 'despesas';
   window._rdEmpresaAtiva = window._rdEmpresaAtiva || RD_EMPRESAS[0];
-  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarSociosListaRd(); carregarDespesas(); carregarMunicipiosLista(); carregarBancosLista(); lancamentoRetomarPendente(); carregarPrestPendentesDespesas(); }, 200);
+  if (tab === 'despesas') setTimeout(() => { carregarFornecedoresListaRd(); carregarColaboradoresListaRd(); carregarSociosListaRd(); carregarDespesas(); carregarMunicipiosLista(); carregarBancosLista(); lancamentoRetomarPendente(); carregarPrestPendentesDespesas(); carregarPagarPendentesDespesas(); }, 200);
   if (tab === 'receitas') setTimeout(() => { carregarClientesListaRc(); carregarReceitas(); carregarMunicipiosLista(); carregarBancosLista(); lancamentoRetomarPendente(); }, 200);
   if (tab === 'transferencias') setTimeout(() => { carregarTransferencias(); carregarBancosLista(); }, 200);
 
@@ -14818,6 +14753,29 @@ async function financeiroBuscarProvisoesDAS() {
     // DAS. Descoberto em 15/10/2026 comparando com o extrato do PGDAS-D: a soma das
     // NFs com número real batia exatamente com a "Receita Bruta do PA - Caixa"
     // declarada, e incluir os "N/A" distorcia o rateio.
+    // Pedido Tiago 26/10/2026 ("tbm nao conseguindo emitir os valores para
+    // pagamento de imposto da DAS de setembro"): essa competência já pode ter
+    // sido reconciliada ANTES (Provisorio virou false em
+    // financeiroConfirmarReconciliacaoDAS) — nesse caso os 2 checks abaixo
+    // (provisões em aberto / NFs nunca provisionadas) dão os 2 zero, e a
+    // mensagem genérica de "nada encontrado" é enganosa: os lançamentos JÁ
+    // EXISTEM em Contas a Pagar, só não apareceram aqui porque este modal só
+    // procura o que ainda está "Provisorio". Checa isso primeiro.
+    const jaReconciliadas = (todas || []).filter(r => r.Empresa === empresa && r.Subcategoria === 'Simples Nacional' && r.CompetenciaDAS === competencia && r.Provisorio === false);
+    if (jaReconciliadas.length) {
+      const somaReconciliada = jaReconciliadas.reduce((s, r) => s + (r.Valor || 0), 0);
+      const pagas = jaReconciliadas.filter(r => r.Status === 'Pago');
+      const pendentes = jaReconciliadas.filter(r => r.Status !== 'Pago');
+      const somaPendente = pendentes.reduce((s, r) => s + (r.Valor || 0), 0);
+      lista.innerHTML = `
+        <div style="background:#e6f5ed;border:1px solid var(--green-main);border-radius:10px;padding:10px 12px;font-size:.78rem;color:#1a5c37">
+          <strong>✅ ${competencia} já foi reconciliado</strong> — ${jaReconciliadas.length} lançamento(s) de DAS, totalizando <strong>R$ ${rdNumeroParaMoeda(somaReconciliada)}</strong>, já existem em Contas a Pagar (não precisa reconciliar de novo).
+          ${pendentes.length ? `<div style="margin-top:4px">⚠️ ${pendentes.length} ainda não ${pendentes.length===1?'foi':'foram'} paga(s) — R$ ${rdNumeroParaMoeda(somaPendente)} em aberto${pagas.length?` (${pagas.length} já paga(s))`:''}.</div>` : `<div style="margin-top:4px">Todos já estão pagos.</div>`}
+          <div style="margin-top:8px"><button class="btn-primary" style="font-size:.76rem;padding:5px 10px" onclick="document.getElementById('fin-das-modal').remove();window._pagVindoDeDespesas=false;navigate('pagar');setTimeout(()=>{const f=document.getElementById('pag_filtro_fornecedor');if(f){f.value='DAS';carregarContasPagar();}},300)">💸 Ver em Contas a Pagar</button></div>
+        </div>`;
+      return;
+    }
+
     const faltantes = (receitas || []).filter(r =>
       r.Empresa === empresa && r.Status === 'Recebido' &&
       (r.NumeroNF || '').trim() && (r.NumeroNF || '').trim().toUpperCase() !== 'N/A' &&
@@ -15668,7 +15626,13 @@ function renderDespesasTab() {
              03/10/2026, 2ª correção: "coloca o card de contas bancarias no lugar
              que ficava conciliação bancaria"). -->
         <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._bancosResumoEmpresa=window._rdEmpresaAtiva||RD_EMPRESAS[0];navigate('cadastro_bancos')">🏦 Contas Bancárias</button>
-        <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem" onclick="window._pagVindoDeDespesas=true;navigate('pagar')">💸 Contas a Pagar</button>
+        <!-- Badge de pendentes (pedido Tiago 26/10/2026: "preciso que o quantitativo
+             de contas a pagar aparecer semelhante a prestação de contas") — mesmo
+             padrão do badge de Prestação de Contas logo abaixo: conta Aguardando
+             Aprovação + Aguardando Pagamento (ainda precisa de alguma ação), só
+             pra Diretoria/Coordenação, e diminui conforme os lançamentos são
+             aprovados/pagos (ver carregarPagarPendentesDespesas()). -->
+        <button class="btn-secondary" style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:.78rem;position:relative" onclick="window._pagVindoDeDespesas=true;navigate('pagar')">💸 Contas a Pagar${(currentProfile==='diretoria'||currentProfile==='coordenador') ? ` <span id="desp-pagar-pendentes-badge" style="font-size:.6rem;font-weight:800;color:#fff;background:var(--amber);padding:1px 6px;border-radius:7px;vertical-align:middle">—</span>` : ''}</button>
         <!-- Pedido 13/10/2026: Despesas também ganha o atalho direto pro
              cadastro de Fornecedores — já existia em Contas a Pagar e
              Prestação de Contas, faltava aqui (mesma tabela compartilhada). -->
@@ -18915,6 +18879,23 @@ async function carregarPrestPendentesDespesas() {
   if (!badge) return;
   const prests = await dbLer('PrestacaoContas');
   const pendentes = prests.filter(r => r.Status === 'Ag. Financeiro' || r.Status === 'Ag. Aprovação Gestor');
+  badge.textContent = String(pendentes.length);
+}
+
+/* -- Mesmo padrão da função acima, pro badge de Contas a Pagar (pedido
+   Tiago 26/10/2026). "Pendente" aqui = ainda precisa de alguma ação (do
+   Diretor pra aprovar, ou do Financeiro pra pagar) — Aguardando Aprovação +
+   Aprovado — Aguardando Pagamento. Não entram os status automáticos por
+   vencimento (Pendente/Vence hoje/Vence em breve/Em atraso) que uma conta
+   assume ANTES de entrar no fluxo de aprovação (calcularStatusVencimento) —
+   só o que já está no fluxo de aprovação/pagamento propriamente dito. Chamada
+   no load da aba Despesas e após toda ação de aprovar/rejeitar/pagar em
+   Contas a Pagar, pra manter o número certo em qualquer tela aberta. -- */
+async function carregarPagarPendentesDespesas() {
+  const badge = document.getElementById('desp-pagar-pendentes-badge');
+  if (!badge) return;
+  const contas = await dbLerSeguro('ContasPagar');
+  const pendentes = (contas || []).filter(r => r.Status === 'Aguardando Aprovação' || r.Status === 'Aprovado — Aguardando Pagamento');
   badge.textContent = String(pendentes.length);
 }
 
