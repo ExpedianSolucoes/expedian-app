@@ -14600,7 +14600,7 @@ async function rcSalvarEdicaoReceita(id) {
     if (status === 'Recebido' && original.Status !== 'Recebido' && numeroNF) {
       await financeiroGerarProvisaoImposto({
         receitaId: id, numeroNF, cliente: original.Cliente, empresa: original.Empresa,
-        centroCusto: original.CentroCusto, valor, dataRecebimento: campos.DataRecebimento,
+        centroCusto: original.CentroCusto, numMedicao: original.NumMedicao, valor, dataRecebimento: campos.DataRecebimento,
       });
     }
     carregarReceitas();
@@ -14748,7 +14748,7 @@ async function financeiroSalvarAliquota() {
    recebida (ver rcSalvarEdicaoReceita). Se a empresa não tiver alíquota
    configurada, avisa e não provisiona nada — melhor não gerar valor errado
    do que gerar um R$ 0,00 silencioso. -- */
-async function financeiroGerarProvisaoImposto({ receitaId, numeroNF, cliente, empresa, centroCusto, valor, dataRecebimento }) {
+async function financeiroGerarProvisaoImposto({ receitaId, numeroNF, cliente, empresa, centroCusto, numMedicao, valor, dataRecebimento }) {
   const aliquota = await financeiroObterAliquota(empresa);
   if (!aliquota) {
     showToast('⚠️ Alíquota do Simples Nacional não configurada para ' + empresa + ' — o imposto desta NF não foi provisionado. Configure em Notas Fiscais > 🧮 Alíquota.');
@@ -14767,6 +14767,14 @@ async function financeiroGerarProvisaoImposto({ receitaId, numeroNF, cliente, em
     Title: 'DAS (Simples Nacional) — NF ' + numeroNF,
     Fornecedor: 'DAS — Simples Nacional', Descricao: 'Imposto estimado sobre a NF ' + numeroNF + (cliente ? ' — ' + cliente : ''),
     Empresa: empresa, CentroCusto: centroCusto || '',
+    // Pedido Tiago 26/10/2026 ("quando vc faz a reconciliacao de DAS vc nao
+    // lançou os boletim de medição ... so lancou o contrato"): a provisão
+    // levava o Centro de Custo (contrato) mas não o Nº de Medição da NF de
+    // origem — faltava pra bater o rateio fino de CC+Medição (ex: Excel
+    // "Resumo CC+Medicao" de Lançamentos de Serviço, Remuneração dos Sócios)
+    // quando esse DAS virar Despesa (pagSincronizarDespesa já copia
+    // NumMedicao do Contas a Pagar pra Despesa, só que o campo vinha vazio).
+    NumMedicao: numMedicao || '',
     Categoria: 'Impostos', Subcategoria: 'Simples Nacional', NaturezaEconomica: rdNaturezaDeSubcategoria('Simples Nacional'),
     Vencimento: vencimento, Valor: valorImposto, Status: calcularStatusVencimento(vencimento),
     Parcelamento: 'avista', LancadoPor: window._currentUser ? window._currentUser.name : '',
@@ -14922,7 +14930,7 @@ async function financeiroGerarProvisoesRetroativasDAS() {
   for (const r of faltantes) {
     await financeiroGerarProvisaoImposto({
       receitaId: r.Id, numeroNF: r.NumeroNF, cliente: r.Cliente, empresa: r.Empresa,
-      centroCusto: r.CentroCusto, valor: r.Valor, dataRecebimento: r.DataRecebimento,
+      centroCusto: r.CentroCusto, numMedicao: r.NumMedicao, valor: r.Valor, dataRecebimento: r.DataRecebimento,
     });
     geradas++;
   }
