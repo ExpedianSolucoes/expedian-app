@@ -5742,7 +5742,7 @@ async function _enviarPrestacaoParaContasPagar(pc) {
     // passar pelo formulário de _salvarContaPagarInterno), então precisam do
     // mesmo tratamento — 1 evento de dia inteiro por parcela, na Vencimento dela.
     const rOutlookPC = await cpCriarEventoOutlook(
-      { Fornecedor: pc.Fornecedor || '', Valor: p.valor, Vencimento: p.vencimento, Empresa: pc.Empresa || '', CentroCusto: pc.CentroCusto || '', Categoria: pc.Categoria || '', NumeroBoleto: '', Observacao: `Convertido de Prestação de Contas (parcela ${p.numero}/${p.total})` },
+      { Fornecedor: pc.Fornecedor || '', Valor: p.valor, Vencimento: p.vencimento, Empresa: pc.Empresa || '', CentroCusto: pc.CentroCusto || '', Categoria: pc.Categoria || '', NumeroBoleto: '', Observacao: `Convertido de Prestação de Contas (parcela ${p.numero}/${p.total})`, ComprovanteUrl: pc.ComprovanteUrl || '', ComprovanteNome: pc.ComprovanteNome || '' },
       null
     );
     const novoCP = await dbInserir('ContasPagar', {
@@ -6281,6 +6281,19 @@ function calcularStatusVencimento(vencimento) {
   if (diff === 0) return 'Vence hoje';
   if (diff <= 3) return 'Vence em breve';
   return 'Pendente';
+}
+
+// Diferenca em dias entre hoje e o Vencimento (negativo = ja venceu, 0 =
+// vence hoje, positivo = ainda vai vencer) — usada tanto pro KPI "Vencendo
+// Hoje" quanto pra ordenar a lista de Contas a Pagar, independente do
+// Status (um lancamento "Aguardando Aprovacao"/"Aprovado — Aguardando
+// Pagamento" ainda pode estar vencendo hoje ou ja vencido). Pedido Tiago
+// 27/10/2026.
+function pagDiffVencimento(vencimento) {
+  if (!vencimento) return null;
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const venc = new Date(vencimento + 'T00:00:00');
+  return Math.floor((venc - hoje) / 86400000);
 }
 
 /* =====================================================================
@@ -7755,6 +7768,7 @@ function pagePagar() {
     <div class="kpi-card amber" id="pag-kpi-card-aprovacao" onclick="pagFiltrarKpi('aprovacao')" style="cursor:pointer;padding:11px 12px" title="Filtrar: aguardando aprovação"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">Aguardando Aprovação</div><div class="kpi-value" id="pag-kpi-aprovacao" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">⏳</div></div>
     <div class="kpi-card blue" id="pag-kpi-card-pagamento" onclick="pagFiltrarKpi('pagamento')" style="cursor:pointer;padding:11px 12px" title="Filtrar: aguardando pagamento"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">Aguardando Pagamento</div><div class="kpi-value" id="pag-kpi-pagamento" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">💳</div></div>
     <div class="kpi-card green" id="pag-kpi-card-pago" onclick="window._rdTab='despesas';navigate('receitas_despesas')" style="cursor:pointer;padding:11px 12px" title="Pagos já saíram desta lista — ver em Despesas"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">Pagos (ver em Despesas)</div><div class="kpi-value" id="pag-kpi-pago" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">✅</div></div>
+    <div class="kpi-card amber" id="pag-kpi-card-vencehoje" onclick="pagFiltrarKpi('vencehoje')" style="cursor:pointer;padding:11px 12px" title="Filtrar: vencendo hoje"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">📅 Vencendo Hoje</div><div class="kpi-value" id="pag-kpi-vencehoje" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">📅</div></div>
     <div class="kpi-card red" id="pag-kpi-card-atraso" onclick="pagFiltrarKpi('atraso')" style="cursor:pointer;padding:11px 12px" title="Filtrar: em atraso"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">Em Atraso</div><div class="kpi-value" id="pag-kpi-atraso" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">⚠️</div></div>
     <div class="kpi-card amber" id="pag-kpi-card-estagiario" onclick="pagFiltrarKpi('estagiario')" style="cursor:pointer;padding:11px 12px" title="Lançamentos feitos por quem usa outro login (ex.: estagiário), aguardando sua aprovação"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">🎓 Do Estagiário — Ag. Aprovação</div><div class="kpi-value" id="pag-kpi-estagiario" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">🎓</div></div>
     <div class="kpi-card blue" style="padding:11px 12px" title="Média de dias entre a data de lançamento e a data de pagamento, considerando só os já pagos"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">⏱️ Prazo Médio (lanç. → pago)</div><div class="kpi-value" id="pag-kpi-prazo" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">⏱️</div></div>
@@ -9025,7 +9039,7 @@ async function _recSincronizarContasPagar(dados) {
   // a Pagar), sem passar pelo formulário — mesmo tratamento dos outros pontos
   // de criação, senão essas ficariam de fora do calendário sem motivo.
   const rOutlookRec = await cpCriarEventoOutlook(
-    { Fornecedor: camposCP.Fornecedor, Valor: camposCP.Valor, Vencimento: camposCP.Vencimento, Empresa: camposCP.Empresa, CentroCusto: camposCP.CentroCusto, Categoria: camposCP.Categoria, Observacao: camposCP.Observacao },
+    { Fornecedor: camposCP.Fornecedor, Valor: camposCP.Valor, Vencimento: camposCP.Vencimento, Empresa: camposCP.Empresa, CentroCusto: camposCP.CentroCusto, Categoria: camposCP.Categoria, Observacao: camposCP.Observacao, ComprovanteUrl: camposCP.ComprovanteUrl || '', ComprovanteNome: camposCP.ComprovanteNome || '' },
     null
   );
   camposCP.OutlookEventId = rOutlookRec.id;
@@ -9713,7 +9727,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
     // Outlook (pedido 30/09/2026): atualiza o evento já existente (se já
     // tinha, vindo de pagEditarLancamento) em vez de criar outro.
     const rOutlookEdit = await cpCriarEventoOutlook(
-      { Fornecedor: fornecedor, Valor: valor, Vencimento: vencimento, Empresa: empresa, CentroCusto: base.CentroCusto, Categoria: categoria, NumeroBoleto: numeroBoleto, Observacao: obs },
+      { Fornecedor: fornecedor, Valor: valor, Vencimento: vencimento, Empresa: empresa, CentroCusto: base.CentroCusto, Categoria: categoria, NumeroBoleto: numeroBoleto, Observacao: obs, ComprovanteUrl: comprovanteUrlFinal, ComprovanteNome: comprovanteNomeFinal },
       window._pagEditandoOutlookId || null
     );
     const dados = { ...base, Title: fornecedor + ' · ' + (vencimento||''), Vencimento: vencimento, Valor: valor, Status: statusP, OutlookEventId: rOutlookEdit.id };
@@ -9734,7 +9748,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
       // então cada uma ganha seu próprio evento de dia inteiro (não dá pra
       // representar isso como 1 evento recorrente do Graph, já que o valor muda).
       const rOutlookParc = await cpCriarEventoOutlook(
-        { Fornecedor: fornecedor, Valor: p.valor, Vencimento: p.vencimento, Empresa: empresa, CentroCusto: base.CentroCusto, Categoria: categoria, NumeroBoleto: numeroBoleto, Observacao: obs },
+        { Fornecedor: fornecedor, Valor: p.valor, Vencimento: p.vencimento, Empresa: empresa, CentroCusto: base.CentroCusto, Categoria: categoria, NumeroBoleto: numeroBoleto, Observacao: obs, ComprovanteUrl: compParcela.url, ComprovanteNome: compParcela.nome },
         null
       );
       const dados = {
@@ -9754,7 +9768,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
     if(!vencimento){showToast('⚠️ Informe o vencimento.');return;}
     const statusP = statusFinal || calcularStatusVencimento(vencimento);
     const rOutlookNovo = await cpCriarEventoOutlook(
-      { Fornecedor: fornecedor, Valor: valor, Vencimento: vencimento, Empresa: empresa, CentroCusto: base.CentroCusto, Categoria: categoria, NumeroBoleto: numeroBoleto, Observacao: obs },
+      { Fornecedor: fornecedor, Valor: valor, Vencimento: vencimento, Empresa: empresa, CentroCusto: base.CentroCusto, Categoria: categoria, NumeroBoleto: numeroBoleto, Observacao: obs, ComprovanteUrl: comprovanteUrlFinal, ComprovanteNome: comprovanteNomeFinal },
       null
     );
     const dados = {
@@ -10403,6 +10417,7 @@ async function carregarContasPagar() {
     setKpi('pag-kpi-pagamento', items.filter(r=>r.Status==='Aprovado — Aguardando Pagamento').length);
     setKpi('pag-kpi-pago', items.filter(r=>r.Status==='Pago').length);
     setKpi('pag-kpi-atraso', items.filter(r=>r.Status==='Em atraso').length);
+    setKpi('pag-kpi-vencehoje', items.filter(r=>r.Status!=='Pago' && pagDiffVencimento(r.Vencimento)===0).length);
     setKpi('pag-kpi-estagiario', items.filter(r=>r.Status==='Aguardando Aprovação' && ehLancadorExtra(r.LancadoPor)).length);
 
     // Prazo médio entre o lançamento (Created, gravado automaticamente ao
@@ -10426,6 +10441,7 @@ async function carregarContasPagar() {
     setActiveKpi('pag-kpi-card-pagamento', PAG_FILTRO_KPI==='pagamento', '#0d6efd');
     setActiveKpi('pag-kpi-card-pago', PAG_FILTRO_KPI==='pago', '#28a745');
     setActiveKpi('pag-kpi-card-atraso', PAG_FILTRO_KPI==='atraso', '#dc3545');
+    setActiveKpi('pag-kpi-card-vencehoje', PAG_FILTRO_KPI==='vencehoje', '#e0a800');
     setActiveKpi('pag-kpi-card-estagiario', PAG_FILTRO_KPI==='estagiario', '#e0a800');
 
     // Filtros de busca
@@ -10464,12 +10480,24 @@ async function carregarContasPagar() {
     if (PAG_FILTRO_KPI === 'aprovacao') items = items.filter(r=>r.Status==='Aguardando Aprovação');
     else if (PAG_FILTRO_KPI === 'pagamento') items = items.filter(r=>r.Status==='Aprovado — Aguardando Pagamento');
     else if (PAG_FILTRO_KPI === 'atraso') items = items.filter(r=>r.Status==='Em atraso');
+    else if (PAG_FILTRO_KPI === 'vencehoje') items = items.filter(r=>r.Status!=='Pago' && pagDiffVencimento(r.Vencimento)===0);
     else if (PAG_FILTRO_KPI === 'estagiario') items = items.filter(r=>r.Status==='Aguardando Aprovação' && ehLancadorExtra(r.LancadoPor));
     // Lançamentos já pagos nunca aparecem nesta lista — assim que pagos, o
     // registro só existe em Despesas (pedido em 06/09/2026).
     items = items.filter(r=>r.Status!=='Pago');
 
-    items = items.slice().sort((a,b)=>(a.Vencimento||'9999-99-99').localeCompare(b.Vencimento||'9999-99-99') || (b.Id||0)-(a.Id||0)).slice(0,200);
+    const pagGrupoOrdem = (r) => {
+      const diff = pagDiffVencimento(r.Vencimento);
+      if (diff === null) return 3;   // sem data de vencimento — por último
+      if (diff === 0) return 0;      // vencendo hoje — primeiro
+      if (diff < 0) return 1;        // vencidas — em seguida
+      return 2;                      // a vencer — por último
+    };
+    items = items.slice().sort((a,b) => {
+      const ga = pagGrupoOrdem(a), gb = pagGrupoOrdem(b);
+      if (ga !== gb) return ga - gb;
+      return (a.Vencimento||'9999-99-99').localeCompare(b.Vencimento||'9999-99-99') || (b.Id||0)-(a.Id||0);
+    }).slice(0,200);
     window._pagFiltradas = items;
     // Remove da seleção qualquer Id que não está mais na lista filtrada
     // (ex.: já foi aprovado, ou saiu do filtro atual) — pedido em 21/09/2026
@@ -20791,7 +20819,63 @@ async function cpCriarEventoOutlook(cp, outlookEventIdExistente) {
   };
   const opts = { allDay: true };
   if (!_cpContaLogadaEhDiretoria()) opts.attendees = [{ email: CP_EMAIL_DIRETORIA, nome: 'Tiago Tavares' }];
-  return agendaCriarEventoOutlook(dadosEvento, outlookEventIdExistente || null, null, opts);
+  const resultado = await agendaCriarEventoOutlook(dadosEvento, outlookEventIdExistente || null, null, opts);
+  // Pedido 27/10/2026: "sera que o anexo consegue ir junto no calendario
+  // tbm?" — se esse lançamento já tem comprovante/boleto no OneDrive,
+  // anexa (como link) no próprio evento, pra abrir direto do calendário.
+  if (resultado && resultado.id && cp.ComprovanteUrl) {
+    await cpAnexarComprovanteNoEvento(resultado.id, cp.ComprovanteUrl, cp.ComprovanteNome);
+  }
+  return resultado;
+}
+
+/* -- Anexa o comprovante/boleto (já hospedado no OneDrive, ComprovanteUrl)
+   no evento do Outlook da Conta a Pagar — assim dá pra abrir o PDF direto
+   pelo convite/lembrete no calendário, sem voltar pro app. Pedido
+   27/10/2026. Usa um "anexo de referência" (referenceAttachment, um LINK)
+   em vez de um fileAttachment (os bytes do arquivo em si): o arquivo já
+   está no OneDrive da Expedian, então não precisa baixar/reenviar nada pro
+   Graph, funciona pra qualquer tamanho de arquivo, e abre com a permissão
+   de quem já acessa aquele OneDrive — não cria uma cópia solta do PDF.
+   Idempotente: se o evento já tem um anexo com esse nome e o link é o
+   mesmo, não faz nada; se o link mudou (comprovante foi substituído),
+   remove o anexo antigo antes de criar o novo (evita acumular anexo
+   duplicado a cada edição do mesmo lançamento). Nunca impede a
+   criação/atualização do evento em si — qualquer falha aqui só vira aviso
+   no console, igual o padrão já usado no resto da integração Outlook. -- */
+const CP_ANEXO_NOME_EVENTO = '📎 Comprovante/Boleto';
+async function cpAnexarComprovanteNoEvento(outlookEventId, comprovanteUrl, comprovanteNome) {
+  if (!outlookEventId || !comprovanteUrl) return;
+  try {
+    const token = await getCalendarToken();
+    if (!token) return;
+    const listResp = await fetch('https://graph.microsoft.com/v1.0/me/events/' + outlookEventId + '/attachments?$select=id,name,sourceUrl', {
+      headers: { 'Authorization': 'Bearer ' + token },
+    });
+    if (listResp.ok) {
+      const lista = await listResp.json();
+      const existente = (lista.value || []).find(a => a.name === CP_ANEXO_NOME_EVENTO);
+      if (existente) {
+        if (existente.sourceUrl === comprovanteUrl) return; // já está certo
+        await fetch('https://graph.microsoft.com/v1.0/me/events/' + outlookEventId + '/attachments/' + existente.id, {
+          method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token },
+        }).catch(()=>{});
+      }
+    }
+    const resp = await fetch('https://graph.microsoft.com/v1.0/me/events/' + outlookEventId + '/attachments', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        '@odata.type': '#microsoft.graph.referenceAttachment',
+        name: CP_ANEXO_NOME_EVENTO,
+        sourceUrl: comprovanteUrl,
+        providerType: 'oneDriveBusiness',
+        permission: 'view',
+        isFolder: false,
+      }),
+    });
+    if (!resp.ok) console.warn('[ContasPagar] Falha ao anexar comprovante no evento Outlook:', resp.status, await resp.text());
+  } catch (e) { console.warn('[ContasPagar] Erro ao anexar comprovante no evento Outlook:', e); }
 }
 
 /* -- Backfill retroativo (pedido 02/10/2026): cria o evento/convite agora
@@ -34762,15 +34846,78 @@ async function meaChecklistsCarregar() {
    Rural. Extraído em função própria (25/09/2026) pra suportar empreendimento
    com MAIS DE UMA classificação (Subestação + Linha no mesmo processo) —
    cada tipo precisa do seu próprio checklist preenchido separadamente. -- */
+/* -- Filtro de Período (semestre civil) da lista principal de Monitoramento
+   Ambiental — pedido 27/10/2026: "as informações deve aparecer pelo
+   semestre, por exemplo estamos no segundo semestre, entao deve aparecer
+   os check list do 2 semestre" + depois, confirmando que queria um
+   seletor (não só o semestre de hoje fixo): "deixar opção de mudar
+   semestre". window._meaFiltroSemestre guarda "AAAA-S" (ex: "2026-2") ou
+   '' pra "Todos os períodos" (comportamento antigo, sem filtro — todo
+   checklist já feito conta, de qualquer data). Afeta só o que já tinha
+   noção de "pronto" por checklist (coluna Checklist da lista + card
+   "Checklist Inspeção"); Vistoria/RMA/Ruído/Poço/CSAO continuam com seus
+   próprios controles de ciclo (botão "Reiniciar Semestre" ou trava),
+   fora do escopo deste filtro por enquanto. -- */
+function meaSemestreAtualStr() {
+  var hoje = semestreCivilDe(new Date().toISOString().slice(0, 10));
+  return hoje.ano + '-' + hoje.sem;
+}
+function meaSemestreLabel(str) {
+  if (!str) return 'Todos os períodos';
+  var p = str.split('-');
+  return p[1] + 'º Semestre / ' + p[0];
+}
+function meaSemestreLabelCurto(str) {
+  if (!str) return 'Todos';
+  var p = str.split('-');
+  return p[1] + 'ºS/' + p[0].slice(2);
+}
+function meaListaSemestresDisponiveis() {
+  var hoje = semestreCivilDe(new Date().toISOString().slice(0, 10));
+  var lista = [];
+  var ano = parseInt(hoje.ano, 10), sem = hoje.sem;
+  for (var i = 0; i < 6; i++) {
+    lista.push(ano + '-' + sem);
+    sem--;
+    if (sem === 0) { sem = 2; ano--; }
+  }
+  return lista;
+}
+if (typeof window._meaFiltroSemestre === 'undefined') window._meaFiltroSemestre = meaSemestreAtualStr();
+function meaHtmlOpcoesSemestre() {
+  var atual = window._meaFiltroSemestre;
+  var opcoes = meaListaSemestresDisponiveis().map(function(s) {
+    return '<option value="' + s + '"' + (s === atual ? ' selected' : '') + '>' + meaSemestreLabel(s) + '</option>';
+  }).join('');
+  return opcoes + '<option value=""' + (atual === '' ? ' selected' : '') + '>Todos os períodos</option>';
+}
+function meaFiltrarSemestre() {
+  window._meaFiltroSemestre = document.getElementById('mea-f-semestre').value;
+  meaRenderizarKPIs();
+  meaRenderizarLista();
+}
+/* -- Um empreendimento está "pronto" pra um TIPO específico (Subestação ou
+   Linha) quando já existe um checklist de inspeção salvo com o mesmo meaId
+   — ChecklistERO se o tipo for Subestação, ChecklistLinha se for LD/Rede
+   Rural. Extraído em função própria (25/09/2026) pra suportar empreendimento
+   com MAIS DE UMA classificação (Subestação + Linha no mesmo processo) —
+   cada tipo precisa do seu próprio checklist preenchido separadamente.
+   Desde 27/10/2026, respeita window._meaFiltroSemestre: com um período
+   selecionado, só conta checklist cuja data caia naquele semestre civil —
+   com "Todos os períodos" (''), volta a contar qualquer checklist já
+   feito, de qualquer data (comportamento original). -- */
 function meaChecklistProntoParaTipo(x, tipo) {
   var hist = tipo === 'subestacao'
     ? (Array.isArray(window._eroHistorico) ? window._eroHistorico : [])
     : (Array.isArray(window._linhaHistorico) ? window._linhaHistorico : []);
   var nome = (x.empreendimento || '').trim().toLowerCase();
+  var semFiltro = window._meaFiltroSemestre || '';
   return hist.some(function(h) {
-    if (h.meaId != null) return h.meaId === x.id;
-    // Fallback p/ checklists antigos, salvos antes do vínculo meaId existir (23/09/2026)
-    return !!nome && (h.empreendimento || '').trim().toLowerCase() === nome;
+    var bate = h.meaId != null ? h.meaId === x.id : (!!nome && (h.empreendimento || '').trim().toLowerCase() === nome);
+    if (!bate) return false;
+    if (!semFiltro) return true;
+    var sem = semestreCivilDe(h.data);
+    return !!sem && (sem.ano + '-' + sem.sem) === semFiltro;
   });
 }
 /* -- "Totalmente pronto" (usado no % geral do topo do card) = todo TIPO
@@ -34796,16 +34943,54 @@ function meaChecklistStatusHtml(x) {
   var temLinha = tipos.indexOf('ld') !== -1 || tipos.indexOf('rede_rural') !== -1;
   var temSub = tipos.indexOf('subestacao') !== -1;
   if (!temLinha && !temSub) return '<span style="color:var(--text-muted)">—</span>';
-  function ic(carregado, pronto) {
+  // Pedido 27/10/2026: "ao clicar no icone ali de check list, ele deve abrir
+  // o check list reealizado" — o ✅ (já preenchido) agora é clicável e abre
+  // o checklist formal correspondente via meaAbrirChecklistRealizado(). O ❌
+  // (ainda pendente) continua só indicativo, sem ação (não existe checklist
+  // preenchido pra abrir).
+  function ic(carregado, pronto, tipo) {
     if (!carregado) return '<span style="color:var(--text-muted)" title="Carregando...">⏳</span>';
-    return pronto ? '<span style="color:#1a7a3c;font-weight:700" title="Checklist já preenchido">✅</span>' : '<span style="color:#b02a2a;font-weight:700" title="Checklist pendente">❌</span>';
+    if (pronto) return '<span style="color:#1a7a3c;font-weight:700;cursor:pointer" title="Checklist já preenchido — clique para abrir" onclick="event.stopPropagation();meaAbrirChecklistRealizado(\''+x.id+'\',\''+tipo+'\')">✅</span>';
+    return '<span style="color:#b02a2a;font-weight:700" title="Checklist pendente">❌</span>';
   }
-  var subHtml = temSub ? ic(Array.isArray(window._eroHistorico), meaChecklistProntoParaTipo(x, 'subestacao')) : '';
-  var linhaHtml = temLinha ? ic(Array.isArray(window._linhaHistorico), meaChecklistProntoParaTipo(x, 'ld')) : '';
+  var subHtml = temSub ? ic(Array.isArray(window._eroHistorico), meaChecklistProntoParaTipo(x, 'subestacao'), 'subestacao') : '';
+  var linhaHtml = temLinha ? ic(Array.isArray(window._linhaHistorico), meaChecklistProntoParaTipo(x, 'ld'), 'ld') : '';
   if (temLinha && temSub) {
     return '<div style="font-size:.68rem;white-space:nowrap">⚡ '+linhaHtml+'</div><div style="font-size:.68rem;white-space:nowrap">🏭 '+subHtml+'</div>';
   }
   return '<div style="font-size:.78rem">'+(temSub ? subHtml : linhaHtml)+'</div>';
+}
+
+/* -- Abre o checklist formal (ERO/Linha) já preenchido pra esse empreendimento,
+   direto a partir do ✅ da coluna Checklist da lista de Monitoramento
+   Ambiental — pedido 27/10/2026. Acha o registro certo no histórico usando o
+   mesmo critério de meaChecklistProntoParaTipo (por meaId, com fallback por
+   nome pros checklists salvos antes do vínculo meaId existir); se houver mais
+   de uma inspeção já feita (mais de um checklist pro mesmo empreendimento),
+   abre a mais recente pela Data. Carrega no formulário de edição
+   (eroEditarChecklist/linhaEditarChecklist — mesma ação do "✏️ Editar" do
+   Histórico), não só o PDF exportado, porque funciona mesmo quando ainda não
+   existe PDF gerado pra esse checklist. -- */
+function meaAbrirChecklistRealizado(meaId, tipo) {
+  var x = MEA_DADOS.find(function(r){ return r.id === meaId; });
+  if (!x) { showToast('⚠️ Empreendimento não encontrado.'); return; }
+  var hist = tipo === 'subestacao'
+    ? (Array.isArray(window._eroHistorico) ? window._eroHistorico : [])
+    : (Array.isArray(window._linhaHistorico) ? window._linhaHistorico : []);
+  var nome = (x.empreendimento || '').trim().toLowerCase();
+  var semFiltro = window._meaFiltroSemestre || '';
+  var candidatos = hist.filter(function(h) {
+    var bate = h.meaId != null ? h.meaId === x.id : (!!nome && (h.empreendimento || '').trim().toLowerCase() === nome);
+    if (!bate) return false;
+    if (!semFiltro) return true;
+    var sem = semestreCivilDe(h.data);
+    return !!sem && (sem.ano + '-' + sem.sem) === semFiltro;
+  });
+  if (!candidatos.length) { showToast('⚠️ Não encontrei o checklist preenchido desse empreendimento' + (semFiltro ? ' nesse período' : '') + ' — tente recarregar a página.'); return; }
+  candidatos.sort(function(a,b){ return (b.data||'').localeCompare(a.data||'') || (b.Id||0)-(a.Id||0); });
+  var escolhido = candidatos[0];
+  if (tipo === 'subestacao') eroEditarChecklist(escolhido.Id);
+  else linhaEditarChecklist(escolhido.Id);
 }
 
 function meaRegistroVazio() {
@@ -35158,7 +35343,7 @@ function meaRenderizarKPIs() {
   var html7Col = '<div style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 8px">Vistorias · Checklist Inspeção · RMA · Ruído · Poço · CSAO · Licenças · Opacidade</div>'
     + '<div class="mea-dash-8col">'
     + cardGrande('Vistorias', '📅', mcVistorias)
-    + cardGrande('Checklist Inspeção', '📝', mcRelatorio)
+    + cardGrande('Checklist Inspeção · ' + meaSemestreLabelCurto(window._meaFiltroSemestre || ''), '📝', mcRelatorio)
     + cardGrande('RMA', '📄', mcRma)
     + cardGrande('Ruído Ambiental', '🔊', mcRuido)
     + cardGrande('Coleta de Poço', '💧', mcPoco)
@@ -36065,6 +36250,9 @@ function pageMonitoramentoAmbientalERO() {
       <option value="nao_realizada">Não Realizada</option>
       <option value="pendente">Pendente</option>
     </select>
+    <select id="mea-f-semestre" onchange="meaFiltrarSemestre()" title="Filtra a coluna Checklist e o card 'Checklist Inspeção' pelo período" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border)">
+      ${meaHtmlOpcoesSemestre()}
+    </select>
   </div>
 
   <div class="card">
@@ -36403,7 +36591,7 @@ function vistRenderizarLista() {
 function vistPreencherDatalist() {
   var dl = document.getElementById('vist-empreendimento-dl');
   if (!dl) return;
-  dl.innerHTML = MEA_DADOS.map(function(x){ return '<option value="'+String(x.empreendimento).replace(/"/g,'&quot;')+'">'; }).join('');
+  dl.innerHTML = MEA_DADOS.slice().sort(meaCmpPorNumero).map(function(x){ return '<option value="'+String(x.empreendimento).replace(/"/g,'&quot;')+'">'; }).join('');
 }
 
 function vistToggleCampos() {
@@ -36472,16 +36660,21 @@ function vistAplicarTravaRealizada(reg, combinado) {
     return;
   }
   var v = reg.vistoria || {};
+  // Data + equipe são campos únicos (não divididos por Linha/Subestação),
+  // então valem pro aviso independente de qual lado disparou a trava.
+  var dataRealizadaTxt = v.data ? laFormatarData(v.data) : '—';
+  var equipeRealizadaTxt = [v.tecnico1, v.tecnico2].filter(Boolean).join(' / ') || '—';
+  var detalheRealizada = ' Foi em <b>' + dataRealizadaTxt + '</b>, pela equipe <b>' + equipeRealizadaTxt + '</b>.';
   if (combinado) {
     var linhaPronta = v.statusLinha === 'realizada';
     var subPronta = v.statusSubestacao === 'realizada';
     if (linhaPronta && subPronta) {
       aviso.style.display = '';
-      aviso.innerHTML = '<div style="background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#664d03">⚠️ <b>Linha e Subestação já estão com Vistoria Realizada</b> neste ciclo. Pra corrigir, abra pelo ✏️ na lista em vez de "+ Nova Vistoria".</div>';
+      aviso.innerHTML = '<div style="background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#664d03">⚠️ <b>Linha e Subestação já estão com Vistoria Realizada</b> neste ciclo.' + detalheRealizada + ' Pra corrigir, abra pelo ✏️ na lista em vez de "+ Nova Vistoria".</div>';
       btnSalvar.disabled = true; btnSalvar.style.opacity = '.5';
     } else if (linhaPronta || subPronta) {
       aviso.style.display = '';
-      aviso.innerHTML = '<div style="background:#e7f1ff;border:1px solid #b6d4fe;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#084298">ℹ️ ' + (linhaPronta ? '⚡ Linha' : '🏭 Subestação') + ' já está com Vistoria Realizada neste ciclo — esse lado ficou travado aqui. Só ' + (linhaPronta ? '🏭 Subestação' : '⚡ Linha') + ' pode ser programada.</div>';
+      aviso.innerHTML = '<div style="background:#e7f1ff;border:1px solid #b6d4fe;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#084298">ℹ️ ' + (linhaPronta ? '⚡ Linha' : '🏭 Subestação') + ' já está com Vistoria Realizada neste ciclo —' + detalheRealizada + ' Esse lado ficou travado aqui. Só ' + (linhaPronta ? '🏭 Subestação' : '⚡ Linha') + ' pode ser programada.</div>';
       if (linhaPronta && selLinha) selLinha.disabled = true;
       if (subPronta && selSub) selSub.disabled = true;
       btnSalvar.disabled = false; btnSalvar.style.opacity = '';
@@ -36492,7 +36685,7 @@ function vistAplicarTravaRealizada(reg, combinado) {
   } else {
     if (v.status === 'realizada') {
       aviso.style.display = '';
-      aviso.innerHTML = '<div style="background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#664d03">⚠️ <b>Esse empreendimento já está com Vistoria Realizada</b> neste ciclo. Pra corrigir, abra pelo ✏️ na lista em vez de "+ Nova Vistoria".</div>';
+      aviso.innerHTML = '<div style="background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#664d03">⚠️ <b>Esse empreendimento já está com Vistoria Realizada</b> neste ciclo.' + detalheRealizada + ' Pra corrigir, abra pelo ✏️ na lista em vez de "+ Nova Vistoria".</div>';
       btnSalvar.disabled = true; btnSalvar.style.opacity = '.5';
     } else {
       aviso.style.display = 'none';
@@ -37277,10 +37470,17 @@ function eroConsolidarStatus(stLinha, stSub) {
   var partes = [stLinha || 'pendente', stSub || 'pendente'];
   var feito = ['realizada','parcial','nao_realizada'];
   var ambosFeitos = partes.every(function(p){ return feito.indexOf(p) !== -1; });
-  if (!ambosFeitos) return partes.some(function(p){ return p !== 'pendente'; }) ? 'programada' : 'pendente';
-  if (partes.every(function(p){ return p === 'realizada'; })) return 'realizada';
-  if (partes.every(function(p){ return p === 'nao_realizada'; })) return 'nao_realizada';
-  return 'parcial';
+  if (ambosFeitos) {
+    if (partes.every(function(p){ return p === 'realizada'; })) return 'realizada';
+    if (partes.every(function(p){ return p === 'nao_realizada'; })) return 'nao_realizada';
+    return 'parcial';
+  }
+  // Um lado já vistoriado (realizada/parcial/não realizada) e o outro ainda
+  // não — pedido Tiago 26/10/2026: "quando um empreendimento tiver
+  // vistoriado e o outro nao, colocar status automatico com parcial".
+  var algumFeito = partes.some(function(p){ return feito.indexOf(p) !== -1; });
+  if (algumFeito) return 'parcial';
+  return partes.some(function(p){ return p !== 'pendente'; }) ? 'programada' : 'pendente';
 }
 
 /* -- Serviços Adicionais / Atividades Especiais --------------------------
@@ -37570,7 +37770,7 @@ function rotAdicionaisPeriodo() {
 function rotPreencherDatalistEmpreendimentos() {
   var dl = document.getElementById('rot-empreendimento-dl');
   if (!dl) return;
-  dl.innerHTML = MEA_DADOS.map(function(x){ return '<option value="'+String(x.empreendimento).replace(/"/g,'&quot;')+'">'; }).join('');
+  dl.innerHTML = MEA_DADOS.slice().sort(meaCmpPorNumero).map(function(x){ return '<option value="'+String(x.empreendimento).replace(/"/g,'&quot;')+'">'; }).join('');
 }
 
 async function rotAdicionarEmpreendimento(dia) {
