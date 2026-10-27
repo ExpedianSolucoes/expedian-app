@@ -21710,12 +21710,20 @@ const ESCOPO_CONTRATUAL_ENERGISA = {
     { codigo: 'classeII', descricao: 'Coleta e destinação — Resíduo Classe II', unidade: 'KG', quantidade: 27521, valorUnitario: 3.61, valorTotal: 99350.81 },
     { codigo: 'emerg', descricao: 'Acionamento a Emergência (por evento)', unidade: 'EVENTO', quantidade: 6, valorUnitario: 3680.00, valorTotal: 22080.00 },
     { codigo: 'mensal', descricao: 'Acionamento Mensal (coleta fora dos municípios-base)', unidade: 'MÊS', quantidade: 12, valorUnitario: 2960.00, valorTotal: 35520.00 },
+    // Pedágios NÃO fazem parte do preço fixo do Anexo 07 — contrato (item 6,
+    // logo após Acionamento Mensal) diz que são "faturados separadamente,
+    // mediante apresentação de comprovantes válidos, desde que previamente
+    // autorizados pela CONTRATANTE". valorUnitario fica 0 aqui de propósito —
+    // preencher na hora de montar o BM com o valor real do mês (soma dos
+    // relatórios de coleta que tiveram pedágio). Pedido Tiago 27/10/2026.
+    { codigo: 'pedagio', descricao: 'Pedágios (reembolso mediante comprovante válido e autorização prévia da Energisa)', unidade: 'MÊS', quantidade: 1, valorUnitario: 0, valorTotal: 0 },
   ],
   clm108943: [
     { codigo: 'classeI', descricao: 'Coleta e destinação — Resíduo Classe I', unidade: 'KG', quantidade: 2959, valorUnitario: 6.00, valorTotal: 17754.00 },
     { codigo: 'classeII', descricao: 'Coleta e destinação — Resíduo Classe II', unidade: 'KG', quantidade: 50620, valorUnitario: 3.36, valorTotal: 170083.20 },
     { codigo: 'emerg', descricao: 'Acionamento a Emergência (por evento)', unidade: 'EVENTO', quantidade: 6, valorUnitario: 3080.00, valorTotal: 18480.00 },
     { codigo: 'mensal', descricao: 'Acionamento Mensal (coleta fora dos municípios-base)', unidade: 'MÊS', quantidade: 12, valorUnitario: 2600.00, valorTotal: 31200.00 },
+    { codigo: 'pedagio', descricao: 'Pedágios (reembolso mediante comprovante válido e autorização prévia da Energisa)', unidade: 'MÊS', quantidade: 1, valorUnitario: 0, valorTotal: 0 },
   ],
 };
 const ESCOPO_CONTRATUAL_FONTE = {
@@ -22673,6 +22681,7 @@ async function cmedSalvar() {
       desc: sub.desc || '', quanti: parseFloat(sub.quanti) || 0, unid: sub.unid || '',
       valorUnit: parseFloat(sub.valorUnit) || 0, valor: cmedSubitemValorTotal(sub),
     })),
+    composicao: Array.isArray(it.composicao) ? it.composicao.filter(sub => sub && (sub.desc || '').trim()) : [],
   }));
   // Descricao/Valor/Obs no nível do registro continuam preenchidos (agora
   // derivados dos itens) porque outras partes do app ainda leem esses campos
@@ -22680,6 +22689,7 @@ async function cmedSalvar() {
   // exportação Excel/PDF e o histórico em tabela.
   const registro = {
     ContratoChave: d.contratoChave, NumeroBM: d.numeroBM, Data: d.data,
+    PeriodoReferencia: d.periodoReferencia || '',
     Itens: itensLimpos,
     Descricao: itensLimpos.map(i => i.desc).filter(Boolean).join(' + '),
     Valor: cmedCalcularTotalItens(itensLimpos),
@@ -23013,6 +23023,21 @@ function cmedVisualizar(id) {
    tabela de escopo com cabeçalho marrom, barra verde "TOTAL DA MEDIÇÃO" e
    bloco de assinaturas Contratante/Contratada. Pedido em 03/09/2026 pra
    igualar o padrão entre os contratos WS/CLM e o 2025022101. -- */
+function cmedFormatarPeriodo(m) {
+  if (m.PeriodoReferencia) {
+    const partes = String(m.PeriodoReferencia).split('-');
+    if (partes.length === 2) {
+      const mi = parseInt(partes[1], 10) - 1;
+      if (PAINEL_MESES_NOMES[mi]) return PAINEL_MESES_NOMES[mi] + '/' + partes[0];
+    }
+    return m.PeriodoReferencia;
+  }
+  if (m.Data) {
+    try { const dt = new Date(m.Data + 'T12:00'); return PAINEL_MESES_NOMES[dt.getMonth()] + '/' + dt.getFullYear(); } catch (e) {}
+  }
+  return '—';
+}
+
 async function cmedGerarDoc(m, dc) {
   await _garantirJsPDF();
   const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
@@ -23043,15 +23068,24 @@ async function cmedGerarDoc(m, dc) {
   // a descrição completa; repetir tudo de novo nesta caixa curta era o que
   // estourava a altura da caixa e sobrepunha a linha seguinte — corrigido em
   // 03/09/2026).
-  campoBox(ML, CW, 0.85, 'Contrato', dc ? dc.numero : m.ContratoChave, { bold: true, size: 11 });
+  const regionalChave = (typeof PROJETOS_ENERGISA_CLM_REGIONAL !== 'undefined') ? PROJETOS_ENERGISA_CLM_REGIONAL[m.ContratoChave] : null;
+  const regionalLabel = regionalChave === 'centro' ? 'Regional Centro' : (regionalChave === 'sul' ? 'Regional Sul' : '');
+  if (regionalLabel) {
+    const gapR = 0.25, colContratoW = CW * 0.66 - gapR / 2, colRegionalW = CW - colContratoW - gapR;
+    campoBox(ML, colContratoW, 0.85, 'Contrato', dc ? dc.numero : m.ContratoChave, { bold: true, size: 11 });
+    campoBox(ML + colContratoW + gapR, colRegionalW, 0.85, 'Regional', regionalLabel, { bold: true, size: 11, destaque: true });
+  } else {
+    campoBox(ML, CW, 0.85, 'Contrato', dc ? dc.numero : m.ContratoChave, { bold: true, size: 11 });
+  }
   y += 0.85 + 0.15;
 
-  // Data medição · Nº BM · Status
-  const gap3 = 0.25, col3 = (CW - gap3 * 2) / 3;
+  // Período de referência · Data medição · Status · Nº BM
+  const gap4 = 0.2, col4 = (CW - gap4 * 3) / 4;
   quebrarSeNecessario(0.85);
-  campoBox(ML, col3, 0.85, 'Data medição', m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—', { bold: true });
-  campoBox(ML + col3 + gap3, col3, 0.85, 'Status', m.Status || '—', { bold: true });
-  campoBox(ML + (col3 + gap3) * 2, col3, 0.85, 'Nº BM', m.NumeroBM != null ? String(m.NumeroBM) : '—', { bold: true, destaque: true, size: 12 });
+  campoBox(ML, col4, 0.85, 'Período de referência', cmedFormatarPeriodo(m), { bold: true });
+  campoBox(ML + col4 + gap4, col4, 0.85, 'Data medição', m.Data ? new Date(m.Data + 'T12:00').toLocaleDateString('pt-BR') : '—', { bold: true });
+  campoBox(ML + (col4 + gap4) * 2, col4, 0.85, 'Status', m.Status || '—', { bold: true });
+  campoBox(ML + (col4 + gap4) * 3, col4, 0.85, 'Nº BM', m.NumeroBM != null ? String(m.NumeroBM) : '—', { bold: true, destaque: true, size: 12 });
   y += 0.85 + 0.15;
 
   // Objeto do contrato
@@ -23082,6 +23116,10 @@ async function cmedGerarDoc(m, dc) {
 
   const colSeq = 0.9, colQtd = 1.5, colUnid = 1.3, colUnit = 2.5, colTot = 2.6;
   const colDesc = CW - (colSeq + colQtd + colUnid + colUnit + colTot);
+  // Observação do item e detalhamento por base usam quase a largura toda da
+  // linha (não só a estreita coluna Descrição) — texto comprido não precisa
+  // quebrar em 3 linhas à toa. Pedido Tiago 27/10/2026.
+  const textoLargo = CW - colSeq - 0.3;
   const xs = { seq: ML, desc: ML + colSeq, qtd: ML + colSeq + colDesc, unid: ML + colSeq + colDesc + colQtd, unit: ML + colSeq + colDesc + colQtd + colUnid, tot: ML + colSeq + colDesc + colQtd + colUnid + colUnit };
   const rowH = 0.6;
   function linhaTabelaCabecalho() {
@@ -23122,7 +23160,7 @@ async function cmedGerarDoc(m, dc) {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(descFont);
     const descLines = doc.splitTextToSize(it.desc || '—', colDesc - 0.3);
     doc.setFont('helvetica', 'italic'); doc.setFontSize(obsFont);
-    const obsLines = it.obs ? doc.splitTextToSize(it.obs, colDesc - 0.3) : [];
+    const obsLines = it.obs ? doc.splitTextToSize(it.obs, textoLargo) : [];
     // Cobranças extras deste serviço (ex: pedágio) — mostradas como linhas
     // "+ Descrição ... R$ valor" logo abaixo da observação, e somadas ao
     // subtotal do item (coluna Valor Total) e ao Total Geral. Pedido em
@@ -23136,6 +23174,18 @@ async function cmedGerarDoc(m, dc) {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(obsFont);
     const subLinhasTexto = subitensValidos.map(sub => '+ ' + _semEmoji(sub.desc) + (sub.quanti ? ' — ' + sub.quanti + ' ' + (sub.unid || '') + ' × R$ ' + (parseFloat(sub.valorUnit) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '') + ': R$ ' + cmedSubitemValorTotal(sub).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
     const subLines = subLinhasTexto.length ? subLinhasTexto.flatMap(t => doc.splitTextToSize(t, colDesc - 0.3)) : [];
+    const composicaoValidos = (it.composicao || []).filter(sub => sub && (sub.desc || '').trim());
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(obsFont);
+    const compW = textoLargo - 2.3;
+    const composicaoLinhas = composicaoValidos.map((sub, j) => {
+      const label = (i + 1) + '.' + (j + 1);
+      const qtdTxt = (sub.quanti != null && sub.quanti !== '') ? (' — ' + sub.quanti + ' ' + (sub.unid || '')) : '';
+      const linhas = doc.splitTextToSize(label + '  ' + _semEmoji(sub.desc) + qtdTxt, compW);
+      const valorNum = (sub.valor != null && sub.valor !== '') ? (parseFloat(sub.valor) || 0) : ((sub.quanti != null && sub.quanti !== '' && parseFloat(it.valorUnit)) ? (parseFloat(sub.quanti) || 0) * (parseFloat(it.valorUnit) || 0) : null);
+      return { linhas, valorTxt: valorNum != null ? 'R$ ' + valorNum.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '' };
+    });
+    const compTotalLinhas = composicaoLinhas.reduce((s, cl) => s + cl.linhas.length, 0);
+    const compBlocoH = compTotalLinhas ? 0.12 + compTotalLinhas * obsLineH : 0;
     // Linha "Subtotal item N: R$ X" — SEMPRE aparece (não só quando tem
     // cobrança extra), pra não depender só da coluna "Valor Total" lá na
     // ponta pra achar o total de cada serviço, e ficar padronizado item a
@@ -23164,7 +23214,7 @@ async function cmedGerarDoc(m, dc) {
     const obsBlocoH = obsLines.length ? 0.12 + obsLines.length * obsLineH : 0;
     const subExtrasBlocoH = subLines.length ? 0.12 + subLines.length * obsLineH : 0;
     const subtotalBlocoH = 0.12 + lh(subtotalFont);
-    const rowHItem = Math.max(rowH, 0.3 + descBlocoH + obsBlocoH + subExtrasBlocoH + subtotalBlocoH);
+    const rowHItem = Math.max(rowH, 0.3 + descBlocoH + obsBlocoH + compBlocoH + subExtrasBlocoH + subtotalBlocoH);
     quebrarSeNecessario(rowHItem);
     if (i % 2 === 1) { doc.setFillColor(250, 248, 246); doc.rect(ML, y, CW, rowHItem, 'F'); }
     doc.setDrawColor(220, 213, 209); doc.setLineWidth(0.015); doc.rect(ML, y, CW, rowHItem);
@@ -23193,6 +23243,16 @@ async function cmedGerarDoc(m, dc) {
       doc.setFont('helvetica', 'italic'); doc.setFontSize(obsFont); doc.setTextColor(110, 100, 95);
       doc.text(obsLines, xs.desc + 0.15, blocoY + 0.12);
       blocoY += 0.12 + obsLines.length * obsLineH;
+    }
+    if (composicaoLinhas.length) {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(obsFont); doc.setTextColor(70, 70, 70);
+      let compY = blocoY + 0.12;
+      composicaoLinhas.forEach(cl => {
+        doc.text(cl.linhas, xs.desc + 0.15, compY);
+        if (cl.valorTxt) doc.text(cl.valorTxt, xDireitaSubtotal, compY, { align: 'right' });
+        compY += cl.linhas.length * obsLineH;
+      });
+      blocoY = compY;
     }
     if (subLines.length) {
       doc.setFont('helvetica', 'normal'); doc.setFontSize(obsFont); doc.setTextColor(150, 90, 40);
@@ -23358,6 +23418,7 @@ function cmedHtmlForm() {
     <div class="form-row">
       <div class="form-group"><label>Número do BM</label><input value="${(d.numeroBM || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroBM', this.value)" placeholder="Ex: 11"></div>
       <div class="form-group"><label>Data</label><input type="date" value="${d.data || ''}" oninput="cmedCampo('data', this.value)"></div>
+      <div class="form-group"><label>Período de referência</label><input type="month" value="${d.periodoReferencia || ''}" oninput="cmedCampo('periodoReferencia', this.value)" title="Mês/ano a que os serviços medidos se referem"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label>Status</label>
@@ -50473,8 +50534,65 @@ if (typeof window._colDashFiltroAno === 'undefined') window._colDashFiltroAno = 
 // aparecer ao clicar em Novo/Editar — pedido Tiago 27/10/2026.
 if (typeof window._colDashFiltroRegional === 'undefined') window._colDashFiltroRegional = '';
 if (typeof window._colMostrarForm === 'undefined') window._colMostrarForm = false;
+if (typeof window._colPlacaManual === 'undefined') window._colPlacaManual = false;
 
 const COL_MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+
+const PEDAGIO_PORTICOS_RO = [
+  { id: 'candeias_jamari',   nome: 'Candeias do Jamari',          valor: 5.40 },
+  { id: 'cujubim',           nome: 'Cujubim',                     valor: 37.00 },
+  { id: 'ariquemes',         nome: 'Ariquemes',                   valor: 19.30 },
+  { id: 'ouro_preto_oeste',  nome: "Ouro Preto do Oeste",         valor: 25.00 },
+  { id: 'presidente_medici', nome: 'Presidente Médici',           valor: 12.50 },
+  { id: 'pimenta_bueno_1',   nome: 'Pimenta Bueno (1º trecho)',   valor: 10.20 },
+  { id: 'pimenta_bueno_2',   nome: 'Pimenta Bueno (2º trecho)',   valor: 35.40 },
+];
+function colNormalizarPlaca(p) { return (p || '').replace(/[^A-Z0-9]/gi, '').toUpperCase(); }
+function colVeiculoFrotaPorPlaca(p) { return CV_FROTA.find(v => v.placa === colNormalizarPlaca(p)); }
+function colSugerirPorticos(regional) {
+  if (regional === 'centro') return ['candeias_jamari', 'cujubim', 'ariquemes', 'ouro_preto_oeste'];
+  if (regional === 'sul') return ['candeias_jamari', 'cujubim', 'ariquemes', 'ouro_preto_oeste', 'presidente_medici', 'pimenta_bueno_1', 'pimenta_bueno_2'];
+  return [];
+}
+function colCalcularPedagio(d) {
+  const ids = Array.isArray(d.pedagioPorticos) ? d.pedagioPorticos : [];
+  const soma = ids.reduce((s, id) => { const p = PEDAGIO_PORTICOS_RO.find(x => x.id === id); return s + (p ? p.valor : 0); }, 0);
+  const mult = d.veiculoTipo && d.veiculoTipo.indexOf('Caminhão') === 0 ? 2 : 1;
+  return soma * 2 * mult;
+}
+function colAtualizarVeiculo(valor) {
+  if (valor === '_outro') {
+    window._colData.placa = '';
+    window._colData.veiculoTipo = '';
+    window._colPlacaManual = true;
+  } else {
+    const v = CV_FROTA.find(f => f.placa === valor);
+    window._colData.placa = v ? (v.placa.slice(0, 3) + '-' + v.placa.slice(3)) : '';
+    window._colData.veiculoTipo = v ? v.tipo : '';
+    window._colPlacaManual = false;
+  }
+  if (window._colData.pedagioHouve) window._colData.pedagioValor = colCalcularPedagio(window._colData);
+  navigate('checklist_coleta');
+}
+function colTogglePedagio(checked) {
+  window._colData.pedagioHouve = checked;
+  if (checked) {
+    if (!Array.isArray(window._colData.pedagioPorticos) || !window._colData.pedagioPorticos.length) {
+      window._colData.pedagioPorticos = colSugerirPorticos(window._colData.regional);
+    }
+    window._colData.pedagioValor = colCalcularPedagio(window._colData);
+  }
+  navigate('checklist_coleta');
+}
+function colTogglePortico(id, checked) {
+  if (!Array.isArray(window._colData.pedagioPorticos)) window._colData.pedagioPorticos = [];
+  const arr = window._colData.pedagioPorticos;
+  const idx = arr.indexOf(id);
+  if (checked && idx === -1) arr.push(id);
+  if (!checked && idx !== -1) arr.splice(idx, 1);
+  window._colData.pedagioValor = colCalcularPedagio(window._colData);
+  navigate('checklist_coleta');
+}
 
 /* -- Localidades reais dos contratos de Coleta e Destinação de Resíduos (Energisa Rondônia) --
       Regional Sul (CLM 108942) e Regional Centro (CLM 108943). "Outro" libera texto livre. -- */
@@ -50720,6 +50838,7 @@ function colCarregarFotosMultiplas(event) {
 }
 
 function colNovoChecklist() {
+  window._colPlacaManual = false;
   const temDados = window._colMostrarForm && window._colData && ((window._colData.residuos||[]).some(r => r && (r.tipo || r.peso)) || (window._colData.fotos||[]).length || window._colData.num);
   if (temDados && !confirm('Isso vai limpar o formulário atual (os dados não salvos serão perdidos). Deseja continuar?')) return;
   window._colData = { residuos: [], fotos: [] };
@@ -51102,13 +51221,47 @@ function pageChecklistColeta() {
     </div>
     <div class="form-row">
       <div class="form-group"><label>Motorista</label><input id="col_motorista" value="${d.motorista||''}" oninput="colCampo('motorista',this.value)"></div>
-      <div class="form-group"><label>Placa Veículo</label><input id="col_placa" value="${d.placa||''}" oninput="colCampo('placa',this.value.toUpperCase())" style="text-transform:uppercase" placeholder="ABC-1D23"></div>
+      <div class="form-group"><label>Placa Veículo</label>
+        ${window._colPlacaManual ? `
+        <input id="col_placa" value="${d.placa||''}" oninput="colCampo('placa',this.value.toUpperCase())" style="text-transform:uppercase" placeholder="ABC-1D23">
+        <span onclick="window._colPlacaManual=false;navigate('checklist_coleta')" style="font-size:.68rem;color:var(--brand-brown,#3F261F);cursor:pointer;text-decoration:underline">← escolher da frota</span>
+        ` : `
+        <select id="col_placa" onchange="colAtualizarVeiculo(this.value)">
+          <option value="">Selecione o veículo...</option>
+          ${CV_FROTA.map(v => `<option value="${v.placa}" ${colNormalizarPlaca(d.placa)===v.placa?'selected':''}>${v.display} (${v.tipo})</option>`).join('')}
+          <option value="_outro">Outro / não cadastrado</option>
+        </select>
+        `}
+      </div>
       <div class="form-group"><label>Placa Reboque</label><input id="col_reboque" value="${d.reboque||''}" oninput="colCampo('reboque',this.value.toUpperCase())" style="text-transform:uppercase" placeholder="Se houver"></div>
       <div class="form-group"><label>Transportadora</label><input id="col_transportadora" value="${d.transportadora||'Expedian'}" oninput="colCampo('transportadora',this.value)"></div>
     </div>
     <div class="form-group">
       <label>Destinação Final</label>
       <textarea rows="2" id="col_destinacao" oninput="colCampo('destinacao',this.value)" placeholder="Descreva a destinação final dada aos resíduos (ex: empresa licenciada, aterro, reciclagem, coprocessamento...)">${d.destinacao||''}</textarea>
+    </div>
+    <div class="form-group" style="margin-top:8px;margin-bottom:0">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:0">
+        <input type="checkbox" ${d.pedagioHouve?'checked':''} onchange="colTogglePedagio(this.checked)" style="width:auto">
+        Houve pedágio nesta coleta?
+      </label>
+      ${d.pedagioHouve ? `
+      <div style="padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin-top:8px">
+        ${!d.veiculoTipo ? `<div style="font-size:.74rem;color:#b8860b;margin-bottom:8px">⚠️ Selecione o Veículo acima pra aplicar a categoria certa de pedágio (pickup/carro de passeio = valor cheio, caminhão = dobro).</div>` : `<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">Veículo: <b>${d.veiculoTipo}</b> — ${d.veiculoTipo.indexOf('Caminhão')===0?'valor em dobro':'valor categoria 1 (cheio)'}</div>`}
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Pórticos cruzados (ida — a volta já soma automático)</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${PEDAGIO_PORTICOS_RO.map(p => `
+          <label style="display:flex;align-items:center;gap:4px;font-size:.76rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:4px 8px;cursor:pointer">
+            <input type="checkbox" ${(d.pedagioPorticos||[]).indexOf(p.id)>-1?'checked':''} onchange="colTogglePortico('${p.id}',this.checked)" style="width:auto">
+            ${p.nome} <span style="color:var(--text-muted)">(R$ ${p.valor.toFixed(2).replace('.',',')})</span>
+          </label>`).join('')}
+        </div>
+        <div class="form-row" style="margin-top:10px;align-items:flex-end">
+          <div class="form-group"><label>Valor total do pedágio (R$)</label><input type="number" step="0.01" min="0" value="${d.pedagioValor!=null?d.pedagioValor:''}" oninput="colCampo('pedagioValor',this.value)" placeholder="0,00"></div>
+          <div class="form-group" style="flex:2"><div style="font-size:.74rem;color:var(--text-muted)">💡 Calculado automaticamente: <b>R$ ${colCalcularPedagio(d).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</b> (ida e volta${d.veiculoTipo && d.veiculoTipo.indexOf('Caminhão')===0?', valor dobrado p/ caminhão':''}). Ajuste se o comprovante vier diferente — anexe o comprovante nas Fotos de Evidência abaixo.</div></div>
+        </div>
+      </div>
+      ` : ''}
     </div>
   </div>
 
@@ -51189,6 +51342,10 @@ async function salvarColetaChecklist() {
     c1Kg: tot.c1Kg,
     c2Kg: tot.c2Kg,
     qtdItens: tot.qtdItens,
+    veiculoTipo: d.veiculoTipo || '',
+    pedagioHouve: !!d.pedagioHouve,
+    pedagioValor: d.pedagioHouve ? (parseFloat(d.pedagioValor) || 0) : 0,
+    pedagioQtdPorticos: d.pedagioHouve && Array.isArray(d.pedagioPorticos) ? d.pedagioPorticos.length : 0,
     arquivoDados: 'Checklists/ColetaResiduos/dados/' + meuId + '.json',
     CriadoPorNome: window._currentUser ? window._currentUser.name : '',
     CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
@@ -51234,6 +51391,7 @@ async function colEditarChecklist(id) {
     window._colData = JSON.parse(texto);
     if (!Array.isArray(window._colData.residuos)) window._colData.residuos = [];
     if (!Array.isArray(window._colData.fotos)) window._colData.fotos = [];
+    window._colPlacaManual = !!window._colData.placa && !colVeiculoFrotaPorPlaca(window._colData.placa);
     window._colRegistroAtualId = id;
     window._colMostrarForm = true;
     showSyncStatus('Relatório carregado!', 'ok', 3000);
