@@ -22795,19 +22795,50 @@ function cmedAlterarOrdemHistorico(chave, modo) {
   window._cmedOrdemHistorico[chave] = modo;
   cmedAtualizarBloco(chave);
 }
+/* -- Filtro por mês do Histórico de Medições (pedido em 27/10/2026, junto
+   com export Excel/PDF) — guarda o mês escolhido por contrato
+   (window._cmedFiltroMes[chave], 'AAAA-MM' ou '' = todos os meses). Afeta a
+   tabela exibida E os exports (cmedExportarExcel/PDF já respeitam o mesmo
+   filtro, pra exportar exatamente o que está na tela). -- */
+if (window._cmedFiltroMes === undefined) window._cmedFiltroMes = {};
+function cmedMesesDisponiveis(lista) {
+  const set = new Set();
+  lista.forEach(m => { if (m.Data && m.Data.length >= 7) set.add(m.Data.slice(0, 7)); });
+  return [...set].sort().reverse();
+}
+function cmedLabelMes(mesAno) {
+  const [ano, mes] = mesAno.split('-');
+  return (PAINEL_MESES_NOMES[parseInt(mes, 10) - 1] || mes) + '/' + ano;
+}
+function cmedFiltrarMes(chave, mes) {
+  window._cmedFiltroMes[chave] = mes;
+  cmedAtualizarBloco(chave);
+}
+function cmedListaFiltradaPorMes(lista, chave) {
+  const mesFiltro = window._cmedFiltroMes[chave] || '';
+  return mesFiltro ? lista.filter(m => (m.Data || '').slice(0, 7) === mesFiltro) : lista;
+}
 function cmedHtmlHistorico(lista, chave) {
   if (!lista.length) return '';
   const dataBR = iso => { try { return new Date(iso + 'T12:00').toLocaleDateString('pt-BR'); } catch (e) { return iso; } };
+  const mesFiltro = window._cmedFiltroMes[chave] || '';
+  const listaMes = cmedListaFiltradaPorMes(lista, chave);
+  const mesesDisponiveis = cmedMesesDisponiveis(lista);
   const modoOrdem = window._cmedOrdemHistorico[chave] || 'data';
-  const ordenada = [...lista].sort((a, b) => modoOrdem === 'numero'
+  const ordenada = [...listaMes].sort((a, b) => modoOrdem === 'numero'
     ? (parseFloat(b.NumeroBM) || 0) - (parseFloat(a.NumeroBM) || 0)
     : (b.Data || '').localeCompare(a.Data || ''));
   const btnOrdem = (modo, label) => `<button onclick="event.preventDefault();event.stopPropagation();cmedAlterarOrdemHistorico('${chave}','${modo}')" style="font-size:.68rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:${modoOrdem === modo ? 'var(--brand-brown,#3F261F)' : 'var(--surface2)'};color:${modoOrdem === modo ? '#fff' : 'inherit'}">${label}</button>`;
   return `
   <details class="card" style="margin-top:4px" ${window._cmedHistoricoAberto[chave] ? 'open' : ''} ontoggle="cmedHistoricoToggleAberto('${chave}', this.open)">
     <summary style="cursor:pointer;font-weight:700;font-size:.8rem;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-      <span>▶ 📑 Histórico de Medições (${lista.length})</span>
+      <span>▶ 📑 Histórico de Medições (${listaMes.length}${mesFiltro ? ' de ' + lista.length : ''})</span>
       <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:.66rem;color:var(--text-muted);margin-right:2px">Mês:</span>
+        <select onclick="event.stopPropagation()" onchange="event.stopPropagation();cmedFiltrarMes('${chave}', this.value)" style="font-size:.68rem;padding:3px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface2)">
+          <option value="" ${!mesFiltro ? 'selected' : ''}>Todos os meses</option>
+          ${mesesDisponiveis.map(mes => `<option value="${mes}" ${mesFiltro === mes ? 'selected' : ''}>${cmedLabelMes(mes)}</option>`).join('')}
+        </select>
         <span style="font-size:.66rem;color:var(--text-muted);margin-right:2px">Ordenar por:</span>
         ${btnOrdem('data', '📅 Data')}
         ${btnOrdem('numero', '🔢 Nº BM')}
@@ -22822,6 +22853,7 @@ function cmedHtmlHistorico(lista, chave) {
           <td style="padding:6px 8px;font-weight:700">Descrição</td><td style="padding:6px 8px;font-weight:700">Valor</td>
           <td style="padding:6px 8px;font-weight:700">Status</td><td style="padding:6px 8px;font-weight:700">OS</td><td></td>
         </tr>
+        ${!ordenada.length ? `<tr><td colspan="7" style="padding:14px 8px;color:var(--text-muted);text-align:center">Nenhuma medição em ${cmedLabelMes(mesFiltro)}.</td></tr>` : ''}
         ${ordenada.map(m => `
         <tr>
           <td style="padding:6px 8px">${m.NumeroBM}</td>
@@ -22849,8 +22881,9 @@ function cmedHtmlHistorico(lista, chave) {
 /* -- Exporta o histórico de medições de UM contrato (filtrado por chave) pra
    Excel — mesmo padrão xlsx.js do medExportarExcel() (2025022101). -- */
 async function cmedExportarExcel(chave) {
-  const lista = (window._cmedHistorico || []).filter(m => m.ContratoChave === chave).slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
-  if (!lista.length) { showToast('⚠️ Nenhuma medição para exportar.'); return; }
+  const todas = (window._cmedHistorico || []).filter(m => m.ContratoChave === chave);
+  const lista = cmedListaFiltradaPorMes(todas, chave).slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
+  if (!lista.length) { showToast('⚠️ Nenhuma medição para exportar' + (window._cmedFiltroMes[chave] ? ' nesse mês.' : '.')); return; }
   showToast('📊 Gerando planilha...');
   if (typeof XLSX === 'undefined') {
     await new Promise((res, rej) => {
@@ -22868,22 +22901,24 @@ async function cmedExportarExcel(chave) {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Medições');
   const dc = CONTRATOS_ENERGISA_DADOS[chave];
-  XLSX.writeFile(wb, 'Historico_Medicoes_' + (dc ? dc.numero.replace(/\s+/g, '_') : chave) + ' - ' + new Date().toLocaleDateString('pt-BR').replace(/\//g, '.') + '.xlsx');
+  const sufixoMes = window._cmedFiltroMes[chave] ? ' - ' + cmedLabelMes(window._cmedFiltroMes[chave]).replace('/', '-') : '';
+  XLSX.writeFile(wb, 'Historico_Medicoes_' + (dc ? dc.numero.replace(/\s+/g, '_') : chave) + sufixoMes + ' - ' + new Date().toLocaleDateString('pt-BR').replace(/\//g, '.') + '.xlsx');
   showToast('✅ Planilha gerada!');
 }
 
 /* -- Exporta o histórico de medições de UM contrato em PDF (tabela com
    cabeçalho/rodapé de marca, mesma infra jsPDF compartilhada). -- */
 async function cmedExportarPDF(chave) {
-  const lista = (window._cmedHistorico || []).filter(m => m.ContratoChave === chave).slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
-  if (!lista.length) { showToast('⚠️ Nenhuma medição para exportar.'); return; }
+  const todas = (window._cmedHistorico || []).filter(m => m.ContratoChave === chave);
+  const lista = cmedListaFiltradaPorMes(todas, chave).slice().sort((a, b) => (b.Data || '').localeCompare(a.Data || ''));
+  if (!lista.length) { showToast('⚠️ Nenhuma medição para exportar' + (window._cmedFiltroMes[chave] ? ' nesse mês.' : '.')); return; }
   showToast('🔄 Gerando PDF... aguarde.');
   await _garantirJsPDF();
   const dc = CONTRATOS_ENERGISA_DADOS[chave];
   const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
   const pageW = 21.0, pageH = 29.7;
   const titulo = 'HISTÓRICO DE MEDIÇÕES';
-  const subtitulo = 'Contrato ' + (dc ? dc.numero : chave) + ' · Energisa RO';
+  const subtitulo = 'Contrato ' + (dc ? dc.numero : chave) + ' · Energisa RO' + (window._cmedFiltroMes[chave] ? ' · ' + cmedLabelMes(window._cmedFiltroMes[chave]) : '');
   _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
   let y = 2.1;
   const ML = 1.4, CW = pageW - 2.8;
@@ -22917,7 +22952,8 @@ async function cmedExportarPDF(chave) {
   doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(63, 38, 31);
   doc.text('TOTAL MEDIDO: R$ ' + total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), ML, y);
   _pdfNumerarPaginas(doc, pageW, pageH);
-  doc.save('Historico_Medicoes_' + (dc ? dc.numero.replace(/\s+/g, '_') : chave) + ' - ' + new Date().toLocaleDateString('pt-BR').replace(/\//g, '.') + '.pdf');
+  const sufixoMesPdf = window._cmedFiltroMes[chave] ? ' - ' + cmedLabelMes(window._cmedFiltroMes[chave]).replace('/', '-') : '';
+  doc.save('Historico_Medicoes_' + (dc ? dc.numero.replace(/\s+/g, '_') : chave) + sufixoMesPdf + ' - ' + new Date().toLocaleDateString('pt-BR').replace(/\//g, '.') + '.pdf');
   showToast('✅ PDF gerado!');
 }
 
