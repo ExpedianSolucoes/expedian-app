@@ -50469,6 +50469,10 @@ if (typeof window._colEmailConfig === 'undefined') window._colEmailConfig = null
 if (typeof window._colRegistroAtualId === 'undefined') window._colRegistroAtualId = null;
 if (typeof window._colDashFiltroMes === 'undefined') window._colDashFiltroMes = '';
 if (typeof window._colDashFiltroAno === 'undefined') window._colDashFiltroAno = '';
+// -- Filtro por Regional (Centro/Sul) do Mini Dashboard + do formulário só
+// aparecer ao clicar em Novo/Editar — pedido Tiago 27/10/2026.
+if (typeof window._colDashFiltroRegional === 'undefined') window._colDashFiltroRegional = '';
+if (typeof window._colMostrarForm === 'undefined') window._colMostrarForm = false;
 
 const COL_MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
@@ -50576,7 +50580,29 @@ function colCampo(campo, valor) {
 function colAtualizarRegional(valor) {
   window._colData.regional = valor;
   window._colData.local = ''; // troca de regional reseta a localidade selecionada
+  // Sugere automaticamente o próximo número da sequência DAQUELA regional —
+  // Centro e Sul numeram cada um a partir de 01, independentes entre si.
+  // Só em relatório NOVO (não mexe no número ao editar um já salvo) e só
+  // se a pessoa ainda não tiver digitado nada. Pedido Tiago 27/10/2026.
+  if (!window._colRegistroAtualId && !(window._colData.num || '').trim() && (valor === 'centro' || valor === 'sul')) {
+    window._colData.num = colProximoNumero(valor);
+  }
   navigate('checklist_coleta');
+}
+
+/* -- Próximo nº de Relatório de Coleta PARA UMA REGIONAL específica — cada
+   regional numera independente, começando de 01 (maior nº já usado NAQUELA
+   regional, +1). Pedido Tiago 27/10/2026. -- */
+function colProximoNumero(regional) {
+  const hist = Array.isArray(window._colHistorico) ? window._colHistorico : [];
+  let max = 0;
+  hist.forEach(r => {
+    if (r.regional === regional) {
+      const n = parseInt(r.num, 10);
+      if (!isNaN(n) && n > max) max = n;
+    }
+  });
+  return String(max + 1).padStart(2, '0');
 }
 
 /* -- Lista única de tipos de resíduo (Classe I e II juntos), usada num <input list="...">
@@ -50694,11 +50720,26 @@ function colCarregarFotosMultiplas(event) {
 }
 
 function colNovoChecklist() {
-  const temDados = window._colData && ((window._colData.residuos||[]).length || (window._colData.fotos||[]).length || window._colData.num);
+  const temDados = window._colMostrarForm && window._colData && ((window._colData.residuos||[]).some(r => r && (r.tipo || r.peso)) || (window._colData.fotos||[]).length || window._colData.num);
   if (temDados && !confirm('Isso vai limpar o formulário atual (os dados não salvos serão perdidos). Deseja continuar?')) return;
   window._colData = { residuos: [], fotos: [] };
   window._colRegistroAtualId = null;
+  window._colMostrarForm = true;
   colAddLinhaResiduo();
+}
+
+/* -- Fecha o formulário de Novo Relatório/Edição sem excluir nada já salvo
+   no OneDrive — volta a mostrar só o Mini Dashboard. O formulário só deve
+   reaparecer ao clicar em "🆕 Novo Relatório" ou "✏️ Editar" num relatório
+   da lista. Pedido Tiago 27/10/2026: "o formulário de novo relatório só
+   deve ser aberto quando clicar em novo". -- */
+function colFecharFormulario() {
+  const temDadosNaoSalvos = !window._colRegistroAtualId && window._colData && ((window._colData.residuos||[]).some(r => r && (r.tipo || r.peso)) || window._colData.num);
+  if (temDadosNaoSalvos && !confirm('Fechar sem salvar? Os dados não salvos deste relatório serão perdidos.')) return;
+  window._colMostrarForm = false;
+  window._colRegistroAtualId = null;
+  window._colData = { residuos: [], fotos: [] };
+  navigate('checklist_coleta');
 }
 
 async function carregarColetaHistorico(forcar) {
@@ -50849,6 +50890,7 @@ async function colConfigEmailSalvar() {
 
 function colDashFiltrarMes(v) { window._colDashFiltroMes = v; navigate('checklist_coleta'); }
 function colDashFiltrarAno(v) { window._colDashFiltroAno = v; navigate('checklist_coleta'); }
+function colDashFiltrarRegional(v) { window._colDashFiltroRegional = v; navigate('checklist_coleta'); }
 
 async function colLimparHistorico() {
   const total = Array.isArray(window._colHistorico) ? window._colHistorico.length : 0;
@@ -50865,6 +50907,7 @@ async function colLimparHistorico() {
   window._colHistorico = [];
   window._colDashFiltroMes = '';
   window._colDashFiltroAno = '';
+  window._colDashFiltroRegional = '';
   try { localStorage.setItem('col_historico_cache', JSON.stringify([])); } catch(e) {}
 
   if (ok) {
@@ -50891,8 +50934,10 @@ function renderColMiniDashboard() {
 
   const filtrados = comData.filter(r =>
     (!window._colDashFiltroAno || r._ano === window._colDashFiltroAno) &&
-    (!window._colDashFiltroMes || r._mes === window._colDashFiltroMes)
+    (!window._colDashFiltroMes || r._mes === window._colDashFiltroMes) &&
+    (!window._colDashFiltroRegional || r.regional === window._colDashFiltroRegional)
   ).sort((a,b) => (b.Id||0)-(a.Id||0));
+  const colLabelRegional = v => v === 'centro' ? 'Centro' : v === 'sul' ? 'Sul' : v === 'outro' ? 'Outro' : '';
 
   const totalKgFiltro = filtrados.reduce((s,r) => s + (r.totalKg||0), 0);
   const c1KgFiltro = filtrados.reduce((s,r) => s + (r.c1Kg||0), 0);
@@ -50903,6 +50948,11 @@ function renderColMiniDashboard() {
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <div style="font-family:'Mont',sans-serif;font-size:.9rem;font-weight:800">📊 Mini Dashboard — Coleta de Resíduos</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select onchange="colDashFiltrarRegional(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:700;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
+          <option value="">Todas as Regionais</option>
+          <option value="centro" ${window._colDashFiltroRegional==='centro'?'selected':''}>Regional Centro</option>
+          <option value="sul" ${window._colDashFiltroRegional==='sul'?'selected':''}>Regional Sul</option>
+        </select>
         <select onchange="colDashFiltrarMes(this.value)" style="border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;font-family:'Mont',sans-serif;outline:none;cursor:pointer">
           <option value="">Todos os meses</option>
           ${COL_MESES.map((m,idx) => `<option value="${String(idx+1).padStart(2,'0')}" ${window._colDashFiltroMes===String(idx+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}
@@ -50946,7 +50996,7 @@ function renderColMiniDashboard() {
           : filtrados.map((r,idx) => `
             <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;${idx%2===0?'background:var(--surface)':'background:var(--surface2)'};${idx<filtrados.length-1?'border-bottom:1px solid var(--border)':''}">
               <div style="flex:1;min-width:140px">
-                <div style="font-size:.82rem;font-weight:700">Nº ${r.num || '—'} · ${r.local || 'Sem local'}</div>
+                <div style="font-size:.82rem;font-weight:700">Nº ${r.num || '—'}${!window._colDashFiltroRegional && colLabelRegional(r.regional) ? ` <span style="font-size:.62rem;font-weight:700;padding:1px 7px;border-radius:9px;background:${r.regional==='centro'?'#e6f0fa':'#fdeee0'};color:${r.regional==='centro'?'#2563eb':'#c0661a'}">${colLabelRegional(r.regional)}</span>` : ''} · ${r.local || 'Sem local'}</div>
                 <div style="font-size:.68rem;color:var(--text-muted)">${r.motorista || '—'} ${r.placa?'· '+r.placa:''}</div>
               </div>
               <div style="font-size:.75rem;color:var(--text-muted);min-width:80px;text-align:center">
@@ -51014,14 +51064,20 @@ function pageChecklistColeta() {
 
   ${renderColMiniDashboard()}
 
-  <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap">
+  <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="colNovoChecklist()">🆕 Novo Relatório</button>
+    ${window._colMostrarForm ? `
     <button class="btn-primary" onclick="salvarColetaChecklist()">💾 Salvar e Sincronizar com OneDrive</button>
     <button class="btn-primary" style="background:var(--brand-brown,#3F261F);color:#fff" onclick="exportarColetaPdf()">🖨️ Exportar PDF</button>
     <button class="btn-secondary" onclick="colAbrirConfigEmails()">⚙️ Destinatários</button>
     <button class="btn-primary" style="background:var(--green-main);color:#fff" onclick="colConcluirEEnviar()">✅ Concluir e Enviar</button>
+    <button class="btn-secondary" style="margin-left:auto" onclick="colFecharFormulario()">✕ Fechar Formulário</button>
+    ` : `
+    <button class="btn-secondary" onclick="colAbrirConfigEmails()">⚙️ Destinatários</button>
+    `}
   </div>
 
+  ${!window._colMostrarForm ? '' : `
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">Identificação</div>
     <div class="form-row">
@@ -51106,6 +51162,7 @@ function pageChecklistColeta() {
     <div class="card-title">Observações</div>
     <textarea rows="3" id="col_obs" oninput="colCampo('obs',this.value)" placeholder="Observações sobre a coleta...">${d.obs||''}</textarea>
   </div>
+  `}
   `;
 }
 
@@ -51178,6 +51235,7 @@ async function colEditarChecklist(id) {
     if (!Array.isArray(window._colData.residuos)) window._colData.residuos = [];
     if (!Array.isArray(window._colData.fotos)) window._colData.fotos = [];
     window._colRegistroAtualId = id;
+    window._colMostrarForm = true;
     showSyncStatus('Relatório carregado!', 'ok', 3000);
     showToast('✏️ Relatório carregado para edição. Altere o que precisar e clique em Salvar.');
     navigate('checklist_coleta');
