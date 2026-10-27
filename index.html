@@ -7767,7 +7767,6 @@ function pagePagar() {
     <div class="kpi-card blue" id="pag-kpi-card-total" onclick="pagFiltrarKpi('')" style="cursor:pointer;padding:11px 12px" title="Ver todos os lançamentos"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">Total de Lançamentos</div><div class="kpi-value" id="pag-kpi-total" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">📑</div></div>
     <div class="kpi-card amber" id="pag-kpi-card-aprovacao" onclick="pagFiltrarKpi('aprovacao')" style="cursor:pointer;padding:11px 12px" title="Filtrar: aguardando aprovação"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">Aguardando Aprovação</div><div class="kpi-value" id="pag-kpi-aprovacao" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">⏳</div></div>
     <div class="kpi-card blue" id="pag-kpi-card-pagamento" onclick="pagFiltrarKpi('pagamento')" style="cursor:pointer;padding:11px 12px" title="Filtrar: aguardando pagamento"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">Aguardando Pagamento</div><div class="kpi-value" id="pag-kpi-pagamento" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">💳</div></div>
-    <div class="kpi-card green" id="pag-kpi-card-pago" onclick="window._rdTab='despesas';navigate('receitas_despesas')" style="cursor:pointer;padding:11px 12px" title="Pagos já saíram desta lista — ver em Despesas"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">Pagos (ver em Despesas)</div><div class="kpi-value" id="pag-kpi-pago" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">✅</div></div>
     <div class="kpi-card amber" id="pag-kpi-card-vencehoje" onclick="pagFiltrarKpi('vencehoje')" style="cursor:pointer;padding:11px 12px" title="Filtrar: vencendo hoje"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">📅 Vencendo Hoje</div><div class="kpi-value" id="pag-kpi-vencehoje" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">📅</div></div>
     <div class="kpi-card red" id="pag-kpi-card-atraso" onclick="pagFiltrarKpi('atraso')" style="cursor:pointer;padding:11px 12px" title="Filtrar: em atraso"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">Em Atraso</div><div class="kpi-value" id="pag-kpi-atraso" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">⚠️</div></div>
     <div class="kpi-card amber" id="pag-kpi-card-estagiario" onclick="pagFiltrarKpi('estagiario')" style="cursor:pointer;padding:11px 12px" title="Lançamentos feitos por quem usa outro login (ex.: estagiário), aguardando sua aprovação"><div class="kpi-label" style="font-size:.66rem;margin-bottom:3px">🎓 Do Estagiário — Ag. Aprovação</div><div class="kpi-value" id="pag-kpi-estagiario" style="font-size:1.25rem">—</div><div class="kpi-icon" style="font-size:1.1rem;top:9px;right:9px">🎓</div></div>
@@ -10013,6 +10012,113 @@ async function pagRejeitarConta(id) {
   setTimeout(() => { carregarContasPagar(); carregarPagarPendentesDespesas(); atualizarBadgeNotificacoes(); if (document.getElementById('aprov-lista-pagar')) carregarAprovacoes(); }, 600);
 }
 
+/* -- Aviso de pagamento por WhatsApp — pedido 27/10/2026: "quando marcelo,
+   luiz, tiago e cassiane adicionar algo em contas a pagar, e eu tiago
+   (gestor) fizer o pagamento, consegue avisar eles?". Perguntado o canal,
+   Tiago escolheu "WhatsApp com link pronto pra eu enviar": sem API paga,
+   sem provedor novo — ao registrar o pagamento (individual ou em lote), 1
+   cartão por pessoa que lançou (LancadoPor, ignorando o próprio Tiago
+   quando ele mesmo lançou o que está pagando) com telefone + mensagem já
+   prontos, e um botão que abre o WhatsApp dele com tudo preenchido —
+   ainda precisa 1 clique do Tiago por pessoa pra confirmar o envio. Não
+   existia telefone de ninguém cadastrado em lugar nenhum do app, então os
+   números ficam numa tabela nova e pequena (ContatosAvisoPagamento,
+   nome+telefone), preenchida sozinha na 1ª vez que Tiago digitar um
+   número aqui — da próxima vez já vem pronto. -- */
+function pagNomesParecidos(a, b) {
+  if (!a || !b) return false;
+  return a === b || a.indexOf(b) !== -1 || b.indexOf(a) !== -1;
+}
+async function pagBuscarTelefoneContato(nome) {
+  try {
+    const lista = await dbLerSeguro('ContatosAvisoPagamento');
+    const nomeNorm = (nome || '').trim().toLowerCase();
+    let achado = (Array.isArray(lista) ? lista : []).find(c => (c.nome || '').trim().toLowerCase() === nomeNorm);
+    if (!achado) achado = (Array.isArray(lista) ? lista : []).find(c => pagNomesParecidos((c.nome || '').trim().toLowerCase(), nomeNorm));
+    return achado ? (achado.telefone || '') : '';
+  } catch (e) { return ''; }
+}
+async function pagSalvarTelefoneContato(nome, telefone) {
+  try {
+    const lista = await dbLerSeguro('ContatosAvisoPagamento');
+    const nomeNorm = (nome || '').trim().toLowerCase();
+    const achado = (Array.isArray(lista) ? lista : []).find(c => (c.nome || '').trim().toLowerCase() === nomeNorm);
+    if (achado) await dbAtualizar('ContatosAvisoPagamento', achado.Id, { telefone });
+    else await dbInserir('ContatosAvisoPagamento', { nome: (nome || '').trim(), telefone });
+  } catch (e) { console.warn('[ContasPagar] Falha ao salvar telefone de contato p/ aviso WhatsApp', e); }
+}
+function pagSoNumeros(s) { return (s || '').replace(/\D/g, ''); }
+function pagMensagemAvisoPagamento(itens) {
+  const fmtValor = (v) => 'R$ ' + (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtData = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  if (itens.length === 1) {
+    const i = itens[0];
+    const titulo = i.Fornecedor || i.Descricao || 'Conta a Pagar';
+    return 'Olá! Informamos que o lançamento *' + titulo + '*' + ((i.Descricao && i.Fornecedor) ? ' — ' + i.Descricao : '') + ', no valor de *' + fmtValor(i.Valor) + '*, foi *pago* em ' + fmtData(i.DataPagamento) + (i.BancoPagamento ? ' (' + i.BancoPagamento + ')' : '') + '.\n\n— Financeiro Expedian';
+  }
+  const soma = itens.reduce((s, r) => s + (r.Valor || 0), 0);
+  const linhas = itens.map(i => '• ' + (i.Fornecedor || i.Descricao || 'Conta a Pagar') + ' — ' + fmtValor(i.Valor)).join('\n');
+  return 'Olá! Informamos que os lançamentos abaixo foram *pagos*:\n' + linhas + '\n\nTotal: *' + fmtValor(soma) + '*.\n\n— Financeiro Expedian';
+}
+/* -- itensPagos: registros de ContasPagar recém-marcados Pago (com
+   Valor/Fornecedor/Descricao/LancadoPor/DataPagamento/BancoPagamento já
+   preenchidos). Agrupa por LancadoPor — ignora quem pagou (normalmente o
+   próprio Tiago, avisar ele mesmo não faz sentido) e quem não tem
+   LancadoPor registrado — e mostra 1 cartão por pessoa. -- */
+function pagAbrirAvisoWhatsapp(itensPagos) {
+  const quemPagou = (window._currentUser ? window._currentUser.name : '').trim().toLowerCase();
+  const porPessoa = {};
+  (itensPagos || []).forEach(i => {
+    const nome = (i.LancadoPor || '').trim();
+    if (!nome || pagNomesParecidos(nome.toLowerCase(), quemPagou)) return;
+    const chave = nome.toLowerCase();
+    if (!porPessoa[chave]) porPessoa[chave] = { nome: nome, itens: [] };
+    porPessoa[chave].itens.push(i);
+  });
+  const pessoas = Object.values(porPessoa);
+  if (!pessoas.length) return;
+  const existente = document.getElementById('pag-aviso-wa-modal'); if (existente) existente.remove();
+  window._pagAvisoWaPessoas = pessoas;
+  const modal = document.createElement('div');
+  modal.id = 'pag-aviso-wa-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = '<div style="background:var(--surface);border-radius:14px;padding:20px;max-width:460px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">' +
+    '<div style="font-weight:800;font-size:1rem;margin-bottom:4px">📲 Avisar pagamento no WhatsApp</div>' +
+    '<div style="font-size:.76rem;color:var(--text-muted);margin-bottom:14px">Confira o número e a mensagem de cada pessoa, depois clique em "Abrir WhatsApp" pra enviar.</div>' +
+    '<div id="pag-aviso-wa-lista">' + pessoas.map((p, idx) => pagHtmlCardAvisoWhatsapp(p, idx)).join('') + '</div>' +
+    '<button class="btn-secondary" style="width:100%;margin-top:6px" onclick="document.getElementById(\'pag-aviso-wa-modal\').remove()">Fechar</button>' +
+    '</div>';
+  document.body.appendChild(modal);
+  pessoas.forEach((p, idx) => {
+    pagBuscarTelefoneContato(p.nome).then(tel => {
+      if (!tel) return;
+      const inp = document.getElementById('pag-aviso-wa-tel-' + idx);
+      if (inp && !inp.value) inp.value = tel;
+    });
+  });
+}
+function pagHtmlCardAvisoWhatsapp(p, idx) {
+  const msg = pagMensagemAvisoPagamento(p.itens);
+  return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px">' +
+    '<div style="font-weight:700;font-size:.85rem;margin-bottom:6px">👤 ' + p.nome + ' <span style="color:var(--text-muted);font-weight:400">(' + p.itens.length + ' lançamento' + (p.itens.length > 1 ? 's' : '') + ')</span></div>' +
+    '<div class="form-group" style="margin-bottom:8px"><label style="font-size:.7rem">Telefone (WhatsApp)</label><input id="pag-aviso-wa-tel-' + idx + '" placeholder="(69) 99999-9999" style="width:100%"></div>' +
+    '<div class="form-group" style="margin-bottom:8px"><label style="font-size:.7rem">Mensagem</label><textarea id="pag-aviso-wa-msg-' + idx + '" rows="4" style="width:100%;font-size:.76rem">' + msg + '</textarea></div>' +
+    '<button class="btn-primary" style="width:100%;background:#25D366" onclick="pagEnviarAvisoWhatsapp(' + idx + ')">📲 Abrir WhatsApp</button>' +
+    '</div>';
+}
+async function pagEnviarAvisoWhatsapp(idx) {
+  const telInp = document.getElementById('pag-aviso-wa-tel-' + idx);
+  const msgInp = document.getElementById('pag-aviso-wa-msg-' + idx);
+  const telDigits = pagSoNumeros(telInp ? telInp.value : '');
+  if (!telDigits || telDigits.length < 10) { showToast('⚠️ Informe um telefone válido (com DDD).'); return; }
+  const msg = msgInp ? msgInp.value : '';
+  const ddi = telDigits.length <= 11 ? '55' : '';
+  const url = 'https://wa.me/' + ddi + telDigits + '?text=' + encodeURIComponent(msg);
+  window.open(url, '_blank');
+  const p = (window._pagAvisoWaPessoas || [])[idx];
+  if (p) await pagSalvarTelefoneContato(p.nome, telInp ? telInp.value : '');
+}
+
 async function pagConfirmarPagamento(id) {
   const dataPag = (document.getElementById('pagv_data_pagamento')||{}).value;
   const banco = (document.getElementById('pagv_banco')||{}).value;
@@ -10026,9 +10132,17 @@ async function pagConfirmarPagamento(id) {
   if (ok) await pagSincronizarDespesa(id, dataPag, banco);
   // Outlook (pedido 30/09/2026): já foi pago, não precisa mais do lembrete
   // de vencimento no calendário — remove o evento. Não bloqueia o fluxo se falhar.
-  if (ok) { const reg = (window._pagFiltradas||[]).find(r=>r.Id===id); if (reg && reg.OutlookEventId) cpExcluirEventoOutlook(reg.OutlookEventId); }
+  // Guarda o registro (pagRegPago) pra poder oferecer o aviso de pagamento
+  // por WhatsApp logo abaixo (pedido 27/10/2026) — depois de recarregar a
+  // lista o item some dela (Pago não aparece mais em Contas a Pagar).
+  let pagRegPago = null;
+  if (ok) {
+    pagRegPago = (window._pagFiltradas||[]).find(r=>r.Id===id);
+    if (pagRegPago && pagRegPago.OutlookEventId) cpExcluirEventoOutlook(pagRegPago.OutlookEventId);
+  }
   showToast(ok ? '✅ Pagamento registrado!' : ('❌ Erro' + syncErrorDetalhe()));
   const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
+  if (ok && pagRegPago) pagAbrirAvisoWhatsapp([{ ...pagRegPago, DataPagamento: dataPag, BancoPagamento: banco }]);
   setTimeout(() => { carregarContasPagar(); carregarPagarPendentesDespesas(); }, 600);
 }
 
@@ -10410,12 +10524,15 @@ async function carregarContasPagar() {
       });
     }
 
-    // KPIs — sobre todos os lançamentos, antes dos filtros de busca
+    // KPIs — sobre todos os lançamentos, antes dos filtros de busca. "Total
+    // de Lançamentos" exclui os já Pagos (pedido 27/10/2026): Pago nunca
+    // aparece na lista abaixo (filtro mais adiante — "só existe em
+    // Despesas"), então o Total precisa bater com o que está de fato
+    // listado, senão parece que pagar um lançamento não "tira" ele da tela.
     const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
-    setKpi('pag-kpi-total', items.length);
+    setKpi('pag-kpi-total', items.filter(r=>r.Status!=='Pago').length);
     setKpi('pag-kpi-aprovacao', items.filter(r=>r.Status==='Aguardando Aprovação').length);
     setKpi('pag-kpi-pagamento', items.filter(r=>r.Status==='Aprovado — Aguardando Pagamento').length);
-    setKpi('pag-kpi-pago', items.filter(r=>r.Status==='Pago').length);
     setKpi('pag-kpi-atraso', items.filter(r=>r.Status==='Em atraso').length);
     setKpi('pag-kpi-vencehoje', items.filter(r=>r.Status!=='Pago' && pagDiffVencimento(r.Vencimento)===0).length);
     setKpi('pag-kpi-estagiario', items.filter(r=>r.Status==='Aguardando Aprovação' && ehLancadorExtra(r.LancadoPor)).length);
@@ -10439,7 +10556,6 @@ async function carregarContasPagar() {
     setActiveKpi('pag-kpi-card-total', !PAG_FILTRO_KPI, '#0d6efd');
     setActiveKpi('pag-kpi-card-aprovacao', PAG_FILTRO_KPI==='aprovacao', '#e0a800');
     setActiveKpi('pag-kpi-card-pagamento', PAG_FILTRO_KPI==='pagamento', '#0d6efd');
-    setActiveKpi('pag-kpi-card-pago', PAG_FILTRO_KPI==='pago', '#28a745');
     setActiveKpi('pag-kpi-card-atraso', PAG_FILTRO_KPI==='atraso', '#dc3545');
     setActiveKpi('pag-kpi-card-vencehoje', PAG_FILTRO_KPI==='vencehoje', '#e0a800');
     setActiveKpi('pag-kpi-card-estagiario', PAG_FILTRO_KPI==='estagiario', '#e0a800');
@@ -10681,6 +10797,7 @@ async function pagConfirmarPagamentoEmLote() {
   if (btn && btn.disabled) return;
   if (btn) btn.disabled = true;
   let ok = 0, falhas = 0;
+  const pagPagosOk = [];
   for (let idx = 0; idx < ids.length; idx++) {
     const id = ids[idx];
     if (btn) btn.innerHTML = '<span class="btn-spinner"></span> Registrando ' + (idx+1) + '/' + ids.length + '...';
@@ -10689,12 +10806,16 @@ async function pagConfirmarPagamentoEmLote() {
       await pagSincronizarDespesa(id, dataPag, banco);
       const reg = (window._pagFiltradas||[]).find(r=>r.Id===id);
       if (reg && reg.OutlookEventId) cpExcluirEventoOutlook(reg.OutlookEventId);
+      if (reg) pagPagosOk.push({ ...reg, DataPagamento: dataPag, BancoPagamento: banco });
       ok++;
     } else falhas++;
   }
   window._pagSelecionados = new Set();
   const m = document.getElementById('pag-lote-modal'); if (m) m.remove();
   showToast(falhas ? `✅ ${ok} pagamento(s) registrado(s), ⚠️ ${falhas} falharam${syncErrorDetalhe()}` : `✅ ${ok} pagamento(s) registrado(s)!`);
+  // Aviso de pagamento por WhatsApp (pedido 27/10/2026) — 1 cartão por
+  // pessoa que lançou, mesmo com vários pagos juntos no lote.
+  if (pagPagosOk.length) pagAbrirAvisoWhatsapp(pagPagosOk);
   setTimeout(() => { carregarContasPagar(); carregarPagarPendentesDespesas(); atualizarBadgeNotificacoes(); }, 600);
 }
 async function pagAprovarSelecionados() {
