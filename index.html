@@ -21716,14 +21716,14 @@ const ESCOPO_CONTRATUAL_ENERGISA = {
     // autorizados pela CONTRATANTE". valorUnitario fica 0 aqui de propósito —
     // preencher na hora de montar o BM com o valor real do mês (soma dos
     // relatórios de coleta que tiveram pedágio). Pedido Tiago 27/10/2026.
-    { codigo: 'pedagio', descricao: 'Pedágios (reembolso mediante comprovante válido e autorização prévia da Energisa)', unidade: 'MÊS', quantidade: 1, valorUnitario: 0, valorTotal: 0 },
+    { codigo: 'pedagio', descricao: 'Pedágios', unidade: 'MÊS', quantidade: 1, valorUnitario: 0, valorTotal: 0 },
   ],
   clm108943: [
     { codigo: 'classeI', descricao: 'Coleta e destinação — Resíduo Classe I', unidade: 'KG', quantidade: 2959, valorUnitario: 6.00, valorTotal: 17754.00 },
     { codigo: 'classeII', descricao: 'Coleta e destinação — Resíduo Classe II', unidade: 'KG', quantidade: 50620, valorUnitario: 3.36, valorTotal: 170083.20 },
     { codigo: 'emerg', descricao: 'Acionamento a Emergência (por evento)', unidade: 'EVENTO', quantidade: 6, valorUnitario: 3080.00, valorTotal: 18480.00 },
     { codigo: 'mensal', descricao: 'Acionamento Mensal (coleta fora dos municípios-base)', unidade: 'MÊS', quantidade: 12, valorUnitario: 2600.00, valorTotal: 31200.00 },
-    { codigo: 'pedagio', descricao: 'Pedágios (reembolso mediante comprovante válido e autorização prévia da Energisa)', unidade: 'MÊS', quantidade: 1, valorUnitario: 0, valorTotal: 0 },
+    { codigo: 'pedagio', descricao: 'Pedágios', unidade: 'MÊS', quantidade: 1, valorUnitario: 0, valorTotal: 0 },
   ],
 };
 const ESCOPO_CONTRATUAL_FONTE = {
@@ -22528,6 +22528,66 @@ function cmedCalcularSubtotalItem(it) {
   const extras = (it.subitens || []).reduce((s, sub) => s + cmedSubitemValorTotal(sub), 0);
   return base + extras;
 }
+function cmedPedagioLinhaValorTotal(linha) {
+  const base = parseFloat(linha.valorUnit) || 0;
+  const idaVolta = linha.idaVolta !== false ? 2 : 1;
+  const dobraCaminhao = (linha.veiculoTipo || '').indexOf('Caminhão') === 0 ? 2 : 1;
+  return base * idaVolta * dobraCaminhao;
+}
+function cmedPedagioSincronizar(idxItem) {
+  const it = window._cmedData.itens && window._cmedData.itens[idxItem];
+  if (!it) return;
+  const linhas = Array.isArray(it.pedagioLinhas) ? it.pedagioLinhas : [];
+  it.quanti = 1;
+  it.unid = it.unid || 'MÊS';
+  it.valorUnit = linhas.reduce((s, l) => s + cmedPedagioLinhaValorTotal(l), 0);
+  it.composicao = linhas.filter(l => l.porticoId).map(l => {
+    const p = PEDAGIO_PORTICOS_RO.find(x => x.id === l.porticoId);
+    const nome = p ? p.nome : l.porticoId;
+    const idaVoltaTxt = l.idaVolta !== false ? 'ida e volta' : 'só ida';
+    return {
+      desc: 'Pórtico ' + nome + ' — ' + idaVoltaTxt + (l.veiculoTipo ? ' (' + l.veiculoTipo + ')' : ''),
+      quanti: null, unid: '',
+      valor: cmedPedagioLinhaValorTotal(l),
+    };
+  });
+}
+function cmedPedagioLinhaAdicionar(idxItem) {
+  const it = window._cmedData.itens && window._cmedData.itens[idxItem];
+  if (!it) return;
+  if (!Array.isArray(it.pedagioLinhas)) it.pedagioLinhas = [];
+  it.pedagioLinhas.push({ porticoId: '', idaVolta: true, veiculoTipo: '', valorUnit: 0 });
+  cmedPedagioSincronizar(idxItem);
+  cmedAtualizarBloco();
+}
+function cmedPedagioLinhaRemover(idxItem, idxLinha) {
+  const it = window._cmedData.itens && window._cmedData.itens[idxItem];
+  if (!it || !Array.isArray(it.pedagioLinhas)) return;
+  it.pedagioLinhas.splice(idxLinha, 1);
+  cmedPedagioSincronizar(idxItem);
+  cmedAtualizarBloco();
+}
+function cmedPedagioLinhaCampo(idxItem, idxLinha, campo, valor) {
+  const it = window._cmedData.itens && window._cmedData.itens[idxItem];
+  if (!it || !Array.isArray(it.pedagioLinhas) || !it.pedagioLinhas[idxLinha]) return;
+  const linha = it.pedagioLinhas[idxLinha];
+  if (campo === 'porticoId') {
+    linha.porticoId = valor;
+    const p = PEDAGIO_PORTICOS_RO.find(x => x.id === valor);
+    if (p) linha.valorUnit = p.valor;
+    cmedPedagioSincronizar(idxItem);
+    cmedAtualizarBloco();
+    return;
+  }
+  if (campo === 'idaVolta' || campo === 'veiculoTipo') {
+    linha[campo] = valor;
+    cmedPedagioSincronizar(idxItem);
+    cmedAtualizarBloco();
+    return;
+  }
+  linha[campo] = valor;
+  cmedAtualizarTotaisItens();
+}
 /* -- Ao escolher um serviço da lista suspensa do escopo técnico, puxa
    Descrição/Unidade/R$ Unitário automaticamente daquele item do contrato.
    '_outro' limpa esses campos pra edição manual (serviço fora do escopo
@@ -22547,6 +22607,7 @@ function cmedItemSelecionarEscopo(idx, codigo) {
       item.valorUnit = escopo.valorUnitario;
     }
   }
+  if (codigo === 'pedagio' && !Array.isArray(item.pedagioLinhas)) item.pedagioLinhas = [];
   cmedAtualizarBloco();
 }
 function cmedCalcularTotalItens(itens) {
@@ -22559,6 +22620,13 @@ function cmedAtualizarTotaisItens() {
       const elSub = document.getElementById('cmed-subitem-total-' + i + '-' + si);
       if (elSub) elSub.textContent = 'R$ ' + cmedSubitemValorTotal(sub).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     });
+    if (Array.isArray(it.pedagioLinhas)) {
+      cmedPedagioSincronizar(i);
+      it.pedagioLinhas.forEach((l, li) => {
+        const elL = document.getElementById('cmed-pedagio-linha-total-' + i + '-' + li);
+        if (elL) elL.textContent = 'R$ ' + cmedPedagioLinhaValorTotal(l).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      });
+    }
     const st = cmedCalcularSubtotalItem(it);
     const el = document.getElementById('cmed-item-total-' + i);
     if (el) el.textContent = 'R$ ' + st.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -23454,11 +23522,42 @@ function cmedHtmlForm() {
       </div>
       ${it.codigo === '_outro' ? `
       <div class="form-group" style="margin:0 0 8px"><input type="text" value="${(it.desc || '').replace(/"/g, '&quot;')}" oninput="cmedItemCampo(${i},'desc',this.value)" placeholder="Descreva o serviço"></div>` : ''}
+      ${it.codigo === 'pedagio' ? `
+      <div style="border-top:1px dashed var(--border);padding-top:8px;margin-bottom:8px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Pórticos cruzados (BR-364/RO) <span style="font-weight:400;text-transform:none">— uma linha por pórtico; valor total calculado automaticamente</span></div>
+        ${(it.pedagioLinhas || []).map((l, li) => `
+        <div style="display:grid;grid-template-columns:1.6fr .8fr 1.1fr .9fr .9fr auto;gap:6px;align-items:end;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px;background:var(--surface)">
+          <div class="form-group" style="margin:0"><label style="font-size:.62rem">Pórtico</label>
+            <select onchange="cmedPedagioLinhaCampo(${i},${li},'porticoId',this.value)" style="font-size:.76rem;padding:5px 6px">
+              <option value="">— Selecione —</option>
+              ${PEDAGIO_PORTICOS_RO.map(p => `<option value="${p.id}" ${l.porticoId === p.id ? 'selected' : ''}>${p.nome}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group" style="margin:0;text-align:center"><label style="font-size:.62rem;display:block">Ida e volta</label>
+            <input type="checkbox" ${l.idaVolta !== false ? 'checked' : ''} onchange="cmedPedagioLinhaCampo(${i},${li},'idaVolta',this.checked)" style="width:16px;height:16px;margin-top:6px">
+          </div>
+          <div class="form-group" style="margin:0"><label style="font-size:.62rem">Tipo de veículo</label>
+            <select onchange="cmedPedagioLinhaCampo(${i},${li},'veiculoTipo',this.value)" style="font-size:.76rem;padding:5px 6px">
+              <option value="">— Selecione —</option>
+              ${['Pickup', 'Caminhão Baú', 'Carro de Passeio'].map(t => `<option value="${t}" ${l.veiculoTipo === t ? 'selected' : ''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group" style="margin:0"><label style="font-size:.62rem">Valor Unit.</label>
+            <input type="number" step="0.01" value="${l.valorUnit != null ? l.valorUnit : ''}" oninput="cmedPedagioLinhaCampo(${i},${li},'valorUnit',this.value)" style="font-size:.76rem;padding:5px 6px">
+          </div>
+          <div style="text-align:right;font-size:.74rem"><label style="font-size:.62rem;display:block;color:var(--text-muted)">Total</label><b id="cmed-pedagio-linha-total-${i}-${li}">R$ ${cmedPedagioLinhaValorTotal(l).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b></div>
+          <span onclick="cmedPedagioLinhaRemover(${i},${li})" style="cursor:pointer;color:var(--red);font-size:.85rem;margin-bottom:6px" title="Remover">✕</span>
+        </div>`).join('')}
+        <button type="button" class="btn-secondary" style="font-size:.7rem;padding:4px 10px" onclick="cmedPedagioLinhaAdicionar(${i})">➕ Adicionar pórtico</button>
+        <div style="text-align:right;font-size:.76rem;color:var(--text-muted);margin-top:6px">R$ Unitário do serviço (MÊS), calculado pela soma dos pórticos: <b>R$ ${(it.valorUnit || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b></div>
+      </div>
+      ` : `
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
         <div class="form-group" style="margin:0"><label>Quanti</label><input type="number" step="0.01" value="${it.quanti != null ? it.quanti : ''}" oninput="cmedItemCampo(${i},'quanti',this.value)"></div>
         <div class="form-group" style="margin:0"><label>Unid</label><input type="text" value="${(it.unid || '').replace(/"/g, '&quot;')}" oninput="cmedItemCampo(${i},'unid',this.value)" placeholder="UNT."></div>
         <div class="form-group" style="margin:0"><label>R$ Unitário</label><input type="number" step="0.01" value="${it.valorUnit != null ? it.valorUnit : ''}" oninput="cmedItemCampo(${i},'valorUnit',this.value)"></div>
       </div>
+      `}
       <div class="form-group" style="margin:0 0 8px"><label>Observação sobre este serviço (opcional)</label>
         <textarea rows="2" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:6px 8px;font-size:.8rem;background:var(--surface);resize:vertical" placeholder="Alguma observação específica sobre este item?" oninput="cmedItemCampo(${i},'obs',this.value)">${it.obs || ''}</textarea>
       </div>
