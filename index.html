@@ -51156,8 +51156,42 @@ async function colLimparHistorico() {
   navigate('checklist_coleta');
 }
 
+/* -- Filtro de mês/ano/regional do Mini Dashboard, extraído pra função própria
+   (30/10/2026) pra ser reaproveitado também pela exportação PDF/Excel do
+   período — sem isso a exportação teria que duplicar o mesmo filtro e correria
+   o risco de ficar dessincronizada do que a tela realmente mostra. -- */
+function colHistoricoFiltrado() {
+  const historico = Array.isArray(window._colHistorico) ? window._colHistorico : [];
+  const comData = historico.map(r => {
+    let ano = '', mes = '';
+    if (r.data && /^\d{4}-\d{2}/.test(r.data)) { ano = r.data.slice(0,4); mes = r.data.slice(5,7); }
+    return { ...r, _ano: ano, _mes: mes };
+  });
+  return comData.filter(r =>
+    (!window._colDashFiltroAno || r._ano === window._colDashFiltroAno) &&
+    (!window._colDashFiltroMes || r._mes === window._colDashFiltroMes) &&
+    (!window._colDashFiltroRegional || r.regional === window._colDashFiltroRegional)
+  ).sort((a,b) => (b.Id||0)-(a.Id||0));
+}
+function colLabelRegional(v) { return v === 'centro' ? 'Centro' : v === 'sul' ? 'Sul' : v === 'outro' ? 'Outro' : ''; }
+
+/* -- Descrição textual do filtro ativo (Regional/Mês/Ano), usada no
+   subtítulo do PDF e no nome dos arquivos exportados (PDF/Excel). -- */
+function colFiltroDescricao() {
+  const partes = [];
+  partes.push(window._colDashFiltroRegional ? 'Regional ' + colLabelRegional(window._colDashFiltroRegional) : 'Todas as Regionais');
+  if (window._colDashFiltroMes || window._colDashFiltroAno) {
+    const mesLabel = window._colDashFiltroMes ? (COL_MESES[parseInt(window._colDashFiltroMes,10)-1] || window._colDashFiltroMes) : 'Todos os meses';
+    partes.push(mesLabel + (window._colDashFiltroAno ? '/' + window._colDashFiltroAno : ''));
+  } else {
+    partes.push('Todo o período');
+  }
+  return partes.join(' · ');
+}
+
 /* -- Mini dashboard: filtros por mês/ano, KPIs de volume coletado e lista de relatórios -- */
 function renderColMiniDashboard() {
+  const filtrados = colHistoricoFiltrado();
   const historico = Array.isArray(window._colHistorico) ? window._colHistorico : [];
 
   const comData = historico.map(r => {
@@ -51167,13 +51201,6 @@ function renderColMiniDashboard() {
   });
 
   const anosDisponiveis = [...new Set(comData.map(r => r._ano).filter(Boolean))].sort().reverse();
-
-  const filtrados = comData.filter(r =>
-    (!window._colDashFiltroAno || r._ano === window._colDashFiltroAno) &&
-    (!window._colDashFiltroMes || r._mes === window._colDashFiltroMes) &&
-    (!window._colDashFiltroRegional || r.regional === window._colDashFiltroRegional)
-  ).sort((a,b) => (b.Id||0)-(a.Id||0));
-  const colLabelRegional = v => v === 'centro' ? 'Centro' : v === 'sul' ? 'Sul' : v === 'outro' ? 'Outro' : '';
 
   const totalKgFiltro = filtrados.reduce((s,r) => s + (r.totalKg||0), 0);
   const c1KgFiltro = filtrados.reduce((s,r) => s + (r.c1Kg||0), 0);
@@ -51198,6 +51225,8 @@ function renderColMiniDashboard() {
           ${anosDisponiveis.map(a => `<option value="${a}" ${window._colDashFiltroAno===a?'selected':''}>${a}</option>`).join('')}
         </select>
         <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="carregarColetaHistorico(true)">🔄 Atualizar</button>
+        <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="colExportarHistoricoPdf()">📄 Exportar PDF do Período</button>
+        <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="colExportarHistoricoExcel()">📊 Exportar Excel do Período</button>
         <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem;color:var(--red)" onclick="colLimparHistorico()">🗑️ Limpar Histórico</button>
       </div>
     </div>
@@ -51251,6 +51280,306 @@ function renderColMiniDashboard() {
     </div>
   </div>
   `;
+}
+
+/* ===== Exportação do histórico filtrado (PDF + Excel) — pedido Tiago
+   30/10/2026: "em coleta consigo exportar em PDF e excel o historico das
+   coletas realizadas no periodo, com quantitativo, produto de cada base".
+   Usa exatamente o filtro Regional/Mês/Ano já aplicado no Mini Dashboard
+   (colHistoricoFiltrado). O quantitativo por base vem direto dos registros
+   leves (totalKg/c1Kg/c2Kg já salvos em ChecklistColeta, sem round-trip
+   extra); o detalhamento por produto (tipo de resíduo) precisa buscar o
+   snapshot completo (arquivoDados) de cada coleta do filtro, pois só lá
+   existe o array residuos[] item a item — mesmo arquivo já buscado por
+   colExportarPdfRegistro pra 1 registro só, aqui em paralelo pros N
+   registros do filtro. ===== */
+
+async function colBuscarDetalhesParaExport(filtrados) {
+  showSyncStatus('Carregando detalhes das coletas do período...');
+  const resultados = await Promise.all(filtrados.map(async r => {
+    let residuos = [];
+    if (r.arquivoDados) {
+      try {
+        const texto = await baixarArquivoCentral(r.arquivoDados);
+        if (texto) {
+          const d = JSON.parse(texto);
+          if (Array.isArray(d.residuos)) residuos = d.residuos;
+        }
+      } catch (e) { residuos = []; }
+    }
+    return { registro: r, residuos };
+  }));
+  showSyncStatus('Detalhes carregados!', 'ok', 1500);
+  return resultados;
+}
+
+function colAgregarPorBase(filtrados) {
+  const mapa = {};
+  filtrados.forEach(r => {
+    const base = r.local || 'Sem local';
+    if (!mapa[base]) mapa[base] = { base, qtd: 0, c1Kg: 0, c2Kg: 0, totalKg: 0 };
+    mapa[base].qtd += 1;
+    mapa[base].c1Kg += r.c1Kg || 0;
+    mapa[base].c2Kg += r.c2Kg || 0;
+    mapa[base].totalKg += r.totalKg || 0;
+  });
+  return Object.values(mapa).sort((a, b) => a.base.localeCompare(b.base, 'pt-BR'));
+}
+
+function colAgregarPorBaseProduto(detalhes) {
+  const mapa = {};
+  detalhes.forEach(({ registro, residuos }) => {
+    const base = registro.local || 'Sem local';
+    (residuos || []).forEach(res => {
+      if (!res.tipo && !res.peso) return;
+      const tipo = res.tipo || 'Não especificado';
+      const classe = res.classe || '—';
+      const chave = base + '\u0000' + tipo + '\u0000' + classe;
+      if (!mapa[chave]) mapa[chave] = { base, tipo, classe, pesoKg: 0, lancamentos: 0 };
+      const peso = parseFloat(res.peso) || 0;
+      if ((res.unid || 'kg') === 'kg') mapa[chave].pesoKg += peso;
+      mapa[chave].lancamentos += 1;
+    });
+  });
+  return Object.values(mapa).sort((a, b) => a.base.localeCompare(b.base, 'pt-BR') || a.tipo.localeCompare(b.tipo, 'pt-BR'));
+}
+
+async function colExportarHistoricoPdf() {
+  const filtrados = colHistoricoFiltrado();
+  if (!filtrados.length) { showToast('⚠️ Nenhuma coleta no filtro atual para exportar.'); return; }
+  showToast('🔄 Gerando PDF do período... aguarde.');
+  try {
+    await _garantirJsPDF();
+    const detalhes = await colBuscarDetalhesParaExport(filtrados);
+    const doc = colMontarPdfHistorico(filtrados, detalhes);
+    const nomeArq = 'ColetaResiduos_Periodo_' + colFiltroDescricao().replace(/[^\w]+/g, '_') + '.pdf';
+    doc.save(nomeArq);
+    showToast('✅ PDF gerado!');
+  } catch (e) {
+    console.warn('[Coleta] erro ao exportar PDF do período:', e);
+    showSyncStatus('Falha ao gerar PDF', 'err', 4000);
+    showToast('❌ Erro ao gerar o PDF do período.');
+  }
+}
+
+function colMontarPdfHistorico(filtrados, detalhes) {
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4' });
+  const pageW = 21.0, pageH = 29.7;
+  const titulo = 'RELATÓRIO DE COLETAS — PERÍODO';
+  const subtitulo = colFiltroDescricao() + ' · Gerado em ' + new Date().toLocaleDateString('pt-BR');
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.1;
+  const ML = 1.4, CW = pageW - 2.8;
+
+  const totalKg = filtrados.reduce((s, r) => s + (r.totalKg || 0), 0);
+  const c1Kg = filtrados.reduce((s, r) => s + (r.c1Kg || 0), 0);
+  const c2Kg = filtrados.reduce((s, r) => s + (r.c2Kg || 0), 0);
+  const fmtKg = v => v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' kg';
+
+  function kpiBox(x, w, label, valor) {
+    const h = 0.95;
+    doc.setFillColor(245, 247, 244); doc.setDrawColor(215, 220, 210); doc.setLineWidth(0.02);
+    doc.roundedRect(x, y, w, h, 0.08, 0.08, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(100, 120, 95);
+    doc.text(label.toUpperCase(), x + 0.25, y + 0.32);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(40, 40, 40);
+    doc.text(valor, x + 0.25, y + 0.72);
+    return h;
+  }
+  const quarterW = (CW - 0.75) / 4;
+  let hBox = kpiBox(ML, quarterW, 'Coletas no Período', String(filtrados.length));
+  kpiBox(ML + (quarterW + 0.25), quarterW, 'Total Coletado', fmtKg(totalKg));
+  kpiBox(ML + 2 * (quarterW + 0.25), quarterW, 'Classe I', fmtKg(c1Kg));
+  kpiBox(ML + 3 * (quarterW + 0.25), quarterW, 'Classe II', fmtKg(c2Kg));
+  y += hBox + 0.4;
+
+  function secaoTitulo(t) {
+    if (y > pageH - 3) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo);
+    doc.setFillColor(128, 196, 118);
+    doc.rect(ML, y, 0.07, 0.38, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(63, 38, 31);
+    doc.text(t.toUpperCase(), ML + 0.22, y + 0.29);
+    y += 0.55;
+  }
+
+  function tabela(headers, colW, linhas, formatarLinha) {
+    function cabecalhoTabela() {
+      doc.setFillColor(240, 244, 241);
+      doc.setDrawColor(200, 200, 200); doc.setLineWidth(0.02);
+      let x = ML;
+      headers.forEach((h, i) => { doc.rect(x, y, colW[i], 0.5, 'FD'); x += colW[i]; });
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(60, 60, 60);
+      x = ML;
+      headers.forEach((h, i) => { doc.text(h, x + 0.1, y + 0.32); x += colW[i]; });
+      y += 0.5;
+    }
+    cabecalhoTabela();
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.6); doc.setTextColor(40, 40, 40);
+    linhas.forEach((linha, i) => {
+      if (y > pageH - 3.0) { y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); cabecalhoTabela(); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.6); doc.setTextColor(40, 40, 40); }
+      const vals = formatarLinha(linha, i);
+      let x = ML;
+      doc.setDrawColor(222, 222, 222); doc.setLineWidth(0.015);
+      vals.forEach((v, ci) => {
+        doc.rect(x, y, colW[ci], 0.46);
+        const linhasTxt = doc.splitTextToSize(String(v), colW[ci] - 0.15);
+        doc.text(linhasTxt[0] || '', x + 0.08, y + 0.3);
+        x += colW[ci];
+      });
+      y += 0.46;
+    });
+    y += 0.35;
+  }
+
+  secaoTitulo('Histórico de Coletas no Período');
+  const colLabelRegionalFn = v => v === 'centro' ? 'Centro' : v === 'sul' ? 'Sul' : v === 'outro' ? 'Outro' : '—';
+  tabela(
+    ['Nº', 'Data', 'Regional', 'Local/Base', 'Motorista', 'Placa', 'Total'],
+    [1.3, 2.0, 2.3, CW - 1.3 - 2.0 - 2.3 - 3.2 - 2.4 - 2.3, 3.2, 2.4, 2.3],
+    filtrados,
+    r => [
+      r.num || '—',
+      r.data ? new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR') : '—',
+      colLabelRegionalFn(r.regional),
+      r.local || '—',
+      r.motorista || '—',
+      r.placa || '—',
+      (r.totalKg || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' kg',
+    ]
+  );
+
+  const porBase = colAgregarPorBase(filtrados);
+  secaoTitulo('Resumo por Base — Quantitativo');
+  tabela(
+    ['Base', 'Nº Coletas', 'Classe I', 'Classe II', 'Total'],
+    [CW - 2.2 - 2.4 - 2.4 - 2.4, 2.2, 2.4, 2.4, 2.4],
+    porBase,
+    b => [b.base, String(b.qtd), fmtKg(b.c1Kg), fmtKg(b.c2Kg), fmtKg(b.totalKg)]
+  );
+
+  const porBaseProduto = colAgregarPorBaseProduto(detalhes);
+  secaoTitulo('Detalhamento por Base e Produto');
+  if (!porBaseProduto.length) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(90, 90, 90);
+    doc.text('Nenhum detalhamento de resíduo disponível para as coletas deste período.', ML, y);
+    y += 0.5;
+  } else {
+    tabela(
+      ['Base', 'Tipo de Resíduo', 'Classe', 'Peso Total'],
+      [3.4, CW - 3.4 - 2.3 - 2.6, 2.3, 2.6],
+      porBaseProduto,
+      p => [p.base, p.tipo, 'Classe ' + p.classe, fmtKg(p.pesoKg)]
+    );
+  }
+
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  return doc;
+}
+
+async function colExportarHistoricoExcel() {
+  const filtrados = colHistoricoFiltrado();
+  if (!filtrados.length) { showToast('⚠️ Nenhuma coleta no filtro atual para exportar.'); return; }
+  showToast('📊 Gerando planilha do período... aguarde.');
+  try {
+    if (typeof ExcelJS === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const detalhes = await colBuscarDetalhesParaExport(filtrados);
+    const porBase = colAgregarPorBase(filtrados);
+    const porBaseProduto = colAgregarPorBaseProduto(detalhes);
+    const totalKg = filtrados.reduce((s, r) => s + (r.totalKg || 0), 0);
+    const c1Kg = filtrados.reduce((s, r) => s + (r.c1Kg || 0), 0);
+    const c2Kg = filtrados.reduce((s, r) => s + (r.c2Kg || 0), 0);
+
+    const FMT_KG = '#,##0.00" kg"';
+    const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF3F261F' } };
+    const FONTE_CORPO = { name: 'Mont', size: 9 };
+    const estilizarCabecalho = (row, { negrito = false } = {}) => {
+      row.eachCell(c => {
+        c.font = { name: 'Mont Black', size: 9, bold: negrito, color: { argb: 'FFFFFFFF' } };
+        c.fill = HEADER_FILL;
+        c.alignment = { horizontal: 'center' };
+      });
+    };
+    const estilizarCorpo = (ws, primeiraLinha, ultimaLinha) => {
+      for (let r = primeiraLinha; r <= ultimaLinha; r++) {
+        ws.getRow(r).eachCell({ includeEmpty: true }, c => { c.font = FONTE_CORPO; });
+      }
+    };
+    const colLabelRegionalFn = v => v === 'centro' ? 'Centro' : v === 'sul' ? 'Sul' : v === 'outro' ? 'Outro' : '—';
+
+    const wb = new ExcelJS.Workbook();
+
+    const ws1 = wb.addWorksheet('Coletas');
+    ws1.columns = [
+      { header: 'Nº', key: 'num', width: 10 },
+      { header: 'Data', key: 'data', width: 11 },
+      { header: 'Regional', key: 'regional', width: 11 },
+      { header: 'Local/Base', key: 'local', width: 26 },
+      { header: 'Motorista', key: 'motorista', width: 18 },
+      { header: 'Placa', key: 'placa', width: 11 },
+      { header: 'Classe I (kg)', key: 'c1', width: 13 },
+      { header: 'Classe II (kg)', key: 'c2', width: 13 },
+      { header: 'Total (kg)', key: 'total', width: 13 },
+    ];
+    filtrados.forEach(r => {
+      ws1.addRow({
+        num: r.num || '', data: r.data ? new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR') : '',
+        regional: colLabelRegionalFn(r.regional), local: r.local || '', motorista: r.motorista || '', placa: r.placa || '',
+        c1: r.c1Kg || 0, c2: r.c2Kg || 0, total: r.totalKg || 0,
+      });
+    });
+    const ultimaLinha1 = filtrados.length + 1;
+    const linhaSoma1 = ultimaLinha1 + 1;
+    ws1.getCell('G' + linhaSoma1).value = { formula: `SUM(G2:G${ultimaLinha1})` };
+    ws1.getCell('H' + linhaSoma1).value = { formula: `SUM(H2:H${ultimaLinha1})` };
+    ws1.getCell('I' + linhaSoma1).value = { formula: `SUM(I2:I${ultimaLinha1})` };
+    ['c1', 'c2', 'total'].forEach(k => { ws1.getColumn(k).numFmt = FMT_KG; });
+    estilizarCabecalho(ws1.getRow(1));
+    estilizarCorpo(ws1, 2, linhaSoma1);
+
+    const ws2 = wb.addWorksheet('Resumo por Base');
+    ws2.columns = [
+      { header: 'Base', key: 'base', width: 30 },
+      { header: 'Nº Coletas', key: 'qtd', width: 11 },
+      { header: 'Classe I (kg)', key: 'c1', width: 13 },
+      { header: 'Classe II (kg)', key: 'c2', width: 13 },
+      { header: 'Total (kg)', key: 'total', width: 13 },
+    ];
+    porBase.forEach(b => ws2.addRow({ base: b.base, qtd: b.qtd, c1: b.c1Kg, c2: b.c2Kg, total: b.totalKg }));
+    ws2.addRow({ base: 'TOTAL', qtd: filtrados.length, c1: c1Kg, c2: c2Kg, total: totalKg });
+    ['c1', 'c2', 'total'].forEach(k => { ws2.getColumn(k).numFmt = FMT_KG; });
+    estilizarCabecalho(ws2.getRow(1), { negrito: true });
+    estilizarCorpo(ws2, 2, ws2.lastRow.number);
+
+    const ws3 = wb.addWorksheet('Por Base e Produto');
+    ws3.columns = [
+      { header: 'Base', key: 'base', width: 30 },
+      { header: 'Tipo de Resíduo', key: 'tipo', width: 36 },
+      { header: 'Classe', key: 'classe', width: 9 },
+      { header: 'Peso Total (kg)', key: 'peso', width: 15 },
+    ];
+    porBaseProduto.forEach(p => ws3.addRow({ base: p.base, tipo: p.tipo, classe: p.classe, peso: p.pesoKg }));
+    ws3.getColumn('peso').numFmt = FMT_KG;
+    estilizarCabecalho(ws3.getRow(1));
+    estilizarCorpo(ws3, 2, ws3.lastRow.number);
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'ColetaResiduos_Periodo_' + colFiltroDescricao().replace(/[^\w]+/g, '_') + '.xlsx'; a.click();
+    URL.revokeObjectURL(url);
+    showToast('✅ Planilha gerada!');
+  } catch (e) {
+    console.warn('[Coleta] erro ao exportar Excel do período:', e);
+    showToast('❌ Erro ao gerar a planilha do período.');
+  }
 }
 
 /* -- Modal de consulta: lista os destinadores cadastrados e os produtos/
