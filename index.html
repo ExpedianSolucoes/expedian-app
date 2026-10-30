@@ -33230,6 +33230,38 @@ async function custosSalvarValorAprovado(ccId, valor) {
   await custosCarregarFinanceiro(true);
 }
 
+/* -- Menu de ações (⋮) da tabela de Centros de Custo — substitui os 3 botões
+   lado a lado (Detalhes/Editar/Excluir) que forçavam rolagem horizontal na
+   tabela (pedido Tiago 30/10/2026: "queria tudo na tela"). Posicionado via
+   position:fixed + coordenadas calculadas no clique, pra não ficar cortado
+   pelo overflow-x:auto do contêiner da tabela. -- */
+function custosToggleAcoesMenu(ev, ccId) {
+  ev.stopPropagation();
+  const existente = document.getElementById('custos-acoes-menu');
+  const mesmoCC = existente && existente.dataset.cc === ccId;
+  if (existente) existente.remove();
+  if (mesmoCC) return;
+  const r = ev.currentTarget.getBoundingClientRect();
+  const menu = document.createElement('div');
+  menu.id = 'custos-acoes-menu';
+  menu.dataset.cc = ccId;
+  const left = Math.max(8, Math.min(r.right - 150, window.innerWidth - 158));
+  menu.style.cssText = `position:fixed;top:${r.bottom+4}px;left:${left}px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.2);z-index:2000;min-width:150px;overflow:hidden;font-family:'Mont',sans-serif`;
+  menu.innerHTML = `
+    <button onclick="document.getElementById('custos-acoes-menu').remove();abrirDetalheCC('${ccId}')" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:.74rem;font-family:'Mont',sans-serif;color:var(--text)">📋 Detalhes</button>
+    <button onclick="document.getElementById('custos-acoes-menu').remove();abrirModalNovoCC('${ccId}')" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:.74rem;font-family:'Mont',sans-serif;color:var(--text)">✏️ Editar</button>
+    <button onclick="document.getElementById('custos-acoes-menu').remove();excluirCC('${ccId}')" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:.74rem;font-family:'Mont',sans-serif;color:var(--red)">🗑️ Excluir</button>
+  `;
+  document.body.appendChild(menu);
+  setTimeout(() => {
+    document.addEventListener('click', function fecharCustosAcoesMenu(e) {
+      const m = document.getElementById('custos-acoes-menu');
+      if (m && !m.contains(e.target)) m.remove();
+      document.removeEventListener('click', fecharCustosAcoesMenu);
+    });
+  }, 0);
+}
+
 function pageCustos() {
   if (!_custosExtrasCarregados) { setTimeout(() => custosCarregarExtras().then(() => navigate('custos')), 50); }
   if (_custosReceitas === null) { setTimeout(() => custosCarregarFinanceiro(), 100); }
@@ -33502,18 +33534,10 @@ function pageCustos() {
         <td style="white-space:nowrap;color:var(--red);font-size:.78rem">${fin === null ? '…' : fmt(fin.despesas)}</td>
         <td style="white-space:nowrap;font-size:.78rem;font-weight:700;color:${fin && fin.saldoAMedir<0?'var(--red)':'inherit'}">${fin === null ? '…' : fmt(fin.saldoAMedir)}</td>
         <td style="white-space:nowrap;font-size:.78rem;font-weight:700;color:${fin && fin.pctDR!==null && fin.pctDR>=100?'var(--red)':fin && fin.pctDR!==null && fin.pctDR>=80?'#d97706':'inherit'}">${fin === null ? '…' : (fin.pctDR===null?'—':fin.pctDR.toFixed(0)+'%')}</td>
-        <td style="white-space:nowrap">
-          <button onclick="abrirDetalheCC('${c.id}')"
-            style="font-size:.68rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;white-space:nowrap;margin-right:4px">
-            📋 Detalhes
-          </button>
-          <button onclick="abrirModalNovoCC('${c.id}')"
-            style="font-size:.68rem;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;white-space:nowrap;margin-right:4px">
-            ✏️ Editar
-          </button>
-          <button onclick="excluirCC('${c.id}')"
-            style="font-size:.68rem;padding:4px 10px;border:1px solid var(--red);border-radius:6px;background:var(--surface2);color:var(--red);cursor:pointer;white-space:nowrap">
-            🗑️ Excluir
+        <td style="white-space:nowrap;text-align:center">
+          <button onclick="custosToggleAcoesMenu(event,'${c.id}')" title="Ações"
+            style="width:32px;height:28px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);cursor:pointer;font-size:1rem;line-height:1;font-weight:700;color:var(--text)">
+            ⋮
           </button>
         </td>
       </tr>`;
@@ -51361,8 +51385,21 @@ function renderColMiniDashboard() {
    registros do filtro. ===== */
 
 async function colBuscarDetalhesParaExport(filtrados) {
-  showSyncStatus('Carregando detalhes das coletas do período...');
-  const resultados = await Promise.all(filtrados.map(async r => {
+  /* -- Busca SEQUENCIAL (não Promise.all) de propósito: disparar vários
+     baixarArquivoCentral() em paralelo faz cada um chamar getOneDriveToken()
+     por conta própria ao mesmo tempo (acquireTokenSilent concorrente), e
+     numa rede real isso pode falhar silenciosamente pra alguns registros —
+     baixarArquivoCentral só retorna null nesse caso, sem lançar exceção.
+     Bug relatado por Tiago em 30/10/2026: "Detalhamento por Base e Produto"
+     saiu vazio no PDF exportado mesmo com os arquivos certinhos no OneDrive
+     (confirmado por conferência direta dos JSONs). Sequencial é mais lento
+     (1 download por vez) mas muito mais confiável — o volume por exportação
+     de período é sempre pequeno (dezenas de coletas, no máximo). -- */
+  const resultados = [];
+  let falhas = 0;
+  for (let i = 0; i < filtrados.length; i++) {
+    const r = filtrados[i];
+    showSyncStatus(`Carregando detalhes das coletas do período (${i+1}/${filtrados.length})...`);
     let residuos = [];
     if (r.arquivoDados) {
       try {
@@ -51370,12 +51407,23 @@ async function colBuscarDetalhesParaExport(filtrados) {
         if (texto) {
           const d = JSON.parse(texto);
           if (Array.isArray(d.residuos)) residuos = d.residuos;
+          else falhas++;
+        } else {
+          falhas++;
+          console.warn('[Coleta] baixarArquivoCentral devolveu vazio para', r.arquivoDados);
         }
-      } catch (e) { residuos = []; }
+      } catch (e) {
+        falhas++;
+        console.warn('[Coleta] erro ao buscar detalhe de', r.arquivoDados, e);
+      }
     }
-    return { registro: r, residuos };
-  }));
-  showSyncStatus('Detalhes carregados!', 'ok', 1500);
+    resultados.push({ registro: r, residuos });
+  }
+  if (falhas > 0) {
+    showSyncStatus(`Detalhes carregados (${falhas} coleta${falhas>1?'s':''} sem detalhamento disponível — ver console)`, 'err', 5000);
+  } else {
+    showSyncStatus('Detalhes carregados!', 'ok', 1500);
+  }
   return resultados;
 }
 
