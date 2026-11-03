@@ -19888,13 +19888,28 @@ function _aprovRenderTabelaSolicPendentes(lista, tipo) {
   // outros tipos); pedido 05/10/2026: "nas solicitações de ponto, tem que
   // aparece a coluna a data da ocorrencia".
   const rotuloColunaData = tipo === 'ajuste_ponto' ? 'Data da Ocorrência' : 'Data';
+  const nomeAtualAprov = window._currentUser ? window._currentUser.name : '';
   return '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tipo</th><th>Solicitante</th><th>Gestor</th><th>Descrição</th><th>' + rotuloColunaData + '</th><th>Status</th><th>Ações</th></tr></thead><tbody>' +
     lista.map(i => {
       const aguardandoGG = i.Status === 'Aguardando Gestor Geral';
       const aguardandoFin = i.Status === 'Aguardando Financeiro';
-      const podeAgir = (aguardandoGG && ehGestorGeral) || (aguardandoFin && ehFinanceiro) || (!aguardandoGG && !aguardandoFin);
+      const estagioInicial = !aguardandoGG && !aguardandoFin;
+      /* -- Ajuste de Ponto, 1º estágio: só quem foi DIRETAMENTE selecionado como
+         "Gestor" daquela solicitação (GestorDestino, escolhido pelo próprio
+         colaborador ao enviar) pode dar a 1ª aprovação — não qualquer
+         coordenador/diretoria que acesse a Central de Aprovações. O Gestor
+         Geral (Tiago) só pode validar DEPOIS dessa 1ª aprovação, exceto quando
+         ele mesmo é o GestorDestino (aí ele acumula os 2 papéis e aprova as
+         2 etapas sozinho, normalmente). Pedido de Tiago em 03/11/2026: "o
+         gestor geral tiago nao consegue validar antes do gestor imediato ter
+         feito a aprovação, exceto nos que ele tiago for coloado nos dois
+         casos". Os demais tipos (Veículo/Equipamento/Compras/Outra) continuam
+         com o 1º estágio aberto a qualquer coordenador/diretoria, como já era. -- */
+      const souGestorImediato = !!(i.GestorDestino && i.GestorDestino === nomeAtualAprov);
+      const podeAgirEstagioInicial = i.Tipo === 'ajuste_ponto' ? souGestorImediato : true;
+      const podeAgir = (aguardandoGG && ehGestorGeral) || (aguardandoFin && ehFinanceiro) || (estagioInicial && podeAgirEstagioInicial);
       const rotuloBotao = aguardandoGG ? 'Aprovar (Final)' : aguardandoFin ? 'Aprovar (Financeiro)' : (i.Tipo === 'compras' ? 'Enviar ao Financeiro' : 'Aprovar');
-      const rotuloEspera = aguardandoGG ? 'Aguardando o Gestor Geral' : 'Aguardando o Financeiro';
+      const rotuloEspera = aguardandoGG ? 'Aguardando o Gestor Geral' : aguardandoFin ? 'Aguardando o Financeiro' : (i.Tipo === 'ajuste_ponto' ? ('Aguardando o gestor imediato' + (i.GestorDestino ? ' (' + i.GestorDestino + ')' : '')) : '');
       return `<tr>
       <td><strong>${(i.TipoLabel || i.Tipo || '—')}${i.TipoOutro ? ' — ' + i.TipoOutro : ''}</strong></td>
       <td>${i.Solicitante || '—'}</td>
@@ -19979,7 +19994,10 @@ async function solicVisualizar(id) {
   const aguardandoFin = r.Status === 'Aguardando Financeiro';
   const ehGestorGeral = solicEhGestorGeral();
   const ehFinanceiro = currentProfile === 'diretoria';
-  const podeAgir = statusAcionavel && ((aguardandoGG && ehGestorGeral) || (aguardandoFin && ehFinanceiro) || (!aguardandoGG && !aguardandoFin));
+  const estagioInicialModal = !aguardandoGG && !aguardandoFin;
+  const souGestorImediatoModal = !!(r.GestorDestino && window._currentUser && r.GestorDestino === window._currentUser.name);
+  const podeAgirEstagioInicialModal = r.Tipo === 'ajuste_ponto' ? souGestorImediatoModal : true;
+  const podeAgir = statusAcionavel && ((aguardandoGG && ehGestorGeral) || (aguardandoFin && ehFinanceiro) || (estagioInicialModal && podeAgirEstagioInicialModal));
   const rotuloBotao = aguardandoGG ? '✅ Aprovar (Final)' : aguardandoFin ? '✅ Aprovar (Financeiro)' : (r.Tipo === 'compras' ? '✅ Enviar ao Financeiro' : '✅ Aprovar');
   const podeExcluir = solicPodeExcluir(r);
   // Uma solicitação Reprovada não é mais um beco sem saída: o Gestor Geral
@@ -20040,9 +20058,15 @@ async function aprovarSolicitacaoGeral(id) {
   if (!r) { showToast('❌ Solicitação não encontrada.'); return; }
   const ehGestorGeral = solicEhGestorGeral();
   const ehFinanceiro = currentProfile === 'diretoria';
+  const nomeAtualAprov = window._currentUser ? window._currentUser.name : '';
   let novoStatus = 'Aprovada';
   let msgOk = '✅ Solicitação aprovada!';
   if (r.Tipo === 'ajuste_ponto' && r.Status === 'Pendente') {
+    // Repete aqui a mesma trava já aplicada na tela (_aprovRenderTabelaSolicPendentes):
+    // só quem foi selecionado como GestorDestino dessa solicitação específica pode dar
+    // a 1ª aprovação — o botão já fica escondido pra quem não é, mas a função é chamada
+    // só por onclick, então vale conferir de novo aqui também.
+    if (!r.GestorDestino || r.GestorDestino !== nomeAtualAprov) { showToast('⛔ Apenas o gestor selecionado nessa solicitação (' + (r.GestorDestino || '—') + ') pode dar a 1ª aprovação.'); return; }
     novoStatus = 'Aguardando Gestor Geral';
     msgOk = '✅ Aprovado pelo gestor — enviado ao Gestor Geral.';
   } else if (r.Tipo === 'ajuste_ponto' && r.Status === 'Aguardando Gestor Geral') {
@@ -20062,6 +20086,14 @@ async function aprovarSolicitacaoGeral(id) {
   setTimeout(() => { carregarAprovacoes(); if (typeof atualizarBadgeNotificacoes === 'function') atualizarBadgeNotificacoes(); }, 600);
 }
 async function reprovarSolicitacaoGeral(id) {
+  // Mesma trava de 1º estágio do Ajuste de Ponto aplicada em aprovarSolicitacaoGeral
+  // (só o GestorDestino daquela solicitação pode decidir antes do Gestor Geral).
+  const todosReprov = await dbLer('SolicitacoesGerais');
+  const rReprov = todosReprov.find(x => x.Id === parseInt(id));
+  if (rReprov && rReprov.Tipo === 'ajuste_ponto' && rReprov.Status === 'Pendente') {
+    const nomeAtualReprov = window._currentUser ? window._currentUser.name : '';
+    if (!rReprov.GestorDestino || rReprov.GestorDestino !== nomeAtualReprov) { showToast('⛔ Apenas o gestor selecionado nessa solicitação (' + (rReprov.GestorDestino || '—') + ') pode decidir aqui.'); return; }
+  }
   const motivo = prompt('Motivo da reprovação (o colaborador verá isso e pode corrigir e reenviar):', '') || '';
   const ok = await dbAtualizar('SolicitacoesGerais', parseInt(id), { Status: 'Reprovada', MotivoReprovacao: motivo, ReprovadoPor: window._currentUser ? window._currentUser.name : '' });
   showToast(ok ? '↩️ Indeferida — colaborador pode corrigir e reenviar.' : '❌ Erro');
