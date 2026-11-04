@@ -51402,13 +51402,17 @@ async function colConfigEmailSalvar() {
   const ed = window._colEmailConfigEdit || { internos: [], externos: [] };
   const campos = { EmailsInternos: ed.internos, EmailsExternos: ed.externos };
   showSyncStatus('Salvando configuração...');
-  const jaExiste = window._colEmailConfig && window._colEmailConfig.Id;
-  let ok;
-  if (jaExiste) {
-    ok = await dbAtualizar('ColetaEmailConfig', window._colEmailConfig.Id, campos);
+  const idAtual = window._colEmailConfig && window._colEmailConfig.Id;
+  let ok = false;
+  if (idAtual) {
+    ok = await dbAtualizar('ColetaEmailConfig', idAtual, campos);
     if (ok) window._colEmailConfig = { ...window._colEmailConfig, ...campos };
-  } else {
-    const novo = await dbInserir('ColetaEmailConfig', { Id: 1, ...campos });
+  }
+  if (!ok) {
+    // idAtual não setado, OU dbAtualizar falhou porque esse registro ainda
+    // não existe de verdade no OneDrive (1ª gravação dessa configuração,
+    // caso mais comum — ver nota acima) -> cria em vez de atualizar.
+    const novo = await dbInserir('ColetaEmailConfig', { Id: (idAtual || 1), ...campos });
     ok = !!novo;
     if (novo) window._colEmailConfig = novo;
   }
@@ -51523,6 +51527,7 @@ function renderColMiniDashboard() {
         <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="colExportarHistoricoPdf()">📄 Exportar PDF do Período</button>
         <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="colExportarHistoricoExcel()">📊 Exportar Excel do Período</button>
         <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem;color:var(--red)" onclick="colLimparHistorico()">🗑️ Limpar Histórico</button>
+        <button class="btn-secondary" style="padding:6px 12px;font-size:.78rem" onclick="colAbrirDestinadores()">🏭 Destinadores</button>
       </div>
     </div>
 
@@ -52058,13 +52063,9 @@ function pageChecklistColeta() {
 
   <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="colNovoChecklist()">🆕 Novo Relatório</button>
-    <button class="btn-secondary" onclick="colAbrirDestinadores()">🏭 Destinadores</button>
     ${window._colMostrarForm ? `
-    <button class="btn-secondary" onclick="colAbrirConfigEmails()">📧 Enviar Email</button>
     <button class="btn-secondary" style="margin-left:auto" onclick="colFecharFormulario()">✕ Fechar Formulário</button>
-    ` : `
-    <button class="btn-secondary" onclick="colAbrirConfigEmails()">📧 Enviar Email</button>
-    `}
+    ` : ''}
   </div>
 
   ${!window._colMostrarForm ? '' : `
@@ -52201,6 +52202,7 @@ function pageChecklistColeta() {
   <div class="card" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <button class="btn-primary" onclick="salvarColetaChecklist()">💾 Salvar e Sincronizar com OneDrive</button>
     <button class="btn-primary" style="background:var(--brand-brown,#3F261F);color:#fff" onclick="exportarColetaPdf()">🖨️ Exportar PDF</button>
+    <button class="btn-secondary" onclick="colAbrirConfigEmails()">📧 Enviar Email</button>
     <button class="btn-primary" style="background:var(--green-main);color:#fff" onclick="colConcluirEEnviar()">✅ Concluir e Enviar</button>
   </div>
   `}
@@ -52639,6 +52641,10 @@ function colGerarPdfRelatorio(d, registroId) {
     const tot = { totalKg, c1Kg, c2Kg, qtdItens: (d.residuos || []).length };
     const dataFmt = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR') : '___/___/______';
     const regionalLabel = d.regional==='sul' ? 'Regional Sul' : d.regional==='centro' ? 'Regional Centro' : d.regional==='outro' ? 'Outro' : '—';
+    // Nome sugerido ao "Salvar como PDF" na janela de impressão = <title> da
+    // página. Pedido Tiago 04/11/2026: "RC + nº + local + Data".
+    const dataArq = d.data ? new Date(d.data + 'T12:00').toLocaleDateString('pt-BR').replace(/\//g, '-') : new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
+    const tituloArquivo = ('RC ' + (d.num || 's-n') + ' - ' + (d.local || 'Sem Local') + ' - ' + dataArq).replace(/[\\\/:*?"<>|]/g, '-');
 
     const linhasResiduos = (d.residuos||[]).filter(r => r.tipo || r.peso).map((r,i) => `<tr>
       <td>${i+1}</td>
@@ -52656,7 +52662,7 @@ function colGerarPdfRelatorio(d, registroId) {
     const htmlContent = `<!DOCTYPE html><html lang="pt-BR"><head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Relatório de Coleta de Resíduos</title>
+    <title>${tituloArquivo}</title>
     <style>
       :root{--b-green:#80C476;--b-green-deep:#3a7030;--b-brown:#3F261F;--b-pale:#eef7ec;}
       @page { size: A4; margin: 15mm 12mm; }
