@@ -50946,17 +50946,60 @@ const COL_DESTINADORES = [
   }
 ];
 
-const COL_TIPO_DESTINADOR_MAP = (() => {
-  const mapa = {};
-  COL_DESTINADORES.forEach(d => {
-    d.produtos.forEach(p => { mapa[p] = { nome: d.nome, cnpj: d.cnpj }; });
-  });
-  return mapa;
-})();
+window._colDestinadoresCache = null;
 
+/* -- Monta (sob demanda, nunca guardado numa variavel propria) o mapa tipo de
+      residuo -> {nome, cnpj} do destinador, a partir do cadastro vivo
+      (window._colDestinadoresCache, carregado via colCarregarDestinadores) --
+      cai pro catalogo hardcoded (COL_DESTINADORES) so enquanto o cadastro
+      ainda nao carregou nessa sessao. Reconstruido a cada chamada (lista e
+      pequena) pra sempre refletir edicoes feitas na tela de Destinadores,
+      sem precisar re-navegar o formulario de Coleta. -- */
+function _colMapaTipoDestinadorAtual() {
+  const lista = Array.isArray(window._colDestinadoresCache) ? window._colDestinadoresCache : COL_DESTINADORES;
+  const mapa = {};
+  lista.forEach(d => { (d.produtos || []).forEach(p => { mapa[p] = { nome: d.nome, cnpj: d.cnpj }; }); });
+  return mapa;
+}
 function colDestinadorDoTipo(tipo) {
-  const info = COL_TIPO_DESTINADOR_MAP[tipo];
+  const info = _colMapaTipoDestinadorAtual()[tipo];
   return info ? info.nome : '';
+}
+function colCnpjDoTipo(tipo) {
+  const info = _colMapaTipoDestinadorAtual()[tipo];
+  return info ? info.cnpj : '';
+}
+
+/* -- Carrega o cadastro de Destinadores do OneDrive (tabela ColetaDestinadores).
+      Na 1a vez que a tabela ainda nao existe/esta vazia, semeia com o catalogo
+      que antes era hardcoded (COL_DESTINADORES), pra nao perder esses 4
+      destinadores e torna-los editaveis dali em diante pela tela "🏭 Destinadores".
+      Pedido Tiago 04/11/2026: "criar botao e tela com destinadores, produtos e
+      CNPJ e no formulario ao colocar produtos, puxar nome e cnpj de cada
+      destinador". -- */
+async function colCarregarDestinadores(forcar) {
+  if (window._colDestinadoresCache !== null && !forcar) return window._colDestinadoresCache;
+  let cacheLocal = null;
+  try { cacheLocal = JSON.parse(localStorage.getItem('col_destinadores_cache') || 'null'); } catch(e) { cacheLocal = null; }
+  if (window._colDestinadoresCache === null && Array.isArray(cacheLocal)) window._colDestinadoresCache = cacheLocal;
+  try {
+    let lista = await dbLer('ColetaDestinadores');
+    if (!Array.isArray(lista)) lista = [];
+    if (!lista.length) {
+      for (const dest of COL_DESTINADORES) {
+        const novo = await dbInserir('ColetaDestinadores', { nome: dest.nome, cnpj: dest.cnpj, produtos: [...dest.produtos] });
+        if (novo) lista.push(novo);
+      }
+    }
+    window._colDestinadoresCache = lista;
+    try { localStorage.setItem('col_destinadores_cache', JSON.stringify(lista)); } catch(e) {}
+  } catch(e) {
+    console.warn('[Coleta] Falha ao carregar destinadores, usando cache local/seed.', e);
+    if (!Array.isArray(window._colDestinadoresCache)) {
+      window._colDestinadoresCache = COL_DESTINADORES.map((dest, i) => ({ Id: 'seed' + i, ...dest }));
+    }
+  }
+  return window._colDestinadoresCache;
 }
 
 function colCampo(campo, valor) {
@@ -51009,7 +51052,7 @@ function colBuildResiduoDatalist() {
 
 function colAddLinhaResiduo() {
   if (!Array.isArray(window._colData.residuos)) window._colData.residuos = [];
-  window._colData.residuos.push({ classe: '', tipo: '', peso: '', unid: 'kg', destinador: '' });
+  window._colData.residuos.push({ classe: '', tipo: '', peso: '', unid: 'kg', destinador: '', cnpj: '' });
   navigate('checklist_coleta');
 }
 
@@ -51031,12 +51074,17 @@ function colAtualizarResiduoTipo(idx, valor) {
     badge.style.background = classe==='I' ? '#fce8e8' : classe==='II' ? '#e6f5ed' : 'var(--surface)';
     badge.style.color = classe==='I' ? '#e03d3d' : classe==='II' ? '#2d8c5a' : 'var(--text-muted)';
   }
-  // Puxa automático o destinador cadastrado pra esse tipo de resíduo; quando não
-  // houver um correspondente, limpa o campo pra permitir preenchimento manual.
+  // Puxa automático o destinador (nome + CNPJ) cadastrado pra esse tipo de
+  // resíduo; quando não houver um correspondente, limpa os campos pra
+  // permitir preenchimento manual.
   const destinador = colDestinadorDoTipo(valor);
   window._colData.residuos[idx].destinador = destinador;
   const destInput = document.getElementById('col-destinador-' + idx);
   if (destInput) destInput.value = destinador;
+  const cnpj = colCnpjDoTipo(valor);
+  window._colData.residuos[idx].cnpj = cnpj;
+  const cnpjInput = document.getElementById('col-cnpj-' + idx);
+  if (cnpjInput) cnpjInput.value = cnpj;
 }
 
 /* -- Edição manual do destinador (quando não há um cadastrado pro tipo escolhido,
@@ -51044,6 +51092,12 @@ function colAtualizarResiduoTipo(idx, valor) {
 function colAtualizarResiduoDestinador(idx, valor) {
   if (!window._colData.residuos[idx]) return;
   window._colData.residuos[idx].destinador = valor;
+}
+
+/* -- Edição manual do CNPJ do destinador (mesmo racional do destinador acima). -- */
+function colAtualizarResiduoCnpj(idx, valor) {
+  if (!window._colData.residuos[idx]) return;
+  window._colData.residuos[idx].cnpj = valor;
 }
 
 /* -- Atualiza peso/unidade sem re-render completo — só recalcula o total exibido no topo. -- */
@@ -51817,39 +51871,147 @@ async function colExportarHistoricoExcel() {
 /* -- Modal de consulta: lista os destinadores cadastrados e os produtos/
       resíduos que cada um atende. Só leitura — pra editar o cadastro,
       é preciso alterar COL_DESTINADORES no código. -- */
-function colAbrirDestinadores() {
+/* -- Tela "🏭 Destinadores": cadastro editável de empresas que recebem os
+      resíduos, com seus produtos/tipos atendidos e CNPJ. Cada ação (add/editar/
+      remover) grava direto no OneDrive (tabela ColetaDestinadores) — sem botão
+      "Salvar" único, igual ao padrão de edição imediata já usado noutras
+      telas de cadastro do app. -- */
+async function colAbrirDestinadores() {
+  await colCarregarDestinadores();
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'colDestinadoresModal';
   modal.innerHTML = `
     <div class="modal-box" style="max-width:640px;width:94vw;max-height:88vh">
       <div class="modal-header">
-        <h2>🏭 Destinadores Cadastrados</h2>
+        <h2>🏭 Destinadores de Resíduos</h2>
         <div class="modal-close" onclick="document.getElementById('colDestinadoresModal').remove()">✕</div>
       </div>
-      <div class="modal-body" style="max-height:72vh;overflow-y:auto">
-        <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Ao escolher o tipo de resíduo no formulário abaixo, o destinador correspondente é preenchido automaticamente com base nesse cadastro. Quando um tipo não está em nenhuma lista, o campo fica em branco para inserção manual.</div>
-        ${COL_DESTINADORES.map(dest => `
-        <div style="margin-bottom:14px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
-          <div style="font-weight:700;font-size:.9rem;margin-bottom:2px">$${dest.nome}</div>
-          <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:8px">CNPJ: $${dest.cnpj}</div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px">
-            $${dest.produtos.map(p => `<span style="font-size:.7rem;padding:3px 8px;border-radius:12px;background:var(--surface);border:1px solid var(--border)">${p}</span>`).join('')}
-          </div>
-        </div>
-        `).join('')}
+      <div class="modal-body" id="colDestinadoresBody" style="max-height:72vh;overflow-y:auto"></div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid var(--border)">
+        <button class="btn-secondary" onclick="document.getElementById('colDestinadoresModal').remove()">Fechar</button>
       </div>
     </div>
   `;
   document.body.appendChild(modal);
+  _colRenderDestinadoresBody();
+}
+
+function _colRenderDestinadoresBody() {
+  const el = document.getElementById('colDestinadoresBody');
+  if (!el) return;
+  const lista = Array.isArray(window._colDestinadoresCache) ? window._colDestinadoresCache : [];
+  el.innerHTML = `
+    <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:14px">Empresa que recebe cada tipo de resíduo. Ao escolher o tipo no formulário de Coleta, o nome e o CNPJ daqui são preenchidos automaticamente — quando um tipo não está vinculado a nenhum destinador, o campo fica em branco para inserção manual.</div>
+    <datalist id="col_dl_produtos_destinador">${colBuildResiduoDatalist()}</datalist>
+    ${lista.map(dest => `
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input value="${(dest.nome||'').replace(/"/g,'&quot;')}" placeholder="Nome do destinador" onchange="colDestinadorEditarCampo(${dest.Id},'nome',this.value)" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.82rem;font-weight:700">
+        <input value="${(dest.cnpj||'').replace(/"/g,'&quot;')}" placeholder="CNPJ" onchange="colDestinadorEditarCampo(${dest.Id},'cnpj',this.value)" style="width:150px;flex-shrink:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.82rem">
+        <button onclick="colDestinadorRemover(${dest.Id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.95rem;flex-shrink:0" title="Remover destinador">✕</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+        ${(dest.produtos||[]).map((p, pIdx) => `
+        <span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:3px 8px;font-size:.72rem">
+          ${p}
+          <span onclick="colDestinadorRemoverProduto(${dest.Id},${pIdx})" style="cursor:pointer;color:var(--red)" title="Remover">✕</span>
+        </span>`).join('') || '<span style="font-size:.72rem;color:var(--text-muted)">Nenhum produto/resíduo vinculado.</span>'}
+      </div>
+      <div style="display:flex;gap:8px">
+        <input list="col_dl_produtos_destinador" id="col_dest_novo_prod_${dest.Id}" placeholder="Adicionar tipo de resíduo..." style="flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.76rem" onkeydown="if(event.key==='Enter'){event.preventDefault();colDestinadorAddProduto(${dest.Id});}">
+        <button class="btn-secondary" style="font-size:.74rem" onclick="colDestinadorAddProduto(${dest.Id})">+ Adicionar</button>
+      </div>
+    </div>`).join('') || '<div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">Nenhum destinador cadastrado ainda.</div>'}
+    <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+      <div style="font-weight:700;font-size:.85rem;margin-bottom:8px">+ Novo destinador</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="col_dest_novo_nome" placeholder="Nome do destinador" style="flex:1;min-width:160px;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.82rem">
+        <input id="col_dest_novo_cnpj" placeholder="CNPJ" style="width:150px;flex-shrink:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.82rem">
+        <button class="btn-primary" style="font-size:.78rem" onclick="colDestinadorAdicionar()">+ Adicionar</button>
+      </div>
+    </div>
+  `;
+}
+
+async function colDestinadorAdicionar() {
+  const nomeInp = document.getElementById('col_dest_novo_nome');
+  const cnpjInp = document.getElementById('col_dest_novo_cnpj');
+  const nome = (nomeInp.value || '').trim();
+  const cnpj = (cnpjInp.value || '').trim();
+  if (!nome) { showToast('⚠️ Informe o nome do destinador.'); return; }
+  showSyncStatus('Salvando destinador...');
+  const novo = await dbInserir('ColetaDestinadores', { nome, cnpj, produtos: [] });
+  if (novo) {
+    window._colDestinadoresCache.push(novo);
+    try { localStorage.setItem('col_destinadores_cache', JSON.stringify(window._colDestinadoresCache)); } catch(e) {}
+    nomeInp.value = '';
+    cnpjInp.value = '';
+    _colRenderDestinadoresBody();
+    showSyncStatus('Destinador salvo!', 'ok', 3000);
+  } else {
+    showSyncStatus('Falha ao salvar', 'err', 5000);
+    showToast('⚠️ Não consegui salvar no OneDrive. Verifique a conexão e tente de novo.');
+  }
+}
+
+async function colDestinadorRemover(id) {
+  if (!confirm('Remover esse destinador? Os tipos de resíduo vinculados a ele deixarão de preencher automaticamente.')) return;
+  showSyncStatus('Removendo...');
+  const { ok } = await dbRemover('ColetaDestinadores', id);
+  if (ok) {
+    window._colDestinadoresCache = window._colDestinadoresCache.filter(d => d.Id !== id);
+    try { localStorage.setItem('col_destinadores_cache', JSON.stringify(window._colDestinadoresCache)); } catch(e) {}
+    _colRenderDestinadoresBody();
+    showSyncStatus('Destinador removido.', 'ok', 3000);
+  } else {
+    showSyncStatus('Falha ao remover', 'err', 5000);
+  }
+}
+
+async function colDestinadorEditarCampo(id, campo, valor) {
+  const d = (window._colDestinadoresCache || []).find(x => x.Id === id);
+  if (!d) return;
+  d[campo] = valor;
+  try { localStorage.setItem('col_destinadores_cache', JSON.stringify(window._colDestinadoresCache)); } catch(e) {}
+  const ok = await dbAtualizar('ColetaDestinadores', id, { [campo]: valor });
+  if (!ok) showToast('⚠️ Não consegui salvar a alteração no OneDrive.');
+}
+
+async function colDestinadorAddProduto(id) {
+  const inp = document.getElementById('col_dest_novo_prod_' + id);
+  if (!inp) return;
+  const produto = (inp.value || '').trim();
+  if (!produto) return;
+  const d = (window._colDestinadoresCache || []).find(x => x.Id === id);
+  if (!d) return;
+  if (!Array.isArray(d.produtos)) d.produtos = [];
+  if (d.produtos.includes(produto)) { showToast('⚠️ Esse tipo já está vinculado a esse destinador.'); inp.value = ''; return; }
+  d.produtos.push(produto);
+  inp.value = '';
+  try { localStorage.setItem('col_destinadores_cache', JSON.stringify(window._colDestinadoresCache)); } catch(e) {}
+  _colRenderDestinadoresBody();
+  const ok = await dbAtualizar('ColetaDestinadores', id, { produtos: d.produtos });
+  if (!ok) showToast('⚠️ Não consegui salvar no OneDrive.');
+}
+
+async function colDestinadorRemoverProduto(id, idx) {
+  const d = (window._colDestinadoresCache || []).find(x => x.Id === id);
+  if (!d || !Array.isArray(d.produtos)) return;
+  d.produtos.splice(idx, 1);
+  try { localStorage.setItem('col_destinadores_cache', JSON.stringify(window._colDestinadoresCache)); } catch(e) {}
+  _colRenderDestinadoresBody();
+  const ok = await dbAtualizar('ColetaDestinadores', id, { produtos: d.produtos });
+  if (!ok) showToast('⚠️ Não consegui salvar no OneDrive.');
 }
 
 function pageChecklistColeta() {
   const d = window._colData;
   if (!Array.isArray(d.residuos)) d.residuos = [];
   if (!Array.isArray(d.fotos)) d.fotos = [];
-  if (!d.residuos.length) d.residuos.push({ classe: 'I', tipo: '', peso: '', unid: 'kg', destinador: '' });
+  if (!d.residuos.length) d.residuos.push({ classe: 'I', tipo: '', peso: '', unid: 'kg', destinador: '', cnpj: '' });
   if (window._colHistorico === null) carregarColetaHistorico();
+  if (!window._colDestinadoresCarregados) { window._colDestinadoresCarregados = true; colCarregarDestinadores(); }
 
   const tot = colCalcularTotais();
 
@@ -51864,10 +52026,10 @@ function pageChecklistColeta() {
   <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="colNovoChecklist()">🆕 Novo Relatório</button>
     ${window._colMostrarForm ? `
-    <button class="btn-secondary" onclick="colAbrirConfigEmails()">⚙️ Destinatários</button>
+    <button class="btn-secondary" onclick="colAbrirConfigEmails()">📧 Enviar Email</button>
     <button class="btn-secondary" style="margin-left:auto" onclick="colFecharFormulario()">✕ Fechar Formulário</button>
     ` : `
-    <button class="btn-secondary" onclick="colAbrirConfigEmails()">⚙️ Destinatários</button>
+    <button class="btn-secondary" onclick="colAbrirConfigEmails()">📧 Enviar Email</button>
     `}
   </div>
 
@@ -51958,6 +52120,7 @@ function pageChecklistColeta() {
         <div id="col-classe-badge-${i}" style="flex-shrink:0;text-align:center;font-size:.68rem;font-weight:700;padding:6px 8px;border-radius:6px;background:${r.classe==='I'?'#fce8e8':r.classe==='II'?'#e6f5ed':'var(--surface)'};color:${r.classe==='I'?'#e03d3d':r.classe==='II'?'#2d8c5a':'var(--text-muted)'}">${r.classe?'Classe '+r.classe:'—'}</div>
         <input type="text" id="col-destinador-${i}" value="${(r.destinador||'').replace(/"/g,'&quot;')}" oninput="colAtualizarResiduoDestinador(${i},this.value)" placeholder="Destinação (auto)" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.76rem">
       </div>
+      <input type="text" id="col-cnpj-${i}" value="${(r.cnpj||'').replace(/"/g,'&quot;')}" oninput="colAtualizarResiduoCnpj(${i},this.value)" placeholder="CNPJ (auto)" style="width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.72rem;color:var(--text-muted);margin-bottom:6px">
       <div style="display:flex;gap:6px">
         <input type="number" step="0.01" min="0" value="${r.peso||''}" oninput="colAtualizarResiduoNum(${i},'peso',this.value)" placeholder="Quantidade" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.76rem">
         <select onchange="colAtualizarResiduoNum(${i},'unid',this.value)" style="flex-shrink:0;border:1px solid var(--border);border-radius:6px;padding:6px;font-size:.76rem">
