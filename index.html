@@ -3012,7 +3012,7 @@ function cvRenderItem(id, label, cat) {
 const CV_FROTA = [
   { placa: 'OHQ3H31',  modelo: 'Ford Ranger',                  tipo: 'Pickup',           display: 'Ford Ranger — OHQ 3H31'          },
   { placa: 'SLI9D41',  modelo: 'Ford Ranger',                  tipo: 'Pickup',           display: 'Ford Ranger — SLI 9D41'          },
-  { placa: 'RKS3C14',  modelo: 'VW/Express DRC 4x2',           tipo: 'Caminhão Baú',     display: 'VW/Express DRC 4x2 — RKS 3C14'  },
+  { placa: 'RKS3C14',  modelo: 'VW/Express DRC 4x2',           tipo: 'Caminhão Tanque',  display: 'VW/Express DRC 4x2 — RKS 3C14'  },
   { placa: 'RSX7A36',  modelo: 'VW/Saveiro CS RB MPI',         tipo: 'Pickup',           display: 'VW/Saveiro CS RB MPI — RSX 7A36'},
   { placa: 'BDB3G34',  modelo: 'M.Benz / Accelo 815 CE',       tipo: 'Caminhão Baú',     display: 'M.Benz Accelo 815 CE — BDB 3G34'},
   { placa: 'UAO4H80',  modelo: 'Fiat/Strada Enduran CS13',     tipo: 'Pickup',           display: 'Fiat/Strada Enduran CS13 — UAO 4H80'},
@@ -4285,8 +4285,12 @@ function pcToggleFormNovo(forcar) {
 
 function _centrosCustoVisiveis() {
   const todos = centrosCustoData || [];
-  if (currentProfile !== 'colaborador') return todos;
-  return todos.filter(c => !c.administrativo);
+  const base = currentProfile !== 'colaborador' ? todos : todos.filter(c => !c.administrativo);
+  // Contratos restritoGestorGeral:true (pedido Tiago 04/11/2026, fechamento do
+  // exercicio) ficam visiveis SO pro Gestor Geral -- nem diretoria/coordenador
+  // (Luiz/Marcelo/Cassiane) veem, diferente do filtro de administrativo acima
+  // (que so esconde de colaborador).
+  return solicEhGestorGeral() ? base : base.filter(c => !c.restritoGestorGeral);
 }
 
 function atualizarCCsPrest() {
@@ -7998,7 +8002,7 @@ function pagRenderizarDivisaoCC() {
 function _pagCCsDisponiveis() {
   const empresa = normalizarEmpresa((document.getElementById('pag_empresa') || {}).value || '');
   if (!empresa) return [];
-  return (centrosCustoData || []).filter(c => {
+  return _centrosCustoVisiveis().filter(c => {
     return normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo';
   });
 }
@@ -8735,7 +8739,7 @@ function recTrocarEmpresaForm() { recAtualizarContratante(); }
 function rfeCCsDisponiveis() {
   const empresa = normalizarEmpresa(window._rfeEmpresa || '');
   if (!empresa) return [];
-  return (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
+  return _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
 }
 function rfeFiltrarCCs(texto) {
   const dd = document.getElementById('rfe_cc_dropdown'); if (!dd) return;
@@ -12152,7 +12156,7 @@ function rcPresetResgate() {
 // "🔄 Transferências" da planilha FINANCEIRO 2026, que já trata Banco e
 // Centro de Custo/Contrato como duas dimensões independentes por lado.
 function _trfOpcoesCC(empresa) {
-  const ccs = (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && c.status === 'ativo');
+  const ccs = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && c.status === 'ativo');
   return '<option value="">— Nenhum —</option>' + ccs.map(c => {
     const label = (c.id + ' · ' + c.contrato).replace(/"/g, '&quot;');
     return `<option value="${label}">${label}</option>`;
@@ -12164,7 +12168,7 @@ function _trfOpcoesCC(empresa) {
    filtrar em vez de rolar a lista inteira. Sem a opção "— Nenhum —": campo
    vazio já significa nenhum Centro de Custo selecionado. -- */
 function _trfOpcoesCCDatalist(empresa) {
-  const ccs = (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && c.status === 'ativo');
+  const ccs = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && c.status === 'ativo');
   return ccs.map(c => {
     const label = (c.id + ' · ' + c.contrato).replace(/"/g, '&quot;');
     return `<option value="${label}">`;
@@ -14124,10 +14128,10 @@ function rcIdentificarCCPorTexto(texto) {
     return melhor;
   };
   const empresaAtiva = normalizarEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]);
-  const doEmpresaAtiva = (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === empresaAtiva && c.status === 'ativo');
+  const doEmpresaAtiva = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresaAtiva && c.status === 'ativo');
   let achado = buscarEm(doEmpresaAtiva);
   if (achado) return { cliente: achado.cliente !== '—' ? achado.cliente : '', cc: achado.id + ' · ' + achado.contrato, empresaDiferente: null };
-  achado = buscarEm(centrosCustoData || []);
+  achado = buscarEm(_centrosCustoVisiveis());
   if (achado) return { cliente: achado.cliente !== '—' ? achado.cliente : '', cc: achado.id + ' · ' + achado.contrato, empresaDiferente: achado.empresa };
   return null;
 }
@@ -17078,7 +17082,7 @@ async function rdConfirmarCadastroColaborador() {
 /* -- Combobox de Centro de Custo (mesmo padrão de Contas a Pagar) -- */
 function _rdCCsDisponiveis() {
   const empresa = normalizarEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]);
-  return (centrosCustoData||[]).filter(c => {
+  return _centrosCustoVisiveis().filter(c => {
     return normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo';
   });
 }
@@ -18288,7 +18292,7 @@ function rdVerDivisaoCC(id) {
    escopado à empresa da despesa sendo dividida. -- */
 function rdccCCsDisponiveis() {
   const empresa = normalizarEmpresa(window._rdccEmpresa || (RD_EMPRESAS && RD_EMPRESAS[0]) || '');
-  return (centrosCustoData||[]).filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
+  return _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
 }
 function rdccFiltrarCCs(texto) {
   const dd = document.getElementById('rdcc_cc_dropdown');
@@ -31190,7 +31194,7 @@ function servFiltrarCCs(tipo, texto) {
   const dd = document.getElementById('val_cc_dropdown_' + tipo);
   if (!dd) return;
   const t = (texto || '').trim().toLowerCase();
-  const disponiveis = (centrosCustoData || []).filter(c => c.status === 'ativo');
+  const disponiveis = _centrosCustoVisiveis().filter(c => c.status === 'ativo');
   const matches = (t ? disponiveis.filter(c => (c.id + ' ' + c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0, 40);
   let html = matches.map(c => {
     const label = (c.id + ' · ' + c.contrato).replace(/'/g, "\\'");
@@ -31446,7 +31450,7 @@ function renderServicosTab(items, tipo) {
   // "Novo Lançamento" (Expedian/TL3/EXP Brasil) — pedido 10/09/2026. Sem
   // empresa escolhida (ex.: form aberto direto por edição), mostra todos.
   const empresaSelServ = window._servEmpresaSelecionada || '';
-  const centrosCusto = centrosCustoData
+  const centrosCusto = _centrosCustoVisiveis()
     .filter(c => c.status === 'ativo')
     .filter(c => !empresaSelServ || normalizarEmpresa(c.empresa) === normalizarEmpresa(empresaSelServ))
     .map(c => c.id + ' · ' + c.contrato);
@@ -32807,7 +32811,7 @@ async function servAbrirAprovacao(id) {
   if (!l) { showToast('⚠️ Lançamento não encontrado (recarregue a lista).'); return; }
 
   const empresa = servEmpresaDoCC(l.cc);
-  const ccsDaEmpresa = centrosCustoData
+  const ccsDaEmpresa = _centrosCustoVisiveis()
     .filter(c => c.status === 'ativo' && normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa))
     .map(c => c.id + ' · ' + c.contrato);
   const ccAtual = l.cc || '';
@@ -32911,9 +32915,9 @@ const centrosCustoData = [
   { id:'CC-EXP-001', contrato:'Consolidado - Expedian',                      cliente:'—',                    empresa:'Expedian',       status:'ativo',      gestor:'—',                  categoria:'Outros recebimentos', subcategoria:'Outros (Outros recebimentos)' },
   { id:'CC-EXP-002', contrato:'ERO - Gestão de Obras',                        cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental', contratoChave:'obras2025022101' },
 
-  { id:'CC-EXP-003', contrato:'ERO - Resíduos Norte - 25/26',                 cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
-  { id:'CC-EXP-004', contrato:'ERO - Resíduos Centro - 25/26',                cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
-  { id:'CC-EXP-005', contrato:'ERO - Resíduos Sul - 25/26',                   cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
+  { id:'CC-EXP-003', contrato:'ERO - Resíduos Norte - 25/26',                 cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos', restritoGestorGeral:true },
+  { id:'CC-EXP-004', contrato:'ERO - Resíduos Centro - 25/26',                cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos', restritoGestorGeral:true },
+  { id:'CC-EXP-005', contrato:'ERO - Resíduos Sul - 25/26',                   cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos', restritoGestorGeral:true },
 
   { id:'CC-EXP-006', contrato:'Energy Assets - Baixa Processos',              cliente:'Energy Assets',        empresa:'Expedian',       status:'ativo',      gestor:'Luiz',               categoria:'Prestação de Serviços', subcategoria:'Licenciamento Ambiental' },
 
@@ -32933,10 +32937,10 @@ const centrosCustoData = [
   { id:'CC-EXP-020', contrato:'ERO - Lic Ambiental - WS108437',               cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Licenciamento Ambiental', contratoChave:'ws108437' },
   { id:'CC-EXP-021', contrato:'ERO - Gest Ambiental - WS 108438',             cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental', contratoChave:'ws108438' },
   { id:'CC-EXP-022', contrato:'Nova 364 - Fauna Porto PVH',                   cliente:'Nova 364',             empresa:'Expedian',       status:'ativo',      gestor:'Tiago',   categoria:'Prestação de Serviços', subcategoria:'Afugentamento de Fauna' },
-  { id:'CC-EXP-023', contrato:'Nova 364 - Resíduos - Gestor',                   cliente:'Nova 364',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos' },
-  { id:'CC-EXP-024', contrato:'ERO - Gestão Ambiental - CONT. 2024.0054.01',    cliente:'Energisa',             empresa:'Expedian',       status:'finalizado', gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental' },
-  { id:'CC-EXP-025', contrato:'ERO - Estudos Ambientais - 2024.0081.01',       cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Luiz',               categoria:'Prestação de Serviços', subcategoria:'Consultoria Ambiental' },
-  { id:'CC-EXP-026', contrato:'COOP RO Jirau',                                 cliente:'Coop Jirau',           empresa:'Expedian',       status:'finalizado', gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Outros (Prestação de Serviços)' },
+  { id:'CC-EXP-023', contrato:'Nova 364 - Resíduos - Gestor',                   cliente:'Nova 364',             empresa:'Expedian',       status:'ativo',      gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos', restritoGestorGeral:true },
+  { id:'CC-EXP-024', contrato:'ERO - Gestão Ambiental - CONT. 2024.0054.01',    cliente:'Energisa',             empresa:'Expedian',       status:'finalizado', gestor:'Tiago',              categoria:'Prestação de Serviços', subcategoria:'Fiscalização Ambiental', restritoGestorGeral:true },
+  { id:'CC-EXP-025', contrato:'ERO - Estudos Ambientais - 2024.0081.01',       cliente:'Energisa',             empresa:'Expedian',       status:'ativo',      gestor:'Luiz',               categoria:'Prestação de Serviços', subcategoria:'Consultoria Ambiental', restritoGestorGeral:true },
+  { id:'CC-EXP-026', contrato:'COOP RO Jirau',                                 cliente:'Coop Jirau',           empresa:'Expedian',       status:'finalizado', gestor:'Marcelo',            categoria:'Prestação de Serviços', subcategoria:'Outros (Prestação de Serviços)', restritoGestorGeral:true },
   // CC-EXP-027/028 criados em 02/09/2026 — contratos CLM 108942/108943 (Coleta de
   // Resíduos, iniciados em 03/08/2026) ainda não tinham Centro de Custo próprio.
   { id:'CC-EXP-027', contrato:'ERO - Coleta de Resíduos - CLM 108942 (Regional Sul)',    cliente:'Energisa', empresa:'Expedian', status:'ativo', gestor:'Marcelo', categoria:'Prestação de Serviços', subcategoria:'Gestão de Resíduos', contratoChave:'clm108942' },
@@ -50774,6 +50778,7 @@ if (typeof window._colDashFiltroAno === 'undefined') window._colDashFiltroAno = 
 if (typeof window._colDashFiltroRegional === 'undefined') window._colDashFiltroRegional = '';
 if (typeof window._colMostrarForm === 'undefined') window._colMostrarForm = false;
 if (typeof window._colPlacaManual === 'undefined') window._colPlacaManual = false;
+if (typeof window._colLocalManual === 'undefined') window._colLocalManual = false;
 
 const COL_MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
@@ -50839,7 +50844,7 @@ const COL_LOCAIS_SUL = [
   'Agência Cacoal', 'Agência e Base Pimenta Bueno', 'Agência e Base Colorado',
   "Agência e Base Espigão D'Oeste", 'Agência e Base Rolim de Moura', 'Agência e Base São Mig. do Guaporé',
   'Agência e Base Vilhena', 'Agência e Base Cerejeiras', 'Base Cacoal', 'Almoxarifado Cacoal',
-  'SED Cacoal I', 'SED Cacoal II', 'SED Pimenta Bueno', "SED Espigão D'Oeste", 'SED Rolim de Moura',
+  'SED Cacoal', 'SED Pimenta Bueno', "SED Espigão D'Oeste", 'SED Rolim de Moura',
   'SED Vilhena I', 'SED Vilhena II', 'SED Colorado', 'SED Cerejeiras', 'SED São Miguel do Guaporé',
 ];
 const COL_LOCAIS_CENTRO = [
@@ -50858,7 +50863,31 @@ const COL_LOCAIS_CENTRO = [
 function colBuildLocalidadeOptions(regional, selecionado) {
   const lista = regional === 'sul' ? COL_LOCAIS_SUL : regional === 'centro' ? COL_LOCAIS_CENTRO : [];
   return '<option value="">— Selecione —</option>' +
-    lista.map(l => `<option value="${l}" ${selecionado===l?'selected':''}>${l}</option>`).join('');
+    lista.map(l => `<option value="${l}" ${selecionado===l?'selected':''}>${l}</option>`).join('') +
+    '<option value="_outro_local">Outros (digitar local)</option>';
+}
+/* -- true se `local` é uma das opções fixas da regional (Centro/Sul); usada pra
+      decidir se um registro carregado pra edição deve abrir em modo "Outros"
+      (texto livre), por exemplo coletas lançadas de outro contrato dentro
+      dessa regional (pedido Tiago 04/11/2026). -- */
+function colLocalEstaNaLista(regional, local) {
+  const lista = regional === 'sul' ? COL_LOCAIS_SUL : regional === 'centro' ? COL_LOCAIS_CENTRO : [];
+  return lista.indexOf(local) !== -1;
+}
+/* -- onchange do <select> de Local/Unidade — "Outros" abre campo de texto
+      livre pra digitar o nome do empreendimento (ex: coletas de outro
+      contrato/regional lançadas aqui). Pedido Tiago 04/11/2026: "vamos
+      precisar registrar nome do empreendimento ai coloca opção outros e
+      abre campo para digitar local". -- */
+function colSelecionarLocal(valor) {
+  if (valor === '_outro_local') {
+    window._colData.local = '';
+    window._colLocalManual = true;
+  } else {
+    window._colData.local = valor;
+    window._colLocalManual = false;
+  }
+  navigate('checklist_coleta');
 }
 
 const COL_RESIDUOS_LISTA = {
@@ -50937,6 +50966,7 @@ function colCampo(campo, valor) {
 function colAtualizarRegional(valor) {
   window._colData.regional = valor;
   window._colData.local = ''; // troca de regional reseta a localidade selecionada
+  window._colLocalManual = false;
   // Sugere automaticamente o próximo número da sequência DAQUELA regional —
   // Centro e Sul numeram cada um a partir de 01, independentes entre si.
   // Só em relatório NOVO (não mexe no número ao editar um já salvo) e só
@@ -51068,19 +51098,71 @@ function colCarregarFoto(event, idx) {
    já processadas, sem precisar clicar "Adicionar foto" uma vez por imagem. -- */
 function colCarregarFotosMultiplas(event) {
   const files = Array.from(event.target.files || []);
-  if (!files.length) return;
+  event.target.value = '';
+  colProcessarFotosArrastadas(files);
+}
+
+/* -- Processa fotos vindas de qualquer origem (input clicado ou arrastadas do
+   computador) e insere no array, numa posição específica (drag sobre um
+   quadro já existente) ou no fim (clique no botão / drop na área geral do
+   card). Pedido Tiago 04/11/2026: "tbm poder arrastar do computador para
+   formulario". -- */
+function colProcessarFotosArrastadas(files, posicao) {
+  if (!files || !files.length) return;
   if (!Array.isArray(window._colData.fotos)) window._colData.fotos = [];
   showToast('📷 Processando ' + files.length + ' foto' + (files.length === 1 ? '' : 's') + '...');
   Promise.all(files.map(file => _eroRedimensionarFoto(file).then(({ dataUrl, horizontal }) => ({ desc: '', dataUrl, horizontal }))))
-    .then(novas => { window._colData.fotos.push(...novas); navigate('checklist_coleta'); });
-  event.target.value = '';
+    .then(novas => {
+      const pos = (typeof posicao === 'number' && posicao >= 0) ? posicao : window._colData.fotos.length;
+      window._colData.fotos.splice(pos, 0, ...novas);
+      navigate('checklist_coleta');
+    });
+}
+
+/* -- Drop solto na área geral do card (fora de um quadro específico) --
+   sempre arquivo externo arrastado do computador, nunca reordenação
+   interna (essa só acontece soltando em cima de um quadro, ver
+   colFotoDrop). -- */
+function colFotosDropContainer(event) {
+  event.preventDefault();
+  const files = Array.from((event.dataTransfer && event.dataTransfer.files) || []);
+  if (files.length) colProcessarFotosArrastadas(files);
+}
+
+/* -- Arrastar/soltar pra reordenar as fotos dentro do formulário (pedido
+   Tiago 04/11/2026: "poder movimentar ela em outros espaços de fotos no
+   formulário"). _colFotoArrastada guarda o índice de origem durante o
+   drag de um quadro; um drop que carrega dataTransfer.files é sempre
+   arquivo novo vindo do computador (nunca reordenação), então insere
+   naquela posição em vez de mover. -- */
+let _colFotoArrastada = null;
+function colFotoDragStart(event, idx) {
+  _colFotoArrastada = idx;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    try { event.dataTransfer.setData('text/plain', String(idx)); } catch(e) {}
+  }
+}
+function colFotoDrop(event, idxDestino) {
+  event.preventDefault();
+  event.stopPropagation();
+  const arquivosExternos = Array.from((event.dataTransfer && event.dataTransfer.files) || []);
+  if (arquivosExternos.length) { colProcessarFotosArrastadas(arquivosExternos, idxDestino); return; }
+  const idxOrigem = _colFotoArrastada;
+  _colFotoArrastada = null;
+  if (idxOrigem === null || idxOrigem === idxDestino || !window._colData.fotos[idxOrigem]) return;
+  const fotos = window._colData.fotos;
+  const [movida] = fotos.splice(idxOrigem, 1);
+  fotos.splice(idxDestino > idxOrigem ? idxDestino - 1 : idxDestino, 0, movida);
+  navigate('checklist_coleta');
 }
 
 function colNovoChecklist() {
   window._colPlacaManual = false;
+  window._colLocalManual = false;
   const temDados = window._colMostrarForm && window._colData && ((window._colData.residuos||[]).some(r => r && (r.tipo || r.peso)) || (window._colData.fotos||[]).length || window._colData.num);
   if (temDados && !confirm('Isso vai limpar o formulário atual (os dados não salvos serão perdidos). Deseja continuar?')) return;
-  window._colData = { residuos: [], fotos: [] };
+  window._colData = { residuos: [], fotos: [], transportadora: 'TL3 Engenharia e Serviços' };
   window._colRegistroAtualId = null;
   window._colMostrarForm = true;
   colAddLinhaResiduo();
@@ -51778,10 +51860,7 @@ function pageChecklistColeta() {
   <div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <button class="btn-secondary" onclick="colNovoChecklist()">🆕 Novo Relatório</button>
     ${window._colMostrarForm ? `
-    <button class="btn-primary" onclick="salvarColetaChecklist()">💾 Salvar e Sincronizar com OneDrive</button>
-    <button class="btn-primary" style="background:var(--brand-brown,#3F261F);color:#fff" onclick="exportarColetaPdf()">🖨️ Exportar PDF</button>
     <button class="btn-secondary" onclick="colAbrirConfigEmails()">⚙️ Destinatários</button>
-    <button class="btn-primary" style="background:var(--green-main);color:#fff" onclick="colConcluirEEnviar()">✅ Concluir e Enviar</button>
     <button class="btn-secondary" style="margin-left:auto" onclick="colFecharFormulario()">✕ Fechar Formulário</button>
     ` : `
     <button class="btn-secondary" onclick="colAbrirConfigEmails()">⚙️ Destinatários</button>
@@ -51803,9 +51882,10 @@ function pageChecklistColeta() {
         </select>
       </div>
       <div class="form-group" style="flex:2"><label>Local / Unidade</label>
-        ${d.regional==='outro'
-          ? `<input id="col_local" value="${d.local||''}" oninput="colCampo('local',this.value)" placeholder="Descreva o local/unidade">`
-          : `<select id="col_local" onchange="colCampo('local',this.value)" ${d.regional?'':'disabled'}>
+        ${d.regional==='outro' || ((d.regional==='sul'||d.regional==='centro') && window._colLocalManual)
+          ? `<input id="col_local" value="${d.local||''}" oninput="colCampo('local',this.value)" placeholder="Descreva o local/unidade (ex: nome do empreendimento)">
+             ${(d.regional==='sul'||d.regional==='centro') ? `<span onclick="window._colLocalManual=false;colCampo('local','');navigate('checklist_coleta')" style="font-size:.68rem;color:var(--brand-brown,#3F261F);cursor:pointer;text-decoration:underline">← escolher da lista</span>` : ''}`
+          : `<select id="col_local" onchange="colSelecionarLocal(this.value)" ${d.regional?'':'disabled'}>
               ${d.regional ? colBuildLocalidadeOptions(d.regional, d.local) : '<option value="">Selecione a Regional primeiro</option>'}
             </select>`
         }
@@ -51826,11 +51906,7 @@ function pageChecklistColeta() {
         `}
       </div>
       <div class="form-group"><label>Placa Reboque</label><input id="col_reboque" value="${d.reboque||''}" oninput="colCampo('reboque',this.value.toUpperCase())" style="text-transform:uppercase" placeholder="Se houver"></div>
-      <div class="form-group"><label>Transportadora</label><input id="col_transportadora" value="${d.transportadora||'Expedian'}" oninput="colCampo('transportadora',this.value)"></div>
-    </div>
-    <div class="form-group">
-      <label>Destinação Final</label>
-      <textarea rows="2" id="col_destinacao" oninput="colCampo('destinacao',this.value)" placeholder="Descreva a destinação final dada aos resíduos (ex: empresa licenciada, aterro, reciclagem, coprocessamento...)">${d.destinacao||''}</textarea>
+      <div class="form-group"><label>Transportadora</label><input id="col_transportadora" value="${d.transportadora||'TL3 Engenharia e Serviços'}" oninput="colCampo('transportadora',this.value)"></div>
     </div>
     <div class="form-group" style="margin-top:8px;margin-bottom:0">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:0">
@@ -51866,46 +51942,66 @@ function pageChecklistColeta() {
       </div>
     </div>
     <datalist id="col_dl_residuos">${colBuildResiduoDatalist()}</datalist>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">
     ${d.residuos.map((r, i) => `
-    <div style="display:grid;grid-template-columns:28px 1fr 70px 1fr 70px 64px 32px;gap:8px;align-items:center;margin-bottom:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
-      <div style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-align:center">${i+1}</div>
-      <input type="text" list="col_dl_residuos" value="${(r.tipo||'').replace(/"/g,'&quot;')}" oninput="colAtualizarResiduoTipo(${i},this.value)" placeholder="Buscar resíduo... (digite pra filtrar)" style="border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.75rem">
-      <div id="col-classe-badge-${i}" style="text-align:center;font-size:.68rem;font-weight:700;padding:5px 4px;border-radius:6px;background:${r.classe==='I'?'#fce8e8':r.classe==='II'?'#e6f5ed':'var(--surface)'};color:${r.classe==='I'?'#e03d3d':r.classe==='II'?'#2d8c5a':'var(--text-muted)'}">${r.classe?'Classe '+r.classe:'—'}</div>
-      <input type="text" id="col-destinador-${i}" value="${(r.destinador||'').replace(/"/g,'&quot;')}" oninput="colAtualizarResiduoDestinador(${i},this.value)" placeholder="Destinador (auto)" style="border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.75rem">
-      <input type="number" step="0.01" min="0" value="${r.peso||''}" oninput="colAtualizarResiduoNum(${i},'peso',this.value)" placeholder="Peso" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
-      <select onchange="colAtualizarResiduoNum(${i},'unid',this.value)" style="border:1px solid var(--border);border-radius:6px;padding:5px;font-size:.75rem">
-        <option value="kg" ${r.unid==='kg'?'selected':''}>kg</option>
-        <option value="un" ${r.unid==='un'?'selected':''}>un</option>
-        <option value="lt" ${r.unid==='lt'?'selected':''}>lt</option>
-      </select>
-      <button onclick="colRemLinhaResiduo(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.95rem" title="Remover">✕</button>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-size:.68rem;font-weight:700;color:var(--text-muted)">#${i+1}</span>
+        <button onclick="colRemLinhaResiduo(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.9rem" title="Remover">✕</button>
+      </div>
+      <input type="text" list="col_dl_residuos" value="${(r.tipo||'').replace(/"/g,'&quot;')}" oninput="colAtualizarResiduoTipo(${i},this.value)" placeholder="Buscar resíduo... (digite pra filtrar)" style="width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.76rem;margin-bottom:6px">
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <div id="col-classe-badge-${i}" style="flex-shrink:0;text-align:center;font-size:.68rem;font-weight:700;padding:6px 8px;border-radius:6px;background:${r.classe==='I'?'#fce8e8':r.classe==='II'?'#e6f5ed':'var(--surface)'};color:${r.classe==='I'?'#e03d3d':r.classe==='II'?'#2d8c5a':'var(--text-muted)'}">${r.classe?'Classe '+r.classe:'—'}</div>
+        <input type="text" id="col-destinador-${i}" value="${(r.destinador||'').replace(/"/g,'&quot;')}" oninput="colAtualizarResiduoDestinador(${i},this.value)" placeholder="Destinação (auto)" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.76rem">
+      </div>
+      <div style="display:flex;gap:6px">
+        <input type="number" step="0.01" min="0" value="${r.peso||''}" oninput="colAtualizarResiduoNum(${i},'peso',this.value)" placeholder="Quantidade" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.76rem">
+        <select onchange="colAtualizarResiduoNum(${i},'unid',this.value)" style="flex-shrink:0;border:1px solid var(--border);border-radius:6px;padding:6px;font-size:.76rem">
+          <option value="kg" ${r.unid==='kg'?'selected':''}>kg</option>
+          <option value="un" ${r.unid==='un'?'selected':''}>un</option>
+          <option value="lt" ${r.unid==='lt'?'selected':''}>lt</option>
+        </select>
+      </div>
     </div>
     `).join('')}
-    <button class="btn-secondary" style="font-size:.78rem" onclick="colAddLinhaResiduo()">+ Adicionar resíduo</button>
+    </div>
+    <button class="btn-secondary" style="font-size:.78rem;margin-top:10px" onclick="colAddLinhaResiduo()">+ Adicionar resíduo</button>
   </div>
 
-  <div class="card" style="margin-bottom:16px">
+  <div class="card" style="margin-bottom:16px" ondragover="event.preventDefault()" ondrop="colFotosDropContainer(event)">
     <div class="card-title">📷 Fotos de Evidência</div>
+    <div style="font-size:.7rem;color:var(--text-muted);margin:-6px 0 10px">Arraste os quadros pra reordenar, ou arraste fotos do computador direto pra cá.</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px">
     ${d.fotos.map((f, i) => `
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
-      <label style="cursor:pointer;flex-shrink:0">
-        <div style="width:56px;height:56px;border-radius:8px;border:2px dashed ${f.dataUrl?'var(--green-main)':'var(--border)'};background:${f.dataUrl?'transparent':'var(--surface)'};display:flex;align-items:center;justify-content:center;overflow:hidden">
-          ${f.dataUrl ? `<img src="${f.dataUrl}" style="width:100%;height:100%;object-fit:cover">` : `<span style="font-size:1.3rem;opacity:.5">📷</span>`}
+    <div draggable="true" ondragstart="colFotoDragStart(event,${i})" ondragover="event.preventDefault()" ondrop="colFotoDrop(event,${i})" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px;cursor:grab;display:flex;flex-direction:column;gap:6px">
+      <label style="cursor:pointer;display:block">
+        <div style="width:100%;aspect-ratio:1/1;border-radius:6px;border:2px dashed ${f.dataUrl?'var(--green-main)':'var(--border)'};background:${f.dataUrl?'transparent':'var(--surface)'};display:flex;align-items:center;justify-content:center;overflow:hidden">
+          ${f.dataUrl ? `<img src="${f.dataUrl}" style="width:100%;height:100%;object-fit:cover">` : `<span style="font-size:1.6rem;opacity:.5">📷</span>`}
         </div>
         <input type="file" accept="image/*" style="display:none" onchange="colCarregarFoto(event,${i})">
       </label>
-      <input value="${f.desc||''}" oninput="colAtualizarFotoDesc(${i},this.value)" placeholder="Descrição da foto ${i+1}" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:.78rem">
-      <button onclick="colRemFoto(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.95rem;flex-shrink:0" title="Remover">✕</button>
+      <textarea rows="2" oninput="colAtualizarFotoDesc(${i},this.value)" placeholder="Legenda da foto ${i+1}" style="width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:6px;padding:5px 7px;font-size:.72rem;text-align:justify;resize:vertical">${f.desc||''}</textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:.62rem;color:var(--text-muted)" title="Arraste o quadro pra reordenar">⠿ mover</span>
+        <button onclick="colRemFoto(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:.9rem" title="Remover">✕</button>
+      </div>
     </div>
     `).join('')}
-    <label class="btn-secondary" style="font-size:.78rem;cursor:pointer;display:inline-block">+ Adicionar Fotos (pode escolher várias)
+    </div>
+    <label class="btn-secondary" style="font-size:.78rem;cursor:pointer;display:inline-block">+ Adicionar Fotos (pode escolher várias, ou arraste aqui)
       <input type="file" accept="image/*" multiple style="display:none" onchange="colCarregarFotosMultiplas(event)">
     </label>
   </div>
 
-  <div class="card">
+  <div class="card" style="margin-bottom:16px">
     <div class="card-title">Observações</div>
-    <textarea rows="3" id="col_obs" oninput="colCampo('obs',this.value)" placeholder="Observações sobre a coleta...">${d.obs||''}</textarea>
+    <textarea rows="3" id="col_obs" oninput="colCampo('obs',this.value)" placeholder="Observações sobre a coleta...">$d.obs||''}</textarea>
+  </div>
+
+  <div class="card" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <button class="btn-primary" onclick="salvarColetaChecklist()">💾 Salvar e Sincronizar com OneDrive</button>
+    <button class="btn-primary" style="background:var(--brand-brown,#3F261F);color:#fff" onclick="exportarColetaPdf()">🖨️ Exportar PDF</button>
+    <button class="btn-primary" style="background:var(--green-main);color:#fff" onclick="colConcluirEEnviar()">✅ Concluir e Enviar</button>
   </div>
   `}
   `;
@@ -51984,6 +52080,7 @@ async function colEditarChecklist(id) {
     if (!Array.isArray(window._colData.residuos)) window._colData.residuos = [];
     if (!Array.isArray(window._colData.fotos)) window._colData.fotos = [];
     window._colPlacaManual = !!window._colData.placa && !colVeiculoFrotaPorPlaca(window._colData.placa);
+    window._colLocalManual = !!window._colData.local && (window._colData.regional === 'sul' || window._colData.regional === 'centro') && !colLocalEstaNaLista(window._colData.regional, window._colData.local);
     window._colRegistroAtualId = id;
     window._colMostrarForm = true;
     showSyncStatus('Relatório carregado!', 'ok', 3000);
