@@ -4310,9 +4310,14 @@ function prestFrentesDoFormulario() {
   if (!prestFrentesModoSimples()) return prestFrentesAtivas();
   return prestFrentesDaPessoa(prestFrentesPessoaAtual());
 }
+// Rótulo na lista: se a liberação tem o mesmo nome do contrato (caso normal),
+// mostra só "CC-EXP-018 · Jirau - Resgate de Fauna"; se o gestor deu um nome
+// próprio (ex.: uma obra), mostra "SED Guaporé — CC-EXP-002".
 function prestFrentesRotulo(f) {
-  const cc = _ccIdPuro(f.CentroCusto || '');
-  return `${f.Nome}${cc ? ' — ' + cc : ''}`;
+  const cc = f.CentroCusto || '';
+  const contrato = cc.includes(' · ') ? cc.split(' · ').slice(1).join(' · ').trim() : cc;
+  if (!f.Nome || _prestNormNome(f.Nome) === _prestNormNome(contrato)) return cc;
+  return `${f.Nome} — ${_ccIdPuro(cc)}`;
 }
 function prestFrentesOrdenar(lista) {
   return lista.slice().sort((a, b) => (a.CentroCusto || '').localeCompare(b.CentroCusto || '', 'pt-BR') || (a.Nome || '').localeCompare(b.Nome || '', 'pt-BR'));
@@ -4348,6 +4353,44 @@ function prestPodeAprovarComoGestor(i) {
   if (gestores.length) return gestores.some(g => _prestNormNome(g) === eu);
   return currentProfile === 'diretoria';
 }
+// Campo(s) de BM na aprovação do gestor (pedido Tiago 05/11/2026): BM pode ser
+// informado pelo gestor aqui ou pelo Financeiro na conferência — não é
+// obrigatório em nenhuma das duas etapas. Com rateio, um campo por linha.
+function prestGestorCamposBMHtml(i) {
+  const partes = (i.DivisaoCC && i.DivisaoCC.length) ? i.DivisaoCC : null;
+  const campo = (idx, cc, bm) => `
+    <div class="form-group" style="margin-bottom:8px">
+      <label style="font-size:.74rem">Nº Medição (BM)${partes ? ' — ' + _prestEsc(_ccIdPuro(cc)) : ''} <span style="color:var(--text-muted);font-weight:400">(opcional — se não souber, o Financeiro informa)</span></label>
+      <input type="text" class="pcg-bm" data-idx="${idx}" data-cc="${_prestEsc(_ccIdPuro(cc))}" list="pcg_bm_dl_${idx}" value="${_prestEsc(bm || '')}" placeholder="Ex.: 13" onfocus="prestGestorSugerirBMs(this)">
+      <datalist id="pcg_bm_dl_${idx}"></datalist>
+    </div>`;
+  return partes ? partes.map((p, k) => campo(k, p.cc, p.medicao)).join('') : campo(0, i.CentroCusto || '', i.NumMedicao);
+}
+async function prestGestorSugerirBMs(inp) {
+  const dl = document.getElementById(inp.getAttribute('list'));
+  if (!dl || dl.dataset.ok) return;
+  let meds = [];
+  try { meds = await medicoesParaCC(inp.dataset.cc); } catch (e) {}
+  meds = (meds || []).filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status))
+    .sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  dl.innerHTML = meds.map(m => `<option value="${_prestEsc(m.NumMedicao)}">${_prestEsc(m.NumMedicao)} — ${_prestEsc(m.Descricao || '')}</option>`).join('');
+  dl.dataset.ok = '1';
+}
+async function prestGestorAprovarComBM(id) {
+  const reg = ((window._prestFiltradas || []).find(r => r.Id === id)) || (await dbLer('PrestacaoContas')).find(r => r.Id === id);
+  const campos = [...document.querySelectorAll('.pcg-bm')];
+  const ajustes = {};
+  if (reg && reg.DivisaoCC && reg.DivisaoCC.length) {
+    const div = JSON.parse(JSON.stringify(reg.DivisaoCC));
+    campos.forEach(c => { const k = parseInt(c.dataset.idx, 10); if (div[k]) div[k].medicao = c.value.trim(); });
+    ajustes.DivisaoCC = div;
+  } else if (campos[0]) {
+    ajustes.NumMedicao = campos[0].value.trim();
+  }
+  const m = document.getElementById('pc-view-modal'); if (m) m.remove();
+  await aprovarPrestacaoGestor(id, ajustes);
+}
+
 function prestGestoresTexto(i) {
   const g = (i && i.GestorAprovador) || [];
   return g.length ? g.join(' ou ') : 'Diretoria';
@@ -4360,13 +4403,13 @@ function prestFrenteBlocoHtml() {
   return `
     <div class="form-row" id="prest_frente_row">
       <div class="form-group" style="grid-column:span 2">
-        <label>📍 Onde foi a despesa? <span style="font-size:.7rem;color:var(--text-muted)">(frente de trabalho — o Centro de Custo e o BM são preenchidos sozinhos)</span></label>
+        <label>🔑 Centro de custo <span style="font-size:.7rem;color:var(--text-muted)">(só os liberados pelo seu gestor)</span></label>
         <select id="prest_frente" onchange="prestFrenteAoEscolher()">
-          <option value="">Carregando frentes...</option>
+          <option value="">Carregando centros de custo...</option>
         </select>
         <label id="prest_frente_multi_lbl" style="display:none;align-items:center;gap:6px;cursor:pointer;font-size:.78rem;margin-top:8px">
           <input type="checkbox" id="prest_frente_multi" onchange="prestFrenteToggleMulti()" style="width:auto">
-          🧩 Esta despesa atendeu mais de uma frente (divide o valor em partes iguais)
+          🧩 Esta despesa atendeu mais de um centro de custo (divide o valor em partes iguais)
         </label>
         <div id="prest_frente_multi_lista" style="display:none;margin-top:8px;background:var(--surface2);border-radius:8px;padding:10px;flex-direction:column;gap:6px"></div>
         <div id="prest_frente_info" style="font-size:.74rem;margin-top:6px;color:var(--text-muted)"></div>
@@ -4390,12 +4433,12 @@ function prestFrenteRenderizarSelect(manterValor) {
     html = '<option value="">Carregando frentes...</option>';
   } else if (!lista.length) {
     html = simples
-      ? '<option value="">🔒 Nenhuma frente liberada para você</option>'
-      : '<option value="">(nenhuma frente cadastrada — use o Centro de Custo abaixo)</option>';
+      ? '<option value="">🔒 Nenhum centro de custo liberado para você</option>'
+      : '<option value="">(nenhum centro de custo liberado ainda — use o campo abaixo)</option>';
   } else {
-    html = `<option value="">${simples ? 'Selecione onde você estava trabalhando...' : '(opcional) Selecione a frente...'}</option>` +
+    html = `<option value="">${simples ? 'Selecione o centro de custo...' : '(opcional) Centro de custo liberado...'}</option>` +
       lista.map(f => `<option value="${f.Id}">${_prestEsc(prestFrentesRotulo(f))}</option>`).join('') +
-      '<option value="__naosei__">❓ Outro / não sei — o Financeiro classifica</option>';
+      '<option value="__naosei__">❓ Não sei qual é — o gestor/Financeiro classifica</option>';
   }
   sel.innerHTML = html;
   if (atual && [...sel.options].some(o => o.value === String(atual))) sel.value = String(atual);
@@ -4417,7 +4460,7 @@ function prestFrenteAplicarBloqueio() {
     });
   }
   const info = document.getElementById('prest_frente_info');
-  if (bloq && info) info.innerHTML = `<div style="background:#fce8e8;border:1px solid #f5b5b5;color:#991b1b;border-radius:8px;padding:10px 12px;font-size:.8rem">🔒 <strong>Você ainda não tem frente de trabalho liberada</strong> e por isso não pode lançar prestação de contas. Fale com o seu gestor para liberar a frente/contrato em que você está trabalhando.</div>`;
+  if (bloq && info) info.innerHTML = `<div style="background:#fce8e8;border:1px solid #f5b5b5;color:#991b1b;border-radius:8px;padding:10px 12px;font-size:.8rem">🔒 <strong>Você ainda não tem centro de custo liberado</strong> e por isso não pode lançar prestação de contas. Antes de sair para o campo, fale com o seu gestor para liberar o centro de custo do trabalho.</div>`;
   else if (!bloq && info && info.innerHTML.includes('🔒')) info.innerHTML = '';
   const sel = document.getElementById('prest_frente'); if (sel && bloq) sel.disabled = true;
 }
@@ -4516,7 +4559,9 @@ function prestFrenteAoEscolher() {
     if (f) {
       window._prestFrenteSel = f;
       _prestFrenteSelecionarCC(f);
-      if (info) info.innerHTML = `✅ <strong>${_prestEsc(f.CentroCusto)}</strong> · BM: <strong>${_prestFrenteBMTexto(f)}</strong>`;
+      if (info) info.innerHTML = prestFrenteBMNaData(f, _prestDataDespesa())
+        ? `✅ <strong>${_prestEsc(f.CentroCusto)}</strong> · BM: <strong>${_prestFrenteBMTexto(f)}</strong>`
+        : `✅ <strong>${_prestEsc(f.CentroCusto)}</strong> · o BM será informado pelo gestor ou pelo Financeiro na aprovação`;
     }
   } else if (v === '__naosei__') {
     if (prestFrentesModoSimples()) {
@@ -4524,7 +4569,7 @@ function prestFrenteAoEscolher() {
       if (emp && !emp.value) { emp.value = 'Expedian'; atualizarCCsPrest(); }
       const sel = document.getElementById('prest_cc'); if (sel) sel.value = '';
     }
-    if (info) info.innerHTML = '❓ Sem frente — o Financeiro vai classificar o Centro de Custo e o BM na conferência.';
+    if (info) info.innerHTML = '❓ O gestor ou o Financeiro vai classificar o centro de custo e o BM na aprovação.';
   } else if (info) {
     info.textContent = '';
   }
@@ -4542,7 +4587,7 @@ function prestFrenteToggleMulti() {
     box.innerHTML = lista.map(f => `
       <label style="display:flex;align-items:center;gap:6px;font-size:.8rem;cursor:pointer">
         <input type="checkbox" class="prest-frente-multi-item" value="${f.Id}" ${String(f.Id) === atual ? 'checked' : ''} onchange="prestFrenteRatearIgual()" style="width:auto">
-        ${_prestEsc(prestFrentesRotulo(f))} <span class="prest-frente-multi-bm" style="color:var(--text-muted);font-size:.7rem">· BM ${_prestEsc(prestFrenteBMNaData(f, _prestDataDespesa()) || '—')}</span>
+        ${_prestEsc(prestFrentesRotulo(f))} <span class="prest-frente-multi-bm" style="color:var(--text-muted);font-size:.7rem">${prestFrenteBMNaData(f, _prestDataDespesa()) ? '· BM ' + _prestEsc(prestFrenteBMNaData(f, _prestDataDespesa())) : ''}</span>
       </label>`).join('');
     box.style.display = 'flex';
     if (sel) sel.value = '';
@@ -4640,15 +4685,15 @@ function prestFrenteCamposExtras() {
 // Validação extra: colaborador com frentes liberadas precisa escolher uma
 // (ou dizer "não sei").
 function prestFrenteValidar() {
-  if (window._prestBloqueado) { showToast('🔒 Você ainda não tem frente liberada — fale com o seu gestor.'); return false; }
+  if (window._prestBloqueado) { showToast('🔒 Você ainda não tem centro de custo liberado — fale com o seu gestor.'); return false; }
   if (!prestFrentesModoSimples() || !window._prestFrenteTemOpcoes) return true;
   const multi = (document.getElementById('prest_frente_multi') || {}).checked;
   if (multi) {
-    if (prestFrentesMultiSelecionadas().length < 2) { showToast('⚠️ Marque pelo menos 2 frentes, ou desmarque "mais de uma frente".'); return false; }
+    if (prestFrentesMultiSelecionadas().length < 2) { showToast('⚠️ Marque pelo menos 2 centros de custo, ou desmarque "mais de um centro de custo".'); return false; }
     return true;
   }
   const v = (document.getElementById('prest_frente') || {}).value || '';
-  if (!v) { showToast('⚠️ Escolha onde foi a despesa (frente de trabalho), ou "Outro / não sei".'); return false; }
+  if (!v) { showToast('⚠️ Escolha o centro de custo da despesa (ou "Não sei qual é").'); return false; }
   return true;
 }
 
@@ -4696,7 +4741,7 @@ async function prestFrenteAlertasHtml(i) {
   const pessoa = i.LancadoPor || i.Responsavel || i.EnviadoPor || '';
   const partes = (i.DivisaoCC && i.DivisaoCC.length) ? i.DivisaoCC.map(d => ({ cc: d.cc, medicao: d.medicao }))
     : [{ cc: i.CentroCusto || '', medicao: i.NumMedicao || '' }];
-  if (i.Frente) info.push(`📍 Frente informada: <strong>${_prestEsc(i.Frente)}</strong>${i.FrenteAuto ? ' (CC e BM preenchidos pelo app)' : ''}`);
+  if (i.Frente) info.push(`🔑 Lançado pelo centro de custo liberado: <strong>${_prestEsc(i.Frente)}</strong>`);
   if (i.FrenteNaoSei) alertas.push('❓ O colaborador marcou "não sei" — defina o Centro de Custo e o BM.');
   const frentesPessoa = prestFrentesDaPessoa(pessoa);
   for (const p of partes) {
@@ -4704,7 +4749,7 @@ async function prestFrenteAlertasHtml(i) {
     const ccId = _ccIdPuro(p.cc);
     const frentesDoCC = prestFrentesAtivas().filter(f => _ccIdPuro(f.CentroCusto) === ccId);
     if (frentesDoCC.length && pessoa && !frentesPessoa.some(f => _ccIdPuro(f.CentroCusto) === ccId)) {
-      alertas.push(`⚠️ ${_prestEsc(pessoa)} não está liberado(a) em nenhuma frente de <strong>${_prestEsc(ccId)}</strong>.`);
+      alertas.push(`⚠️ ${_prestEsc(pessoa)} não está liberado(a) no centro de custo <strong>${_prestEsc(ccId)}</strong>.`);
     }
     if (!p.medicao && frentesDoCC.length) {
       const bms = [...new Set(frentesDoCC.map(f => f.BMAtual).filter(Boolean))];
@@ -4742,20 +4787,20 @@ async function prestFrentePreencherAlertasModal(i) {
    GESTÃO — modal "Frentes e Acessos" (Gestor Geral + Diretoria)
    --------------------------------------------------------------------- */
 async function prestFrentesAbrirGestao() {
-  if (!prestFrentesPodeGerir()) { showToast('⚠️ Só o Gestor Geral e a Diretoria cadastram frentes.'); return; }
+  if (!prestFrentesPodeGerir()) { showToast('⚠️ Só o Gestor Geral e a Diretoria liberam centros de custo.'); return; }
   const antigo = document.getElementById('prest-frentes-modal'); if (antigo) antigo.remove();
   const modal = document.createElement('div');
   modal.id = 'prest-frentes-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3000;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:24px 10px';
   modal.innerHTML = `<div style="background:var(--surface);border-radius:14px;padding:20px;width:min(860px,96vw);box-shadow:0 20px 60px rgba(0,0,0,.4)">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px">
-      <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem">📍 Frentes de Trabalho e Acessos</div>
+      <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem">🔑 Centros de custo liberados</div>
       <button class="btn-secondary" style="padding:5px 12px" onclick="prestFrentesFecharGestao()">✕ Fechar</button>
     </div>
-    <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:14px">Cada frente é ligada a um Centro de Custo. Marque o <strong>BM em execução</strong>, o <strong>gestor</strong> que aprova as despesas e quem pode lançar nela (colaborador sem nenhuma frente fica bloqueado para lançar). Quando enviar o BM ao cliente, clique em <strong>➡️ Próximo BM</strong> — os lançamentos seguintes já caem no BM novo.</div>
+    <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:14px">Libere o <strong>centro de custo</strong> para os colaboradores que vão trabalhar nele — só eles poderão lançar prestação de contas ali (colaborador sem nenhum centro de custo liberado fica bloqueado). Escolha o <strong>gestor</strong> que aprova. O <strong>BM em execução</strong> é opcional: preencha nos contratos mensais (Jirau, Nova 364, Resíduos…) para o BM vir sozinho; nos contratos por demanda/OS deixe em branco — o gestor ou o Financeiro informa o BM na aprovação.</div>
     <div id="prest-frentes-nova" style="background:var(--surface2);border-radius:10px;padding:12px;margin-bottom:14px"></div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-      <input type="text" id="prest-frentes-busca" placeholder="🔍 Filtrar por frente, contrato ou colaborador..." oninput="prestFrentesRenderizarGestao()" style="flex:1;min-width:200px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
+      <input type="text" id="prest-frentes-busca" placeholder="🔍 Filtrar por contrato ou colaborador..." oninput="prestFrentesRenderizarGestao()" style="flex:1;min-width:200px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
       <label style="font-size:.76rem;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="prest-frentes-inativas" onchange="prestFrentesRenderizarGestao()" style="width:auto"> mostrar inativas</label>
     </div>
     <div id="prest-frentes-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
@@ -4784,17 +4829,17 @@ function prestFrentesRenderizarNova() {
   const el = document.getElementById('prest-frentes-nova');
   if (!el) return;
   el.innerHTML = `
-    <div style="font-weight:700;font-size:.8rem;margin-bottom:8px">➕ Nova frente</div>
+    <div style="font-weight:700;font-size:.8rem;margin-bottom:8px">➕ Liberar um centro de custo</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <select id="pfn_cc" onchange="prestFrentesNomeDoContrato();prestFrentesSugerirBM('pfn')" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">${_prestFrentesCCsOpcoes('')}</select>
-      <input type="text" id="pfn_nome" placeholder="Nome da frente (vem do contrato — troque se for uma obra/OS)" style="flex:2 1 200px;min-width:0;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
+      <input type="text" id="pfn_nome" placeholder="Nome (vem do contrato — só mude se quiser separar uma obra)" style="flex:2 1 200px;min-width:0;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
       <select id="pfn_gestor" title="Gestor que aprova as despesas desta frente" style="flex:1 1 160px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem"><option value="">Gestor que aprova...</option>${prestGestoresDisponiveis().map(g => `<option value="${_prestEsc(g)}">${_prestEsc(g)}</option>`).join('')}</select>
-      <input type="text" id="pfn_bm" list="pfn_bm_dl" placeholder="BM em execução" style="flex:0 1 120px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
+      <input type="text" id="pfn_bm" list="pfn_bm_dl" placeholder="BM (opcional)" style="flex:0 1 130px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
       <datalist id="pfn_bm_dl"></datalist>
-      <button class="btn-primary" style="padding:7px 14px;font-size:.8rem" onclick="prestFrentesCriar()">Criar</button>
+      <button class="btn-primary" style="padding:7px 14px;font-size:.8rem" onclick="prestFrentesCriar()">Liberar</button>
     </div>
     <div id="pfn_bm_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:4px"></div>
-    <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">Escolha o contrato: o nome já vem preenchido. Contrato sem divisão (só contrato + BM) é só clicar em Criar. Se o contrato tem obras/OS separadas (ex.: Gestão de Obras), troque o nome — ex.: "SED Guaporé" — e crie uma frente por obra.</div>`;
+    <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">Escolha o centro de custo, o gestor e clique em Liberar; depois marque os colaboradores. BM só para contrato mensal — por demanda/OS, deixe em branco.</div>`;
 }
 
 // Preenche o datalist de BM com as medições já cadastradas do CC e sugere a
@@ -4813,9 +4858,9 @@ async function prestFrentesSugerirBM(pfx, idx) {
   if (dl) dl.innerHTML = meds.map(m => `<option value="${_prestEsc(m.NumMedicao)}">${_prestEsc(m.NumMedicao)} — ${_prestEsc(m.Descricao || '')} (${_prestEsc(m.Status || '')})</option>`).join('');
   const abertas = meds.filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status));
   if (hint) hint.textContent = meds.length
-    ? (abertas.length ? `Medições em aberto neste contrato: ${abertas.map(m => m.NumMedicao).join(', ')}` : 'Todas as medições cadastradas deste contrato já estão faturadas/concluídas — informe o número do próximo BM.')
-    : 'Nenhuma medição cadastrada para este contrato — digite o número do BM.';
-  if (bmEl && !bmEl.value && abertas.length) bmEl.value = abertas[0].NumMedicao;
+    ? (abertas.length ? `Medições em aberto: ${abertas.map(m => m.NumMedicao).join(', ')} — preencha só se for contrato mensal.` : 'Medições cadastradas já faturadas/concluídas. Contrato mensal? Informe o próximo BM; por demanda, deixe em branco.')
+    : 'Sem medição cadastrada. Contrato mensal? Digite o BM; por demanda, deixe em branco.';
+  // Não preenche sozinho: em contrato por demanda/OS o BM fica em branco.
 }
 
 // Ao escolher o contrato em "Nova frente", o nome vem preenchido com o nome
@@ -4840,7 +4885,7 @@ async function prestFrentesCriar() {
   const cc = ccSel ? ccSel.value : '';
   const bm = (document.getElementById('pfn_bm') || {}).value?.trim() || '';
   const gestor = (document.getElementById('pfn_gestor') || {}).value || '';
-  if (!nome) { showToast('⚠️ Dê um nome para a frente.'); return; }
+  if (!nome) { showToast('⚠️ Escolha o centro de custo.'); return; }
   if (!cc) { showToast('⚠️ Escolha o Centro de Custo.'); return; }
   const empresa = ccSel.selectedOptions[0] ? (ccSel.selectedOptions[0].dataset.emp || '') : '';
   const novo = await dbInserir('FrentesPrestacao', {
@@ -4850,7 +4895,7 @@ async function prestFrentesCriar() {
   });
   if (!novo) { showToast('❌ Erro ao criar a frente.' + (typeof syncErrorDetalhe === 'function' ? syncErrorDetalhe() : '')); return; }
   window._pfnNomeAuto = ''; window._pfnGestorAuto = '';
-  showToast('✅ Frente criada — agora libere os colaboradores.');
+  showToast('✅ Centro de custo liberado — agora marque os colaboradores.');
   await prestFrentesCarregar(true);
   prestFrentesRenderizarNova();
   window._prestFrentesAbertaId = novo.Id;
@@ -4864,7 +4909,7 @@ function prestFrentesRenderizarGestao() {
   const inativas = (document.getElementById('prest-frentes-inativas') || {}).checked;
   let lista = prestFrentesOrdenar(window._prestFrentes || []).filter(f => inativas || f.Ativa !== false);
   if (busca) lista = lista.filter(f => _prestNormNome([f.Nome, f.CentroCusto, ...(f.Colaboradores || [])].join(' ')).includes(busca));
-  if (!lista.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;padding:12px">Nenhuma frente ainda. Crie a primeira acima.</div>'; return; }
+  if (!lista.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;padding:12px">Nenhum centro de custo liberado ainda. Libere o primeiro acima.</div>'; return; }
   const pessoas = prestListaLancadores();
   el.innerHTML = lista.map(f => {
     const colabs = f.Colaboradores || [];
@@ -4909,7 +4954,7 @@ async function prestFrentesSalvar(id) {
   const ccSel = document.getElementById('pfg_cc_' + id);
   const cc = ccSel ? ccSel.value : f.CentroCusto;
   const bm = ((document.getElementById('pfg_bm_' + id) || {}).value || '').trim();
-  if (!nome) { showToast('⚠️ A frente precisa de um nome.'); return; }
+  if (!nome) { showToast('⚠️ Informe um nome.'); return; }
   if (!cc) { showToast('⚠️ Escolha o Centro de Custo.'); return; }
   const caixas = document.querySelectorAll('.pfg-colab-' + id);
   // Se a lista de colaboradores não foi aberta, mantém a que já estava salva.
@@ -4937,7 +4982,7 @@ async function prestFrentesProximoBM(id) {
   const f = prestFrentePorId(id);
   if (!f) return;
   const sugerido = _prestProximoNumeroBM(f.BMAtual);
-  const novo = prompt(`Frente "${f.Nome}"\nBM atual: ${f.BMAtual || '—'}\n\nQual é o novo BM em execução?`, sugerido);
+  const novo = prompt(`${f.Nome}\nBM atual: ${f.BMAtual || '—'}\n\nQual é o novo BM em execução?`, sugerido);
   if (novo === null) return;
   const bm = String(novo).trim();
   if (!bm) { showToast('⚠️ Informe o número do BM.'); return; }
@@ -4953,9 +4998,9 @@ async function prestFrentesAlternarAtiva(id) {
   const f = prestFrentePorId(id);
   if (!f) return;
   const ativar = f.Ativa === false;
-  if (!ativar && !confirm(`Desativar a frente "${f.Nome}"?\n\nEla some da lista dos colaboradores. Os lançamentos já feitos não mudam.`)) return;
+  if (!ativar && !confirm(`Desativar "${f.Nome}"?\n\nO centro de custo some da lista dos colaboradores. Os lançamentos já feitos não mudam.`)) return;
   const ok = await dbAtualizar('FrentesPrestacao', f.Id, { Ativa: ativar });
-  showToast(ok ? (ativar ? '✅ Frente reativada.' : '⏸️ Frente desativada.') : '❌ Erro ao salvar.');
+  showToast(ok ? (ativar ? '✅ Reativado.' : '⏸️ Desativado.') : '❌ Erro ao salvar.');
   if (ok) { await prestFrentesCarregar(true); prestFrentesRenderizarGestao(); }
 }
 /* ================= fim FRENTES DE TRABALHO ================= */
@@ -4977,7 +5022,7 @@ function pagePrestacao() {
     <button class="btn-secondary" onclick="${window._prestVindoDeDespesas ? "window._prestVindoDeDespesas=false;window._rdTab='despesas';navigate('receitas_despesas')" : "navigate('financeiro')"}">← ${window._prestVindoDeDespesas ? 'Despesas' : 'Financeiro'}</button>
     <button id="prest-form-toggle-btn" class="btn-primary" onclick="pcToggleFormNovo()">➕ Nova Despesa</button>
     <button class="btn-secondary" onclick="window._fornVindoDe='prestacao';navigate('fornecedores')">🏷️ Fornecedores</button>
-    ${prestFrentesPodeGerir() ? `<button class="btn-secondary" onclick="prestFrentesAbrirGestao()" title="Cadastrar frentes, BM em execução e quem pode lançar em cada uma">📍 Frentes e Acessos</button>` : ''}
+    ${prestFrentesPodeGerir() ? `<button class="btn-secondary" onclick="prestFrentesAbrirGestao()" title="Liberar centros de custo para os colaboradores, gestor que aprova e BM">🔑 Centros de custo liberados</button>` : ''}
     <!-- KPIs na mesma linha dos botões (pedido Tiago 26/10/2026: "colocar os
          cards de total de lançamentos aguardando, aprovados e indeferidas, na
          mesma linha de botão despesa, nova despesa e fornecedores"). -->
@@ -5205,10 +5250,11 @@ function pagePrestacao() {
   </div>
 
 
-  <!-- LISTA DE PRESTAÇÕES — colapsável (lista suspensa) -->
-  <details class="card">
-    <summary class="card-title" style="margin-bottom:0;cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px">▶ 📑 ${isGestorFin?'Prestações de Contas':'Minhas Prestações'}</summary>
-    <div style="margin-top:14px">
+  <!-- LISTA DE PRESTAÇÕES — sempre visível (pedido Tiago 05/11/2026: não
+       precisa mais ficar escondida numa lista suspensa colapsada). -->
+  <div class="card">
+    <div class="card-title" style="margin-bottom:14px">📑 ${isGestorFin?'Prestações de Contas':'Minhas Prestações'}</div>
+    <div>
     <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
       <button class="btn-secondary" onclick="exportarPrestacaoExcel()" style="font-size:.78rem;padding:6px 12px">📊 Exportar Excel</button>
     </div>
@@ -5235,7 +5281,7 @@ function pagePrestacao() {
     <div id="prest-alerta-pendentes"></div>
     <div id="lista-prestacoes"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
     </div>
-  </details>
+  </div>
   `;
 }
 
@@ -5633,7 +5679,7 @@ function _pcDesbloquearBotoes(btnAtivo) {
 
 async function salvarRascunhoPrestacao() {
   if (document.getElementById('pc-btn-rascunho')?.disabled) return; // clique duplo — já processando
-  if (window._prestBloqueado) { showToast('🔒 Você ainda não tem frente liberada — fale com o seu gestor.'); return; }
+  if (window._prestBloqueado) { showToast('🔒 Você ainda não tem centro de custo liberado — fale com o seu gestor.'); return; }
   const dados = coletarDadosPrestacao(); if(!dados)return;
   const editandoId = window._pcEditandoId;
   if (!editandoId && await _prestacaoDuplicada(dados)) {
@@ -6054,7 +6100,7 @@ async function carregarPrestacoes() {
     else if (PC_FILTRO_KPI === 'estagiario') items = items.filter(r=>ehLancadorExtra(r.LancadoPor));
 
     const pendentes = items.filter(i => i.Status !== 'Paga')
-      .sort((a,b) => new Date(a.DataLancamento||a.DataDespesa||0) - new Date(b.DataLancamento||b.DataDespesa||0));
+      .sort((a,b) => new Date(b.DataLancamento||b.DataDespesa||0) - new Date(a.DataLancamento||a.DataDespesa||0));
     // Prestações já pagas somem desta lista assim que pagas — o registro já
     // existe em Despesas a partir daí; aqui só ficam as que ainda estão em
     // andamento (pedido em 06/09/2026).
@@ -6499,13 +6545,13 @@ async function exportarPrestacaoExcel() {
   XLSX.writeFile(wb, 'PrestacaoContas_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
-async function aprovarPrestacaoGestor(id) {
+async function aprovarPrestacaoGestor(id, ajustes) {
   try {
     const reg = ((window._prestFiltradas || []).find(r => r.Id === id)) || (await dbLer('PrestacaoContas')).find(r => r.Id === id);
     if (reg && !prestPodeAprovarComoGestor(reg)) { showToast('⚠️ Só o gestor responsável (' + prestGestoresTexto(reg) + ') ou o Gestor Geral aprovam esta etapa.'); return; }
   } catch (e) {}
   _limparSyncError();
-  const ok = await dbAtualizar('PrestacaoContas', id, { Status: 'Ag. Financeiro', DataAprovacaoGestor: new Date().toISOString().split('T')[0], AprovadoPorGestor: window._currentUser?.name });
+  const ok = await dbAtualizar('PrestacaoContas', id, Object.assign({ Status: 'Ag. Financeiro', DataAprovacaoGestor: new Date().toISOString().split('T')[0], AprovadoPorGestor: window._currentUser?.name }, ajustes || {}));
   showToast(ok ? '✅ Aprovado! Enviado ao financeiro.' : ('❌ Erro' + syncErrorDetalhe()));
   setTimeout(() => { carregarAprovacoes(); carregarPrestacoes(); carregarPrestPendentesDespesas(); }, 600);
 }
@@ -6964,8 +7010,9 @@ async function pcAbrirVisualizar(id) {
         <div style="font-weight:700;font-size:.82rem;margin-bottom:6px">👤 Aprovação do Gestor</div>
         <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">Confira se a despesa é mesmo dessa frente/contrato. Depois da sua aprovação, ela segue para o Financeiro conferir e aprovar.</div>
         <div id="pcv_alertas_frente" style="margin-bottom:10px"></div>
+        ${prestGestorCamposBMHtml(i)}
         <div style="display:flex;gap:8px">
-          <button class="btn-primary" style="flex:1" onclick="document.getElementById('pc-view-modal').remove();aprovarPrestacaoGestor(${id})">✅ Aprovar e enviar ao Financeiro</button>
+          <button class="btn-primary" style="flex:1" onclick="prestGestorAprovarComBM(${id})">✅ Aprovar e enviar ao Financeiro</button>
           <button class="btn-secondary" style="flex:1" onclick="document.getElementById('pc-view-modal').remove();reprovarPrestacaoGestor(${id})">↩️ Devolver</button>
         </div>
       </div>` : `<div style="margin-top:16px;padding:12px 14px;background:#fef3c7;border-radius:10px;font-size:.8rem">
@@ -7076,7 +7123,7 @@ async function pcAbrirVisualizar(id) {
           )).join('')
         : linha('Centro de Custo', i.CentroCusto||'—')}
       ${(!(i.DivisaoCC && i.DivisaoCC.length) && i.NumMedicao) ? linha('Nº Medição (BM)', i.NumMedicao) : ''}
-      ${i.Frente ? linha('📍 Frente', i.Frente) : (i.FrenteNaoSei ? linha('📍 Frente', '❓ não soube informar') : '')}
+      ${i.FrenteNaoSei ? linha('🔑 Centro de custo', '❓ colaborador não soube informar') : ''}
       ${i.AprovadoPorGestor ? linha('👤 Aprovado pelo gestor', i.AprovadoPorGestor + (i.DataAprovacaoGestor ? ' · ' + new Date(i.DataAprovacaoGestor + 'T00:00:00').toLocaleDateString('pt-BR') : '')) : ''}
       ${i.Categoria ? linha('Categoria', i.Categoria) : ''}
       ${i.Subcategoria ? linha('Subcategoria', i.Subcategoria) : ''}
