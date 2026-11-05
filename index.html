@@ -4824,6 +4824,25 @@ function _prestFrentesCCsOpcoes(selecionado) {
   if (selecionado && !ccs.some(c => c.v === selecionado)) ccs.unshift({ v: selecionado, emp: '' });
   return '<option value="">Centro de Custo...</option>' + ccs.map(c => `<option value="${_prestEsc(c.v)}" data-emp="${_prestEsc(c.emp)}" ${c.v === selecionado ? 'selected' : ''}>${_prestEsc(c.v)}</option>`).join('');
 }
+// -- Pedido Tiago 05/11/2026: campo de Centro de Custo digitável (filtra
+// enquanto digita), não só um <select> fixo com a lista inteira -- usa
+// <input list> + <datalist> nativo do navegador. Estas 3 funções substituem
+// o acesso via ccSel.selectedOptions que só existe em <select>.
+function _prestFrentesCCsLista() {
+  return (centrosCustoData || []).filter(c => c.status === 'ativo')
+    .map(c => ({ v: c.id + ' · ' + c.contrato, emp: c.empresa }))
+    .sort((a, b) => a.v.localeCompare(b.v, 'pt-BR'));
+}
+function _prestFrentesCCsDatalist() {
+  return _prestFrentesCCsLista().map(c => `<option value="${_prestEsc(c.v)}">`).join('');
+}
+function _prestFrentesEmpDoCC(cc) {
+  const achado = _prestFrentesCCsLista().find(c => c.v === cc);
+  return achado ? achado.emp : '';
+}
+function _prestFrentesCCValido(cc) {
+  return _prestFrentesCCsLista().some(c => c.v === cc);
+}
 
 function prestFrentesRenderizarNova() {
   const el = document.getElementById('prest-frentes-nova');
@@ -4831,7 +4850,8 @@ function prestFrentesRenderizarNova() {
   el.innerHTML = `
     <div style="font-weight:700;font-size:.8rem;margin-bottom:8px">➕ Liberar um centro de custo</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <select id="pfn_cc" onchange="prestFrentesNomeDoContrato();prestFrentesSugerirBM('pfn')" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">${_prestFrentesCCsOpcoes('')}</select>
+      <input type="text" id="pfn_cc" list="pfn_cc_dl" placeholder="Centro de Custo..." autocomplete="off" oninput="prestFrentesNomeDoContrato();prestFrentesSugerirBM('pfn')" onchange="prestFrentesNomeDoContrato();prestFrentesSugerirBM('pfn')" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
+      <datalist id="pfn_cc_dl">${_prestFrentesCCsDatalist()}</datalist>
       <input type="text" id="pfn_nome" placeholder="Nome (vem do contrato — só mude se quiser separar uma obra)" style="flex:2 1 200px;min-width:0;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
       <select id="pfn_gestor" title="Gestor que aprova as despesas desta frente" style="flex:1 1 160px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem"><option value="">Gestor que aprova...</option>${prestGestoresDisponiveis().map(g => `<option value="${_prestEsc(g)}">${_prestEsc(g)}</option>`).join('')}</select>
       <input type="text" id="pfn_bm" list="pfn_bm_dl" placeholder="BM (opcional)" style="flex:0 1 130px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
@@ -4882,12 +4902,13 @@ function prestFrentesNomeDoContrato() {
 async function prestFrentesCriar() {
   const nome = (document.getElementById('pfn_nome') || {}).value?.trim();
   const ccSel = document.getElementById('pfn_cc');
-  const cc = ccSel ? ccSel.value : '';
+  const cc = ccSel ? ccSel.value.trim() : '';
   const bm = (document.getElementById('pfn_bm') || {}).value?.trim() || '';
   const gestor = (document.getElementById('pfn_gestor') || {}).value || '';
   if (!nome) { showToast('⚠️ Escolha o centro de custo.'); return; }
   if (!cc) { showToast('⚠️ Escolha o Centro de Custo.'); return; }
-  const empresa = ccSel.selectedOptions[0] ? (ccSel.selectedOptions[0].dataset.emp || '') : '';
+  if (!_prestFrentesCCValido(cc)) { showToast('⚠️ Centro de Custo não encontrado — escolha um da lista de sugestões.'); return; }
+  const empresa = _prestFrentesEmpDoCC(cc);
   const novo = await dbInserir('FrentesPrestacao', {
     Title: nome + ' · ' + _ccIdPuro(cc), Nome: nome, CentroCusto: cc, Empresa: empresa, BMAtual: bm, Ativa: true, Colaboradores: [], Gestor: gestor,
     HistoricoBM: bm ? [{ bm, em: new Date().toISOString(), por: window._currentUser ? window._currentUser.name : '' }] : [],
@@ -4918,7 +4939,8 @@ function prestFrentesRenderizarGestao() {
     return `<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;${f.Ativa === false ? 'opacity:.55' : ''}">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <input type="text" id="pfg_nome_${f.Id}" value="${_prestEsc(f.Nome)}" style="flex:2 1 180px;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.82rem;font-weight:700">
-        <select id="pfg_cc_${f.Id}" onchange="prestFrentesSugerirBM('pfg',${f.Id})" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.78rem">${_prestFrentesCCsOpcoes(f.CentroCusto)}</select>
+        <input type="text" id="pfg_cc_${f.Id}" list="pfg_cc_dl_${f.Id}" value="${_prestEsc(f.CentroCusto)}" placeholder="Centro de Custo..." autocomplete="off" oninput="prestFrentesSugerirBM('pfg',${f.Id})" onchange="prestFrentesSugerirBM('pfg',${f.Id})" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.78rem">
+        <datalist id="pfg_cc_dl_${f.Id}">${_prestFrentesCCsDatalist()}</datalist>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <span style="font-size:.76rem;color:var(--text-muted)">BM em execução:</span>
@@ -4952,14 +4974,15 @@ async function prestFrentesSalvar(id) {
   if (!f) return;
   const nome = (document.getElementById('pfg_nome_' + id) || {}).value?.trim();
   const ccSel = document.getElementById('pfg_cc_' + id);
-  const cc = ccSel ? ccSel.value : f.CentroCusto;
+  const cc = ccSel ? ccSel.value.trim() : f.CentroCusto;
   const bm = ((document.getElementById('pfg_bm_' + id) || {}).value || '').trim();
   if (!nome) { showToast('⚠️ Informe um nome.'); return; }
   if (!cc) { showToast('⚠️ Escolha o Centro de Custo.'); return; }
+  if (!_prestFrentesCCValido(cc)) { showToast('⚠️ Centro de Custo não encontrado — escolha um da lista de sugestões.'); return; }
   const caixas = document.querySelectorAll('.pfg-colab-' + id);
   // Se a lista de colaboradores não foi aberta, mantém a que já estava salva.
   const colabs = caixas.length ? [...caixas].filter(c => c.checked).map(c => c.value) : (f.Colaboradores || []);
-  const empresa = ccSel && ccSel.selectedOptions[0] ? (ccSel.selectedOptions[0].dataset.emp || f.Empresa || '') : (f.Empresa || '');
+  const empresa = _prestFrentesEmpDoCC(cc) || f.Empresa || '';
   const gestorSel = document.getElementById('pfg_gestor_' + id);
   const campos = { Nome: nome, Title: nome + ' · ' + _ccIdPuro(cc), CentroCusto: cc, Empresa: empresa, BMAtual: bm, Colaboradores: colabs, Gestor: gestorSel ? gestorSel.value : (f.Gestor || '') };
   if (String(bm) !== String(f.BMAtual || '')) {
@@ -31697,11 +31720,11 @@ const users = {
   'enoque@expediansolucoes.com.br': { profile: 'colaborador', name: 'Enoque Lima de Assunção', initials: 'EL', role: 'Auxiliar de Campo', tipo: 'email' },
   'joaogabriel@expediansolucoes.com.br': { profile: 'colaborador', name: 'João Gabriel Veloso de Oliveira', initials: 'JG', role: 'Auxiliar Técnico Ambiental', tipo: 'email' },
   // 'felipeneves@expediansolucoes.com.br' removido — não faz mais parte do time (desligado, 2026-08-30).
+  // 'brendo@expediansolucoes.com.br' removido — não faz mais parte do time (pedido Tiago, 05/11/2026).
   // Acesso real ao app é via Microsoft/Entra ID, então isso não bloqueia login sozinho; ver nota em
   // resolveProfileFromEmail() sobre revogar o acesso pela conta Microsoft dele.
-  'brendo@expediansolucoes.com.br': { profile: 'colaborador', name: 'Brendo Lima Brito', initials: 'BL', role: 'Auxiliar de Campo', tipo: 'email' },
   'marcos@expediansolucoes.com.br': { profile: 'colaborador', name: 'Marcos Fernandes da Silva', initials: 'MF', role: 'Biólogo', tipo: 'email' },
-  'nathaliaolivio@expediansolucoes.com.br': { profile: 'colaborador', name: 'Nathalia Olívio Pereira', initials: 'NO', role: 'Técnica Ambiental', tipo: 'email' },
+  'nathaliaolivio@expediansolucoes.com.br': { profile: 'colaborador', name: 'Nathalia Olivio Pereira', initials: 'NO', role: 'Técnica Ambiental', tipo: 'email' },
 };
 // Garante que cada usuário "conheça" o próprio e-mail (usado em Meus Dados, uploads de perfil etc.),
 // sem precisar repetir o campo manualmente em cada entrada acima.
