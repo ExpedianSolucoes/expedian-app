@@ -24628,6 +24628,75 @@ async function cmedExportarExcelUm(id) {
   showToast('✅ Planilha gerada!');
 }
 
+/* -- Pedido Tiago 05/11/2026: ao trocar o Período de referência numa Medição
+   NOVA de Coleta de Resíduos (CLM108942-Sul/CLM108943-Centro), preenche
+   sozinho os itens Classe I/Classe II com tudo que já foi coletado naquele
+   mês/regional (soma de c1Kg/c2Kg de cada RC em ChecklistColeta), com o
+   detalhamento por RC em `composicao` (mesmo campo já usado no PDF/Excel
+   pra "Pórticos cruzados" etc.). Só roda em Medição nova — editar uma
+   Medição já salva não reaplica (pra não sobrescrever ajuste manual feito
+   depois). -- */
+function cmedColetaResumoDoMes(regional, periodo) {
+  const lista = (window._colHistorico || []).filter(r => r.regional === regional && String(r.data || '').slice(0, 7) === periodo)
+    .slice().sort((a, b) => (a.data || '').localeCompare(b.data || ''));
+  const c1Kg = Math.round(lista.reduce((s, r) => s + (r.c1Kg || 0), 0) * 100) / 100;
+  const c2Kg = Math.round(lista.reduce((s, r) => s + (r.c2Kg || 0), 0) * 100) / 100;
+  return { lista, c1Kg, c2Kg };
+}
+function cmedAplicarResumoColetaNosItens(d, resumo) {
+  const escopo = ESCOPO_CONTRATUAL_ENERGISA[d.contratoChave] || [];
+  const porCodigo = {};
+  escopo.forEach(e => { porCodigo[e.codigo] = e; });
+  // Tira os itens Classe I/II auto-preenchidos de uma rodada anterior (ex.:
+  // trocou de mês de novo antes de salvar) pra não duplicar.
+  d.itens = (d.itens || []).filter(it => it.codigo !== 'classeI' && it.codigo !== 'classeII');
+  ['classeI', 'classeII'].forEach(codigo => {
+    const kg = codigo === 'classeI' ? resumo.c1Kg : resumo.c2Kg;
+    if (!kg) return; // só cria o item se teve peso de fato naquela classe no mês
+    const e = porCodigo[codigo];
+    const composicao = resumo.lista
+      .filter(r => (codigo === 'classeI' ? (r.c1Kg || 0) : (r.c2Kg || 0)) > 0)
+      .map(r => ({ desc: 'RC ' + (r.num || '—') + ' — ' + (r.local || ''), quanti: codigo === 'classeI' ? (r.c1Kg || 0) : (r.c2Kg || 0), unid: 'KG' }));
+    d.itens.push({
+      codigo, desc: e ? e.descricao : ('Coleta e destinação — Resíduo Classe ' + (codigo === 'classeI' ? 'I' : 'II')),
+      obs: '', quanti: kg, unid: 'KG', valorUnit: e ? e.valorUnitario : 0, subitens: [], composicao,
+    });
+  });
+  if (!d.itens.length) d.itens = [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '', subitens: [] }];
+}
+async function cmedCampoPeriodo(valor) {
+  const d = window._cmedData;
+  d.periodoReferencia = valor;
+  const regional = PROJETOS_ENERGISA_CLM_REGIONAL[d.contratoChave];
+  if (regional && valor && !window._cmedRegistroAtualId) {
+    if (window._colHistorico === null) await projetosCarregarColetaSemNavegar();
+    cmedAplicarResumoColetaNosItens(d, cmedColetaResumoDoMes(regional, valor));
+  }
+  cmedAtualizarBloco();
+}
+/* -- Aviso mostrado logo abaixo da linha Número do BM/Data/Período/Status:
+   (a) se já existe outra Medição pro mesmo contrato+período, avisa com o
+   nº do BM e status dela (não bloqueia — pode ser um BM complementar de
+   propósito); (b) senão, em Medição nova de Coleta, mostra um resumo do
+   que foi auto-preenchido (ou que não tem coleta lançada ainda nesse
+   mês/regional). -- */
+function cmedPeriodoInfoHtml(d) {
+  const regional = PROJETOS_ENERGISA_CLM_REGIONAL[d.contratoChave];
+  if (!regional || !d.periodoReferencia) return '';
+  const existente = (window._cmedHistorico || []).find(m => m.ContratoChave === d.contratoChave && m.PeriodoReferencia === d.periodoReferencia && String(m.Id) !== String(window._cmedRegistroAtualId));
+  if (existente) {
+    return `<div style="background:#fdf1e7;border:1px solid #f0c36d;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem">⚠️ Já existe uma Medição pra este período: <b>BM Nº ${_prestEsc(existente.NumeroBM || '—')}</b> — Status: <b>${_prestEsc(existente.Status || '—')}</b>. <span onclick="cmedEditar(${existente.Id})" style="cursor:pointer;text-decoration:underline;color:#a05a28">Abrir essa Medição</span> em vez de criar outra, ou continue se for intencional (ex.: um BM complementar).</div>`;
+  }
+  if (!window._cmedRegistroAtualId && regional) {
+    const resumo = cmedColetaResumoDoMes(regional, d.periodoReferencia);
+    if (resumo.lista.length) {
+      return `<div style="background:#eef7f0;border:1px solid #b9ddc3;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem">✅ Classe I/II preenchidos automaticamente com ${resumo.lista.length} coleta${resumo.lista.length !== 1 ? 's' : ''} deste período — Classe I: <b>${resumo.c1Kg.toLocaleString('pt-BR')} KG</b>, Classe II: <b>${resumo.c2Kg.toLocaleString('pt-BR')} KG</b>. Confira antes de salvar.</div>`;
+    }
+    return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem;color:var(--text-muted)">Nenhuma coleta registrada ainda pra este período/regional — adicione os serviços manualmente ou volte aqui depois de lançar as coletas do mês.</div>`;
+  }
+  return '';
+}
+
 function cmedHtmlForm() {
   const d = window._cmedData;
   const chave = d.contratoChave;
@@ -24640,16 +24709,14 @@ function cmedHtmlForm() {
     <div class="form-row">
       <div class="form-group"><label>Número do BM</label><input value="${(d.numeroBM || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroBM', this.value)" placeholder="Ex: 11"></div>
       <div class="form-group"><label>Data</label><input type="date" value="${d.data || ''}" oninput="cmedCampo('data', this.value)"></div>
-      <div class="form-group"><label>Período de referência</label><input type="month" value="${d.periodoReferencia || ''}" oninput="cmedCampo('periodoReferencia', this.value)" title="Mês/ano a que os serviços medidos se referem"></div>
-    </div>
-    <div class="form-row">
+      <div class="form-group"><label>Período de referência</label><input type="month" value="${d.periodoReferencia || ''}" onchange="cmedCampoPeriodo(this.value)" title="Mês/ano a que os serviços medidos se referem"></div>
       <div class="form-group"><label>Status</label>
         <select onchange="cmedCampoStatus(this.value)">
           ${CMED_STATUS_OPCOES.map(s => `<option value="${s}" ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>
       </div>
-      <div class="form-group"><label>Número da OS</label><input value="${(d.numeroOS || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroOS', this.value)" placeholder="Ex: 015/2026"></div>
     </div>
+    ${cmedPeriodoInfoHtml(d)}
   </div>
 
   ${medicaoPrazosCamposHtml(d, 'cmedCampo', d.seccionada)}
