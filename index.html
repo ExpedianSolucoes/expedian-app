@@ -3995,8 +3995,610 @@ function prestNomeSugeridoLancadoPor() {
   return window._currentUser.name || '';
 }
 
+/* =====================================================================
+   FRENTES DE TRABALHO + BM EM EXECUÇÃO (Prestação de Contas)
+   Pedido Tiago 05/11/2026: o colaborador não sabe qual Centro de Custo nem
+   qual Boletim de Medição usar — ele só sabe ONDE estava trabalhando.
+   Então:
+   - Gestor Geral e Diretoria cadastram "frentes" (ex.: "SED Guaporé",
+     "SED Espigão", "Coleta Centro") ligadas a um Centro de Custo, marcam o
+     BM que está EM EXECUÇÃO em cada frente e liberam quais colaboradores
+     podem lançar despesa nela.
+   - Na Nova Despesa o colaborador escolhe só a frente; o app preenche
+     Empresa, Centro de Custo e Nº Medição sozinho. Se atendeu mais de uma
+     frente, marca as frentes e o valor é dividido em partes iguais.
+   - Quando o BM é enviado ao cliente, o gestor clica "Próximo BM" na frente
+     e os lançamentos seguintes já caem no BM novo.
+   - Na conferência/aprovação aparecem alertas (sem BM, colaborador fora da
+     frente, BM já faturado/concluído, BM da frente já avançou).
+   Tabela: 'FrentesPrestacao' (pasta compartilhada — colaborador precisa ler).
+   Registro: { Id, Nome, CentroCusto ('CC-EXP-002 · ERO - Gestão de Obras'),
+               Empresa, BMAtual, Ativa, Colaboradores: [nomes] }
+   ===================================================================== */
+
+// Perfis que podem cadastrar frentes, mudar BM e liberar colaboradores.
+// Hoje: Gestor Geral (Tiago) e Diretoria (Luiz, Marcelo). Para liberar
+// também a gerência (Cassiane, perfil 'coordenador'), basta incluir aqui.
+const PREST_FRENTES_PERFIS_GESTAO = ['diretoria'];
+
+window._prestFrentes = window._prestFrentes || [];
+window._prestFrentesCarregadas = false;
+
+function prestFrentesPodeGerir() {
+  return PREST_FRENTES_PERFIS_GESTAO.includes(currentProfile) || (typeof solicEhGestorGeral === 'function' && solicEhGestorGeral());
+}
+// Colaborador comum (não financeiro/gestão) — é pra ele que o formulário
+// fica "simplificado" (só a frente, sem Centro de Custo manual).
+function prestFrentesModoSimples() {
+  return !(currentProfile === 'diretoria' || currentProfile === 'coordenador');
+}
+function _prestNormNome(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+function _prestEsc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function prestFrentesCarregar(forcar) {
+  try {
+    const lista = forcar ? (await dbLerComEtag('FrentesPrestacao', true)).lista : await dbLer('FrentesPrestacao');
+    window._prestFrentes = Array.isArray(lista) ? lista : [];
+  } catch (e) {
+    window._prestFrentes = window._prestFrentes || [];
+  }
+  window._prestFrentesCarregadas = true;
+  return window._prestFrentes;
+}
+
+function prestFrentesAtivas() {
+  return (window._prestFrentes || []).filter(f => f.Ativa !== false);
+}
+// Nome de quem está lançando: o "Lançado por" escolhido (login compartilhado
+// do estagiário etc.) ou, se vazio, o próprio usuário logado.
+function prestFrentesPessoaAtual() {
+  const sel = document.getElementById('prest_lancadopor');
+  const v = sel && sel.value ? sel.value : '';
+  return v || (window._currentUser ? window._currentUser.name : '');
+}
+function prestFrentesDaPessoa(nome) {
+  const n = _prestNormNome(nome);
+  if (!n) return [];
+  return prestFrentesAtivas().filter(f => (f.Colaboradores || []).some(c => _prestNormNome(c) === n));
+}
+// Lista que aparece no formulário: colaborador comum vê só as frentes
+// liberadas pra ele; gestão vê todas as ativas.
+function prestFrentesDoFormulario() {
+  if (!prestFrentesModoSimples()) return prestFrentesAtivas();
+  return prestFrentesDaPessoa(prestFrentesPessoaAtual());
+}
+function prestFrentesRotulo(f) {
+  const cc = _ccIdPuro(f.CentroCusto || '');
+  return `${f.Nome}${cc ? ' — ' + cc : ''}`;
+}
+function prestFrentesOrdenar(lista) {
+  return lista.slice().sort((a, b) => (a.CentroCusto || '').localeCompare(b.CentroCusto || '', 'pt-BR') || (a.Nome || '').localeCompare(b.Nome || '', 'pt-BR'));
+}
+
+/* ---------------------------------------------------------------------
+   FORMULÁRIO — bloco "Onde foi a despesa?"
+   --------------------------------------------------------------------- */
+function prestFrenteBlocoHtml() {
+  return `
+    <div class="form-row" id="prest_frente_row">
+      <div class="form-group" style="grid-column:span 2">
+        <label>📍 Onde foi a despesa? <span style="font-size:.7rem;color:var(--text-muted)">(frente de trabalho — o Centro de Custo e o BM são preenchidos sozinhos)</span></label>
+        <select id="prest_frente" onchange="prestFrenteAoEscolher()">
+          <option value="">Carregando frentes...</option>
+        </select>
+        <label id="prest_frente_multi_lbl" style="display:none;align-items:center;gap:6px;cursor:pointer;font-size:.78rem;margin-top:8px">
+          <input type="checkbox" id="prest_frente_multi" onchange="prestFrenteToggleMulti()" style="width:auto">
+          🧩 Esta despesa atendeu mais de uma frente (divide o valor em partes iguais)
+        </label>
+        <div id="prest_frente_multi_lista" style="display:none;margin-top:8px;background:var(--surface2);border-radius:8px;padding:10px;flex-direction:column;gap:6px"></div>
+        <div id="prest_frente_info" style="font-size:.74rem;margin-top:6px;color:var(--text-muted)"></div>
+      </div>
+    </div>`;
+}
+
+function prestFrenteRenderizarSelect(manterValor) {
+  const sel = document.getElementById('prest_frente');
+  if (!sel) return;
+  const atual = manterValor !== undefined ? manterValor : sel.value;
+  const lista = prestFrentesOrdenar(prestFrentesDoFormulario());
+  const simples = prestFrentesModoSimples();
+  window._prestFrenteTemOpcoes = lista.length > 0;
+  let html;
+  if (!window._prestFrentesCarregadas) {
+    html = '<option value="">Carregando frentes...</option>';
+  } else if (!lista.length) {
+    html = simples
+      ? '<option value="">Nenhuma frente liberada para você — escolha o Centro de Custo abaixo</option>'
+      : '<option value="">(nenhuma frente cadastrada — use o Centro de Custo abaixo)</option>';
+  } else {
+    html = `<option value="">${simples ? 'Selecione onde você estava trabalhando...' : '(opcional) Selecione a frente...'}</option>` +
+      lista.map(f => `<option value="${f.Id}">${_prestEsc(prestFrentesRotulo(f))}</option>`).join('') +
+      '<option value="__naosei__">❓ Outro / não sei — o Financeiro classifica</option>';
+  }
+  sel.innerHTML = html;
+  if (atual && [...sel.options].some(o => o.value === String(atual))) sel.value = String(atual);
+  const multiLbl = document.getElementById('prest_frente_multi_lbl');
+  if (multiLbl) multiLbl.style.display = lista.length >= 2 ? 'flex' : 'none';
+  prestFrenteAtualizarVisibilidade();
+}
+
+// Colaborador comum com frentes liberadas: some o Centro de Custo manual e o
+// rateio manual (o app preenche). Sem frente liberada, ou "não sei": volta
+// o formulário de antes (Empresa visível; CC só se ele não tiver frentes).
+function prestFrenteAtualizarVisibilidade() {
+  const simples = prestFrentesModoSimples();
+  const temOpcoes = !!window._prestFrenteTemOpcoes;
+  const valor = (document.getElementById('prest_frente') || {}).value || '';
+  const multi = (document.getElementById('prest_frente_multi') || {}).checked;
+  const naoSei = valor === '__naosei__';
+  const ccSel = document.getElementById('prest_cc');
+  const ccGrupo = ccSel ? ccSel.closest('.form-group') : null;
+  const empSel = document.getElementById('prest_empresa');
+  const empGrupo = empSel ? empSel.closest('.form-group') : null;
+  const divRow = document.getElementById('prest_divisaocc_row');
+  if (simples && temOpcoes) {
+    const escolheu = (valor && !naoSei) || multi;
+    if (ccGrupo) ccGrupo.style.display = 'none';
+    if (empGrupo) empGrupo.style.display = escolheu ? 'none' : '';
+    if (divRow) divRow.style.display = 'none';
+  } else {
+    if (ccGrupo) ccGrupo.style.display = '';
+    if (empGrupo) empGrupo.style.display = '';
+    if (divRow) divRow.style.display = '';
+  }
+  const sel = document.getElementById('prest_frente');
+  if (sel) sel.disabled = !!multi;
+}
+
+function prestFrentePorId(id) {
+  return (window._prestFrentes || []).find(f => String(f.Id) === String(id));
+}
+
+// Garante que o CC da frente exista como <option> no select (EMPRESAS_CC e
+// _centrosCustoVisiveis podem não listar um CC administrativo para o
+// colaborador) e seleciona.
+function _prestFrenteSelecionarCC(f) {
+  const emp = document.getElementById('prest_empresa');
+  if (emp && f.Empresa) { emp.value = f.Empresa; atualizarCCsPrest(); }
+  const sel = document.getElementById('prest_cc');
+  if (!sel) return;
+  if (![...sel.options].some(o => o.value === f.CentroCusto)) {
+    const o = document.createElement('option'); o.value = f.CentroCusto; o.textContent = f.CentroCusto; sel.appendChild(o);
+  }
+  sel.value = f.CentroCusto;
+}
+
+function prestFrenteAoEscolher() {
+  const v = (document.getElementById('prest_frente') || {}).value || '';
+  const info = document.getElementById('prest_frente_info');
+  window._prestFrenteSel = null;
+  if (v && v !== '__naosei__') {
+    const f = prestFrentePorId(v);
+    if (f) {
+      window._prestFrenteSel = f;
+      _prestFrenteSelecionarCC(f);
+      if (info) info.innerHTML = `✅ <strong>${_prestEsc(f.CentroCusto)}</strong> · BM em execução: <strong>${_prestEsc(f.BMAtual || '— (sem BM definido)')}</strong>`;
+    }
+  } else if (v === '__naosei__') {
+    if (prestFrentesModoSimples()) {
+      const sel = document.getElementById('prest_cc'); if (sel) sel.value = '';
+    }
+    if (info) info.innerHTML = '❓ Sem frente — o Financeiro vai classificar o Centro de Custo e o BM na conferência.';
+  } else if (info) {
+    info.textContent = '';
+  }
+  prestFrenteAtualizarVisibilidade();
+}
+
+function prestFrenteToggleMulti() {
+  const chk = document.getElementById('prest_frente_multi');
+  const box = document.getElementById('prest_frente_multi_lista');
+  const sel = document.getElementById('prest_frente');
+  if (!chk || !box) return;
+  if (chk.checked) {
+    const lista = prestFrentesOrdenar(prestFrentesDoFormulario());
+    const atual = sel ? sel.value : '';
+    box.innerHTML = lista.map(f => `
+      <label style="display:flex;align-items:center;gap:6px;font-size:.8rem;cursor:pointer">
+        <input type="checkbox" class="prest-frente-multi-item" value="${f.Id}" ${String(f.Id) === atual ? 'checked' : ''} onchange="prestFrenteRatearIgual()" style="width:auto">
+        ${_prestEsc(prestFrentesRotulo(f))} <span style="color:var(--text-muted);font-size:.7rem">· BM ${_prestEsc(f.BMAtual || '—')}</span>
+      </label>`).join('');
+    box.style.display = 'flex';
+    if (sel) sel.value = '';
+    window._prestFrenteSel = null;
+  } else {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    const divChk = document.getElementById('prest_tem_divisaocc');
+    if (divChk && divChk.checked) { divChk.checked = false; window._aprovDivisaoCC_prest = []; aprovDivccToggle('prest'); }
+  }
+  prestFrenteRatearIgual();
+  prestFrenteAtualizarVisibilidade();
+}
+
+function prestFrentesMultiSelecionadas() {
+  return [...document.querySelectorAll('.prest-frente-multi-item:checked')].map(el => prestFrentePorId(el.value)).filter(Boolean);
+}
+
+// Divide o valor em partes iguais entre as frentes marcadas (centavo que
+// sobra vai na última) e monta a Divisão de Centro de Custo que o resto do
+// app já entende (DivisaoCC: [{cc, medicao, valor}]).
+function prestFrenteRatearIgual() {
+  const chk = document.getElementById('prest_frente_multi');
+  const info = document.getElementById('prest_frente_info');
+  if (!chk || !chk.checked) return;
+  const frentes = prestFrentesMultiSelecionadas();
+  const total = parseFloat((document.getElementById('prest_valor') || {}).value) || 0;
+  const divChk = document.getElementById('prest_tem_divisaocc');
+  if (frentes.length < 2) {
+    if (divChk && divChk.checked) { divChk.checked = false; window._aprovDivisaoCC_prest = []; aprovDivccToggle('prest'); }
+    if (info) info.innerHTML = '⚠️ Marque pelo menos 2 frentes.';
+    return;
+  }
+  const cents = Math.round(total * 100);
+  const base = Math.floor(cents / frentes.length);
+  const itens = frentes.map((f, i) => ({
+    cc: f.CentroCusto, medicao: f.BMAtual || '', frente: f.Nome, frenteId: f.Id,
+    valor: (i === frentes.length - 1 ? cents - base * (frentes.length - 1) : base) / 100,
+  }));
+  // Duas frentes no mesmo CC/BM viram uma linha só (soma) — a Divisão de CC
+  // não aceita CC+Medição repetidos.
+  const agrupado = [];
+  itens.forEach(it => {
+    const ja = agrupado.find(a => a.cc === it.cc && (a.medicao || '') === (it.medicao || ''));
+    if (ja) { ja.valor = Math.round((ja.valor + it.valor) * 100) / 100; ja.frente += ' + ' + it.frente; }
+    else agrupado.push({ ...it });
+  });
+  const empresas = [...new Set(frentes.map(f => f.Empresa).filter(Boolean))];
+  const emp = document.getElementById('prest_empresa');
+  if (emp && empresas.length === 1 && emp.value !== empresas[0]) { emp.value = empresas[0]; atualizarCCsPrest(); }
+  window._aprovValorTotal_prest = total;
+  if (agrupado.length >= 2) {
+    window._aprovDivisaoCC_prest = agrupado;
+    if (divChk) { divChk.checked = true; aprovDivccToggle('prest'); }
+  } else {
+    // Todas no mesmo CC e BM: é um lançamento simples, sem divisão.
+    if (divChk && divChk.checked) { divChk.checked = false; aprovDivccToggle('prest'); }
+    window._aprovDivisaoCC_prest = [];
+    _prestFrenteSelecionarCC(frentes[0]);
+  }
+  if (info) info.innerHTML = total
+    ? '🧩 ' + agrupado.map(a => `${_prestEsc(a.frente)}: <strong>${rdNumeroParaMoeda(a.valor)}</strong> (BM ${_prestEsc(a.medicao || '—')})`).join(' · ')
+    : '🧩 Informe o valor da despesa para ver a divisão.';
+}
+
+// Chamado no oninput do Valor.
+function prestFrenteValorMudou() {
+  const chk = document.getElementById('prest_frente_multi');
+  if (chk && chk.checked) prestFrenteRatearIgual();
+}
+
+// Campos extras gravados no lançamento. Só inclui as chaves quando há
+// frente escolhida — numa edição sem frente, não apaga o que já existia.
+function prestFrenteCamposExtras() {
+  const multi = (document.getElementById('prest_frente_multi') || {}).checked;
+  if (multi) {
+    const frentes = prestFrentesMultiSelecionadas();
+    if (frentes.length >= 2) {
+      const unico = (window._aprovDivisaoCC_prest || []).length < 2;
+      const extra = { Frente: frentes.map(f => f.Nome).join(' + '), FrenteIds: frentes.map(f => f.Id), FrenteAuto: true };
+      if (unico) extra.NumMedicao = frentes[0].BMAtual || '';
+      return extra;
+    }
+    return {};
+  }
+  const v = (document.getElementById('prest_frente') || {}).value || '';
+  if (v === '__naosei__') return { Frente: '', FrenteIds: [], FrenteNaoSei: true };
+  const f = v ? prestFrentePorId(v) : null;
+  if (!f) return {};
+  return { Frente: f.Nome, FrenteIds: [f.Id], NumMedicao: f.BMAtual || '', FrenteAuto: true, FrenteNaoSei: false };
+}
+
+// Validação extra: colaborador com frentes liberadas precisa escolher uma
+// (ou dizer "não sei").
+function prestFrenteValidar() {
+  if (!prestFrentesModoSimples() || !window._prestFrenteTemOpcoes) return true;
+  const multi = (document.getElementById('prest_frente_multi') || {}).checked;
+  if (multi) {
+    if (prestFrentesMultiSelecionadas().length < 2) { showToast('⚠️ Marque pelo menos 2 frentes, ou desmarque "mais de uma frente".'); return false; }
+    return true;
+  }
+  const v = (document.getElementById('prest_frente') || {}).value || '';
+  if (!v) { showToast('⚠️ Escolha onde foi a despesa (frente de trabalho), ou "Outro / não sei".'); return false; }
+  return true;
+}
+
+function prestFrenteLimpar() {
+  const multi = document.getElementById('prest_frente_multi'); if (multi) multi.checked = false;
+  const box = document.getElementById('prest_frente_multi_lista'); if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+  const info = document.getElementById('prest_frente_info'); if (info) info.textContent = '';
+  window._prestFrenteSel = null;
+  prestFrenteRenderizarSelect('');
+}
+
+// Edição de um lançamento: reabre com a frente que foi usada.
+function prestFrenteRestaurar(r) {
+  const ids = (r && r.FrenteIds) || [];
+  prestFrenteRenderizarSelect(ids.length === 1 ? String(ids[0]) : (r && r.FrenteNaoSei ? '__naosei__' : ''));
+  const info = document.getElementById('prest_frente_info');
+  if (ids.length > 1) {
+    const multi = document.getElementById('prest_frente_multi');
+    if (multi) {
+      multi.checked = true;
+      prestFrenteToggleMulti();
+      document.querySelectorAll('.prest-frente-multi-item').forEach(el => { el.checked = ids.map(String).includes(el.value); });
+    }
+    if (info) info.innerHTML = '🧩 ' + _prestEsc(r.Frente || '');
+  } else if (ids.length === 1) {
+    const f = prestFrentePorId(ids[0]);
+    window._prestFrenteSel = f || null;
+    if (info) info.innerHTML = `📍 ${_prestEsc(r.Frente || (f && f.Nome) || '')} · BM gravado: <strong>${_prestEsc(r.NumMedicao || '—')}</strong>`;
+  }
+  prestFrenteAtualizarVisibilidade();
+}
+
+async function prestFrenteInicializarForm() {
+  if (!window._prestFrentesCarregadas) await prestFrentesCarregar();
+  prestFrenteRenderizarSelect();
+}
+
+/* ---------------------------------------------------------------------
+   CONFERÊNCIA / APROVAÇÃO — alertas no modal "Visualizar"
+   --------------------------------------------------------------------- */
+async function prestFrenteAlertasHtml(i) {
+  if (!window._prestFrentesCarregadas) await prestFrentesCarregar();
+  const alertas = [];
+  const info = [];
+  const pessoa = i.LancadoPor || i.Responsavel || i.EnviadoPor || '';
+  const partes = (i.DivisaoCC && i.DivisaoCC.length) ? i.DivisaoCC.map(d => ({ cc: d.cc, medicao: d.medicao }))
+    : [{ cc: i.CentroCusto || '', medicao: i.NumMedicao || '' }];
+  if (i.Frente) info.push(`📍 Frente informada: <strong>${_prestEsc(i.Frente)}</strong>${i.FrenteAuto ? ' (CC e BM preenchidos pelo app)' : ''}`);
+  if (i.FrenteNaoSei) alertas.push('❓ O colaborador marcou "não sei" — defina o Centro de Custo e o BM.');
+  const frentesPessoa = prestFrentesDaPessoa(pessoa);
+  for (const p of partes) {
+    if (!p.cc) { alertas.push('⚠️ Sem Centro de Custo.'); continue; }
+    const ccId = _ccIdPuro(p.cc);
+    const frentesDoCC = prestFrentesAtivas().filter(f => _ccIdPuro(f.CentroCusto) === ccId);
+    if (frentesDoCC.length && pessoa && !frentesPessoa.some(f => _ccIdPuro(f.CentroCusto) === ccId)) {
+      alertas.push(`⚠️ ${_prestEsc(pessoa)} não está liberado(a) em nenhuma frente de <strong>${_prestEsc(ccId)}</strong>.`);
+    }
+    if (!p.medicao && frentesDoCC.length) {
+      const bms = [...new Set(frentesDoCC.map(f => f.BMAtual).filter(Boolean))];
+      alertas.push(`⚠️ Sem BM em ${_prestEsc(ccId)}${bms.length ? ` — em execução: ${bms.map(b => 'BM ' + _prestEsc(b)).join(', ')}` : ''}.`);
+    }
+    if (p.medicao) {
+      const idsGravados = (i.FrenteIds || []).map(String);
+      const frenteUsada = frentesDoCC.find(f => idsGravados.includes(String(f.Id)));
+      if (frenteUsada && frenteUsada.BMAtual && String(frenteUsada.BMAtual) !== String(p.medicao)) {
+        info.push(`ℹ️ ${_prestEsc(frenteUsada.Nome)}: lançado no BM ${_prestEsc(p.medicao)}, mas a frente já está no BM ${_prestEsc(frenteUsada.BMAtual)}. Confira pela data da despesa.`);
+      }
+      try {
+        const meds = await medicoesParaCC(ccId);
+        const m = (meds || []).find(x => String(x.NumMedicao) === String(p.medicao));
+        if (m && ['Concluída', 'Faturada', 'Cancelada'].includes(m.Status)) {
+          alertas.push(`⚠️ BM ${_prestEsc(p.medicao)} de ${_prestEsc(ccId)} está <strong>${_prestEsc(m.Status)}</strong> — a despesa não deveria entrar nele.`);
+        }
+      } catch (e) {}
+    }
+  }
+  if (!alertas.length && !info.length) return '';
+  return `<div style="margin-top:12px;padding:10px 12px;border-radius:10px;font-size:.76rem;line-height:1.5;background:${alertas.length ? '#fff7e6' : '#eaf2fb'};border:1px solid ${alertas.length ? '#f0c36d' : '#b6d4f0'}">
+    ${[...alertas, ...info].map(t => `<div>${t}</div>`).join('')}
+  </div>`;
+}
+
+async function prestFrentePreencherAlertasModal(i) {
+  const el = document.getElementById('pcv_alertas_frente');
+  if (!el) return;
+  try { el.innerHTML = await prestFrenteAlertasHtml(i); } catch (e) { el.innerHTML = ''; }
+}
+
+/* ---------------------------------------------------------------------
+   GESTÃO — modal "Frentes e Acessos" (Gestor Geral + Diretoria)
+   --------------------------------------------------------------------- */
+async function prestFrentesAbrirGestao() {
+  if (!prestFrentesPodeGerir()) { showToast('⚠️ Só o Gestor Geral e a Diretoria cadastram frentes.'); return; }
+  const antigo = document.getElementById('prest-frentes-modal'); if (antigo) antigo.remove();
+  const modal = document.createElement('div');
+  modal.id = 'prest-frentes-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3000;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:24px 10px';
+  modal.innerHTML = `<div style="background:var(--surface);border-radius:14px;padding:20px;width:min(860px,96vw);box-shadow:0 20px 60px rgba(0,0,0,.4)">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px">
+      <div style="font-family:'Mont',sans-serif;font-weight:800;font-size:1rem">📍 Frentes de Trabalho e Acessos</div>
+      <button class="btn-secondary" style="padding:5px 12px" onclick="prestFrentesFecharGestao()">✕ Fechar</button>
+    </div>
+    <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:14px">Cada frente é ligada a um Centro de Custo. Marque o <strong>BM em execução</strong> e quem pode lançar despesa nela. Quando enviar o BM ao cliente, clique em <strong>➡️ Próximo BM</strong> — os lançamentos seguintes já caem no BM novo.</div>
+    <div id="prest-frentes-nova" style="background:var(--surface2);border-radius:10px;padding:12px;margin-bottom:14px"></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <input type="text" id="prest-frentes-busca" placeholder="🔍 Filtrar por frente, contrato ou colaborador..." oninput="prestFrentesRenderizarGestao()" style="flex:1;min-width:200px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
+      <label style="font-size:.76rem;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="prest-frentes-inativas" onchange="prestFrentesRenderizarGestao()" style="width:auto"> mostrar inativas</label>
+    </div>
+    <div id="prest-frentes-lista"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
+  </div>`;
+  document.body.appendChild(modal);
+  await prestGarantirColaboradoresCarregados();
+  await prestFrentesCarregar(true);
+  prestFrentesRenderizarNova();
+  prestFrentesRenderizarGestao();
+}
+
+function prestFrentesFecharGestao() {
+  const m = document.getElementById('prest-frentes-modal'); if (m) m.remove();
+  prestFrenteRenderizarSelect();
+}
+
+function _prestFrentesCCsOpcoes(selecionado) {
+  const ccs = (centrosCustoData || []).filter(c => c.status === 'ativo')
+    .map(c => ({ v: c.id + ' · ' + c.contrato, emp: c.empresa }))
+    .sort((a, b) => a.v.localeCompare(b.v, 'pt-BR'));
+  if (selecionado && !ccs.some(c => c.v === selecionado)) ccs.unshift({ v: selecionado, emp: '' });
+  return '<option value="">Centro de Custo...</option>' + ccs.map(c => `<option value="${_prestEsc(c.v)}" data-emp="${_prestEsc(c.emp)}" ${c.v === selecionado ? 'selected' : ''}>${_prestEsc(c.v)}</option>`).join('');
+}
+
+function prestFrentesRenderizarNova() {
+  const el = document.getElementById('prest-frentes-nova');
+  if (!el) return;
+  el.innerHTML = `
+    <div style="font-weight:700;font-size:.8rem;margin-bottom:8px">➕ Nova frente</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="text" id="pfn_nome" placeholder="Nome da frente (ex: SED Guaporé, Coleta Centro)" style="flex:2 1 200px;min-width:0;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
+      <select id="pfn_cc" onchange="prestFrentesSugerirBM('pfn')" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">${_prestFrentesCCsOpcoes('')}</select>
+      <input type="text" id="pfn_bm" list="pfn_bm_dl" placeholder="BM em execução" style="flex:0 1 120px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
+      <datalist id="pfn_bm_dl"></datalist>
+      <button class="btn-primary" style="padding:7px 14px;font-size:.8rem" onclick="prestFrentesCriar()">Criar</button>
+    </div>
+    <div id="pfn_bm_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:4px"></div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">Contrato sem divisão em frentes? Crie uma frente só, com o nome do próprio contrato.</div>`;
+}
+
+// Preenche o datalist de BM com as medições já cadastradas do CC e sugere a
+// primeira em aberto.
+async function prestFrentesSugerirBM(pfx, idx) {
+  const sufixo = idx === undefined ? '' : '_' + idx;
+  const ccEl = document.getElementById(pfx + '_cc' + sufixo);
+  const dl = document.getElementById(pfx + '_bm_dl' + sufixo);
+  const hint = document.getElementById(pfx + '_bm_hint' + sufixo);
+  const bmEl = document.getElementById(pfx + '_bm' + sufixo);
+  const cc = ccEl ? ccEl.value : '';
+  if (!cc) { if (dl) dl.innerHTML = ''; if (hint) hint.textContent = ''; return; }
+  let meds = [];
+  try { meds = await medicoesParaCC(_ccIdPuro(cc)); } catch (e) { meds = []; }
+  meds = (meds || []).slice().sort((a, b) => String(a.NumMedicao).localeCompare(String(b.NumMedicao), undefined, { numeric: true }));
+  if (dl) dl.innerHTML = meds.map(m => `<option value="${_prestEsc(m.NumMedicao)}">${_prestEsc(m.NumMedicao)} — ${_prestEsc(m.Descricao || '')} (${_prestEsc(m.Status || '')})</option>`).join('');
+  const abertas = meds.filter(m => !['Concluída', 'Cancelada', 'Faturada'].includes(m.Status));
+  if (hint) hint.textContent = meds.length
+    ? (abertas.length ? `Medições em aberto neste contrato: ${abertas.map(m => m.NumMedicao).join(', ')}` : 'Todas as medições cadastradas deste contrato já estão faturadas/concluídas — informe o número do próximo BM.')
+    : 'Nenhuma medição cadastrada para este contrato — digite o número do BM.';
+  if (bmEl && !bmEl.value && abertas.length) bmEl.value = abertas[0].NumMedicao;
+}
+
+async function prestFrentesCriar() {
+  const nome = (document.getElementById('pfn_nome') || {}).value?.trim();
+  const ccSel = document.getElementById('pfn_cc');
+  const cc = ccSel ? ccSel.value : '';
+  const bm = (document.getElementById('pfn_bm') || {}).value?.trim() || '';
+  if (!nome) { showToast('⚠️ Dê um nome para a frente.'); return; }
+  if (!cc) { showToast('⚠️ Escolha o Centro de Custo.'); return; }
+  const empresa = ccSel.selectedOptions[0] ? (ccSel.selectedOptions[0].dataset.emp || '') : '';
+  const novo = await dbInserir('FrentesPrestacao', {
+    Title: nome + ' · ' + _ccIdPuro(cc), Nome: nome, CentroCusto: cc, Empresa: empresa, BMAtual: bm, Ativa: true, Colaboradores: [],
+    HistoricoBM: bm ? [{ bm, em: new Date().toISOString(), por: window._currentUser ? window._currentUser.name : '' }] : [],
+    CriadoPor: window._currentUser ? window._currentUser.name : '',
+  });
+  if (!novo) { showToast('❌ Erro ao criar a frente.' + (typeof syncErrorDetalhe === 'function' ? syncErrorDetalhe() : '')); return; }
+  showToast('✅ Frente criada — agora libere os colaboradores.');
+  await prestFrentesCarregar(true);
+  prestFrentesRenderizarNova();
+  window._prestFrentesAbertaId = novo.Id;
+  prestFrentesRenderizarGestao();
+}
+
+function prestFrentesRenderizarGestao() {
+  const el = document.getElementById('prest-frentes-lista');
+  if (!el) return;
+  const busca = _prestNormNome((document.getElementById('prest-frentes-busca') || {}).value || '');
+  const inativas = (document.getElementById('prest-frentes-inativas') || {}).checked;
+  let lista = prestFrentesOrdenar(window._prestFrentes || []).filter(f => inativas || f.Ativa !== false);
+  if (busca) lista = lista.filter(f => _prestNormNome([f.Nome, f.CentroCusto, ...(f.Colaboradores || [])].join(' ')).includes(busca));
+  if (!lista.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;padding:12px">Nenhuma frente ainda. Crie a primeira acima.</div>'; return; }
+  const pessoas = prestListaLancadores();
+  el.innerHTML = lista.map(f => {
+    const colabs = f.Colaboradores || [];
+    const nomesSel = colabs.map(_prestNormNome);
+    const aberta = String(window._prestFrentesAbertaId) === String(f.Id);
+    return `<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;${f.Ativa === false ? 'opacity:.55' : ''}">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="pfg_nome_${f.Id}" value="${_prestEsc(f.Nome)}" style="flex:2 1 180px;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.82rem;font-weight:700">
+        <select id="pfg_cc_${f.Id}" onchange="prestFrentesSugerirBM('pfg',${f.Id})" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.78rem">${_prestFrentesCCsOpcoes(f.CentroCusto)}</select>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <span style="font-size:.76rem;color:var(--text-muted)">BM em execução:</span>
+        <input type="text" id="pfg_bm_${f.Id}" list="pfg_bm_dl_${f.Id}" value="${_prestEsc(f.BMAtual || '')}" onfocus="prestFrentesSugerirBM('pfg',${f.Id})" style="width:90px;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.86rem;font-weight:800;text-align:center">
+        <datalist id="pfg_bm_dl_${f.Id}"></datalist>
+        <button class="btn-secondary" style="padding:5px 10px;font-size:.74rem" onclick="prestFrentesProximoBM(${f.Id})" title="Avança para o próximo número de BM e salva">➡️ Próximo BM</button>
+        <span style="flex:1"></span>
+        <button class="btn-secondary" style="padding:5px 10px;font-size:.74rem" onclick="prestFrentesToggleColabs(${f.Id})">👥 ${colabs.length} colaborador${colabs.length === 1 ? '' : 'es'} ${aberta ? '▲' : '▼'}</button>
+        <button class="btn-primary" style="padding:5px 12px;font-size:.74rem" onclick="prestFrentesSalvar(${f.Id})">💾 Salvar</button>
+        <button class="btn-secondary" style="padding:5px 10px;font-size:.74rem" onclick="prestFrentesAlternarAtiva(${f.Id})">${f.Ativa === false ? '♻️ Reativar' : '⏸️ Desativar'}</button>
+      </div>
+      <div id="pfg_bm_hint_${f.Id}" style="font-size:.66rem;color:var(--text-muted);margin-top:4px"></div>
+      ${colabs.length && !aberta ? `<div style="font-size:.72rem;color:var(--text-muted);margin-top:6px">${colabs.map(_prestEsc).join(' · ')}</div>` : ''}
+      <div id="pfg_colabs_${f.Id}" style="display:${aberta ? 'grid' : 'none'};grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 12px;margin-top:10px;padding:10px;background:var(--surface2);border-radius:8px">
+        ${pessoas.map(p => `<label style="display:flex;align-items:center;gap:6px;font-size:.78rem;cursor:pointer"><input type="checkbox" class="pfg-colab-${f.Id}" value="${_prestEsc(p)}" ${nomesSel.includes(_prestNormNome(p)) ? 'checked' : ''} style="width:auto"> ${_prestEsc(p)}</label>`).join('')}
+        ${colabs.filter(c => !pessoas.some(p => _prestNormNome(p) === _prestNormNome(c))).map(c => `<label style="display:flex;align-items:center;gap:6px;font-size:.78rem;cursor:pointer;color:var(--text-muted)"><input type="checkbox" class="pfg-colab-${f.Id}" value="${_prestEsc(c)}" checked style="width:auto"> ${_prestEsc(c)} (inativo?)</label>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function prestFrentesToggleColabs(id) {
+  window._prestFrentesAbertaId = String(window._prestFrentesAbertaId) === String(id) ? null : id;
+  prestFrentesRenderizarGestao();
+}
+
+async function prestFrentesSalvar(id) {
+  const f = prestFrentePorId(id);
+  if (!f) return;
+  const nome = (document.getElementById('pfg_nome_' + id) || {}).value?.trim();
+  const ccSel = document.getElementById('pfg_cc_' + id);
+  const cc = ccSel ? ccSel.value : f.CentroCusto;
+  const bm = ((document.getElementById('pfg_bm_' + id) || {}).value || '').trim();
+  if (!nome) { showToast('⚠️ A frente precisa de um nome.'); return; }
+  if (!cc) { showToast('⚠️ Escolha o Centro de Custo.'); return; }
+  const caixas = document.querySelectorAll('.pfg-colab-' + id);
+  // Se a lista de colaboradores não foi aberta, mantém a que já estava salva.
+  const colabs = caixas.length ? [...caixas].filter(c => c.checked).map(c => c.value) : (f.Colaboradores || []);
+  const empresa = ccSel && ccSel.selectedOptions[0] ? (ccSel.selectedOptions[0].dataset.emp || f.Empresa || '') : (f.Empresa || '');
+  const campos = { Nome: nome, Title: nome + ' · ' + _ccIdPuro(cc), CentroCusto: cc, Empresa: empresa, BMAtual: bm, Colaboradores: colabs };
+  if (String(bm) !== String(f.BMAtual || '')) {
+    campos.HistoricoBM = [...(f.HistoricoBM || []), { bm, de: f.BMAtual || '', em: new Date().toISOString(), por: window._currentUser ? window._currentUser.name : '' }];
+  }
+  const ok = await dbAtualizar('FrentesPrestacao', f.Id, campos);
+  showToast(ok ? '✅ Frente salva!' : ('❌ Erro ao salvar.' + (typeof syncErrorDetalhe === 'function' ? syncErrorDetalhe() : '')));
+  if (ok) { await prestFrentesCarregar(true); prestFrentesRenderizarGestao(); }
+}
+
+function _prestProximoNumeroBM(atual) {
+  const s = String(atual || '').trim();
+  if (!s) return '1';
+  const m = s.match(/^(.*?)(\d+)(?:\.\d+)?$/);
+  if (!m) return s;
+  return m[1] + String(parseInt(m[2], 10) + 1);
+}
+
+async function prestFrentesProximoBM(id) {
+  const f = prestFrentePorId(id);
+  if (!f) return;
+  const sugerido = _prestProximoNumeroBM(f.BMAtual);
+  const novo = prompt(`Frente "${f.Nome}"\nBM atual: ${f.BMAtual || '—'}\n\nQual é o novo BM em execução?`, sugerido);
+  if (novo === null) return;
+  const bm = String(novo).trim();
+  if (!bm) { showToast('⚠️ Informe o número do BM.'); return; }
+  const ok = await dbAtualizar('FrentesPrestacao', f.Id, {
+    BMAtual: bm,
+    HistoricoBM: [...(f.HistoricoBM || []), { bm, de: f.BMAtual || '', em: new Date().toISOString(), por: window._currentUser ? window._currentUser.name : '' }],
+  });
+  showToast(ok ? `✅ ${f.Nome}: agora no BM ${bm}.` : ('❌ Erro ao salvar.' + (typeof syncErrorDetalhe === 'function' ? syncErrorDetalhe() : '')));
+  if (ok) { await prestFrentesCarregar(true); prestFrentesRenderizarGestao(); }
+}
+
+async function prestFrentesAlternarAtiva(id) {
+  const f = prestFrentePorId(id);
+  if (!f) return;
+  const ativar = f.Ativa === false;
+  if (!ativar && !confirm(`Desativar a frente "${f.Nome}"?\n\nEla some da lista dos colaboradores. Os lançamentos já feitos não mudam.`)) return;
+  const ok = await dbAtualizar('FrentesPrestacao', f.Id, { Ativa: ativar });
+  showToast(ok ? (ativar ? '✅ Frente reativada.' : '⏸️ Frente desativada.') : '❌ Erro ao salvar.');
+  if (ok) { await prestFrentesCarregar(true); prestFrentesRenderizarGestao(); }
+}
+/* ================= fim FRENTES DE TRABALHO ================= */
+
 function pagePrestacao() {
-  setTimeout(()=>{ carregarFornecedoresListaPrest().then(()=>carregarPrestacoes()); carregarMunicipiosLista(); carregarBancosLista(); prestGarantirColaboradoresCarregados(); }, 200);
+  setTimeout(()=>{ carregarFornecedoresListaPrest().then(()=>carregarPrestacoes()); carregarMunicipiosLista(); carregarBancosLista(); prestGarantirColaboradoresCarregados().then(()=>prestFrenteRenderizarSelect()); prestFrenteInicializarForm(); }, 200);
   const isGestorFin = currentProfile==='diretoria'||currentProfile==='coordenador';
   return `
   <div class="page-header">
@@ -4012,6 +4614,7 @@ function pagePrestacao() {
     <button class="btn-secondary" onclick="${window._prestVindoDeDespesas ? "window._prestVindoDeDespesas=false;window._rdTab='despesas';navigate('receitas_despesas')" : "navigate('financeiro')"}">← ${window._prestVindoDeDespesas ? 'Despesas' : 'Financeiro'}</button>
     <button id="prest-form-toggle-btn" class="btn-primary" onclick="pcToggleFormNovo()">➕ Nova Despesa</button>
     <button class="btn-secondary" onclick="window._fornVindoDe='prestacao';navigate('fornecedores')">🏷️ Fornecedores</button>
+    ${prestFrentesPodeGerir() ? `<button class="btn-secondary" onclick="prestFrentesAbrirGestao()" title="Cadastrar frentes, BM em execução e quem pode lançar em cada uma">📍 Frentes e Acessos</button>` : ''}
     <!-- KPIs na mesma linha dos botões (pedido Tiago 26/10/2026: "colocar os
          cards de total de lançamentos aguardando, aprovados e indeferidas, na
          mesma linha de botão despesa, nova despesa e fornecedores"). -->
@@ -4050,9 +4653,12 @@ function pagePrestacao() {
       </div>
       <div class="form-group">
         <label>Valor da Despesa (R$)</label>
-        <input type="number" id="prest_valor" placeholder="0,00" step="0.01" oninput="prestDivccSincronizarValor()">
+        <input type="number" id="prest_valor" placeholder="0,00" step="0.01" oninput="prestDivccSincronizarValor();prestFrenteValorMudou()">
       </div>
     </div>
+
+    <!-- Linha 1b: Frente de trabalho (preenche Empresa/CC/BM sozinho) -->
+    ${prestFrenteBlocoHtml()}
 
     <!-- Linha 2: Empresa + CC -->
     <div class="form-row">
@@ -4192,7 +4798,7 @@ function pagePrestacao() {
     <div class="form-row">
       <div class="form-group" style="grid-column:span 2">
         <label>Lançado por</label>
-        <select id="prest_lancadopor">
+        <select id="prest_lancadopor" onchange="prestFrenteLimpar()">
           <option value="">Selecione...</option>
           ${prestOpcoesLancadoPorHtml(prestNomeSugeridoLancadoPor())}
         </select>
@@ -4904,6 +5510,7 @@ function coletarDadosPrestacao(validar=false) {
   const temDivisaoCC=(document.getElementById('prest_tem_divisaocc')||{}).checked||false;
   const divisaoCC=temDivisaoCC?(window._aprovDivisaoCC_prest||[]):[];
   if(validar){
+    if(!prestFrenteValidar())return null;
     if(!data){showToast('⚠️ Informe a data da despesa.');return null;}
     if(!valor){showToast('⚠️ Informe o valor da despesa.');return null;}
     if(!empresa){showToast('⚠️ Selecione a empresa.');return null;}
@@ -4930,6 +5537,9 @@ function coletarDadosPrestacao(validar=false) {
     DataLancamento: new Date().toISOString(),
     DivisaoCC: divisaoCC,
   };
+  // Frente de trabalho escolhida: grava Frente/FrenteIds e o BM em execução
+  // (NumMedicao) — ver bloco FRENTES DE TRABALHO.
+  Object.assign(base, prestFrenteCamposExtras());
   if (!editandoId) {
     // Só em lançamento NOVO o Parcelamento/Tipo/quantidade vêm daqui — ver
     // nota acima sobre por que edição nunca inclui esses campos.
@@ -4991,6 +5601,7 @@ function limparFormPrestacao() {
   window._prestComprovanteNome = null;
   window._pcEditandoId = null;
   window._pcEditandoStatusOriginal = null;
+  prestFrenteLimpar();
   const btnRascunho = document.getElementById('pc-btn-rascunho'); if (btnRascunho) btnRascunho.style.display = '';
   const btnEnviar = document.getElementById('pc-btn-enviar'); if (btnEnviar) btnEnviar.style.display = '';
   const btnSalvarAprovada = document.getElementById('pc-btn-salvar-aprovada'); if (btnSalvarAprovada) btnSalvarAprovada.style.display = 'none';
@@ -5413,6 +6024,7 @@ async function pcEditarPrestacao(id) {
   window._aprovDivisaoCC_prest = (r.DivisaoCC && r.DivisaoCC.length) ? JSON.parse(JSON.stringify(r.DivisaoCC)) : [];
   const divccChkEdit = document.getElementById('prest_tem_divisaocc');
   if (divccChkEdit) { divccChkEdit.checked = !!(r.DivisaoCC && r.DivisaoCC.length); aprovDivccToggle('prest'); }
+  prestFrenteRestaurar(r);
   const infoParcela = (r.Parcelamento === 'parcelado' && r.NumParcela)
     ? ` (parcela ${r.NumParcela}/${r.NumParcelas||'?'} — ${r.TipoParcelamento||''})`
     : '';
@@ -5981,6 +6593,7 @@ async function pcAbrirVisualizar(id) {
     acoesHtml = `
       <div style="margin-top:16px;padding:14px;background:var(--surface2);border-radius:10px">
         <div style="font-weight:700;font-size:.82rem;margin-bottom:10px">✏️ Conferir/Ajustar antes de Aprovar</div>
+        <div id="pcv_alertas_frente" style="margin-bottom:10px"></div>
         <div class="form-row">
           <div class="form-group">
             <label>Centro de Custo / Contrato</label>
@@ -6072,6 +6685,8 @@ async function pcAbrirVisualizar(id) {
             'R$ ' + (d.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})
           )).join('')
         : linha('Centro de Custo', i.CentroCusto||'—')}
+      ${(!(i.DivisaoCC && i.DivisaoCC.length) && i.NumMedicao) ? linha('Nº Medição (BM)', i.NumMedicao) : ''}
+      ${i.Frente ? linha('📍 Frente', i.Frente) : (i.FrenteNaoSei ? linha('📍 Frente', '❓ não soube informar') : '')}
       ${i.Categoria ? linha('Categoria', i.Categoria) : ''}
       ${i.Subcategoria ? linha('Subcategoria', i.Subcategoria) : ''}
       ${linha('Valor', 'R$ '+(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}))}
@@ -6096,6 +6711,7 @@ async function pcAbrirVisualizar(id) {
     const chk = document.getElementById('pcv_tem_divisaocc');
     if (chk) { chk.checked = true; aprovDivccToggle('pcv'); }
   }
+  prestFrentePreencherAlertasModal(i);
 }
 
 async function pcConfirmarPagamento(id) {
