@@ -415,9 +415,6 @@
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
   .form-row.full { grid-template-columns: 1fr; }
   @media (max-width: 600px) { .form-row { grid-template-columns: 1fr; } }
-  .form-row-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
-  @media (max-width: 900px) { .form-row-4 { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 600px) { .form-row-4 { grid-template-columns: 1fr; } }
 
   /* Linha de Modalidade em Nova Despesa: Modalidade mais estreita pra caber o
      nome (Fornecedor/Colaborador/Sócio) ao lado dela, além do Contrato
@@ -3029,6 +3026,10 @@ const CV_FROTA = [
    VEÍCULOS › VEÍCULOS PRÓPRIO (03 = carretinha vendida, código não é reaproveitado).
    O controle é alimentado automaticamente por:
    • Despesas (Veículos e Frota) — campo Veiculo + KmVeiculo + FrotaItens (itens do plano);
+   • Contas a Pagar (Veículos e Frota) — mesmos campos Veiculo/KmVeiculo/FrotaItens, espelhado
+     em 06/11/2026 ("criar na aba de despesas e contas a pagar... pra sincronizar o consumo de
+     combustível e manutenção de cada veiculo"); usa o Vencimento como data de referência do
+     custo, já que Contas a Pagar não tem DataLancamento;
    • Checklist Veicular — km, condutor e veículo em uso;
    • FrotaManutencoes — registros manuais (última troca, revisões em garantia, leitura de km). */
 const FROTA_PLANOS = {
@@ -3061,7 +3062,6 @@ function rdFrotaToggle() {
   if (ob) ob.style.display = FROTA_SUBCATS_OBRIG.includes(sub) ? 'inline' : 'none';
   if (!mostrar) {
     const s = document.getElementById('rd_frota_veic'); if (s) s.value = '';
-    const k = document.getElementById('rd_frota_km'); if (k) k.value = '';
   }
   rdFrotaVeicMudou();
 }
@@ -3070,6 +3070,37 @@ function rdFrotaVeicMudou(marcados) {
   const placa = (document.getElementById('rd_frota_veic') || {}).value || '';
   const wrap = document.getElementById('rd_frota_itens_wrap');
   const box = document.getElementById('rd_frota_itens');
+  if (!wrap || !box) return;
+  const v = placa ? CV_FROTA.find(x => x.placa === placa) : null;
+  const mostrar = !!v && FROTA_SUBCATS_ITENS.includes(sub);
+  wrap.style.display = mostrar ? '' : 'none';
+  if (!mostrar) { box.innerHTML = ''; return; }
+  const ja = Array.isArray(marcados) ? marcados : [...box.querySelectorAll('input:checked')].map(x => x.value);
+  box.innerHTML = frotaPlano(v).map(it => `<label class="frota-chip"><input type="checkbox" value="${it.id}"${ja.includes(it.id) ? ' checked' : ''}> ${frotaEsc(it.nome)}</label>`).join('');
+}
+
+/* -- Campo "Veículo da frota" na tela de Contas a Pagar — mesmo mecanismo de
+   rdFrotaToggle/rdFrotaVeicMudou (Despesas), espelhado com prefixo pag_.
+   Pedido em 06/11/2026: "criar na aba de despesas e contas a pagar sempre
+   que envolver combustivel ou manutenção veicular". -- */
+function pagFrotaToggle() {
+  const sub = (document.getElementById('pag_subcategoria') || {}).value || '';
+  const row = document.getElementById('pag_frota_row');
+  if (!row) return;
+  const mostrar = FROTA_SUBCATS_VEIC.includes(sub);
+  row.style.display = mostrar ? '' : 'none';
+  const ob = document.getElementById('pag_frota_obrig');
+  if (ob) ob.style.display = FROTA_SUBCATS_OBRIG.includes(sub) ? 'inline' : 'none';
+  if (!mostrar) {
+    const s = document.getElementById('pag_frota_veic'); if (s) s.value = '';
+  }
+  pagFrotaVeicMudou();
+}
+function pagFrotaVeicMudou(marcados) {
+  const sub = (document.getElementById('pag_subcategoria') || {}).value || '';
+  const placa = (document.getElementById('pag_frota_veic') || {}).value || '';
+  const wrap = document.getElementById('pag_frota_itens_wrap');
+  const box = document.getElementById('pag_frota_itens');
   if (!wrap || !box) return;
   const v = placa ? CV_FROTA.find(x => x.placa === placa) : null;
   const mostrar = !!v && FROTA_SUBCATS_ITENS.includes(sub);
@@ -3090,15 +3121,22 @@ function frotaKm(n) { return (n === '' || n == null || isNaN(n)) ? '—' : Numbe
 function frotaBRL(n) { return Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
 
 function frotaMontar() {
-  const d = window._frotaDados || { cv: [], man: [], desp: null };
+  const d = window._frotaDados || { cv: [], man: [], desp: null, cp: null };
   const hoje = new Date(); hoje.setHours(0,0,0,0);
   const ano = String(hoje.getFullYear()), mes = hoje.toISOString().slice(0, 7);
   return CV_FROTA.map(v => {
     const ev = []; // eventos com km e/ou itens
     const cvs = d.cv.filter(r => frotaNormPlaca(r.placa) === v.placa).map(r => ({ ...r, _data: frotaDataISO(r) })).sort((a, b) => (a.Id || 0) - (b.Id || 0));
     cvs.forEach(r => ev.push({ data: r._data, km: Number(r.km) || null, itens: [], origem: (r.modo === 'devolucao' ? 'Checklist devolução' : 'Checklist retirada') + ' · ' + (r.condutor || ''), valor: 0 }));
-    const desp = (d.desp || []).filter(x => x.Categoria === 'Veículos e Frota' && x.Subcategoria !== 'Locação de Veículo Próprio' && x.Subcategoria !== 'Locação de Veículos' && frotaPorTexto(x.Veiculo) === v);
-    desp.forEach(x => ev.push({ data: x.DataLancamento || '', km: Number(x.KmVeiculo) || null, itens: x.FrotaItens || [], origem: 'Despesa · ' + (x.Subcategoria || '') + (x.Fornecedor ? ' · ' + x.Fornecedor : ''), valor: Number(x.Valor != null ? x.Valor : x.ValorTotal) || 0, sub: x.Subcategoria }));
+    // Combustível/manutenção chegam tanto de Despesas (DataLancamento) quanto
+    // de Contas a Pagar (que não tem DataLancamento — usa o Vencimento como
+    // data de referência do custo). Pedido em 06/11/2026: "criar na aba de
+    // despesas e contas a pagar... pra sincronizar o consumo de combustível
+    // e manutenção de cada veiculo".
+    const despRaw = (d.desp || []).map(x => ({ ...x, _origemFrota: 'Despesa' }));
+    const cpRaw = (d.cp || []).map(x => ({ ...x, DataLancamento: x.Vencimento || '', _origemFrota: 'Contas a Pagar' }));
+    const desp = despRaw.concat(cpRaw).filter(x => x.Categoria === 'Veículos e Frota' && x.Subcategoria !== 'Locação de Veículo Próprio' && x.Subcategoria !== 'Locação de Veículos' && frotaPorTexto(x.Veiculo) === v);
+    desp.forEach(x => ev.push({ data: x.DataLancamento || '', km: Number(x.KmVeiculo) || null, itens: x.FrotaItens || [], origem: (x._origemFrota || 'Despesa') + ' · ' + (x.Subcategoria || '') + (x.Fornecedor ? ' · ' + x.Fornecedor : ''), valor: Number(x.Valor != null ? x.Valor : x.ValorTotal) || 0, sub: x.Subcategoria }));
     (d.man || []).filter(m => m.Placa === v.placa).forEach(m => ev.push({ data: m.Data || '', km: Number(m.Km) || null, itens: m.Itens || [], origem: 'Registro de manutenção' + (m.Oficina ? ' · ' + m.Oficina : '') + (m.Descricao ? ' · ' + m.Descricao : ''), valor: 0, man: true }));
     ev.sort((a, b) => (b.data || '').localeCompare(a.data || '') || (b.km || 0) - (a.km || 0));
     const comKm = ev.filter(e => e.km);
@@ -3110,7 +3148,7 @@ function frotaMontar() {
     const ultimo = cvs[cvs.length - 1] || null;
     const soma = (f) => desp.filter(f).reduce((s, x) => s + (Number(x.Valor != null ? x.Valor : x.ValorTotal) || 0), 0);
     const ehComb = x => /Combust/.test(x.Subcategoria || '');
-    const custos = d.desp ? {
+    const custos = (d.desp || d.cp) ? {
       combMes: soma(x => ehComb(x) && (x.DataLancamento || '').startsWith(mes)),
       combAno: soma(x => ehComb(x) && (x.DataLancamento || '').startsWith(ano)),
       manAno: soma(x => x.Subcategoria === 'Manutenção Veicular' && (x.DataLancamento || '').startsWith(ano)),
@@ -3175,11 +3213,11 @@ function renderFrotaPainelHTML() {
       }
       return row;
     }).join('') + `</tbody></table></div>
-    <div style="font-size:.72rem;color:var(--text-muted);margin-top:8px">Alimentado automaticamente pelas <strong>Despesas</strong> de Veículos e Frota (combustível, manutenção, documentos, seguro) e pelo <strong>Checklist Veicular</strong> (km e condutor).${d_semCustos() ? ' Custos visíveis só para a Diretoria.' : ''} Intervalos sugeridos; ajuste conforme o manual do veículo.</div></div>`;
+    <div style="font-size:.72rem;color:var(--text-muted);margin-top:8px">Alimentado automaticamente pelas <strong>Despesas</strong> e <strong>Contas a Pagar</strong> de Veículos e Frota (combustível, manutenção, documentos, seguro) e pelo <strong>Checklist Veicular</strong> (km e condutor).${d_semCustos() ? ' Custos visíveis só para a Diretoria.' : ''} Intervalos sugeridos; ajuste conforme o manual do veículo.</div></div>`;
   if (ger) h += renderFrotaFormManutencao();
   return h;
 }
-function d_semCustos() { return !(window._frotaDados && window._frotaDados.desp); }
+function d_semCustos() { return !(window._frotaDados && (window._frotaDados.desp || window._frotaDados.cp)); }
 
 function renderFrotaFormManutencao() {
   const sel = window._frotaFormPlaca || '';
@@ -3228,15 +3266,16 @@ async function frotaCarregarPainel() {
   const box = document.getElementById('frota-painel'); if (!box) return;
   const podeCustos = currentProfile === 'diretoria';
   try {
-    const [cv, man, desp] = await Promise.all([
+    const [cv, man, desp, cp] = await Promise.all([
       dbLer('ChecklistVeicular').catch(() => []),
       dbLer('FrotaManutencoes').catch(() => []),
       podeCustos ? dbLerSeguro('Despesas').catch(() => null) : Promise.resolve(null),
+      podeCustos ? dbLerSeguro('ContasPagar').catch(() => null) : Promise.resolve(null),
     ]);
-    window._frotaDados = { cv: Array.isArray(cv) ? cv : [], man: Array.isArray(man) ? man : [], desp: Array.isArray(desp) ? desp : null };
+    window._frotaDados = { cv: Array.isArray(cv) ? cv : [], man: Array.isArray(man) ? man : [], desp: Array.isArray(desp) ? desp : null, cp: Array.isArray(cp) ? cp : null };
   } catch (e) {
     console.warn('[Frota] Falha ao carregar:', e);
-    window._frotaDados = window._frotaDados || { cv: [], man: [], desp: null };
+    window._frotaDados = window._frotaDados || { cv: [], man: [], desp: null, cp: null };
   }
   frotaRender();
 }
@@ -4302,10 +4341,26 @@ function prestFrentesPessoaAtual() {
   const v = sel && sel.value ? sel.value : '';
   return v || (window._currentUser ? window._currentUser.name : '');
 }
-function prestFrentesDaPessoa(nome) {
+// Validade opcional da liberação, por colaborador (pedido Tiago 05/11/2026):
+// f.Validades = { 'nome normalizado': 'AAAA-MM-DD' }. Sem data = sem prazo.
+// Vale até o fim do dia informado.
+function _prestHojeISO() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function prestValidade(f, nome) {
+  return ((f && f.Validades) || {})[_prestNormNome(nome)] || '';
+}
+function prestLiberacaoVigente(f, nome, diaISO) {
+  const v = prestValidade(f, nome);
+  return !v || v >= (diaISO || _prestHojeISO());
+}
+function _prestFmtDia(iso) { return iso ? iso.split('-').reverse().slice(0, 2).join('/') : ''; }
+function prestFrentesDaPessoa(nome, ignorarValidade) {
   const n = _prestNormNome(nome);
   if (!n) return [];
-  return prestFrentesAtivas().filter(f => (f.Colaboradores || []).some(c => _prestNormNome(c) === n));
+  return prestFrentesAtivas().filter(f => (f.Colaboradores || []).some(c => _prestNormNome(c) === n)
+    && (ignorarValidade || prestLiberacaoVigente(f, nome)));
 }
 // Lista que aparece no formulário: colaborador comum vê só as frentes
 // liberadas pra ele; gestão vê todas as ativas.
@@ -4361,13 +4416,39 @@ function prestPodeAprovarComoGestor(i) {
 // obrigatório em nenhuma das duas etapas. Com rateio, um campo por linha.
 function prestGestorCamposBMHtml(i) {
   const partes = (i.DivisaoCC && i.DivisaoCC.length) ? i.DivisaoCC : null;
-  const campo = (idx, cc, bm) => `
-    <div class="form-group" style="margin-bottom:8px">
-      <label style="font-size:.74rem">Nº Medição (BM)${partes ? ' — ' + _prestEsc(_ccIdPuro(cc)) : ''} <span style="color:var(--text-muted);font-weight:400">(opcional — se não souber, o Financeiro informa)</span></label>
-      <input type="text" class="pcg-bm" data-idx="${idx}" data-cc="${_prestEsc(_ccIdPuro(cc))}" list="pcg_bm_dl_${idx}" value="${_prestEsc(bm || '')}" placeholder="Ex.: 13" onfocus="prestGestorSugerirBMs(this)">
-      <datalist id="pcg_bm_dl_${idx}"></datalist>
+  const campoBM = (idx, cc, bm) => `
+      <input type="text" class="pcg-bm" data-idx="${idx}" data-cc="${_prestEsc(_ccIdPuro(cc))}" list="pcg_bm_dl_${idx}" value="${_prestEsc(bm || '')}" placeholder="BM (opcional)" onfocus="prestGestorSugerirBMs(this)" style="flex:1;min-width:90px">
+      <datalist id="pcg_bm_dl_${idx}"></datalist>`;
+  if (!partes) {
+    return `<div class="form-group" style="margin-bottom:8px">
+      <label style="font-size:.74rem">Nº Medição (BM) <span style="color:var(--text-muted);font-weight:400">(opcional — se não souber, o Financeiro informa)</span></label>
+      <div style="display:flex">${campoBM(0, i.CentroCusto || '', i.NumMedicao)}</div>
     </div>`;
-  return partes ? partes.map((p, k) => campo(k, p.cc, p.medicao)).join('') : campo(0, i.CentroCusto || '', i.NumMedicao);
+  }
+  // Rateio: o gestor pode ajustar o valor de cada centro de custo (pedido
+  // Tiago 05/11/2026) e informar o BM de cada um. A soma tem que fechar.
+  window._pcgValorTotal = Number(i.Valor) || 0;
+  return `<div style="margin-bottom:8px">
+    <div style="font-size:.74rem;font-weight:700;margin-bottom:6px">🧩 Rateio entre centros de custo <span style="color:var(--text-muted);font-weight:400">(ajuste os valores se a divisão não for meio a meio)</span></div>
+    ${partes.map((p, k) => `
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">
+        <div style="flex:2 1 160px;font-size:.78rem;font-weight:600">${_prestEsc(p.cc || '—')}</div>
+        <input type="number" step="0.01" class="pcg-valor" data-idx="${k}" value="${(Number(p.valor) || 0).toFixed(2)}" oninput="prestGestorConferirSoma()" style="width:110px;font-weight:700;text-align:right">
+        ${campoBM(k, p.cc, p.medicao)}
+      </div>`).join('')}
+    <div id="pcg_soma" style="font-size:.74rem;margin-top:4px"></div>
+  </div>`;
+}
+function prestGestorConferirSoma() {
+  const el = document.getElementById('pcg_soma');
+  const soma = [...document.querySelectorAll('.pcg-valor')].reduce((s, c) => s + (parseFloat(c.value) || 0), 0);
+  const total = window._pcgValorTotal || 0;
+  const diff = Math.round((total - soma) * 100) / 100;
+  if (!el) return Math.abs(diff) < 0.01;
+  if (Math.abs(diff) < 0.01) { el.style.color = 'var(--green-main)'; el.textContent = `✅ Soma ${rdNumeroParaMoeda(soma)} = valor da despesa.`; return true; }
+  el.style.color = 'var(--red)';
+  el.textContent = diff > 0 ? `⚠️ Faltam ${rdNumeroParaMoeda(diff)} para fechar ${rdNumeroParaMoeda(total)}.` : `⚠️ Passou ${rdNumeroParaMoeda(-diff)} do valor ${rdNumeroParaMoeda(total)}.`;
+  return false;
 }
 async function prestGestorSugerirBMs(inp) {
   const dl = document.getElementById(inp.getAttribute('list'));
@@ -4384,8 +4465,10 @@ async function prestGestorAprovarComBM(id) {
   const campos = [...document.querySelectorAll('.pcg-bm')];
   const ajustes = {};
   if (reg && reg.DivisaoCC && reg.DivisaoCC.length) {
+    if (!prestGestorConferirSoma()) { showToast('⚠️ A soma do rateio não fecha com o valor da despesa — ajuste os valores.'); return; }
     const div = JSON.parse(JSON.stringify(reg.DivisaoCC));
     campos.forEach(c => { const k = parseInt(c.dataset.idx, 10); if (div[k]) div[k].medicao = c.value.trim(); });
+    document.querySelectorAll('.pcg-valor').forEach(c => { const k = parseInt(c.dataset.idx, 10); if (div[k]) div[k].valor = Math.round((parseFloat(c.value) || 0) * 100) / 100; });
     ajustes.DivisaoCC = div;
   } else if (campos[0]) {
     ajustes.NumMedicao = campos[0].value.trim();
@@ -4746,12 +4829,16 @@ async function prestFrenteAlertasHtml(i) {
     : [{ cc: i.CentroCusto || '', medicao: i.NumMedicao || '' }];
   if (i.Frente) info.push(`🔑 Lançado pelo centro de custo liberado: <strong>${_prestEsc(i.Frente)}</strong>`);
   if (i.FrenteNaoSei) alertas.push('❓ O colaborador marcou "não sei" — defina o Centro de Custo e o BM.');
-  const frentesPessoa = prestFrentesDaPessoa(pessoa);
+  const frentesPessoa = prestFrentesDaPessoa(pessoa, true);
   for (const p of partes) {
     if (!p.cc) { alertas.push('⚠️ Sem Centro de Custo.'); continue; }
     const ccId = _ccIdPuro(p.cc);
     const frentesDoCC = prestFrentesAtivas().filter(f => _ccIdPuro(f.CentroCusto) === ccId);
-    if (frentesDoCC.length && pessoa && !frentesPessoa.some(f => _ccIdPuro(f.CentroCusto) === ccId)) {
+    const libDoCC = frentesPessoa.filter(f => _ccIdPuro(f.CentroCusto) === ccId);
+    if (libDoCC.length && i.DataDespesa && !libDoCC.some(f => prestLiberacaoVigente(f, pessoa, i.DataDespesa))) {
+      info.push(`ℹ️ A liberação de ${_prestEsc(pessoa)} em ${_prestEsc(ccId)} venceu em ${_prestFmtDia(prestValidade(libDoCC[0], pessoa))}, antes da data da despesa.`);
+    }
+    if (frentesDoCC.length && pessoa && !libDoCC.length) {
       alertas.push(`⚠️ ${_prestEsc(pessoa)} não está liberado(a) no centro de custo <strong>${_prestEsc(ccId)}</strong>.`);
     }
     if (!p.medicao && frentesDoCC.length) {
@@ -4827,25 +4914,6 @@ function _prestFrentesCCsOpcoes(selecionado) {
   if (selecionado && !ccs.some(c => c.v === selecionado)) ccs.unshift({ v: selecionado, emp: '' });
   return '<option value="">Centro de Custo...</option>' + ccs.map(c => `<option value="${_prestEsc(c.v)}" data-emp="${_prestEsc(c.emp)}" ${c.v === selecionado ? 'selected' : ''}>${_prestEsc(c.v)}</option>`).join('');
 }
-// -- Pedido Tiago 05/11/2026: campo de Centro de Custo digitável (filtra
-// enquanto digita), não só um <select> fixo com a lista inteira -- usa
-// <input list> + <datalist> nativo do navegador. Estas 3 funções substituem
-// o acesso via ccSel.selectedOptions que só existe em <select>.
-function _prestFrentesCCsLista() {
-  return (centrosCustoData || []).filter(c => c.status === 'ativo')
-    .map(c => ({ v: c.id + ' · ' + c.contrato, emp: c.empresa }))
-    .sort((a, b) => a.v.localeCompare(b.v, 'pt-BR'));
-}
-function _prestFrentesCCsDatalist() {
-  return _prestFrentesCCsLista().map(c => `<option value="${_prestEsc(c.v)}">`).join('');
-}
-function _prestFrentesEmpDoCC(cc) {
-  const achado = _prestFrentesCCsLista().find(c => c.v === cc);
-  return achado ? achado.emp : '';
-}
-function _prestFrentesCCValido(cc) {
-  return _prestFrentesCCsLista().some(c => c.v === cc);
-}
 
 function prestFrentesRenderizarNova() {
   const el = document.getElementById('prest-frentes-nova');
@@ -4853,8 +4921,7 @@ function prestFrentesRenderizarNova() {
   el.innerHTML = `
     <div style="font-weight:700;font-size:.8rem;margin-bottom:8px">➕ Liberar um centro de custo</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <input type="text" id="pfn_cc" list="pfn_cc_dl" placeholder="Centro de Custo..." autocomplete="off" oninput="prestFrentesNomeDoContrato();prestFrentesSugerirBM('pfn')" onchange="prestFrentesNomeDoContrato();prestFrentesSugerirBM('pfn')" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
-      <datalist id="pfn_cc_dl">${_prestFrentesCCsDatalist()}</datalist>
+      <select id="pfn_cc" onchange="prestFrentesNomeDoContrato();prestFrentesSugerirBM('pfn')" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">${_prestFrentesCCsOpcoes('')}</select>
       <input type="text" id="pfn_nome" placeholder="Nome (vem do contrato — só mude se quiser separar uma obra)" style="flex:2 1 200px;min-width:0;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
       <select id="pfn_gestor" title="Gestor que aprova as despesas desta frente" style="flex:1 1 160px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem"><option value="">Gestor que aprova...</option>${prestGestoresDisponiveis().map(g => `<option value="${_prestEsc(g)}">${_prestEsc(g)}</option>`).join('')}</select>
       <input type="text" id="pfn_bm" list="pfn_bm_dl" placeholder="BM (opcional)" style="flex:0 1 130px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
@@ -4905,13 +4972,12 @@ function prestFrentesNomeDoContrato() {
 async function prestFrentesCriar() {
   const nome = (document.getElementById('pfn_nome') || {}).value?.trim();
   const ccSel = document.getElementById('pfn_cc');
-  const cc = ccSel ? ccSel.value.trim() : '';
+  const cc = ccSel ? ccSel.value : '';
   const bm = (document.getElementById('pfn_bm') || {}).value?.trim() || '';
   const gestor = (document.getElementById('pfn_gestor') || {}).value || '';
   if (!nome) { showToast('⚠️ Escolha o centro de custo.'); return; }
   if (!cc) { showToast('⚠️ Escolha o Centro de Custo.'); return; }
-  if (!_prestFrentesCCValido(cc)) { showToast('⚠️ Centro de Custo não encontrado — escolha um da lista de sugestões.'); return; }
-  const empresa = _prestFrentesEmpDoCC(cc);
+  const empresa = ccSel.selectedOptions[0] ? (ccSel.selectedOptions[0].dataset.emp || '') : '';
   const novo = await dbInserir('FrentesPrestacao', {
     Title: nome + ' · ' + _ccIdPuro(cc), Nome: nome, CentroCusto: cc, Empresa: empresa, BMAtual: bm, Ativa: true, Colaboradores: [], Gestor: gestor,
     HistoricoBM: bm ? [{ bm, em: new Date().toISOString(), por: window._currentUser ? window._currentUser.name : '' }] : [],
@@ -4942,8 +5008,7 @@ function prestFrentesRenderizarGestao() {
     return `<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;${f.Ativa === false ? 'opacity:.55' : ''}">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <input type="text" id="pfg_nome_${f.Id}" value="${_prestEsc(f.Nome)}" style="flex:2 1 180px;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.82rem;font-weight:700">
-        <input type="text" id="pfg_cc_${f.Id}" list="pfg_cc_dl_${f.Id}" value="${_prestEsc(f.CentroCusto)}" placeholder="Centro de Custo..." autocomplete="off" oninput="prestFrentesSugerirBM('pfg',${f.Id})" onchange="prestFrentesSugerirBM('pfg',${f.Id})" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.78rem">
-        <datalist id="pfg_cc_dl_${f.Id}">${_prestFrentesCCsDatalist()}</datalist>
+        <select id="pfg_cc_${f.Id}" onchange="prestFrentesSugerirBM('pfg',${f.Id})" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.78rem">${_prestFrentesCCsOpcoes(f.CentroCusto)}</select>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <span style="font-size:.76rem;color:var(--text-muted)">BM em execução:</span>
@@ -4958,9 +5023,17 @@ function prestFrentesRenderizarGestao() {
         <button class="btn-secondary" style="padding:5px 10px;font-size:.74rem" onclick="prestFrentesAlternarAtiva(${f.Id})">${f.Ativa === false ? '♻️ Reativar' : '⏸️ Desativar'}</button>
       </div>
       <div id="pfg_bm_hint_${f.Id}" style="font-size:.66rem;color:var(--text-muted);margin-top:4px"></div>
-      ${colabs.length && !aberta ? `<div style="font-size:.72rem;color:var(--text-muted);margin-top:6px">${colabs.map(_prestEsc).join(' · ')}</div>` : ''}
+      ${colabs.length && !aberta ? `<div style="font-size:.72rem;color:var(--text-muted);margin-top:6px">${colabs.map(c => {
+        const v = prestValidade(f, c);
+        if (!v) return _prestEsc(c);
+        return v < _prestHojeISO() ? `<span style="text-decoration:line-through">${_prestEsc(c)}</span> <span style="color:var(--red)">(venceu ${_prestFmtDia(v)})</span>` : `${_prestEsc(c)} <span style="color:var(--green-mid)">(até ${_prestFmtDia(v)})</span>`;
+      }).join(' · ')}</div>` : ''}
       <div id="pfg_colabs_${f.Id}" style="display:${aberta ? 'grid' : 'none'};grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 12px;margin-top:10px;padding:10px;background:var(--surface2);border-radius:8px">
-        ${pessoas.map(p => `<label style="display:flex;align-items:center;gap:6px;font-size:.78rem;cursor:pointer"><input type="checkbox" class="pfg-colab-${f.Id}" value="${_prestEsc(p)}" ${nomesSel.includes(_prestNormNome(p)) ? 'checked' : ''} style="width:auto"> ${_prestEsc(p)}</label>`).join('')}
+        <div style="grid-column:1/-1;font-size:.7rem;color:var(--text-muted)">Marque quem pode lançar. <strong>Até</strong> (opcional): o acesso expira sozinho no fim desse dia — deixe em branco para não ter prazo. Dê uns dias de folga depois da volta do campo para a pessoa lançar as notas.</div>
+        ${pessoas.map(p => { const v = prestValidade(f, p); const venc = v && v < _prestHojeISO(); return `<div style="display:flex;align-items:center;gap:6px;font-size:.78rem;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1;min-width:150px"><input type="checkbox" class="pfg-colab-${f.Id}" value="${_prestEsc(p)}" ${nomesSel.includes(_prestNormNome(p)) ? 'checked' : ''} style="width:auto"> ${_prestEsc(p)}${venc ? ' <span style="color:var(--red);font-size:.66rem">(venceu)</span>' : ''}</label>
+          <span style="font-size:.66rem;color:var(--text-muted)">até</span><input type="date" class="pfg-val-${f.Id}" data-nome="${_prestEsc(p)}" value="${_prestEsc(v)}" style="width:132px;padding:3px 6px;font-size:.72rem;border-radius:6px;border:1px solid var(--border)">
+        </div>`; }).join('')}
         ${colabs.filter(c => !pessoas.some(p => _prestNormNome(p) === _prestNormNome(c))).map(c => `<label style="display:flex;align-items:center;gap:6px;font-size:.78rem;cursor:pointer;color:var(--text-muted)"><input type="checkbox" class="pfg-colab-${f.Id}" value="${_prestEsc(c)}" checked style="width:auto"> ${_prestEsc(c)} (inativo?)</label>`).join('')}
       </div>
     </div>`;
@@ -4977,17 +5050,24 @@ async function prestFrentesSalvar(id) {
   if (!f) return;
   const nome = (document.getElementById('pfg_nome_' + id) || {}).value?.trim();
   const ccSel = document.getElementById('pfg_cc_' + id);
-  const cc = ccSel ? ccSel.value.trim() : f.CentroCusto;
+  const cc = ccSel ? ccSel.value : f.CentroCusto;
   const bm = ((document.getElementById('pfg_bm_' + id) || {}).value || '').trim();
   if (!nome) { showToast('⚠️ Informe um nome.'); return; }
   if (!cc) { showToast('⚠️ Escolha o Centro de Custo.'); return; }
-  if (!_prestFrentesCCValido(cc)) { showToast('⚠️ Centro de Custo não encontrado — escolha um da lista de sugestões.'); return; }
   const caixas = document.querySelectorAll('.pfg-colab-' + id);
   // Se a lista de colaboradores não foi aberta, mantém a que já estava salva.
   const colabs = caixas.length ? [...caixas].filter(c => c.checked).map(c => c.value) : (f.Colaboradores || []);
-  const empresa = _prestFrentesEmpDoCC(cc) || f.Empresa || '';
+  // Validades (opcional) — só dos marcados; sem lista aberta, mantém as salvas.
+  let validades = f.Validades || {};
+  const datas = document.querySelectorAll('.pfg-val-' + id);
+  if (datas.length) {
+    validades = {};
+    const marcados = colabs.map(_prestNormNome);
+    datas.forEach(d => { const n = _prestNormNome(d.dataset.nome); if (d.value && marcados.includes(n)) validades[n] = d.value; });
+  }
+  const empresa = ccSel && ccSel.selectedOptions[0] ? (ccSel.selectedOptions[0].dataset.emp || f.Empresa || '') : (f.Empresa || '');
   const gestorSel = document.getElementById('pfg_gestor_' + id);
-  const campos = { Nome: nome, Title: nome + ' · ' + _ccIdPuro(cc), CentroCusto: cc, Empresa: empresa, BMAtual: bm, Colaboradores: colabs, Gestor: gestorSel ? gestorSel.value : (f.Gestor || '') };
+  const campos = { Nome: nome, Title: nome + ' · ' + _ccIdPuro(cc), CentroCusto: cc, Empresa: empresa, BMAtual: bm, Colaboradores: colabs, Validades: validades, Gestor: gestorSel ? gestorSel.value : (f.Gestor || '') };
   if (String(bm) !== String(f.BMAtual || '')) {
     campos.HistoricoBM = [...(f.HistoricoBM || []), { bm, de: f.BMAtual || '', em: new Date().toISOString(), por: window._currentUser ? window._currentUser.name : '' }];
   }
@@ -8731,6 +8811,23 @@ function pagePagar() {
       </div>
     </div>
 
+    <!-- Frota (pedido 06/11/2026: "criar na aba de despesas e contas a pagar sempre que
+         envolver combustivel ou manutenção veicular" — mesmo campo já existente em Nova
+         Despesa desde 05/11/2026, agora espelhado aqui) -->
+    <div class="form-row" id="pag_frota_row" style="display:none">
+      <div class="form-group" style="grid-column:1 / -1">
+        <label>Veículo da frota <span id="pag_frota_obrig" style="color:var(--red)">*</span> <span style="font-size:.7rem;color:var(--text-muted)">(km não é lançado aqui — já vem do Checklist Veicular/registro de manutenção em Equipamentos)</span></label>
+        <select id="pag_frota_veic" onchange="pagFrotaVeicMudou()">
+          <option value="">Selecione o veículo...</option>
+          ${CV_FROTA.map(v => `<option value="${v.placa}">${frotaEsc(frotaLabel(v))}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" id="pag_frota_itens_wrap" style="display:none;grid-column:1 / -1">
+        <label>Itens do plano de manutenção feitos neste serviço</label>
+        <div id="pag_frota_itens" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+      </div>
+    </div>
+
     <!-- Linha 3: Valor, Forma de Pagamento, À vista/Parcelado, Vencimento —
          tudo na mesma linha (pedido 12/10/2026: "valor, forma de pagamento,
          a vista ou parcelado, quantas vezes e vencimento primeira parcela
@@ -10631,6 +10728,7 @@ function pagSelecionarSubcategoria(sub) {
   const hid = document.getElementById('pag_subcategoria'); if (hid) hid.value = sub;
   pagFecharDropdownSubcategoria();
   pagAtualizarCategoriaPorSubcategoria();
+  if (typeof pagFrotaToggle === 'function') pagFrotaToggle();
 }
 
 /* -- Combobox pesquisável de Categoria em Contas a Pagar (digita e filtra) —
@@ -10689,6 +10787,9 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   const desc=(document.getElementById('pag_desc').value||'').trim();
   const categoria=(document.getElementById('pag_categoria')||{}).value||'';
   const subcategoria=(document.getElementById('pag_subcategoria')||{}).value||'';
+  const frotaPlacaSel = FROTA_SUBCATS_VEIC.includes(subcategoria) ? ((document.getElementById('pag_frota_veic')||{}).value || '') : '';
+  const frotaV = frotaPlacaSel ? CV_FROTA.find(v => v.placa === frotaPlacaSel) : null;
+  const frotaItensSel = frotaV ? [...document.querySelectorAll('#pag_frota_itens input:checked')].map(x => x.value) : [];
   const formaPgto=(document.getElementById('pag_forma_pgto')||{}).value||'';
   const parcelamento=(document.getElementById('pag_parcelamento')||{}).value||'avista';
   const vencimento=document.getElementById('pag_vencimento').value;
@@ -10708,6 +10809,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   if(!fornecedor){showToast('⚠️ Selecione um fornecedor.');return;}
   if(!valor){showToast('⚠️ Informe o valor.');return;}
   if(!empresa){showToast('⚠️ Selecione a empresa.');return;}
+  if (FROTA_SUBCATS_OBRIG.includes(subcategoria) && !frotaV) { showToast('⚠️ Selecione o veículo da frota — combustível e manutenção alimentam o controle de frota.'); return; }
   if(parcelamento==='parcelado' && (window._pagParcelas||[]).some(p=>!p.cc)){showToast('⚠️ Selecione o Centro de Custo de cada parcela.');return;}
   if(temDivisaoCC){
     if(divisaoCC.length<2){showToast('⚠️ Adicione pelo menos 2 Centros de Custo na divisão, ou desmarque a opção.');return;}
@@ -10793,6 +10895,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   const base = {
     Fornecedor:fornecedor, Descricao:desc, Empresa:empresa, CentroCusto: temDivisaoCC ? divisaoCC.map(d=>d.cc).join(' + ') : cc,
     Categoria: categoria, Subcategoria: subcategoria, NaturezaEconomica: rdNaturezaDeSubcategoria(subcategoria),
+    Veiculo: frotaV ? frotaLabel(frotaV) : '', FrotaItens: frotaItensSel,
     FormaPagamento:formaPgto, Observacao:obs, NumeroBoleto:numeroBoleto, EnviadoFinanceiro:enviarFinanceiro,
     LancadoPor:lancadoPor, NumMedicao: temDivisaoCC ? '' : medicao,
     ComprovanteUrl: comprovanteUrlFinal, ComprovanteNome: comprovanteNomeFinal,
@@ -10884,7 +10987,8 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   const pagDivccQtdReset=document.getElementById('pag_divcc_qtd');if(pagDivccQtdReset)pagDivccQtdReset.value='';
   pagToggleDivisaoCC();
   ['pag_fornecedor_input','pag_fornecedor_sel'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
-  ['pag_categoria','pag_categoria_input','pag_subcategoria','pag_subcategoria_input'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['pag_categoria','pag_categoria_input','pag_subcategoria','pag_subcategoria_input','pag_frota_veic'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  if (typeof pagFrotaToggle === 'function') pagFrotaToggle();
   const formaSel=document.getElementById('pag_forma_pgto');if(formaSel)formaSel.selectedIndex=0;
   const parcSel=document.getElementById('pag_parcelamento');if(parcSel){parcSel.selectedIndex=0;pagToggleParcelas();}
   window._pagParcelas = null;
@@ -12084,6 +12188,12 @@ async function pagEditarLancamento(id) {
   set('pag_desc', i.Descricao);
   set('pag_subcategoria', i.Subcategoria); set('pag_subcategoria_input', i.Subcategoria);
   set('pag_categoria', i.Categoria); set('pag_categoria_input', i.Categoria);
+  pagFrotaToggle();
+  if (FROTA_SUBCATS_VEIC.includes(i.Subcategoria)) {
+    const fv = frotaPorTexto(i.Veiculo);
+    const fs = document.getElementById('pag_frota_veic');
+    if (fs && fv) { fs.value = fv.placa; pagFrotaVeicMudou(i.FrotaItens || []); }
+  }
   set('pag_forma_pgto', i.FormaPagamento);
   // Cada parcela já é seu próprio registro em ContasPagar — editar aqui edita
   // só essa parcela específica, então força "à vista" no formulário (esconde
@@ -17113,16 +17223,12 @@ function renderDespesasTab() {
 
     <!-- Frota (pedido 05/11/2026): combustível/manutenção alimentam o controle de frota em Equipamentos › Veículos -->
     <div class="form-row" id="rd_frota_row" style="display:none">
-      <div class="form-group">
-        <label>Veículo da frota <span id="rd_frota_obrig" style="color:var(--red)">*</span></label>
+      <div class="form-group" style="grid-column:1 / -1">
+        <label>Veículo da frota <span id="rd_frota_obrig" style="color:var(--red)">*</span> <span style="font-size:.7rem;color:var(--text-muted)">(km não é lançado aqui — já vem do Checklist Veicular/registro de manutenção em Equipamentos)</span></label>
         <select id="rd_frota_veic" onchange="rdFrotaVeicMudou()">
           <option value="">Selecione o veículo...</option>
           ${CV_FROTA.map(v => `<option value="${v.placa}">${frotaEsc(frotaLabel(v))}</option>`).join('')}
         </select>
-      </div>
-      <div class="form-group">
-        <label>Km no hodômetro <span style="font-size:.7rem;color:var(--text-muted)">(opcional — atualiza o km da frota)</span></label>
-        <input type="number" id="rd_frota_km" min="0" step="1" placeholder="ex.: 52300">
       </div>
       <div class="form-group" id="rd_frota_itens_wrap" style="display:none;grid-column:1 / -1">
         <label>Itens do plano de manutenção feitos neste serviço</label>
@@ -18760,7 +18866,6 @@ async function salvarDespesa() {
   const local = (document.getElementById('rd_local')||{}).value || '';
   const frotaPlacaSel = FROTA_SUBCATS_VEIC.includes(subcategoria) ? ((document.getElementById('rd_frota_veic')||{}).value || '') : '';
   const frotaV = frotaPlacaSel ? CV_FROTA.find(v => v.placa === frotaPlacaSel) : null;
-  const frotaKmSel = frotaV ? ((document.getElementById('rd_frota_km')||{}).value || '') : '';
   const frotaItensSel = frotaV ? [...document.querySelectorAll('#rd_frota_itens input:checked')].map(x => x.value) : [];
   const valorTotal = rdMoedaParaNumero(document.getElementById('rd_valor').value);
   const tipoPagamento = document.getElementById('rd_tipo_pagamento').value;
@@ -18835,7 +18940,7 @@ async function salvarDespesa() {
     Fornecedor: modalidade==='fornecedor' ? fornecedor : modalidade==='socio' ? socioSel : '', Colaborador: modalidade==='colaborador' ? colaboradorPagto : '',
     Beneficiario: modalidade==='servicos' ? beneficiario : '',
     Veiculo: (modalidade==='servicos' && ehServicoVeiculo) ? veiculo : (frotaV ? frotaLabel(frotaV) : ''),
-    KmVeiculo: frotaKmSel ? Number(frotaKmSel) : '', FrotaItens: frotaItensSel,
+    FrotaItens: frotaItensSel,
     DiariaVeiculoId: diariaVeiculoId, DiariaVeiculoDesc: diariaVeiculoDesc, DiariaVeiculoValor: diariaVeiculoValor,
     Descricao: descLivre,
     CentroCusto: temDivisaoCC ? divisaoCC.map(d=>d.cc).join(' + ') : cc, Local: local, TipoPagamento: tipoPagamento, FormaPagamento: formaPgto,
@@ -20006,7 +20111,7 @@ async function rdAbrirEdicaoDespesa(id) {
   if (FROTA_SUBCATS_VEIC.includes(i.Subcategoria)) {
     const fv = frotaPorTexto(i.Veiculo);
     const fs = document.getElementById('rd_frota_veic');
-    if (fs && fv) { fs.value = fv.placa; set('rd_frota_km', i.KmVeiculo); rdFrotaVeicMudou(i.FrotaItens || []); }
+    if (fs && fv) { fs.value = fv.placa; rdFrotaVeicMudou(i.FrotaItens || []); }
   }
 
   set('rd_modalidade', i.Modalidade);
@@ -24631,86 +24736,6 @@ async function cmedExportarExcelUm(id) {
   showToast('✅ Planilha gerada!');
 }
 
-/* -- Pedido Tiago 05/11/2026: ao trocar o Período de referência numa Medição
-   NOVA de Coleta de Resíduos (CLM108942-Sul/CLM108943-Centro), preenche
-   sozinho os itens Classe I/Classe II com tudo que já foi coletado naquele
-   mês/regional (soma de c1Kg/c2Kg de cada RC em ChecklistColeta), com o
-   detalhamento por RC em `composicao` (mesmo campo já usado no PDF/Excel
-   pra "Pórticos cruzados" etc.). Só roda em Medição nova — editar uma
-   Medição já salva não reaplica (pra não sobrescrever ajuste manual feito
-   depois). -- */
-function cmedColetaResumoDoMes(regional, periodo) {
-  const lista = (window._colHistorico || []).filter(r => r.regional === regional && String(r.data || '').slice(0, 7) === periodo)
-    .slice().sort((a, b) => (a.data || '').localeCompare(b.data || ''));
-  const c1Kg = Math.round(lista.reduce((s, r) => s + (r.c1Kg || 0), 0) * 100) / 100;
-  const c2Kg = Math.round(lista.reduce((s, r) => s + (r.c2Kg || 0), 0) * 100) / 100;
-  return { lista, c1Kg, c2Kg };
-}
-function cmedAplicarResumoColetaNosItens(d, resumo) {
-  const escopo = ESCOPO_CONTRATUAL_ENERGISA[d.contratoChave] || [];
-  const porCodigo = {};
-  escopo.forEach(e => { porCodigo[e.codigo] = e; });
-  // Tira os itens Classe I/II e o Acionamento Mensal auto-preenchidos de uma
-  // rodada anterior (ex.: trocou de mês de novo antes de salvar) pra não
-  // duplicar.
-  d.itens = (d.itens || []).filter(it => it.codigo !== 'classeI' && it.codigo !== 'classeII' && it.codigo !== 'mensal');
-  ['classeI', 'classeII'].forEach(codigo => {
-    const kg = codigo === 'classeI' ? resumo.c1Kg : resumo.c2Kg;
-    if (!kg) return; // só cria o item se teve peso de fato naquela classe no mês
-    const e = porCodigo[codigo];
-    const composicao = resumo.lista
-      .filter(r => (codigo === 'classeI' ? (r.c1Kg || 0) : (r.c2Kg || 0)) > 0)
-      .map(r => ({ desc: 'RC ' + (r.num || '—') + ' — ' + (r.local || ''), quanti: codigo === 'classeI' ? (r.c1Kg || 0) : (r.c2Kg || 0), unid: 'KG' }));
-    d.itens.push({
-      codigo, desc: e ? e.descricao : ('Coleta e destinação — Resíduo Classe ' + (codigo === 'classeI' ? 'I' : 'II')),
-      obs: '', quanti: kg, unid: 'KG', valorUnit: e ? e.valorUnitario : 0, subitens: [], composicao,
-    });
-  });
-  // Acionamento Mensal é uma taxa fixa cobrada todo mês independente de
-  // volume coletado — entra sempre, com o valor unitário do escopo
-  // contratual, assim que a pessoa escolhe o período. Pedido em 06/11/2026.
-  const itemMensal = porCodigo['mensal'];
-  if (itemMensal) {
-    d.itens.push({
-      codigo: 'mensal', desc: itemMensal.descricao, obs: '', quanti: 1, unid: itemMensal.unidade,
-      valorUnit: itemMensal.valorUnitario, subitens: [],
-    });
-  }
-  if (!d.itens.length) d.itens = [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '', subitens: [] }];
-}
-async function cmedCampoPeriodo(valor) {
-  const d = window._cmedData;
-  d.periodoReferencia = valor;
-  const regional = PROJETOS_ENERGISA_CLM_REGIONAL[d.contratoChave];
-  if (regional && valor && !window._cmedRegistroAtualId) {
-    if (window._colHistorico === null) await projetosCarregarColetaSemNavegar();
-    cmedAplicarResumoColetaNosItens(d, cmedColetaResumoDoMes(regional, valor));
-  }
-  cmedAtualizarBloco();
-}
-/* -- Aviso mostrado logo abaixo da linha Número do BM/Data/Período/Status:
-   (a) se já existe outra Medição pro mesmo contrato+período, avisa com o
-   nº do BM e status dela (não bloqueia — pode ser um BM complementar de
-   propósito); (b) senão, em Medição nova de Coleta, mostra um resumo do
-   que foi auto-preenchido (ou que não tem coleta lançada ainda nesse
-   mês/regional). -- */
-function cmedPeriodoInfoHtml(d) {
-  const regional = PROJETOS_ENERGISA_CLM_REGIONAL[d.contratoChave];
-  if (!regional || !d.periodoReferencia) return '';
-  const existente = (window._cmedHistorico || []).find(m => m.ContratoChave === d.contratoChave && m.PeriodoReferencia === d.periodoReferencia && String(m.Id) !== String(window._cmedRegistroAtualId));
-  if (existente) {
-    return `<div style="background:#fdf1e7;border:1px solid #f0c36d;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem">⚠️ Já existe uma Medição pra este período: <b>BM Nº ${_prestEsc(existente.NumeroBM || '—')}</b> — Status: <b>${_prestEsc(existente.Status || '—')}</b>. <span onclick="cmedEditar(${existente.Id})" style="cursor:pointer;text-decoration:underline;color:#a05a28">Abrir essa Medição</span> em vez de criar outra, ou continue se for intencional (ex.: um BM complementar).</div>`;
-  }
-  if (!window._cmedRegistroAtualId && regional) {
-    const resumo = cmedColetaResumoDoMes(regional, d.periodoReferencia);
-    if (resumo.lista.length) {
-      return `<div style="background:#eef7f0;border:1px solid #b9ddc3;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem">✅ Preenchido automaticamente: Classe I/II com ${resumo.lista.length} coleta${resumo.lista.length !== 1 ? 's' : ''} deste período — Classe I: <b>${resumo.c1Kg.toLocaleString('pt-BR')} KG</b>, Classe II: <b>${resumo.c2Kg.toLocaleString('pt-BR')} KG</b> — e o Acionamento Mensal. Confira antes de salvar.</div>`;
-    }
-    return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem;color:var(--text-muted)">Nenhuma coleta registrada ainda pra este período/regional — Classe I/II ficam de fora, mas o Acionamento Mensal já foi preenchido automaticamente. Adicione os demais serviços manualmente ou volte aqui depois de lançar as coletas do mês.</div>`;
-  }
-  return '';
-}
-
 function cmedHtmlForm() {
   const d = window._cmedData;
   const chave = d.contratoChave;
@@ -24720,17 +24745,19 @@ function cmedHtmlForm() {
   return `
   <div class="card" data-cmed-form-topo style="margin-bottom:16px;border-top:3px solid var(--brand-brown,#3F261F)">
     <div class="card-title" style="margin-bottom:10px">${window._cmedRegistroAtualId ? '✏️ Editar Medição' : '➕ Nova Medição'} — ${d.contratoChave.toUpperCase()}</div>
-    <div class="form-row-4">
+    <div class="form-row">
       <div class="form-group"><label>Número do BM</label><input value="${(d.numeroBM || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroBM', this.value)" placeholder="Ex: 11"></div>
       <div class="form-group"><label>Data</label><input type="date" value="${d.data || ''}" oninput="cmedCampo('data', this.value)"></div>
-      <div class="form-group"><label>Período de referência</label><input type="month" value="${d.periodoReferencia || ''}" onchange="cmedCampoPeriodo(this.value)" title="Mês/ano a que os serviços medidos se referem"></div>
+      <div class="form-group"><label>Período de referência</label><input type="month" value="${d.periodoReferencia || ''}" oninput="cmedCampo('periodoReferencia', this.value)" title="Mês/ano a que os serviços medidos se referem"></div>
+    </div>
+    <div class="form-row">
       <div class="form-group"><label>Status</label>
         <select onchange="cmedCampoStatus(this.value)">
           ${CMED_STATUS_OPCOES.map(s => `<option value="${s}" ${d.status === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>
       </div>
+      <div class="form-group"><label>Número da OS</label><input value="${(d.numeroOS || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroOS', this.value)" placeholder="Ex: 015/2026"></div>
     </div>
-    ${cmedPeriodoInfoHtml(d)}
   </div>
 
   ${medicaoPrazosCamposHtml(d, 'cmedCampo', d.seccionada)}
@@ -31801,11 +31828,11 @@ const users = {
   'enoque@expediansolucoes.com.br': { profile: 'colaborador', name: 'Enoque Lima de Assunção', initials: 'EL', role: 'Auxiliar de Campo', tipo: 'email' },
   'joaogabriel@expediansolucoes.com.br': { profile: 'colaborador', name: 'João Gabriel Veloso de Oliveira', initials: 'JG', role: 'Auxiliar Técnico Ambiental', tipo: 'email' },
   // 'felipeneves@expediansolucoes.com.br' removido — não faz mais parte do time (desligado, 2026-08-30).
-  // 'brendo@expediansolucoes.com.br' removido — não faz mais parte do time (pedido Tiago, 05/11/2026).
   // Acesso real ao app é via Microsoft/Entra ID, então isso não bloqueia login sozinho; ver nota em
   // resolveProfileFromEmail() sobre revogar o acesso pela conta Microsoft dele.
+  'brendo@expediansolucoes.com.br': { profile: 'colaborador', name: 'Brendo Lima Brito', initials: 'BL', role: 'Auxiliar de Campo', tipo: 'email' },
   'marcos@expediansolucoes.com.br': { profile: 'colaborador', name: 'Marcos Fernandes da Silva', initials: 'MF', role: 'Biólogo', tipo: 'email' },
-  'nathaliaolivio@expediansolucoes.com.br': { profile: 'colaborador', name: 'Nathalia Olivio Pereira', initials: 'NO', role: 'Técnica Ambiental', tipo: 'email' },
+  'nathaliaolivio@expediansolucoes.com.br': { profile: 'colaborador', name: 'Nathalia Olívio Pereira', initials: 'NO', role: 'Técnica Ambiental', tipo: 'email' },
 };
 // Garante que cada usuário "conheça" o próprio e-mail (usado em Meus Dados, uploads de perfil etc.),
 // sem precisar repetir o campo manualmente em cada entrada acima.
@@ -67820,29 +67847,8 @@ async function asoGerarPDF() {
   ];
   const riscos = ghe === '03' ? riscosGHE03 : (ghe === '02' ? riscosGHE02 : riscosGHE01);
 
-  /* -- Pedido Tiago 05/11/2026 (ASO demissional do Brendo): a tabela de riscos impressa
-     em todo ASO não trazia o risco Químico que o PGR REV05 (23/09/2026) acrescentou pra
-     7 cargos. Texto/níveis abaixo extraídos literalmente do PGR REV05 assinado; cada
-     cargo tem um subconjunto diferente de riscos químicos (confirmado no PGR). -- */
-  const RISCO_PRODUTOS_QUIMICOS = { cat:'X Químicos', risco:'Produtos Químicos (óleo mineral isolante)', perigo:'Manuseio de transformadores contendo óleo mineral isolante. Contato dérmico e inalação de vapores durante operações de transporte, carga/descarga e manutenção.', dano:'Dermatite de contato, irritação das vias respiratórias, efeitos neurotóxicos por exposição prolongada, risco carcinogênico (IARC Grupo 1 — óleos minerais não tratados).', nivel:'Trivial' };
-  const RISCO_RESIDUOS_CLASSE_I = { cat:'X Químicos', risco:'Resíduos Classe I (Perigosos)', perigo:'Manuseio, coleta e transporte de resíduos classificados como perigosos (ABNT NBR 10004) — incluindo resíduos contaminados com óleo mineral, solventes, baterias, lâmpadas fluorescentes e materiais com PCB.', dano:'Intoxicação, dermatite química, queimaduras, contaminação por metais pesados.', nivel:'Tolerável' };
-  const RISCOS_QUIMICOS_POR_CARGO = {
-    'Auxiliar de Campo I': ['pq', 'rc1'],
-    'Auxiliar de Campo II': ['pq', 'rc1'],
-    'Motorista': ['pq', 'rc1'],
-    'Op. Máquinas Pesadas': ['pq'],
-    'Auxiliar Técnico Ambiental': ['rc1'],
-    'Gestor Ambiental': ['rc1'],
-    'Técnico em Meio Ambiente': ['rc1'],
-  };
-  const quimicosDoCargo = RISCOS_QUIMICOS_POR_CARGO[ctx.cargoNome] || [];
-  const riscosComQuimicos = riscos.concat(quimicosDoCargo.map((k, i) => {
-    const base = k === 'pq' ? RISCO_PRODUTOS_QUIMICOS : RISCO_RESIDUOS_CLASSE_I;
-    return Object.assign({}, base, { cat: i === 0 ? 'X Químicos' : '' });
-  }));
-
   let riscosHtml = '';
-  riscosComQuimicos.forEach(r => {
+  riscos.forEach(r => {
     const nivelColor = r.nivel==='Substancial'?'#dc2626':r.nivel==='Moderado'?'#d97706':r.nivel==='Tolerável'?'#1d4ed8':'#16a34a';
     riscosHtml += '<tr>'
       + '<td style="font-weight:700;font-size:9px;background:#f5f5f5;border-right:1px solid #ccc;white-space:nowrap">' + r.cat + '</td>'
@@ -71873,6 +71879,7 @@ function finPreencherCategoria(prefixo, sugestao) {
     const subInp = document.getElementById('pag_subcategoria_input');
     if (subInp) subInp.value = sugestao.subcategoria;
     pagAtualizarCategoriaPorSubcategoria();
+    if (typeof pagFrotaToggle === 'function') pagFrotaToggle();
   }
   return true;
 }
