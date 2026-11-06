@@ -415,6 +415,9 @@
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
   .form-row.full { grid-template-columns: 1fr; }
   @media (max-width: 600px) { .form-row { grid-template-columns: 1fr; } }
+  .form-row-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 900px) { .form-row-4 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 600px) { .form-row-4 { grid-template-columns: 1fr; } }
 
   /* Linha de Modalidade em Nova Despesa: Modalidade mais estreita pra caber o
      nome (Fornecedor/Colaborador/Sócio) ao lado dela, além do Contrato
@@ -24647,9 +24650,10 @@ function cmedAplicarResumoColetaNosItens(d, resumo) {
   const escopo = ESCOPO_CONTRATUAL_ENERGISA[d.contratoChave] || [];
   const porCodigo = {};
   escopo.forEach(e => { porCodigo[e.codigo] = e; });
-  // Tira os itens Classe I/II auto-preenchidos de uma rodada anterior (ex.:
-  // trocou de mês de novo antes de salvar) pra não duplicar.
-  d.itens = (d.itens || []).filter(it => it.codigo !== 'classeI' && it.codigo !== 'classeII');
+  // Tira os itens Classe I/II e o Acionamento Mensal auto-preenchidos de uma
+  // rodada anterior (ex.: trocou de mês de novo antes de salvar) pra não
+  // duplicar.
+  d.itens = (d.itens || []).filter(it => it.codigo !== 'classeI' && it.codigo !== 'classeII' && it.codigo !== 'mensal');
   ['classeI', 'classeII'].forEach(codigo => {
     const kg = codigo === 'classeI' ? resumo.c1Kg : resumo.c2Kg;
     if (!kg) return; // só cria o item se teve peso de fato naquela classe no mês
@@ -24662,6 +24666,16 @@ function cmedAplicarResumoColetaNosItens(d, resumo) {
       obs: '', quanti: kg, unid: 'KG', valorUnit: e ? e.valorUnitario : 0, subitens: [], composicao,
     });
   });
+  // Acionamento Mensal é uma taxa fixa cobrada todo mês independente de
+  // volume coletado — entra sempre, com o valor unitário do escopo
+  // contratual, assim que a pessoa escolhe o período. Pedido em 06/11/2026.
+  const itemMensal = porCodigo['mensal'];
+  if (itemMensal) {
+    d.itens.push({
+      codigo: 'mensal', desc: itemMensal.descricao, obs: '', quanti: 1, unid: itemMensal.unidade,
+      valorUnit: itemMensal.valorUnitario, subitens: [],
+    });
+  }
   if (!d.itens.length) d.itens = [{ codigo: '', desc: '', obs: '', quanti: 1, unid: '', valorUnit: '', subitens: [] }];
 }
 async function cmedCampoPeriodo(valor) {
@@ -24690,9 +24704,9 @@ function cmedPeriodoInfoHtml(d) {
   if (!window._cmedRegistroAtualId && regional) {
     const resumo = cmedColetaResumoDoMes(regional, d.periodoReferencia);
     if (resumo.lista.length) {
-      return `<div style="background:#eef7f0;border:1px solid #b9ddc3;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem">✅ Classe I/II preenchidos automaticamente com ${resumo.lista.length} coleta${resumo.lista.length !== 1 ? 's' : ''} deste período — Classe I: <b>${resumo.c1Kg.toLocaleString('pt-BR')} KG</b>, Classe II: <b>${resumo.c2Kg.toLocaleString('pt-BR')} KG</b>. Confira antes de salvar.</div>`;
+      return `<div style="background:#eef7f0;border:1px solid #b9ddc3;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem">✅ Preenchido automaticamente: Classe I/II com ${resumo.lista.length} coleta${resumo.lista.length !== 1 ? 's' : ''} deste período — Classe I: <b>${resumo.c1Kg.toLocaleString('pt-BR')} KG</b>, Classe II: <b>${resumo.c2Kg.toLocaleString('pt-BR')} KG</b> — e o Acionamento Mensal. Confira antes de salvar.</div>`;
     }
-    return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem;color:var(--text-muted)">Nenhuma coleta registrada ainda pra este período/regional — adicione os serviços manualmente ou volte aqui depois de lançar as coletas do mês.</div>`;
+    return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.78rem;color:var(--text-muted)">Nenhuma coleta registrada ainda pra este período/regional — Classe I/II ficam de fora, mas o Acionamento Mensal já foi preenchido automaticamente. Adicione os demais serviços manualmente ou volte aqui depois de lançar as coletas do mês.</div>`;
   }
   return '';
 }
@@ -24706,7 +24720,7 @@ function cmedHtmlForm() {
   return `
   <div class="card" data-cmed-form-topo style="margin-bottom:16px;border-top:3px solid var(--brand-brown,#3F261F)">
     <div class="card-title" style="margin-bottom:10px">${window._cmedRegistroAtualId ? '✏️ Editar Medição' : '➕ Nova Medição'} — ${d.contratoChave.toUpperCase()}</div>
-    <div class="form-row">
+    <div class="form-row-4">
       <div class="form-group"><label>Número do BM</label><input value="${(d.numeroBM || '').replace(/"/g, '&quot;')}" oninput="cmedCampo('numeroBM', this.value)" placeholder="Ex: 11"></div>
       <div class="form-group"><label>Data</label><input type="date" value="${d.data || ''}" oninput="cmedCampo('data', this.value)"></div>
       <div class="form-group"><label>Período de referência</label><input type="month" value="${d.periodoReferencia || ''}" onchange="cmedCampoPeriodo(this.value)" title="Mês/ano a que os serviços medidos se referem"></div>
@@ -67806,8 +67820,29 @@ async function asoGerarPDF() {
   ];
   const riscos = ghe === '03' ? riscosGHE03 : (ghe === '02' ? riscosGHE02 : riscosGHE01);
 
+  /* -- Pedido Tiago 05/11/2026 (ASO demissional do Brendo): a tabela de riscos impressa
+     em todo ASO não trazia o risco Químico que o PGR REV05 (23/09/2026) acrescentou pra
+     7 cargos. Texto/níveis abaixo extraídos literalmente do PGR REV05 assinado; cada
+     cargo tem um subconjunto diferente de riscos químicos (confirmado no PGR). -- */
+  const RISCO_PRODUTOS_QUIMICOS = { cat:'X Químicos', risco:'Produtos Químicos (óleo mineral isolante)', perigo:'Manuseio de transformadores contendo óleo mineral isolante. Contato dérmico e inalação de vapores durante operações de transporte, carga/descarga e manutenção.', dano:'Dermatite de contato, irritação das vias respiratórias, efeitos neurotóxicos por exposição prolongada, risco carcinogênico (IARC Grupo 1 — óleos minerais não tratados).', nivel:'Trivial' };
+  const RISCO_RESIDUOS_CLASSE_I = { cat:'X Químicos', risco:'Resíduos Classe I (Perigosos)', perigo:'Manuseio, coleta e transporte de resíduos classificados como perigosos (ABNT NBR 10004) — incluindo resíduos contaminados com óleo mineral, solventes, baterias, lâmpadas fluorescentes e materiais com PCB.', dano:'Intoxicação, dermatite química, queimaduras, contaminação por metais pesados.', nivel:'Tolerável' };
+  const RISCOS_QUIMICOS_POR_CARGO = {
+    'Auxiliar de Campo I': ['pq', 'rc1'],
+    'Auxiliar de Campo II': ['pq', 'rc1'],
+    'Motorista': ['pq', 'rc1'],
+    'Op. Máquinas Pesadas': ['pq'],
+    'Auxiliar Técnico Ambiental': ['rc1'],
+    'Gestor Ambiental': ['rc1'],
+    'Técnico em Meio Ambiente': ['rc1'],
+  };
+  const quimicosDoCargo = RISCOS_QUIMICOS_POR_CARGO[ctx.cargoNome] || [];
+  const riscosComQuimicos = riscos.concat(quimicosDoCargo.map((k, i) => {
+    const base = k === 'pq' ? RISCO_PRODUTOS_QUIMICOS : RISCO_RESIDUOS_CLASSE_I;
+    return Object.assign({}, base, { cat: i === 0 ? 'X Químicos' : '' });
+  }));
+
   let riscosHtml = '';
-  riscos.forEach(r => {
+  riscosComQuimicos.forEach(r => {
     const nivelColor = r.nivel==='Substancial'?'#dc2626':r.nivel==='Moderado'?'#d97706':r.nivel==='Tolerável'?'#1d4ed8':'#16a34a';
     riscosHtml += '<tr>'
       + '<td style="font-weight:700;font-size:9px;background:#f5f5f5;border-right:1px solid #ccc;white-space:nowrap">' + r.cat + '</td>'
