@@ -3043,10 +3043,54 @@ const FROTA_SUBCATS_ITENS = ['Manutenção Veicular','Documentação de Veículo
 function frotaTipoPlano(v) { return v.tipo === 'Caminhão Tanque' ? 'tanque' : (/Caminh/.test(v.tipo) ? 'pesado' : 'leve'); }
 function frotaPlano(v) { return (FROTA_PLANOS[frotaTipoPlano(v)] || FROTA_PLANOS.leve).map(([id,nome,km,meses]) => ({ id, nome, km, meses })); }
 function frotaNormPlaca(p) { return (p || '').replace(/[^A-Z0-9]/gi, '').toUpperCase(); }
+/* -- Identificação do veículo num lançamento (pedido 07/11/2026: "a aba
+   equipamentos não está sincronizada com a aba despesas"). Antes só casava
+   pela placa ou pelo código EXP-VEI no campo Veiculo — e quase todas as
+   despesas antigas só tinham o veículo escrito na descrição ("Seguro Mobi
+   Like - Parc 06/10", "Embreagem Caminhão Tanque"). Agora procura também
+   nos apelidos de cada veículo (modelo/tipo que só ele tem na frota) e no
+   texto da descrição, título e comprovante. Se o texto servir para mais de
+   um veículo (ex.: só "Strada" ou só "Ranger"), não vincula. -- */
+const FROTA_APELIDOS = {
+  RKS3C14: ['caminhao tanque', 'cam tanque', 'cam. tanque', 'caminhao pipa', 'express drc'],
+  BDB3G34: ['caminhao bau', 'cam bau', 'cam. bau', 'accelo', 'caminhao 3/4'],
+  RSX7A36: ['saveiro'],
+  UAO4H80: ['enduran', 'endurance'],
+  UAP1J40: ['mobi'],
+  UAO0I86: ['freedom', 'freedon', 'nova strada'],
+};
+const FROTA_APELIDOS_GENERICOS = { UAO4H80: ['strada'] };
+function _frotaNormTxt(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
 function frotaPorTexto(s) {
   if (!s) return null;
   const n = frotaNormPlaca(s), up = String(s).toUpperCase();
-  return CV_FROTA.find(v => n.includes(v.placa) || (v.cod && up.includes(v.cod))) || null;
+  const porPlaca = CV_FROTA.filter(v => n.includes(v.placa) || (v.cod && up.includes(v.cod)));
+  if (porPlaca.length === 1) return porPlaca[0];
+  if (porPlaca.length > 1) return null;
+  const t = _frotaNormTxt(s);
+  const porApelido = CV_FROTA.filter(v => (FROTA_APELIDOS[v.placa] || []).some(a => t.includes(a)));
+  if (porApelido.length === 1) return porApelido[0];
+  if (porApelido.length > 1) return null;
+  // Apelido genérico, só quando nada mais específico casou. Pedido 07/11/2026:
+  // "o que tiver com strada pode colocar para Enduran (UAO 4H80)".
+  const porGenerico = CV_FROTA.filter(v => (FROTA_APELIDOS_GENERICOS[v.placa] || []).some(a => t.includes(a)));
+  return porGenerico.length === 1 ? porGenerico[0] : null;
+}
+/* Veículo de um lançamento: primeiro o campo Veiculo; se vazio/"N/A",
+   procura no texto do lançamento. */
+function frotaDoLancamento(x) {
+  const pv = (x.Veiculo && x.Veiculo !== 'N/A') ? frotaPorTexto(x.Veiculo) : null;
+  if (pv) return pv;
+  return frotaPorTexto([x.Descricao, x.Observacao, x.Observacoes, x.Title, x.ComprovanteNome, x.ServicoDesc].filter(Boolean).join(' '));
+}
+/* Lançamento é custo de veículo? Aceita as categorias antigas e novas
+   (Veículos e Frota, Manutenção de veículos, Transporte/Logística,
+   Seguros...) pela subcategoria; locação e compra de veículo ficam fora. */
+function frotaEhCustoVeiculo(x) {
+  const sub = _frotaNormTxt(x.Subcategoria), cat = _frotaNormTxt(x.Categoria);
+  if (/locacao|fretamento|aquisicao/.test(sub) || cat === 'capex') return false;
+  if (/combust|manutencao veic|seguro veic|documentacao (de |do )?veic|multas de transito|pedagio|ipva|licenciamento de veic|outros \(veiculos/.test(sub)) return true;
+  return cat === 'veiculos e frota' || cat === 'manutencao de veiculos';
 }
 function frotaLabel(v) { return (v.cod ? v.cod + ' · ' : '') + v.display; }
 function frotaEsc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -3146,8 +3190,11 @@ function frotaMontar() {
     // despesas e contas a pagar... pra sincronizar o consumo de combustível
     // e manutenção de cada veiculo".
     const despRaw = (d.desp || []).map(x => ({ ...x, _origemFrota: 'Despesa' }));
-    const cpRaw = (d.cp || []).map(x => ({ ...x, DataLancamento: x.Vencimento || '', _origemFrota: 'Contas a Pagar' }));
-    const desp = despRaw.concat(cpRaw).filter(x => x.Categoria === 'Veículos e Frota' && x.Subcategoria !== 'Locação de Veículo Próprio' && x.Subcategoria !== 'Locação de Veículos' && frotaPorTexto(x.Veiculo) === v);
+    // Conta a Pagar já paga vira Despesa (DespesaId) — conta só uma vez;
+    // parcelas futuras (vencimento depois de hoje) ainda não são custo.
+    const hojeISO = hoje.toISOString().slice(0, 10);
+    const cpRaw = (d.cp || []).filter(x => !x.DespesaId && (x.Vencimento || '') <= hojeISO).map(x => ({ ...x, DataLancamento: x.Vencimento || '', _origemFrota: 'Contas a Pagar' }));
+    const desp = despRaw.concat(cpRaw).filter(x => frotaEhCustoVeiculo(x) && frotaDoLancamento(x) === v);
     desp.forEach(x => ev.push({ data: x.DataLancamento || '', km: Number(x.KmVeiculo) || null, itens: x.FrotaItens || [], origem: (x._origemFrota || 'Despesa') + ' · ' + (x.Subcategoria || '') + (x.Fornecedor ? ' · ' + x.Fornecedor : ''), valor: Number(x.Valor != null ? x.Valor : x.ValorTotal) || 0, sub: x.Subcategoria }));
     (d.man || []).filter(m => m.Placa === v.placa).forEach(m => ev.push({ data: m.Data || '', km: Number(m.Km) || null, itens: m.Itens || [], origem: 'Registro de manutenção' + (m.Oficina ? ' · ' + m.Oficina : '') + (m.Descricao ? ' · ' + m.Descricao : ''), valor: 0, man: true }));
     ev.sort((a, b) => (b.data || '').localeCompare(a.data || '') || (b.km || 0) - (a.km || 0));
@@ -3163,8 +3210,9 @@ function frotaMontar() {
     const custos = (d.desp || d.cp) ? {
       combMes: soma(x => ehComb(x) && (x.DataLancamento || '').startsWith(mes)),
       combAno: soma(x => ehComb(x) && (x.DataLancamento || '').startsWith(ano)),
-      manAno: soma(x => x.Subcategoria === 'Manutenção Veicular' && (x.DataLancamento || '').startsWith(ano)),
-      outAno: soma(x => !ehComb(x) && x.Subcategoria !== 'Manutenção Veicular' && (x.DataLancamento || '').startsWith(ano)),
+      manAno: soma(x => /Manuten/.test(x.Subcategoria || '') && (x.DataLancamento || '').startsWith(ano)),
+      segAno: soma(x => /Seguro/i.test(x.Subcategoria || '') && (x.DataLancamento || '').startsWith(ano)),
+      outAno: soma(x => !ehComb(x) && !/Manuten|Seguro/i.test(x.Subcategoria || '') && (x.DataLancamento || '').startsWith(ano)),
     } : null;
     const plano = frotaPlano(v).map(it => {
       const ult = ev.find(e => (e.itens || []).includes(it.id));
@@ -3196,27 +3244,29 @@ function renderFrotaPainelHTML() {
   const emUso = L.filter(x => x.emUso).length;
   const combMes = L.reduce((s, x) => s + (x.custos ? x.custos.combMes : 0), 0);
   const manAno = L.reduce((s, x) => s + (x.custos ? x.custos.manAno : 0), 0);
+  const segAno = L.reduce((s, x) => s + (x.custos ? x.custos.segAno : 0), 0);
+  const outAnoT = L.reduce((s, x) => s + (x.custos ? x.custos.outAno : 0), 0);
   const aberto = window._frotaAberto || '';
   let h = `<div class="kpi-grid">
     <div class="kpi-card blue"><div class="kpi-label">Veículos da frota</div><div class="kpi-value">${L.length}</div><div class="kpi-sub">${emUso} em uso agora</div><div class="kpi-icon">🚗</div></div>
     <div class="kpi-card red"><div class="kpi-label">Manutenções vencidas</div><div class="kpi-value">${venc}</div><div class="kpi-sub">por km ou por data</div><div class="kpi-icon">🛠️</div></div>
     <div class="kpi-card amber"><div class="kpi-label">Vencem em breve</div><div class="kpi-value">${prox}</div><div class="kpi-sub">30 dias ou 1.000 km</div><div class="kpi-icon">⏳</div></div>
-    ${temCusto ? `<div class="kpi-card green"><div class="kpi-label">Combustível no mês</div><div class="kpi-value" style="font-size:1.25rem">${frotaBRL(combMes)}</div><div class="kpi-sub">Manutenção no ano: ${frotaBRL(manAno)}</div><div class="kpi-icon">⛽</div></div>` : ''}
+    ${temCusto ? `<div class="kpi-card green"><div class="kpi-label">Combustível no mês</div><div class="kpi-value" style="font-size:1.25rem">${frotaBRL(combMes)}</div><div class="kpi-sub">Manutenção no ano: ${frotaBRL(manAno)} · Seguro: ${frotaBRL(segAno)} · Outros: ${frotaBRL(outAnoT)}</div><div class="kpi-icon">⛽</div></div>` : ''}
   </div>`;
   const alertas = [];
   L.forEach(x => x.plano.forEach(i => { if (i.st === 'venc' || i.st === 'prox') alertas.push([x, i]); }));
   alertas.sort((a, b) => (b[1].st === 'venc') - (a[1].st === 'venc'));
   if (alertas.length) h += `<div class="card" style="margin-bottom:16px"><div class="card-title">⚠️ Manutenções que precisam de atenção</div><div style="overflow-x:auto"><table class="data-table"><tbody>${alertas.map(([x, i]) => `<tr><td style="white-space:nowrap"><strong>${frotaEsc(x.v.cod || '—')}</strong></td><td>${frotaEsc(x.v.display)}</td><td>${frotaEsc(i.nome)}</td><td style="font-size:.78rem">${frotaEsc(i.txt)}</td><td>${frotaPill(i.st)}</td></tr>`).join('')}</tbody></table></div></div>`;
-  h += `<div class="card" style="margin-bottom:16px"><div class="card-title">🚗 Frota — situação dos veículos</div><div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Código</th><th>Veículo</th><th>Com quem está</th><th>Km atual</th>${temCusto ? '<th>Combustível (mês / ano)</th><th>Manutenção (ano)</th>' : ''}<th>Manutenção</th><th></th></tr></thead><tbody>` +
+  h += `<div class="card" style="margin-bottom:16px"><div class="card-title">🚗 Frota — situação dos veículos</div><div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Código</th><th>Veículo</th><th>Com quem está</th><th>Km atual</th>${temCusto ? '<th>Combustível (mês / ano)</th><th>Manutenção (ano)</th><th>Seguro e outros (ano)</th>' : ''}<th>Manutenção</th><th></th></tr></thead><tbody>` +
     L.map(x => {
       const uso = x.emUso ? `🔑 <strong>${frotaEsc(x.emUso.condutor || '—')}</strong><div style="font-size:.68rem;color:var(--text-muted)">desde ${frotaFmtD(x.emUso._data)}${x.emUso.destino ? ' · ' + frotaEsc(x.emUso.destino) : ''}</div>` : `<span style="color:var(--green-main)">✅ Disponível</span>${x.ultimo ? `<div style="font-size:.68rem;color:var(--text-muted)">último: ${frotaEsc(x.ultimo.condutor || '—')} (${frotaFmtD(x.ultimo._data)})</div>` : ''}`;
       const kmTxt = x.kmAtual ? `<strong>${frotaKm(x.kmAtual)}</strong><div style="font-size:.68rem;color:var(--text-muted)">${frotaFmtD(x.kmEv.data)}</div>` : '<span style="font-size:.75rem;color:var(--text-muted)">sem leitura</span>';
       const det = aberto === x.v.placa;
       let row = `<tr><td style="white-space:nowrap"><strong>${frotaEsc(x.v.cod || '—')}</strong></td><td><strong>${frotaEsc(x.v.modelo)}</strong><div style="font-size:.68rem;color:var(--text-muted)">${frotaEsc(x.v.placa)} · ${frotaEsc(x.v.tipo)}</div></td><td style="font-size:.8rem">${uso}</td><td style="font-size:.8rem">${kmTxt}</td>` +
-        (temCusto ? `<td style="font-size:.8rem">${x.custos ? frotaBRL(x.custos.combMes) + ' / ' + frotaBRL(x.custos.combAno) : '—'}</td><td style="font-size:.8rem">${x.custos ? frotaBRL(x.custos.manAno) : '—'}</td>` : '') +
+        (temCusto ? `<td style="font-size:.8rem">${x.custos ? frotaBRL(x.custos.combMes) + ' / ' + frotaBRL(x.custos.combAno) : '—'}</td><td style="font-size:.8rem">${x.custos ? frotaBRL(x.custos.manAno) : '—'}</td><td style="font-size:.8rem">${x.custos ? frotaBRL(x.custos.segAno) + (x.custos.outAno ? ' + ' + frotaBRL(x.custos.outAno) : '') : '—'}</td>` : '') +
         `<td>${frotaPill(x.pior)}</td><td><button class="btn-secondary" style="padding:3px 9px;font-size:.68rem" onclick="frotaAbrir('${x.v.placa}')">${det ? '▲ Fechar' : '▼ Detalhes'}</button></td></tr>`;
       if (det) {
-        row += `<tr><td colspan="${temCusto ? 8 : 6}" style="background:var(--surface2)">
+        row += `<tr><td colspan="${temCusto ? 9 : 6}" style="background:var(--surface2)">
           <div style="font-weight:700;font-size:.82rem;margin:4px 0 6px">Plano de manutenção — vence pelo que chegar primeiro (km ou tempo)</div>
           <table class="data-table"><thead><tr><th>Item</th><th>A cada</th><th>Último</th><th>Próximo</th><th>Situação</th></tr></thead><tbody>${x.plano.map(i => `<tr><td>${frotaEsc(i.nome)}</td><td style="font-size:.75rem">${[i.km ? frotaKm(i.km) : '', i.meses ? i.meses + ' meses' : ''].filter(Boolean).join(' ou ') || '—'}</td><td style="font-size:.75rem">${i.ult ? frotaFmtD(i.ult.data) + (i.ult.km ? ' · ' + frotaKm(i.ult.km) : '') : '—'}</td><td style="font-size:.75rem">${[i.nk ? frotaKm(i.nk) : '', i.nd ? frotaFmtD(i.nd.toISOString().slice(0, 10)) : ''].filter(Boolean).join(' ou ') || '—'}</td><td>${frotaPill(i.st)}<div style="font-size:.68rem;color:var(--text-muted)">${i.ult ? frotaEsc(i.txt) : ''}</div></td></tr>`).join('')}</tbody></table>
           <div style="font-weight:700;font-size:.82rem;margin:12px 0 6px">Últimos registros (checklist, despesas e manutenções)</div>
@@ -3285,11 +3335,55 @@ async function frotaCarregarPainel() {
       podeCustos ? dbLerSeguro('ContasPagar').catch(() => null) : Promise.resolve(null),
     ]);
     window._frotaDados = { cv: Array.isArray(cv) ? cv : [], man: Array.isArray(man) ? man : [], desp: Array.isArray(desp) ? desp : null, cp: Array.isArray(cp) ? cp : null };
+    if (window._frotaDados.desp) frotaAgendarResumo();
   } catch (e) {
     console.warn('[Frota] Falha ao carregar:', e);
     window._frotaDados = window._frotaDados || { cv: [], man: [], desp: null, cp: null };
   }
   frotaRender();
+}
+/* -- Resumo da frota para o Segundo Cérebro (pedido 07/11/2026: "deixar
+   sincronizados automático com cérebro"). Sempre que a diretoria grava
+   Despesas, Contas a Pagar, Checklist Veicular ou um registro de manutenção
+   (ou abre o painel de Frota), o APP regrava db/FrotaResumo.json na pasta
+   central; o Segundo Cérebro lê esse arquivo pelo conector Microsoft 365. -- */
+function frotaMontarResumo() {
+  const L = frotaMontar();
+  return {
+    atualizado: new Date().toISOString(),
+    por: (typeof currentUser !== 'undefined' && currentUser && (currentUser.name || currentUser.nome)) || '',
+    veiculos: L.map(x => ({
+      cod: x.v.cod || '', placa: x.v.placa, modelo: x.v.modelo, tipo: x.v.tipo, display: x.v.display,
+      kmAtual: x.kmAtual || null, kmData: x.kmEv ? x.kmEv.data : '',
+      emUso: x.emUso ? { condutor: x.emUso.condutor || '', desde: x.emUso._data || '', destino: x.emUso.destino || '' } : null,
+      custos: x.custos,
+      situacao: x.pior,
+      plano: x.plano.map(i => ({ nome: i.nome, st: i.st, txt: i.txt })),
+      ultimos: x.ev.slice(0, 10).map(e => ({ data: e.data, km: e.km, origem: e.origem, valor: e.valor || 0 })),
+    })),
+  };
+}
+let _frotaResumoTimer = null, _frotaResumoUltimo = '';
+async function frotaGravarResumo() {
+  if (currentProfile !== 'diretoria') return;
+  try {
+    if (!window._frotaDados || !window._frotaDados.desp) {
+      const [cv, man, desp, cp] = await Promise.all([
+        dbLer('ChecklistVeicular').catch(() => []), dbLer('FrotaManutencoes').catch(() => []),
+        dbLerSeguro('Despesas').catch(() => null), dbLerSeguro('ContasPagar').catch(() => null)]);
+      if (!Array.isArray(desp)) return; // sem custos não sobrescreve o resumo
+      window._frotaDados = { cv: Array.isArray(cv) ? cv : [], man: Array.isArray(man) ? man : [], desp, cp: Array.isArray(cp) ? cp : null };
+    }
+    const r = frotaMontarResumo();
+    const chave = JSON.stringify(r.veiculos);
+    if (chave === _frotaResumoUltimo) return;
+    if (await dbSalvar('FrotaResumo', r) === true) _frotaResumoUltimo = chave;
+  } catch (e) { console.warn('[Frota] Falha ao gravar resumo', e); }
+}
+function frotaAgendarResumo(recarregar) {
+  if (recarregar) window._frotaDados = null;
+  clearTimeout(_frotaResumoTimer);
+  _frotaResumoTimer = setTimeout(frotaGravarResumo, 4000);
 }
 function equipVeiculosAba(aba) { window._equipVeicAba = aba; navigate('equipamentos'); }
 function renderVeiculosAbasEquip() {
@@ -5267,6 +5361,21 @@ function pagePrestacao() {
       </div>
     </div>
 
+    <!-- Veículo da frota (pedido 07/11/2026: "Prestação de contas - sim colocar
+         veiculo"): aparece para combustível, manutenção, seguro, pedágio e
+         demais custos de veículo, igual ao campo de Despesas/Contas a Pagar. -->
+    <div class="form-row" id="prest_frota_row" style="display:none">
+      <div class="form-group" style="grid-column:1 / -1">
+        <label>Veículo <span id="prest_frota_obrig" style="color:var(--red)">*</span></label>
+        <select id="prest_frota_veic" onchange="prestFrotaVeicMudou()">
+          <option value="">Selecione o veículo...</option>
+          ${CV_FROTA.map(v => `<option value="${v.placa}">${frotaEsc(frotaLabel(v))}</option>`).join('')}
+          <option value="_outro">Outro / não cadastrado (ex.: veículo particular)</option>
+        </select>
+        <input type="text" id="prest_frota_veic_outro" style="display:none;margin-top:8px" placeholder="Descreva o veículo (ex.: Honda Civic particular — Tiago)">
+      </div>
+    </div>
+
     <!-- Linha 4: Forma de pagamento + parcelamento -->
     <div class="form-row">
       <div class="form-group">
@@ -5966,6 +6075,31 @@ function prestSelecionarSubcategoria(sub) {
   const hid = document.getElementById('prest_subcategoria'); if (hid) hid.value = sub;
   prestFecharDropdownSubcategoria();
   prestAtualizarCategoriaPorSubcategoria();
+  prestFrotaToggle();
+}
+/* -- Campo Veículo na Prestação de Contas: mostra quando a subcategoria é
+   custo de veículo; obrigatório para combustível e manutenção. -- */
+function prestEhSubVeiculo(sub) { return typeof frotaEhCustoVeiculo === 'function' && !!sub && frotaEhCustoVeiculo({ Subcategoria: sub, Categoria: (typeof rdCategoriaDeSubcategoria === 'function' ? rdCategoriaDeSubcategoria(sub) : '') }); }
+function prestFrotaObrig(sub) { return /combust|manuten/i.test(sub || ''); }
+function prestFrotaToggle() {
+  const sub = (document.getElementById('prest_subcategoria') || {}).value || '';
+  const row = document.getElementById('prest_frota_row'); if (!row) return;
+  const mostrar = prestEhSubVeiculo(sub);
+  row.style.display = mostrar ? '' : 'none';
+  const ob = document.getElementById('prest_frota_obrig'); if (ob) ob.style.display = prestFrotaObrig(sub) ? 'inline' : 'none';
+  if (!mostrar) { const s = document.getElementById('prest_frota_veic'); if (s) s.value = ''; const o = document.getElementById('prest_frota_veic_outro'); if (o) { o.value = ''; o.style.display = 'none'; } }
+}
+function prestFrotaVeicMudou() {
+  const v = (document.getElementById('prest_frota_veic') || {}).value || '';
+  const o = document.getElementById('prest_frota_veic_outro'); if (o) o.style.display = v === '_outro' ? '' : 'none';
+}
+function prestFrotaValor() {
+  const row = document.getElementById('prest_frota_row');
+  if (!row || row.style.display === 'none') return '';
+  const p = (document.getElementById('prest_frota_veic') || {}).value || '';
+  if (p === '_outro') return ((document.getElementById('prest_frota_veic_outro') || {}).value || '').trim();
+  const v = p ? CV_FROTA.find(x => x.placa === p) : null;
+  return v ? frotaLabel(v) : '';
 }
 
 /* -- Combobox pesquisável de Categoria em Nova Despesa — normalmente
@@ -6045,6 +6179,7 @@ function coletarDadosPrestacao(validar=false) {
     if(!empresa){showToast('⚠️ Selecione a empresa.');return null;}
     if(!fornecedor){showToast('⚠️ Selecione o fornecedor/estabelecimento (digite e escolha na lista).');return null;}
     if(!formaPgto){showToast('⚠️ Selecione a forma de pagamento.');return null;}
+    if(prestEhSubVeiculo(subcategoria)&&prestFrotaObrig(subcategoria)&&!prestFrotaValor()){showToast('⚠️ Selecione o veículo (combustível e manutenção precisam do veículo para a Frota).');return null;}
     if(!editandoId&&parcelamento==='parcelado'&&!numParcelas){showToast('⚠️ Informe em quantas vezes foi parcelado.');return null;}
     if(!editandoId&&parcelamento==='parcelado'&&(!window._prestParcelas||!window._prestParcelas.length)){showToast('⚠️ Informe o vencimento da 1ª parcela pra gerar as parcelas (vencimento e valor de cada uma).');return null;}
     if(temDivisaoCC){
@@ -6059,6 +6194,7 @@ function coletarDadosPrestacao(validar=false) {
     DataDespesa: data, Valor: valor, Empresa: empresa, CentroCusto: temDivisaoCC ? divisaoCC.map(d=>d.cc).join(' + ') : cc,
     Fornecedor: fornecedor, Municipio: municipio, NumeroNF: '', Observacoes: descricao,
     Categoria: categoria, Subcategoria: subcategoria, NaturezaEconomica: rdNaturezaDeSubcategoria(subcategoria),
+    Veiculo: prestFrotaValor(),
     FormaPagamento: formaPgto,
     Responsavel: window._currentUser?window._currentUser.name:'',
     EnviadoPor: window._currentUser?window._currentUser.name:'Desconhecido',
@@ -6112,7 +6248,8 @@ function limparFormPrestacao() {
   const forn=document.getElementById('prest_fornecedor_input');if(forn)forn.value='';
   const fornSel=document.getElementById('prest_fornecedor_sel');if(fornSel)fornSel.value='';
   const hint=document.getElementById('prest_fornecedor_municipio_hint');if(hint)hint.textContent='';
-  ['prest_categoria','prest_categoria_input','prest_subcategoria','prest_subcategoria_input'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['prest_categoria','prest_categoria_input','prest_subcategoria','prest_subcategoria_input','prest_frota_veic','prest_frota_veic_outro'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  try { prestFrotaToggle(); } catch (e) {}
   const formaPgto=document.getElementById('prest_forma_pgto');if(formaPgto)formaPgto.selectedIndex=0;
   const parc=document.getElementById('prest_parcelamento');if(parc)parc.selectedIndex=0;
   pcToggleParcelas();
@@ -6536,6 +6673,10 @@ async function pcEditarPrestacao(id) {
   set('prest_subcategoria_input', r.Subcategoria);
   set('prest_categoria', r.Categoria || rdCategoriaDeSubcategoria(r.Subcategoria));
   set('prest_categoria_input', r.Categoria || rdCategoriaDeSubcategoria(r.Subcategoria));
+  try {
+    prestFrotaToggle();
+    if (r.Veiculo) { const fv = frotaPorTexto(r.Veiculo); if (fv) set('prest_frota_veic', fv.placa); else { set('prest_frota_veic', '_outro'); set('prest_frota_veic_outro', r.Veiculo); } prestFrotaVeicMudou(); }
+  } catch (e) {}
   set('prest_forma_pgto', r.FormaPagamento);
   set('prest_lancadopor', r.LancadoPor || r.EnviadoPor || r.Responsavel || '');
   // Cada parcela já é seu próprio registro em PrestacaoContas (mesmo padrão
@@ -6912,6 +7053,7 @@ async function _enviarPrestacaoParaContasPagar(pc) {
       Fornecedor: pc.Fornecedor || '', Descricao: pc.Observacoes || '', Empresa: pc.Empresa || '',
       CentroCusto: pc.CentroCusto || '', Categoria: pc.Categoria || '', Subcategoria: pc.Subcategoria || '',
       NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(pc.Subcategoria || '') : ''),
+      Veiculo: pc.Veiculo || '',
       FormaPagamento: pc.FormaPagamento || '',
       Observacao: `Convertido de Prestação de Contas${pc.Fornecedor ? (' — ' + pc.Fornecedor) : ''} (parcela ${p.numero}/${p.total})`,
       NumeroBoleto: '', EnviadoFinanceiro: true, LancadoPor: pc.LancadoPor || pc.EnviadoPor || '',
@@ -7011,6 +7153,7 @@ async function pcConfirmarEnviarContasPagar(id) {
       Fornecedor: pc.Fornecedor || '', Descricao: pc.Observacoes || '', Empresa: pc.Empresa || '',
       CentroCusto: pc.CentroCusto || '', Categoria: pc.Categoria || '', Subcategoria: pc.Subcategoria || '',
       NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(pc.Subcategoria || '') : ''),
+      Veiculo: pc.Veiculo || '',
       FormaPagamento: pc.FormaPagamento || '',
       Observacao: `Convertido de Prestação de Contas${pc.Fornecedor ? (' — ' + pc.Fornecedor) : ''}`,
       NumeroBoleto: '', EnviadoFinanceiro: true, LancadoPor: pc.LancadoPor || pc.EnviadoPor || '',
@@ -7313,7 +7456,7 @@ async function pcSincronizarDespesa(id, dataPag, banco) {
       Categoria: categoriaFinal, Subcategoria: subcategoriaFinal,
       Modalidade: 'fornecedor',
       NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(subcategoriaFinal) : ''),
-      Fornecedor: i.Fornecedor || '', Beneficiario: '', Veiculo: '',
+      Fornecedor: i.Fornecedor || '', Beneficiario: '', Veiculo: i.Veiculo || '',
       CentroCusto: i.CentroCusto || '', NumMedicao: i.NumMedicao || '', Local: i.Municipio || '',
       TipoPagamento: i.Parcelamento === 'parcelado' ? 'parcelado' : (i.Parcelamento === 'faturado' ? 'faturado' : 'avista'),
       FormaPagamento: i.FormaPagamento || '', ResponsavelLancamento: i.Responsavel || i.EnviadoPor || '', Empresa: empresaRd,
@@ -11375,7 +11518,7 @@ async function pagSincronizarDespesa(id, dataPag, banco) {
       Categoria: categoriaFinal, Subcategoria: subcategoriaFinal,
       Modalidade: 'fornecedor',
       NaturezaEconomica: (typeof rdNaturezaDeSubcategoria === 'function' ? rdNaturezaDeSubcategoria(subcategoriaFinal) : ''),
-      Fornecedor: i.Fornecedor || '', Beneficiario: '', Veiculo: '', Descricao: i.Descricao || '',
+      Fornecedor: i.Fornecedor || '', Beneficiario: '', Veiculo: i.Veiculo || '', KmVeiculo: i.KmVeiculo || '', FrotaItens: i.FrotaItens || [], Descricao: i.Descricao || '',
       CentroCusto: i.CentroCusto || '', NumMedicao: i.NumMedicao || '', Local: '', TipoPagamento: 'faturado',
       FormaPagamento: i.FormaPagamento || '', ResponsavelLancamento: i.LancadoPor || '', Empresa: empresaRd,
       DataPagamento: dataPag, Banco: banco, Vencimento: i.Vencimento || '', Valor: i.Valor || 0,
@@ -65438,7 +65581,7 @@ const TABELAS_BPO_FINANCEIRO = [
   'bpo_impostos_v2', 'bpo_transferencias_v1'
 ];
 // Tabelas (dbLer/dbInserir/dbAtualizar/dbSalvar) que ficam SÓ na pasta central restrita.
-const TABELAS_RESTRITAS_DIRETORIA = ['ContasPagar', 'ContasReceber', 'Despesas', 'contratos', 'Empreendimentos', 'Outorgas', 'OrcamentosProjetos', 'Recibos', 'Concorrencias', 'CatalogoCustosOrcamento', ...TABELAS_BPO_FINANCEIRO];
+const TABELAS_RESTRITAS_DIRETORIA = ['ContasPagar', 'ContasReceber', 'Despesas', 'FrotaResumo', 'contratos', 'Empreendimentos', 'Outorgas', 'OrcamentosProjetos', 'Recibos', 'Concorrencias', 'CatalogoCustosOrcamento', ...TABELAS_BPO_FINANCEIRO];
 // Prefixos de subpasta (OD_FOLDERS ou caminhos relativos de upload) que ficam SÓ na pasta central restrita.
 const PASTAS_RESTRITAS_DIRETORIA = ['Contratos'];
 
@@ -71093,6 +71236,16 @@ async function _dbGravarComRetry(tabela, mutarFn, tentativas) {
   return { ok: false, lista: ultimaLista };
 }
 
+/* -- Gatilho do resumo da frota (Segundo Cérebro): depois de gravar uma
+   tabela que alimenta a frota, agenda a regravação de FrotaResumo. -- */
+const FROTA_TABELAS_GATILHO = ['Despesas', 'ContasPagar', 'ChecklistVeicular', 'FrotaManutencoes'];
+dbSalvar = (function (orig) {
+  return async function (tabela, dados, etag) {
+    const r = await orig(tabela, dados, etag);
+    if (r === true && FROTA_TABELAS_GATILHO.includes(tabela) && typeof frotaAgendarResumo === 'function') frotaAgendarResumo(true);
+    return r;
+  };
+})(dbSalvar);
 async function dbInserir(tabela, registro) {
   // Offline (ou sem sessão Microsoft): guarda na fila local e sincroniza sozinho quando voltar a conexão.
   // Marca `_offlinePendente:true` no retorno pra quem chamou saber que isso
@@ -71885,6 +72038,7 @@ function finPreencherCategoria(prefixo, sugestao) {
     const subInp = document.getElementById('prest_subcategoria_input');
     if (subInp) subInp.value = sugestao.subcategoria;
     prestAtualizarCategoriaPorSubcategoria();
+    try { prestFrotaToggle(); } catch (e) {}
   } else if (prefixo === 'rd') {
     // Financeiro > Despesas: mesma taxonomia (RD_CATEGORIAS_DESPESAS), campos
     // rd_subcategoria (primeiro)/rd_categoria (automático a partir da sub).
