@@ -34583,8 +34583,18 @@ async function custosCarregarExtras(forcar) {
         continue;
       }
 
-      // Colide com um CC de fábrica (hardcoded, sem _spId) de outro contrato -> bug antigo, corrigir.
-      const colisao = centrosCustoData.find(c => c.id === ccId && c._spId == null && c.contrato !== l.Contrato);
+      // Colide com outro contrato já usando o mesmo código — seja um CC de fábrica
+      // (hardcoded, sem _spId) OU OUTRO REGISTRO AO VIVO já mesclado antes nesta mesma
+      // função (bug corrigido em 07/11/2026: a checagem antiga só comparava contra
+      // hardcoded (`c._spId == null`), então 2 linhas diferentes da tabela CentrosCusto
+      // com o mesmo CCId mas contrato diferente não eram detectadas como colisão — a
+      // 2ª linha processada só sobrescrevia o _spId da 1ª silenciosamente (branch
+      // "jaEmMemoria" de antes), fazendo ela "desaparecer" da tela sem aviso nenhum.
+      // Caso real encontrado nessa auditoria: CC-EXP-030 tinha 2 registros vivos
+      // diferentes — "SAE - Inventário e Fauna" (código errado, devia ser CC-EXP-029)
+      // e "Jirau - Renovação Autorização Fauna" (dono legítimo do 030) — o 2º ficava
+      // invisível na tela por causa desse bug.
+      const colisao = centrosCustoData.find(c => c.id === ccId && c._spId !== l.Id && c.contrato !== l.Contrato);
       if (colisao) {
         const novoId = _custosProximoId(l.Empresa);
         console.warn('[Centros de Custo] Corrigindo colisão de código: "' + l.Contrato + '" estava usando ' + ccId + ' (já era de "' + colisao.contrato + '"). Novo código: ' + novoId);
@@ -34597,7 +34607,8 @@ async function custosCarregarExtras(forcar) {
         continue;
       }
 
-      // Já existe em memória com esse id (ex: carregado numa sessão anterior) -> só marca o vínculo.
+      // Já existe em memória com esse id E mesmo contrato (ex: carregado numa sessão
+      // anterior, ou um 2º registro legitimamente repetindo o mesmo CC) -> só marca o vínculo.
       const jaEmMemoria = centrosCustoData.find(c => c.id === ccId);
       if (jaEmMemoria) {
         jaEmMemoria._spId = l.Id;
@@ -34941,11 +34952,18 @@ function pageCustos() {
     const administrativos = items.filter(c => c.administrativo);
     const operacionais = items.filter(c => !c.administrativo);
 
-    const linhaCC = c => {
+    // Nº sequencial (pedido 07/11/2026: "esse contratos administrativos deve
+    // iniciar do numero 01 tbm assim como centros de custos") — espelha a
+    // coluna "Item" da aba 📋 Contratos da planilha financeira, que numera
+    // 1,2,3... DENTRO de cada bloco (Administrativos/Operacionais/por
+    // empresa), reiniciando em cada um. É só uma coluna de exibição/posição —
+    // não mexe no código real do CC (CC-EXP-XXX), que continua intacto.
+    const linhaCC = (c, idx) => {
       const fin = _custosReceitas === null ? null : _custosFinanceiroDoCC(c.id);
       const fmt = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2,maximumFractionDigits:2});
       return `
       <tr>
+        <td style="font-size:.74rem;color:var(--text-muted);white-space:nowrap;text-align:center">${String(idx+1).padStart(2,'0')}</td>
         <td style="font-weight:700;color:${empColors[emp]};font-size:.75rem;white-space:nowrap">${c.id}</td>
         <td style="font-size:.7rem;font-weight:500;white-space:normal;word-break:break-word;text-align:justify;max-width:220px;min-width:160px">${c.contrato}</td>
         <td style="font-size:.76rem;color:var(--text-muted);white-space:nowrap">${c.cliente}</td>
@@ -35001,7 +35019,7 @@ function pageCustos() {
         <div style="overflow-x:auto">
         <table class="data-table" style="min-width:1020px">
           <thead>
-            <tr><th>Código</th><th>Contrato</th><th>Cliente</th><th>Categoria</th><th>Gestor</th><th>Status</th><th>Valor Aprovado</th><th>Receitas</th><th>Despesas</th><th>Saldo a Medir</th><th>%D/R</th><th></th></tr>
+            <tr><th>Nº</th><th>Código</th><th>Contrato</th><th>Cliente</th><th>Categoria</th><th>Gestor</th><th>Status</th><th>Valor Aprovado</th><th>Receitas</th><th>Despesas</th><th>Saldo a Medir</th><th>%D/R</th><th></th></tr>
           </thead>
           <tbody>
             ${subset.map(linhaCC).join('')}
@@ -35020,7 +35038,7 @@ function pageCustos() {
       <div style="overflow-x:auto">
       <table class="data-table" style="min-width:1020px">
         <thead>
-          <tr><th>Código</th><th>Contrato</th><th>Cliente</th><th>Categoria</th><th>Gestor</th><th>Status</th><th>Valor Aprovado</th><th>Receitas</th><th>Despesas</th><th>Saldo a Medir</th><th>%D/R</th><th></th></tr>
+          <tr><th>Nº</th><th>Código</th><th>Contrato</th><th>Cliente</th><th>Categoria</th><th>Gestor</th><th>Status</th><th>Valor Aprovado</th><th>Receitas</th><th>Despesas</th><th>Saldo a Medir</th><th>%D/R</th><th></th></tr>
         </thead>
         <tbody>
           ${subset.map(linhaCC).join('')}
