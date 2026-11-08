@@ -71280,6 +71280,307 @@ dbSalvar = (function (orig) {
     return r;
   };
 })(dbSalvar);
+
+/* == SINCRONIZAÇÃO APP → PLANILHA "FINANCEIRO 2026 - EXPEDIAN.xlsx" ==
+   Pedido 08/11/2026 (Tiago): o que for lançado no APP em Despesas, Contas a
+   Pagar, Receitas e Transferências entre contas passa a ir sozinho para a
+   planilha financeira (abas 💸 Saídas, 💰 Receitas e 🔄 Transferências).
+   Direção única: APP → planilha. O APP é a fonte oficial; a planilha é o
+   espelho. Correções devem ser feitas no APP (a linha é reescrita).
+   - Só entra o que foi CRIADO no APP a partir de PLAN_SYNC.inicio (o
+     histórico da planilha está sendo conferido à mão e não é tocado).
+   - Cada linha escrita leva na coluna "Sync APP" a chave do lançamento
+     (D-/CP-/R-/T- + Id) e um hash do conteúdo; só reescreve se mudou.
+   - Conta a pagar aprovada entra como "A pagar"; quando é paga no APP, a
+     MESMA linha recebe a data de pagamento (não cria linha nova).
+   - Conta "Aguardando Aprovação" não entra; prestação de contas entra quando
+     vira despesa (depois do Financeiro aprovar).
+   - Lançamento excluído no APP → a linha dele é limpa (só linhas do APP).
+   - Colunas com fórmula da planilha (Item, Dia, Mês, Categoria, Grupo,
+     Status, Empresa, Local…) não são escritas — as fórmulas continuam.
+   - Roda para perfil diretoria: ao abrir o APP, a cada 10 min e alguns
+     segundos depois de salvar Despesas/ContasPagar/Receitas. -- */
+const PLAN_SYNC = {
+  inicio: '2026-11-08T12:03:54.000Z',
+  caminho: ['04 - FINANCEIRO', '04 - Contas a Pagar', '07 - Ano 2026', 'FINANCEIRO 2026 - EXPEDIAN.xlsx'],
+  maxLinha: 6000,
+  abas: {
+    saidas:   { nome: '💸 Saídas',         idCol: 'AE', limpar: ['B','E','I','J','K','L','M','N','P','R','T','U','V','X','Z','AB','AC','AD'] },
+    receitas: { nome: '💰 Receitas',       idCol: 'BM', limpar: ['B','E','G','H','I','J','K','L','N','O','Q','S','U','V','X'] },
+    transf:   { nome: '🔄 Transferências', idCol: 'O',  limpar: ['B','D','E','F','G','H','I','J','K','L','M','N'] }
+  },
+  tabelas: ['Despesas', 'ContasPagar', 'Receitas']
+};
+const _plan = { item: null, rodando: false, pendente: false, timer: null };
+
+function _planCol(c) { let n = 0; for (const ch of c) n = n * 26 + (ch.charCodeAt(0) - 64); return n; }
+function _planLetra(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+function _planSerial(d) {
+  const s = String(d || '').slice(0, 10); const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  return Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3]) - Date.UTC(1899, 11, 30)) / 864e5);
+}
+function _planNum(v) { const s = String(v ?? '').trim(); if (!s) return ''; return /^\d+$/.test(s) ? Number(s) : s; }
+function _planValor(v) { const n = Number(v); return isFinite(n) ? Math.round(n * 100) / 100 : ''; }
+function _planHash(o) { const s = JSON.stringify(o); let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); }
+function _planForma(f) {
+  const s = String(f || '').trim(), l = s.toLowerCase();
+  const mapa = { 'pix': 'Pix', 'boleto': 'Boleto', 'cartão de crédito': 'Cartão de Crédito', 'cartão de débito': 'Cartão de Débito', 'cartão pré pago': 'Cartão Pré Pago', 'débito em conta': 'Débito em conta', 'crédito em conta': 'Crédito em conta' };
+  return mapa[l] || s;
+}
+function _planVeiculo(v) {
+  const s = String(v || '').toUpperCase().replace(/\s+/g, '');
+  if (!s || s === 'N/A') return 'N/A';
+  if (s.includes('UAO4H80') || s.includes('ENDURAN')) return 'Strada Enduran - UAO4H80';
+  if (s.includes('UAO0I86') || s.includes('FREEDOM')) return 'Strada Freedom - UAO0I86';
+  if (s.includes('BDB3G34') || s.includes('BAÚ') || s.includes('BAU')) return 'Caminhão Baú';
+  if (s.includes('RKS3C14') || s.includes('TANQUE')) return 'Caminhão Tanque';
+  if (s.includes('UAP1J40') || s.includes('MOBI')) return 'Mobi Like';
+  if (s.includes('RSX7A36') || s.includes('SAVEIRO')) return 'Saveiro';
+  if (s.includes('RANGER')) return s.includes('MARCELO') ? 'Ranger Marcelo' : 'Ranger Tiago';
+  if (s.includes('CIVIC')) return 'Civic Tiago';
+  if (s.includes('JEEP')) return 'Jeep';
+  if (s.includes('CARRETINHA')) return 'Carretinha';
+  return String(v);
+}
+function _planCriadoDepois(r) { return String(r && r.Created || '') >= PLAN_SYNC.inicio; }
+
+/* -- monta as linhas desejadas de cada aba a partir das tabelas do APP -- */
+function _planLinhaSaida(r, extra) {
+  const tipo = { avista: 'À Vista', faturado: 'Faturado', parcelado: 'Parcelado' }[String(r.TipoPagamento || r.Parcelamento || '').toLowerCase()] || 'À Vista';
+  const pago = String(r.Status || '') === 'Pago' && (r.DataPagamento || '');
+  const mod = String(r.Modalidade || '').toLowerCase();
+  const tot = Number(r.TotalParcelas) || 1;
+  const linha = {
+    B: _planSerial(r.DataLancamento || r.Created),
+    E: r.Subcategoria || '',
+    I: mod === 'socio' ? 'Sócio' : (mod === 'servicos' ? 'Serviços' : 'Fornecedor'),
+    J: r.Fornecedor || r.Colaborador || r.Beneficiario || '',
+    K: r.CentroCusto || '',
+    L: _planValor(r.ValorTotal || r.Valor),
+    M: tipo,
+    N: tot,
+    P: _planSerial(r.Vencimento || r.DataPagamento || r.DataLancamento),
+    R: _planForma(r.FormaPagamento),
+    T: r.Descricao || r.Title || '',
+    U: r.LancadoPor || r.ResponsavelLancamento || '',
+    V: r.Colaborador || r.Beneficiario || '',
+    X: pago ? _planSerial(r.DataPagamento) : '',
+    Z: (pago ? (r.Banco || r.BancoPagamento) : (r.Banco || r.BancoPagamento)) || '',
+    AB: _planNum(r.NumMedicao),
+    AC: _planVeiculo(r.Veiculo),
+    AD: (r.ComprovanteUrl || r.Comprovante === 'Sim') ? 'Sim' : 'Não'
+  };
+  if (tipo === 'Parcelado') {
+    linha.O = _planValor(r.Valor);
+    const np = Number(r.NumParcela) || 0;
+    if (np && tot > 1 && !/parc/i.test(linha.T)) linha.T += ' - Parc ' + String(np).padStart(2, '0') + '/' + String(tot).padStart(2, '0');
+  } else {
+    linha.L = _planValor(r.Valor);
+  }
+  return Object.assign(linha, extra || {});
+}
+function _planDividir(base, r, chave, valorCampo) {
+  const div = Array.isArray(r.DivisaoCC) ? r.DivisaoCC.filter(d => d && d.cc) : [];
+  if (div.length < 2) return [[chave, base]];
+  return div.map((d, i) => [chave + '#' + (i + 1), Object.assign({}, base, valorCampo(d, div.length))]);
+}
+function _planDesejadas(desp, contas, rec) {
+  const saidas = new Map(), receitas = new Map(), transf = new Map();
+  const contaPorId = new Map(contas.map(c => [String(c.Id), c]));
+  // Transferências entre contas: par despesa (saída) + receita (entrada)
+  const trf = new Map();
+  for (const d of desp) if (d.TransferenciaId) { const t = trf.get(d.TransferenciaId) || {}; t.d = d; trf.set(d.TransferenciaId, t); }
+  for (const x of rec) if (x.TransferenciaId) { const t = trf.get(x.TransferenciaId) || {}; t.r = x; trf.set(x.TransferenciaId, t); }
+  for (const [id, t] of trf) {
+    const o = t.d || t.r;
+    if (!_planCriadoDepois(o)) continue;
+    const d = t.d || {}, x = t.r || {};
+    transf.set('T-' + id, {
+      B: _planSerial(d.DataPagamento || d.DataLancamento || x.DataRecebimento || x.DataEmissao),
+      D: o.Empresa || '',
+      E: d.Banco || x.TransferenciaContraparte || '',
+      F: d.CentroCusto || '',
+      G: _planNum(d.NumMedicao),
+      H: x.Banco || d.TransferenciaContraparte || '',
+      I: x.CentroCusto || '',
+      J: _planNum(x.NumMedicao),
+      K: _planValor(d.Valor || x.Valor),
+      L: o.Descricao || o.Title || '',
+      M: o.LancadoPor || o.ResponsavelLancamento || '',
+      N: (d.Status === 'Pago' || x.Status === 'Recebido') ? 'Concluído ✅' : 'Pendente'
+    });
+  }
+  // Contas a pagar aprovadas e ainda sem despesa
+  for (const c of contas) {
+    if (c.DespesaId || c.Status === 'Aguardando Aprovação' || !_planCriadoDepois(c)) continue;
+    const base = _planLinhaSaida(Object.assign({}, c, { DataLancamento: String(c.Created || '').slice(0, 10), TipoPagamento: c.Parcelamento, Status: c.Status === 'Pago' ? 'Pago' : c.Status, Banco: c.BancoPagamento }));
+    for (const [k, v] of _planDividir(base, c, 'CP-' + c.Id, (dv, n) => ({ K: dv.cc, AB: _planNum(dv.medicao), M: 'Parcelado', N: n, O: _planValor(dv.valor) }))) saidas.set(k, v);
+  }
+  // Despesas (inclui prestações aprovadas e contas pagas)
+  for (const d of desp) {
+    if (d.TransferenciaId) continue;
+    let chave = 'D-' + d.Id, origem = d;
+    if (d.ContaPagarId) { chave = 'CP-' + d.ContaPagarId; origem = contaPorId.get(String(d.ContaPagarId)) || d; }
+    if (!_planCriadoDepois(origem)) continue;
+    const base = _planLinhaSaida(d, origem !== d ? { B: _planSerial(String(origem.Created || '').slice(0, 10)) } : null);
+    for (const [k, v] of _planDividir(base, d, chave, (dv, n) => ({ K: dv.cc, AB: _planNum(dv.medicao), M: 'Parcelado', N: n, O: _planValor(dv.valor) }))) saidas.set(k, v);
+  }
+  // Receitas
+  for (const x of rec) {
+    if (x.TransferenciaId || !_planCriadoDepois(x)) continue;
+    const recebido = x.Status === 'Recebido' && x.DataRecebimento;
+    const iss = String(x.ISSRetido || '') === 'Sim';
+    const base = {
+      B: _planSerial(x.DataEmissao || x.Created),
+      E: x.Subcategoria || '',
+      G: x.Cliente || '',
+      H: x.CentroCusto || '',
+      I: _planValor(x.Valor),
+      J: iss ? 'Sim' : 'Não',
+      K: iss ? Math.round((Number(x.ISSPercentual) || 0) * 100) / 10000 : '',
+      L: _planValor(x.OutrasRetencoesValor) || '',
+      N: _planSerial(x.DataPrevista),
+      O: _planForma(x.FormaRecebimento),
+      Q: _planNum(x.NumeroNF),
+      S: recebido ? _planSerial(x.DataRecebimento) : '',
+      U: recebido ? (x.Banco || '') : '',
+      V: _planNum(x.NumMedicao),
+      X: x.Descricao || ''
+    };
+    for (const [k, v] of _planDividir(base, x, 'R-' + x.Id, dv => ({ H: dv.cc, V: _planNum(dv.medicao), I: _planValor(dv.valor) }))) receitas.set(k, v);
+  }
+  return { saidas, receitas, transf };
+}
+
+/* -- Graph / Excel -- */
+async function _planFetch(token, sessao, url, opt) {
+  const headers = Object.assign({ 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, sessao ? { 'workbook-session-id': sessao } : {});
+  let r = await fetch(url, Object.assign({}, opt || {}, { headers }));
+  if (r.status === 429 || r.status === 503) {
+    const espera = Math.min((Number(r.headers.get('Retry-After')) || 5) * 1000, 15000);
+    await new Promise(res => setTimeout(res, espera));
+    r = await fetch(url, Object.assign({}, opt || {}, { headers }));
+  }
+  return r;
+}
+async function _planResolverItem(token) {
+  if (_plan.item) return _plan.item;
+  const pasta = await resolverPastaAppExpedian(token);
+  if (!pasta || !pasta.driveId) throw new Error('pasta APP Expedian não encontrada');
+  const r1 = await _planFetch(token, null, `https://graph.microsoft.com/v1.0/drives/${pasta.driveId}/items/${pasta.itemId}?$select=id,parentReference`);
+  if (!r1.ok) throw new Error('não achei a pasta 01 - EXPEDIAN (' + r1.status + ')');
+  const pai = (await r1.json()).parentReference.id;
+  const caminho = PLAN_SYNC.caminho.map(encodeURIComponent).join('/');
+  const r2 = await _planFetch(token, null, `https://graph.microsoft.com/v1.0/drives/${pasta.driveId}/items/${pai}:/${caminho}?$select=id,name`);
+  if (!r2.ok) throw new Error('planilha FINANCEIRO 2026 não encontrada (' + r2.status + ')');
+  _plan.item = { driveId: pasta.driveId, itemId: (await r2.json()).id };
+  return _plan.item;
+}
+function _planUrlAba(item, aba, endereco) {
+  return `https://graph.microsoft.com/v1.0/drives/${item.driveId}/items/${item.itemId}/workbook/worksheets('${encodeURIComponent(aba.replace(/'/g, "''"))}')/range(address='${endereco}')`;
+}
+async function _planLerColuna(token, sessao, item, aba, col) {
+  const r = await _planFetch(token, sessao, _planUrlAba(item, aba, `${col}1:${col}${PLAN_SYNC.maxLinha}`) + '?$select=values');
+  if (!r.ok) throw new Error('falha ao ler ' + aba + ' (' + r.status + ')');
+  return ((await r.json()).values || []).map(l => l[0]);
+}
+async function _planEscreverLinha(token, sessao, item, aba, linha, celulas, ateCol) {
+  // escreve de B até a coluna Sync APP; null = não mexe (mantém fórmulas)
+  const n = _planCol(ateCol), vals = [];
+  for (let c = 2; c <= n; c++) { const L = _planLetra(c); vals.push(Object.prototype.hasOwnProperty.call(celulas, L) ? celulas[L] : null); }
+  const r = await _planFetch(token, sessao, _planUrlAba(item, aba, `B${linha}:${ateCol}${linha}`), { method: 'PATCH', body: JSON.stringify({ values: [vals] }) });
+  if (!r.ok) throw new Error('falha ao gravar ' + aba + ' linha ' + linha + ' (' + r.status + ')');
+}
+function _planFormulaValor(l) {
+  return `=IF(OR(L${l}="",N${l}=""),"",IF(OR(M${l}="À Vista",M${l}="Faturado"),L${l}*N${l},IF(AND(M${l}="Parcelado",N${l}>0),L${l}/N${l},"")))`;
+}
+async function _planSincronizarAba(token, sessao, item, cfg, desejadas, res) {
+  const aba = cfg.nome, idCol = cfg.idCol;
+  const ids = await _planLerColuna(token, sessao, item, aba, idCol);
+  const colB = await _planLerColuna(token, sessao, item, aba, 'B');
+  if (!ids[1]) await _planEscreverLinha(token, sessao, item, aba, 2, { [idCol]: 'Sync APP' }, idCol);
+  const existentes = new Map();
+  ids.forEach((v, i) => { const s = String(v || ''); if (i >= 2 && /^(D|CP|R|T)-/.test(s)) { const [k, h] = s.split(' · '); existentes.set(k, { linha: i + 1, hash: h || '' }); } });
+  let ultima = 2;
+  colB.forEach((v, i) => { if (i >= 2 && v !== '' && v != null) ultima = i + 1; });
+  for (const { linha } of existentes.values()) ultima = Math.max(ultima, linha);
+  for (const [chave, celulas] of desejadas) {
+    const h = _planHash(celulas), ex = existentes.get(chave);
+    existentes.delete(chave);
+    if (ex && ex.hash === h) continue;
+    const linha = ex ? ex.linha : ++ultima;
+    const gravar = Object.assign({}, celulas, { [idCol]: chave + ' · ' + h });
+    await _planEscreverLinha(token, sessao, item, aba, linha, gravar, idCol);
+    if (aba === PLAN_SYNC.abas.saidas.nome && !Object.prototype.hasOwnProperty.call(celulas, 'O')) {
+      await _planFetch(token, sessao, _planUrlAba(item, aba, `O${linha}`), { method: 'PATCH', body: JSON.stringify({ formulas: [[_planFormulaValor(linha)]] }) });
+    }
+    ex ? res.atualizadas++ : res.novas++;
+  }
+  // lançamentos que sumiram do APP: limpa só as linhas escritas pelo APP
+  for (const [, ex] of existentes) {
+    const vazio = {}; cfg.limpar.forEach(c => { vazio[c] = ''; }); vazio[idCol] = '';
+    await _planEscreverLinha(token, sessao, item, aba, ex.linha, vazio, idCol);
+    if (aba === PLAN_SYNC.abas.saidas.nome) await _planFetch(token, sessao, _planUrlAba(item, aba, `O${ex.linha}`), { method: 'PATCH', body: JSON.stringify({ formulas: [[_planFormulaValor(ex.linha)]] }) });
+    res.limpas++;
+  }
+}
+function _planPodeRodar() {
+  const u = window._currentUser;
+  return !!(u && u.profile === 'diretoria');
+}
+async function planilhaSincronizar(manual) {
+  if (!_planPodeRodar()) return null;
+  if (_plan.rodando) { _plan.pendente = true; return null; }
+  _plan.rodando = true;
+  const res = { novas: 0, atualizadas: 0, limpas: 0, erro: '' };
+  let token = null, sessao = null, item = null;
+  try {
+    const [d, c, r] = await Promise.all([dbLerComEtag('Despesas', true), dbLerComEtag('ContasPagar', true), dbLerComEtag('Receitas', true)]);
+    if (!d.sucesso || !c.sucesso || !r.sucesso) throw new Error('não consegui ler Despesas/Contas/Receitas agora');
+    const des = _planDesejadas(d.lista, c.lista, r.lista);
+    token = await getOneDriveToken();
+    if (!token) throw new Error('sem sessão Microsoft');
+    item = await _planResolverItem(token);
+    const rs = await _planFetch(token, null, `https://graph.microsoft.com/v1.0/drives/${item.driveId}/items/${item.itemId}/workbook/createSession`, { method: 'POST', body: JSON.stringify({ persistChanges: true }) });
+    if (!rs.ok) throw new Error(rs.status === 423 || rs.status === 409 ? 'planilha travada/aberta em modo exclusivo' : 'não abriu a planilha (' + rs.status + ')');
+    sessao = (await rs.json()).id;
+    await _planSincronizarAba(token, sessao, item, PLAN_SYNC.abas.saidas, des.saidas, res);
+    await _planSincronizarAba(token, sessao, item, PLAN_SYNC.abas.receitas, des.receitas, res);
+    await _planSincronizarAba(token, sessao, item, PLAN_SYNC.abas.transf, des.transf, res);
+  } catch (e) {
+    res.erro = (e && e.message) || String(e);
+    console.warn('[Planilha] sincronização falhou:', res.erro);
+    if (/não encontrada/.test(res.erro)) _plan.item = null;
+  } finally {
+    if (sessao && token && item) { try { await _planFetch(token, sessao, `https://graph.microsoft.com/v1.0/drives/${item.driveId}/items/${item.itemId}/workbook/closeSession`, { method: 'POST' }); } catch (e) {} }
+    _plan.rodando = false;
+  }
+  try { localStorage.setItem('planSyncUltimo', JSON.stringify(Object.assign({ em: new Date().toISOString() }, res))); } catch (e) {}
+  const mudou = res.novas + res.atualizadas + res.limpas;
+  if (typeof showSyncStatus === 'function') {
+    if (res.erro) { if (manual || mudou) showSyncStatus('⚠️ Planilha financeira: ' + res.erro + ' — tento de novo em instantes', 'err', 6000); }
+    else if (mudou || manual) showSyncStatus('📊 Planilha financeira: ' + (mudou ? [res.novas && res.novas + ' nova(s)', res.atualizadas && res.atualizadas + ' atualizada(s)', res.limpas && res.limpas + ' removida(s)'].filter(Boolean).join(', ') : 'já estava em dia'), 'ok', 4000);
+  }
+  if (res.erro && !manual) setTimeout(() => planilhaAgendarSync(), 120000);
+  if (_plan.pendente) { _plan.pendente = false; planilhaAgendarSync(); }
+  return res;
+}
+function planilhaAgendarSync() {
+  clearTimeout(_plan.timer);
+  _plan.timer = setTimeout(() => planilhaSincronizar(false), 6000);
+}
+window.planilhaSincronizarAgora = () => planilhaSincronizar(true);
+dbSalvar = (function (orig) {
+  return async function (tabela, dados, etag) {
+    const r = await orig(tabela, dados, etag);
+    if (r === true && PLAN_SYNC.tabelas.includes(tabela)) planilhaAgendarSync();
+    return r;
+  };
+})(dbSalvar);
+setTimeout(() => planilhaSincronizar(false), 30000);
+setInterval(() => planilhaSincronizar(false), 10 * 60 * 1000);
+
 async function dbInserir(tabela, registro) {
   // Offline (ou sem sessão Microsoft): guarda na fila local e sincroniza sozinho quando voltar a conexão.
   // Marca `_offlinePendente:true` no retorno pra quem chamou saber que isso
