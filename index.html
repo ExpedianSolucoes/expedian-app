@@ -4434,6 +4434,7 @@ async function prestFrentesCarregar(forcar) {
     const r = await dbLerComEtag('FrentesPrestacao', !!forcar);
     ok = !!(r && r.sucesso); lista = (r && Array.isArray(r.lista)) ? r.lista : [];
   } catch (e) { ok = false; }
+  window._prestFrentesUltimaLeituraOk = ok;
   if (ok) {
     window._prestFrentes = lista;
     try { localStorage.setItem('prest_frentes_cache', JSON.stringify(lista)); } catch (e) {}
@@ -4629,7 +4630,14 @@ function prestFrenteRenderizarSelect(manterValor) {
   window._prestFrentesQtdForm = lista.length;
   // Colaborador sem nenhuma frente liberada fica BLOQUEADO (pedido Tiago
   // 05/11/2026, opção 2): não lança até o gestor liberar uma frente.
-  window._prestBloqueado = simples && window._prestFrentesCarregadas && !lista.length;
+  // Tiago 12/11/2026: voltou ao modelo anterior ("liberado por empresa") —
+  // colaborador NAO fica mais bloqueado por falta de frente liberada. Se
+  // tiver frente(s) liberada(s), continua usando o formulario simplificado
+  // (comodidade); sem nenhuma, cai pro formulario manual de Empresa + Centro
+  // de Custo de sempre (que ja esconde os Contratos Administrativos do
+  // colaborador via _centrosCustoVisiveis). Mantido window._prestBloqueado
+  // em vez de apagar o mecanismo pra nao quebrar o resto do codigo que o le.
+  window._prestBloqueado = false;
   let html;
   if (!window._prestFrentesCarregadas) {
     html = '<option value="">Carregando frentes...</option>';
@@ -4662,8 +4670,13 @@ function prestFrenteAplicarBloqueio() {
     });
   }
   const info = document.getElementById('prest_frente_info');
-  if (bloq && info) info.innerHTML = `<div style="background:#fce8e8;border:1px solid #f5b5b5;color:#991b1b;border-radius:8px;padding:10px 12px;font-size:.8rem">🔒 <strong>Você ainda não tem centro de custo liberado</strong> e por isso não pode lançar prestação de contas. Antes de sair para o campo, fale com o seu gestor para liberar o centro de custo do trabalho.<br><button onclick="prestFrenteAtualizarLiberacoes()" style="margin-top:8px;font-size:.74rem;padding:5px 10px;border-radius:7px;border:1px solid #991b1b;background:transparent;color:#991b1b;cursor:pointer;font-weight:700">🔄 Já liberou? Verificar de novo</button></div>`;
-  else if (!bloq && info && info.innerHTML.includes('🔒')) info.innerHTML = '';
+  if (bloq && info) {
+    const semRede = window._prestFrentesUltimaLeituraOk === false;
+    info.innerHTML = semRede
+      ? `<div style="background:#fff3cd;border:1px solid #f0c36d;color:#7a5c00;border-radius:8px;padding:10px 12px;font-size:.8rem">⚠️ <strong>Não consegui confirmar suas liberações agora</strong> — parece que você está sem internet no momento (isso NÃO quer dizer que seu gestor não liberou). Assim que tiver sinal, clique no botão abaixo pra conferir de novo.<br><button onclick="prestFrenteAtualizarLiberacoes()" style="margin-top:8px;font-size:.74rem;padding:5px 10px;border-radius:7px;border:1px solid #7a5c00;background:transparent;color:#7a5c00;cursor:pointer;font-weight:700">🔄 Tentar de novo</button></div>`
+      : `<div style="background:#fce8e8;border:1px solid #f5b5b5;color:#991b1b;border-radius:8px;padding:10px 12px;font-size:.8rem">🔒 <strong>Você ainda não tem centro de custo liberado</strong> e por isso não pode lançar prestação de contas. Antes de sair para o campo, fale com o seu gestor para liberar o centro de custo do trabalho.<br><button onclick="prestFrenteAtualizarLiberacoes()" style="margin-top:8px;font-size:.74rem;padding:5px 10px;border-radius:7px;border:1px solid #991b1b;background:transparent;color:#991b1b;cursor:pointer;font-weight:700">🔄 Já liberou? Verificar de novo</button></div>`;
+  }
+  else if (!bloq && info && (info.innerHTML.includes('🔒') || info.innerHTML.includes('⚠️'))) info.innerHTML = '';
   const sel = document.getElementById('prest_frente'); if (sel && bloq) sel.disabled = true;
 }
 
@@ -4983,7 +4996,12 @@ async function prestFrenteAtualizarLiberacoes() {
   await prestFrentesCarregar(true);
   prestFrenteRenderizarSelect();
   const lista = prestFrentesDoFormulario();
-  showToast(lista.length ? ('✅ ' + lista.length + ' centro(s) de custo liberado(s) pra você.') : '🔒 Ainda sem centro de custo liberado — fale com seu gestor.');
+  if (lista.length) { showToast('✅ ' + lista.length + ' centro(s) de custo liberado(s) pra você.'); return; }
+  if (window._prestFrentesUltimaLeituraOk === false) {
+    showToast('⚠️ Sem internet agora — não consegui confirmar. Tente de novo com conexão.');
+  } else {
+    showToast('🔒 Ainda sem centro de custo liberado — fale com seu gestor.');
+  }
 }
 
 /* ---------------------------------------------------------------------
