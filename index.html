@@ -4655,7 +4655,7 @@ function prestFrenteAplicarBloqueio() {
     });
   }
   const info = document.getElementById('prest_frente_info');
-  if (bloq && info) info.innerHTML = `<div style="background:#fce8e8;border:1px solid #f5b5b5;color:#991b1b;border-radius:8px;padding:10px 12px;font-size:.8rem">🔒 <strong>Você ainda não tem centro de custo liberado</strong> e por isso não pode lançar prestação de contas. Antes de sair para o campo, fale com o seu gestor para liberar o centro de custo do trabalho.</div>`;
+  if (bloq && info) info.innerHTML = `<div style="background:#fce8e8;border:1px solid #f5b5b5;color:#991b1b;border-radius:8px;padding:10px 12px;font-size:.8rem">🔒 <strong>Você ainda não tem centro de custo liberado</strong> e por isso não pode lançar prestação de contas. Antes de sair para o campo, fale com o seu gestor para liberar o centro de custo do trabalho.<br><button onclick="prestFrenteAtualizarLiberacoes()" style="margin-top:8px;font-size:.74rem;padding:5px 10px;border-radius:7px;border:1px solid #991b1b;background:transparent;color:#991b1b;cursor:pointer;font-weight:700">🔄 Já liberou? Verificar de novo</button></div>`;
   else if (!bloq && info && info.innerHTML.includes('🔒')) info.innerHTML = '';
   const sel = document.getElementById('prest_frente'); if (sel && bloq) sel.disabled = true;
 }
@@ -4921,9 +4921,31 @@ function prestFrenteRestaurar(r) {
   prestFrenteAtualizarVisibilidade();
 }
 
+/* -- Antes só buscava as frentes UMA vez por carregamento de página (flag
+   window._prestFrentesCarregadas) — então um colaborador que liberava a
+   aba de Prestação de Contas no celular e ficava com ela aberta (ou só
+   navegava pra outra aba e voltava, sem recarregar o app todo) nunca via
+   uma liberação nova feita pelo gestor enquanto isso: pra ele continuava
+   "bloqueado" mesmo depois do gestor salvar e confirmar que estava
+   liberado do lado dele (que força esse refetch ao salvar). Corrigido em
+   12/11/2026: toda vez que esta tela é aberta, busca de novo (forcar=true)
+   — é um arquivo pequeno, custo baixo, e esse é exatamente o momento em
+   que vale a pena checar se mudou algo. -- */
 async function prestFrenteInicializarForm() {
-  if (!window._prestFrentesCarregadas) await prestFrentesCarregar();
+  await prestFrentesCarregar(true);
   prestFrenteRenderizarSelect();
+}
+
+/* -- Botão manual "🔄 Atualizar liberações" (12/11/2026) — cobre o caso de
+   o colaborador já estar com o formulário de Nova Despesa aberto na hora
+   em que o gestor libera o centro de custo: sem precisar navegar pra outra
+   aba e voltar, só clicar aqui já busca a lista atualizada. */
+async function prestFrenteAtualizarLiberacoes() {
+  showToast('🔄 Verificando liberações...');
+  await prestFrentesCarregar(true);
+  prestFrenteRenderizarSelect();
+  const lista = prestFrentesDoFormulario();
+  showToast(lista.length ? ('✅ ' + lista.length + ' centro(s) de custo liberado(s) pra você.') : '🔒 Ainda sem centro de custo liberado — fale com seu gestor.');
 }
 
 /* ---------------------------------------------------------------------
@@ -5028,17 +5050,31 @@ function prestFrentesRenderizarNova() {
   const el = document.getElementById('prest-frentes-nova');
   if (!el) return;
   el.innerHTML = `
-    <div style="font-weight:700;font-size:.8rem;margin-bottom:8px">➕ Liberar um centro de custo</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <select id="pfn_cc" onchange="prestFrentesNomeDoContrato();prestFrentesSugerirBM('pfn')" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">${_prestFrentesCCsOpcoes('')}</select>
-      <input type="text" id="pfn_nome" placeholder="Nome (vem do contrato — só mude se quiser separar uma obra)" style="flex:2 1 200px;min-width:0;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
-      <select id="pfn_gestor" title="Gestor que aprova as despesas desta frente" style="flex:1 1 160px;min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem"><option value="">Gestor que aprova...</option>${prestGestoresDisponiveis().map(g => `<option value="${_prestEsc(g)}">${_prestEsc(g)}</option>`).join('')}</select>
-      <input type="text" id="pfn_bm" list="pfn_bm_dl" placeholder="BM (opcional)" style="flex:0 1 130px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);font-size:.82rem">
-      <datalist id="pfn_bm_dl"></datalist>
-      <button class="btn-primary" style="padding:7px 14px;font-size:.8rem" onclick="prestFrentesCriar()">Liberar</button>
+    <div style="font-weight:800;font-size:.84rem;margin-bottom:12px">➕ Liberar um novo centro de custo</div>
+    <div class="form-row-3" style="margin-bottom:12px">
+      <div class="form-group">
+        <label>Centro de Custo</label>
+        <select id="pfn_cc" onchange="prestFrentesNomeDoContrato();prestFrentesSugerirBM('pfn')">${_prestFrentesCCsOpcoes('')}</select>
+      </div>
+      <div class="form-group">
+        <label>Nome <span style="text-transform:none;font-weight:400">(vem do contrato — só mude pra separar uma obra)</span></label>
+        <input type="text" id="pfn_nome" placeholder="Ex.: SED Guaporé">
+      </div>
+      <div class="form-group">
+        <label>Gestor que aprova</label>
+        <select id="pfn_gestor"><option value="">(Diretoria)</option>${prestGestoresDisponiveis().map(g => `<option value="${_prestEsc(g)}">${_prestEsc(g)}</option>`).join('')}</select>
+      </div>
     </div>
-    <div id="pfn_bm_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:4px"></div>
-    <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">Escolha o centro de custo, o gestor e clique em Liberar; depois marque os colaboradores. BM só para contrato mensal — por demanda/OS, deixe em branco.</div>`;
+    <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+      <div class="form-group" style="flex:0 1 160px">
+        <label>BM em execução <span style="text-transform:none;font-weight:400">(opcional)</span></label>
+        <input type="text" id="pfn_bm" list="pfn_bm_dl">
+        <datalist id="pfn_bm_dl"></datalist>
+      </div>
+      <div style="flex:1;font-size:.7rem;color:var(--text-muted);padding-bottom:9px">BM só para contrato mensal (Jirau, Nova 364, Resíduos…) — por demanda/OS, deixe em branco.</div>
+      <button class="btn-primary" style="padding:9px 18px;font-size:.82rem;white-space:nowrap" onclick="prestFrentesCriar()">✅ Liberar</button>
+    </div>
+    <div id="pfn_bm_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:6px"></div>`;
 }
 
 // Preenche o datalist de BM com as medições já cadastradas do CC e sugere a
@@ -5110,40 +5146,73 @@ function prestFrentesRenderizarGestao() {
   if (busca) lista = lista.filter(f => _prestNormNome([f.Nome, f.CentroCusto, ...(f.Colaboradores || [])].join(' ')).includes(busca));
   if (!lista.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;padding:12px">Nenhum centro de custo liberado ainda. Libere o primeiro acima.</div>'; return; }
   const pessoas = prestListaLancadores();
+  // Reestruturado em 12/11/2026 (pedido Tiago: "estrutura muito ruim") — antes
+  // tudo (nome, CC, BM, gestor, botões de ação, toggle de colaboradores)
+  // ficava numa única linha flex-wrap, que embaralhava a ordem dos campos em
+  // tela estreita e escondia os botões de Salvar/Desativar no meio de outros
+  // controles. Agora: cabeçalho com nome/CC + ações sempre visíveis à
+  // direita, campos editáveis organizados no grid padrão do app
+  // (.form-row-3/.form-group, com labels), e o bloco de colaboradores
+  // destacado como sua própria seção.
   el.innerHTML = lista.map(f => {
     const colabs = f.Colaboradores || [];
     const nomesSel = colabs.map(_prestNormNome);
     const aberta = String(window._prestFrentesAbertaId) === String(f.Id);
-    return `<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;${f.Ativa === false ? 'opacity:.55' : ''}">
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <input type="text" id="pfg_nome_${f.Id}" value="${_prestEsc(f.Nome)}" style="flex:2 1 180px;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.82rem;font-weight:700">
-        <select id="pfg_cc_${f.Id}" onchange="prestFrentesSugerirBM('pfg',${f.Id})" style="flex:2 1 220px;min-width:0;max-width:100%;box-sizing:border-box;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.78rem">${_prestFrentesCCsOpcoes(f.CentroCusto)}</select>
+    const inativa = f.Ativa === false;
+    return `<div style="border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px;background:var(--surface);${inativa ? 'opacity:.6' : ''}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        <div style="min-width:180px">
+          <div style="font-weight:800;font-size:.9rem">${_prestEsc(f.Nome)} ${inativa ? '<span class="status-pill red" style="margin-left:4px">inativa</span>' : ''}</div>
+          <div style="font-size:.74rem;color:var(--text-muted);margin-top:2px">${_prestEsc(f.CentroCusto)}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn-primary" style="padding:6px 14px;font-size:.76rem" onclick="prestFrentesSalvar(${f.Id})">💾 Salvar</button>
+          <button class="btn-secondary" style="padding:6px 12px;font-size:.76rem" onclick="prestFrentesAlternarAtiva(${f.Id})">${inativa ? '♻️ Reativar' : '⏸️ Desativar'}</button>
+        </div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
-        <span style="font-size:.76rem;color:var(--text-muted)">BM em execução:</span>
-        <input type="text" id="pfg_bm_${f.Id}" list="pfg_bm_dl_${f.Id}" value="${_prestEsc(f.BMAtual || '')}" onfocus="prestFrentesSugerirBM('pfg',${f.Id})" style="width:90px;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.86rem;font-weight:800;text-align:center">
-        <datalist id="pfg_bm_dl_${f.Id}"></datalist>
-        <button class="btn-secondary" style="padding:5px 10px;font-size:.74rem" onclick="prestFrentesProximoBM(${f.Id})" title="Avança para o próximo número de BM e salva">➡️ Próximo BM</button>
-        <span style="font-size:.76rem;color:var(--text-muted)">Gestor:</span>
-        <select id="pfg_gestor_${f.Id}" style="flex:0 1 180px;min-width:0;padding:6px 9px;border-radius:7px;border:1px solid var(--border);font-size:.78rem${f.Gestor ? '' : ';border-color:#f0c36d'}"><option value="">(Diretoria)</option>${[...new Set([...prestGestoresDisponiveis(), ...(f.Gestor ? [f.Gestor] : [])])].map(g => `<option value="${_prestEsc(g)}" ${g === f.Gestor ? 'selected' : ''}>${_prestEsc(g)}</option>`).join('')}</select>
-        <span style="flex:1"></span>
-        <button class="btn-secondary" style="padding:5px 10px;font-size:.74rem" onclick="prestFrentesToggleColabs(${f.Id})">👥 ${colabs.length} colaborador${colabs.length === 1 ? '' : 'es'} ${aberta ? '▲' : '▼'}</button>
-        <button class="btn-primary" style="padding:5px 12px;font-size:.74rem" onclick="prestFrentesSalvar(${f.Id})">💾 Salvar</button>
-        <button class="btn-secondary" style="padding:5px 10px;font-size:.74rem" onclick="prestFrentesAlternarAtiva(${f.Id})">${f.Ativa === false ? '♻️ Reativar' : '⏸️ Desativar'}</button>
+
+      <div class="form-row-3" style="margin-bottom:12px">
+        <div class="form-group">
+          <label>Nome</label>
+          <input type="text" id="pfg_nome_${f.Id}" value="${_prestEsc(f.Nome)}">
+        </div>
+        <div class="form-group">
+          <label>Centro de Custo</label>
+          <select id="pfg_cc_${f.Id}" onchange="prestFrentesSugerirBM('pfg',${f.Id})">${_prestFrentesCCsOpcoes(f.CentroCusto)}</select>
+        </div>
+        <div class="form-group">
+          <label>Gestor que aprova</label>
+          <select id="pfg_gestor_${f.Id}" style="${f.Gestor ? '' : 'border-color:#f0c36d'}"><option value="">(Diretoria)</option>${[...new Set([...prestGestoresDisponiveis(), ...(f.Gestor ? [f.Gestor] : [])])].map(g => `<option value="${_prestEsc(g)}" ${g === f.Gestor ? 'selected' : ''}>${_prestEsc(g)}</option>`).join('')}</select>
+        </div>
       </div>
-      <div id="pfg_bm_hint_${f.Id}" style="font-size:.66rem;color:var(--text-muted);margin-top:4px"></div>
-      ${colabs.length && !aberta ? `<div style="font-size:.72rem;color:var(--text-muted);margin-top:6px">${colabs.map(c => {
-        const v = prestValidade(f, c);
-        if (!v) return _prestEsc(c);
-        return v < _prestHojeISO() ? `<span style="text-decoration:line-through">${_prestEsc(c)}</span> <span style="color:var(--red)">(venceu ${_prestFmtDia(v)})</span>` : `${_prestEsc(c)} <span style="color:var(--green-mid)">(até ${_prestFmtDia(v)})</span>`;
-      }).join(' · ')}</div>` : ''}
-      <div id="pfg_colabs_${f.Id}" style="display:${aberta ? 'grid' : 'none'};grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 12px;margin-top:10px;padding:10px;background:var(--surface2);border-radius:8px">
-        <div style="grid-column:1/-1;font-size:.7rem;color:var(--text-muted)">Marque quem pode lançar. <strong>Até</strong> (opcional): o acesso expira sozinho no fim desse dia — deixe em branco para não ter prazo. Dê uns dias de folga depois da volta do campo para a pessoa lançar as notas.</div>
-        ${pessoas.map(p => { const v = prestValidade(f, p); const venc = v && v < _prestHojeISO(); return `<div style="display:flex;align-items:center;gap:6px;font-size:.78rem;flex-wrap:wrap">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1;min-width:150px"><input type="checkbox" class="pfg-colab-${f.Id}" value="${_prestEsc(p)}" ${nomesSel.includes(_prestNormNome(p)) ? 'checked' : ''} style="width:auto"> ${_prestEsc(p)}${venc ? ' <span style="color:var(--red);font-size:.66rem">(venceu)</span>' : ''}</label>
-          <span style="font-size:.66rem;color:var(--text-muted)">até</span><input type="date" class="pfg-val-${f.Id}" data-nome="${_prestEsc(p)}" value="${_prestEsc(v)}" style="width:132px;padding:3px 6px;font-size:.72rem;border-radius:6px;border:1px solid var(--border)">
-        </div>`; }).join('')}
-        ${colabs.filter(c => !pessoas.some(p => _prestNormNome(p) === _prestNormNome(c))).map(c => `<label style="display:flex;align-items:center;gap:6px;font-size:.78rem;cursor:pointer;color:var(--text-muted)"><input type="checkbox" class="pfg-colab-${f.Id}" value="${_prestEsc(c)}" checked style="width:auto"> ${_prestEsc(c)} (inativo?)</label>`).join('')}
+
+      <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin-bottom:4px">
+        <div class="form-group" style="flex:0 1 150px">
+          <label>BM em execução</label>
+          <input type="text" id="pfg_bm_${f.Id}" list="pfg_bm_dl_${f.Id}" value="${_prestEsc(f.BMAtual || '')}" onfocus="prestFrentesSugerirBM('pfg',${f.Id})" style="font-weight:800;text-align:center">
+          <datalist id="pfg_bm_dl_${f.Id}"></datalist>
+        </div>
+        <button class="btn-secondary" style="padding:8px 12px;font-size:.74rem;align-self:center" onclick="prestFrentesProximoBM(${f.Id})" title="Avança para o próximo número de BM e salva">➡️ Próximo BM</button>
+        <div id="pfg_bm_hint_${f.Id}" style="font-size:.68rem;color:var(--text-muted);flex:1;align-self:center"></div>
+      </div>
+
+      <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px">
+        <button class="btn-secondary" style="padding:6px 12px;font-size:.76rem" onclick="prestFrentesToggleColabs(${f.Id})">👥 ${colabs.length} colaborador${colabs.length === 1 ? '' : 'es'} liberado${colabs.length === 1 ? '' : 's'} ${aberta ? '▲' : '▼'}</button>
+        ${colabs.length && !aberta ? `<div style="font-size:.74rem;color:var(--text-muted);margin-top:8px">${colabs.map(c => {
+          const v = prestValidade(f, c);
+          if (!v) return _prestEsc(c);
+          return v < _prestHojeISO() ? `<span style="text-decoration:line-through">${_prestEsc(c)}</span> <span style="color:var(--red)">(venceu ${_prestFmtDia(v)})</span>` : `${_prestEsc(c)} <span style="color:var(--green-mid)">(até ${_prestFmtDia(v)})</span>`;
+        }).join(' · ')}</div>` : ''}
+        <div id="pfg_colabs_${f.Id}" style="display:${aberta ? 'block' : 'none'};margin-top:12px">
+          <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:8px">Marque quem pode lançar nesse centro de custo. <strong>Até</strong> (opcional): o acesso expira sozinho no fim desse dia — deixe em branco para não ter prazo. Dê uns dias de folga depois da volta do campo para a pessoa lançar as notas.</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px 14px;padding:12px;background:var(--surface2);border-radius:10px">
+            ${pessoas.map(p => { const v = prestValidade(f, p); const venc = v && v < _prestHojeISO(); return `<div style="display:flex;align-items:center;gap:6px;font-size:.78rem;flex-wrap:wrap">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1;min-width:150px"><input type="checkbox" class="pfg-colab-${f.Id}" value="${_prestEsc(p)}" ${nomesSel.includes(_prestNormNome(p)) ? 'checked' : ''} style="width:auto"> ${_prestEsc(p)}${venc ? ' <span style="color:var(--red);font-size:.66rem">(venceu)</span>' : ''}</label>
+              <span style="font-size:.66rem;color:var(--text-muted)">até</span><input type="date" class="pfg-val-${f.Id}" data-nome="${_prestEsc(p)}" value="${_prestEsc(v)}" style="width:132px;padding:3px 6px;font-size:.72rem;border-radius:6px;border:1px solid var(--border)">
+            </div>`; }).join('')}
+            ${colabs.filter(c => !pessoas.some(p => _prestNormNome(p) === _prestNormNome(c))).map(c => `<label style="display:flex;align-items:center;gap:6px;font-size:.78rem;cursor:pointer;color:var(--text-muted)"><input type="checkbox" class="pfg-colab-${f.Id}" value="${_prestEsc(c)}" checked style="width:auto"> ${_prestEsc(c)} (inativo?)</label>`).join('')}
+          </div>
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -10684,6 +10753,17 @@ function pagToggleParcelas() {
   if (divccBloqueado) divccBloqueado.style.display = (v === 'parcelado') ? 'block' : 'none';
 }
 
+/* -- Checagem de sanidade do ano de vencimento — pedido indiretamente em
+   08/11/2026 ao corrigir um parcelamento da Fortbras salvo com Vencimento
+   "0226-10-29" (ano 226 em vez de 2026, por um erro de digitação no input
+   de data que passou batido). Usada antes de salvar Contas a Pagar e
+   Despesas, tanto no campo único quanto em cada parcela do parcelamento. --*/
+function _anoVencimentoPlausivel(dataStr) {
+  if (!dataStr) return true; // campo vazio: outras validações já cobrem obrigatoriedade
+  const ano = parseInt(String(dataStr).slice(0, 4), 10);
+  return !isNaN(ano) && ano >= 2000 && ano <= 2100;
+}
+
 function pagGerarParcelas() {
   const parcelamento = (document.getElementById('pag_parcelamento')||{}).value;
   if (parcelamento !== 'parcelado') return;
@@ -10978,6 +11058,11 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   if(!empresa){showToast('⚠️ Selecione a empresa.');return;}
   if (FROTA_SUBCATS_OBRIG.includes(subcategoria) && !frotaV && !frotaOutroTexto) { showToast('⚠️ Selecione o veículo da frota (ou descreva em "Outro") — combustível e manutenção alimentam o controle de frota.'); return; }
   if(parcelamento==='parcelado' && (window._pagParcelas||[]).some(p=>!p.cc)){showToast('⚠️ Selecione o Centro de Custo de cada parcela.');return;}
+  if (!_anoVencimentoPlausivel(vencimento)) { showToast('⚠️ Data de vencimento com ano inválido: ' + vencimento + '. Confira se não digitou errado (ex.: 29/10/2026).'); return; }
+  if (parcelamento==='parcelado') {
+    const parcVencErrada = (window._pagParcelas||[]).find(p => !_anoVencimentoPlausivel(p.vencimento));
+    if (parcVencErrada) { showToast('⚠️ Parcela ' + parcVencErrada.numero + ' com ano de vencimento inválido: ' + (parcVencErrada.vencimento||'—') + '. Confira a data digitada.'); return; }
+  }
   if(temDivisaoCC){
     if(divisaoCC.length<2){showToast('⚠️ Adicione pelo menos 2 Centros de Custo na divisão, ou desmarque a opção.');return;}
     const somaDivisao=divisaoCC.reduce((s,d)=>s+(d.valor||0),0);
@@ -12298,7 +12383,11 @@ async function pagVerHistoricoCompra(id) {
         <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('pag-hist-modal').remove()">✕</div>
       </div>
       <div style="font-size:.85rem;font-weight:700;margin-bottom:2px">${i.Fornecedor||'—'}</div>
-      <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:14px">${i.Descricao||i.CentroCusto||'—'} · ${parcelas.length} parcelas</div>
+      <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:10px">${i.Descricao||i.CentroCusto||'—'} · ${parcelas.length} parcelas</div>
+
+      <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
+        <button onclick="pagEditarParcelamentoCompleto('${i.GrupoCompraId}')" style="font-size:.72rem;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);cursor:pointer;font-weight:700;color:inherit">✏️ Editar parcelamento completo</button>
+      </div>
 
       <div style="display:flex;gap:10px;margin-bottom:14px">
         <div style="flex:1;padding:10px;border-radius:10px;background:var(--surface2);text-align:center">
@@ -12330,6 +12419,149 @@ async function pagVerHistoricoCompra(id) {
       </div>
     </div>`;
   document.body.appendChild(modal);
+}
+
+/* ===== Editar Parcelamento Completo (Contas a Pagar) =====
+   Pedido em 08/11/2026: "tinha que ter a opção de editar o lançamento por
+   completo caso precise corrigir valor, data ou outra coisa em vez de
+   corrigir lançamento por lançamento". Antes, corrigir um parcelamento
+   inteiro (ex.: fornecedor errado, ou valor/vencimento de cada parcela)
+   exigia abrir pagEditarLancamento parcela por parcela. Esta tela mostra
+   todas as parcelas de uma vez: os dados que descrevem a compra em si
+   (Fornecedor/Descrição/Categoria/Subcategoria/Forma de Pagamento/
+   Observação) ficam num bloco só, editado uma vez e aplicado a todas as
+   parcelas; o que varia por parcela (Centro de Custo, Nº do Boleto, Valor
+   e Vencimento — já é assim na criação, cada parcela pode ter seu próprio
+   CC/boleto) fica editável linha a linha. Parcelas já "Pago" têm Valor e
+   Vencimento travados (não dá pra mudar o valor/data de algo já pago e
+   reconciliado por aqui — para isso, use Editar Lançamento na própria
+   parcela), mas os demais campos continuam editáveis. */
+async function pagEditarParcelamentoCompleto(grupoCompraId) {
+  if (!grupoCompraId) { showToast('⚠️ Parcelamento sem identificador — não é possível editar em lote.'); return; }
+  showToast('🔎 Carregando parcelas...');
+  const todas = await dbLerSeguro('ContasPagar');
+  const parcelas = todas.filter(x => x.GrupoCompraId === grupoCompraId).sort((a,b) => (a.NumParcela||0)-(b.NumParcela||0));
+  if (!parcelas.length) { showToast('⚠️ Nenhuma parcela encontrada.'); return; }
+
+  ['pag-hist-modal','pag-view-modal','pag-edit-parc-modal'].forEach(id => { const m = document.getElementById(id); if (m) m.remove(); });
+
+  const base = parcelas[0];
+  const statusColor = (s) => s==='Pago'?'green':(s==='Em atraso'||s==='Rejeitada')?'red':'amber';
+  const campo = (label, elId, value, tipo='text') => `
+    <div class="form-group" style="margin-bottom:8px">
+      <label style="font-size:.72rem">${label}</label>
+      <input type="${tipo}" id="${elId}" value="${(value||'').toString().replace(/"/g,'&quot;')}" style="width:100%">
+    </div>`;
+
+  const modal = document.createElement('div');
+  modal.id = 'pag-edit-parc-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:20px;max-width:620px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <div style="font-weight:800;font-size:1rem">✏️ Editar Parcelamento Completo</div>
+        <div style="cursor:pointer;font-size:1.1rem;color:var(--text-muted)" onclick="document.getElementById('pag-edit-parc-modal').remove()">✕</div>
+      </div>
+      <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">${parcelas.length} parcelas · os campos abaixo (fornecedor, descrição etc.) valem para o parcelamento todo; Centro de Custo, Nº do Boleto, Valor e Vencimento são por parcela.</div>
+
+      <div style="font-size:.78rem;font-weight:800;margin-bottom:8px;color:var(--text-muted)">DADOS DA COMPRA (aplicados a todas as parcelas)</div>
+      ${campo('Fornecedor', 'pepc_fornecedor', base.Fornecedor)}
+      ${campo('Descrição', 'pepc_descricao', base.Descricao)}
+      ${campo('Categoria', 'pepc_categoria', base.Categoria)}
+      ${campo('Subcategoria', 'pepc_subcategoria', base.Subcategoria)}
+      ${campo('Forma de Pagamento', 'pepc_formapgto', base.FormaPagamento)}
+      ${campo('Observação', 'pepc_obs', base.Observacao)}
+
+      <div style="font-size:.78rem;font-weight:800;margin:16px 0 8px;color:var(--text-muted)">PARCELAS</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${parcelas.map(p => {
+          const travada = p.Status === 'Pago';
+          return `
+          <div style="padding:10px;border-radius:10px;background:var(--surface2)" data-pepc-id="${p.Id}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <div style="font-size:.78rem;font-weight:700">Parcela ${p.NumParcela}/${p.TotalParcelas}</div>
+              <span class="status-pill ${statusColor(p.Status)}" style="font-size:.65rem">${p.Status||'—'}${travada ? ' · 🔒 valor/data travados' : ''}</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <div class="form-group" style="margin-bottom:0">
+                <label style="font-size:.7rem">Centro de Custo</label>
+                <input type="text" id="pepc_cc_${p.Id}" value="${(p.CentroCusto||'').replace(/"/g,'&quot;')}" style="width:100%">
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label style="font-size:.7rem">Nº do Boleto</label>
+                <input type="text" id="pepc_boleto_${p.Id}" value="${(p.NumeroBoleto||'').replace(/"/g,'&quot;')}" style="width:100%">
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label style="font-size:.7rem">Valor (R$)</label>
+                <input type="number" step="0.01" id="pepc_valor_${p.Id}" value="${p.Valor||0}" ${travada?'disabled':''} style="width:100%${travada?';opacity:.55':''}">
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label style="font-size:.7rem">Vencimento</label>
+                <input type="date" id="pepc_venc_${p.Id}" value="${p.Vencimento||''}" ${travada?'disabled':''} style="width:100%${travada?';opacity:.55':''}">
+              </div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:18px">
+        <button onclick="document.getElementById('pag-edit-parc-modal').remove()" style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--border);background:transparent;cursor:pointer;font-weight:700;color:inherit">Cancelar</button>
+        <button onclick="pagSalvarParcelamentoCompleto('${grupoCompraId}')" style="flex:2;padding:10px;border-radius:8px;border:none;background:var(--accent,#1a73e8);color:#fff;cursor:pointer;font-weight:700">💾 Salvar alterações em todas as parcelas</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function pagSalvarParcelamentoCompleto(grupoCompraId) {
+  const val = (id) => { const e = document.getElementById(id); return e ? e.value : ''; };
+  const fornecedor = val('pepc_fornecedor').trim();
+  const descricao = val('pepc_descricao').trim();
+  const categoria = val('pepc_categoria').trim();
+  const subcategoria = val('pepc_subcategoria').trim();
+  const formaPgto = val('pepc_formapgto').trim();
+  const obs = val('pepc_obs').trim();
+  if (!fornecedor) { showToast('⚠️ Informe o fornecedor.'); return; }
+
+  const todas = await dbLerSeguro('ContasPagar');
+  const parcelas = todas.filter(x => x.GrupoCompraId === grupoCompraId).sort((a,b) => (a.NumParcela||0)-(b.NumParcela||0));
+  if (!parcelas.length) { showToast('⚠️ Nenhuma parcela encontrada (recarregue e tente de novo).'); return; }
+
+  // Valida tudo antes de gravar qualquer parcela — evita salvar 2 de 3 e
+  // parar na 3ª por um valor/data inválido, deixando o parcelamento num
+  // estado misto.
+  const porId = {};
+  for (const p of parcelas) {
+    const travada = p.Status === 'Pago';
+    const cc = val('pepc_cc_' + p.Id).trim();
+    const boleto = val('pepc_boleto_' + p.Id).trim();
+    const valor = travada ? p.Valor : (parseFloat(val('pepc_valor_' + p.Id)) || 0);
+    const vencimento = travada ? p.Vencimento : val('pepc_venc_' + p.Id);
+    if (!travada && !valor) { showToast('⚠️ Parcela ' + p.NumParcela + ' sem valor.'); return; }
+    if (!travada && !_anoVencimentoPlausivel(vencimento)) { showToast('⚠️ Parcela ' + p.NumParcela + ' com ano de vencimento inválido: ' + (vencimento||'—') + '. Confira a data digitada.'); return; }
+    porId[p.Id] = { cc, boleto, valor, vencimento };
+  }
+
+  showToast('💾 Salvando parcelamento...');
+  let okTodas = true;
+  for (const p of parcelas) {
+    const { cc, boleto, valor, vencimento } = porId[p.Id];
+    const campos = {
+      Fornecedor: fornecedor, Descricao: descricao, Categoria: categoria, Subcategoria: subcategoria,
+      FormaPagamento: formaPgto, Observacao: obs, CentroCusto: cc, NumeroBoleto: boleto,
+      Valor: valor, Vencimento: vencimento,
+      Title: fornecedor + ' · parcela ' + p.NumParcela + '/' + p.TotalParcelas + ' · ' + vencimento,
+    };
+    const ok = await dbAtualizar('ContasPagar', p.Id, campos);
+    okTodas = okTodas && !!ok;
+  }
+
+  if (okTodas) {
+    showToast('✅ Parcelamento atualizado — ' + parcelas.length + ' parcela(s) salva(s)!');
+    const m = document.getElementById('pag-edit-parc-modal'); if (m) m.remove();
+    await carregarContasPagar();
+  } else {
+    showToast('⚠️ Algumas parcelas não foram salvas — confira a conexão e tente de novo.' + (typeof syncErrorDetalhe==='function'?syncErrorDetalhe():''));
+  }
 }
 
 /* -- Edição de um lançamento já existente — antes só dava pra Visualizar ou
@@ -19091,6 +19323,13 @@ async function salvarDespesa() {
     const somaDivisao = divisaoCC.reduce((s,d)=>s+(d.valor||0),0);
     const diffDivisao = Math.round((somaDivisao - valorTotal)*100)/100;
     if (Math.abs(diffDivisao) > 0.01) { showToast(`⚠️ A soma da divisão de Centro de Custo (R$ ${rdNumeroParaMoeda(somaDivisao)}) não bate com o valor total (R$ ${rdNumeroParaMoeda(valorTotal)}).`); return; }
+  }
+
+  const vencimentoCampoUnico = (document.getElementById('rd_vencimento')||{}).value || '';
+  if (!_anoVencimentoPlausivel(vencimentoCampoUnico)) { showToast('⚠️ Data de vencimento com ano inválido: ' + vencimentoCampoUnico + '. Confira se não digitou errado (ex.: 29/10/2026).'); return; }
+  if (tipoPagamento === 'parcelado') {
+    const parcVencErrada = (window._rdParcelas||[]).find(p => !_anoVencimentoPlausivel(p.vencimento));
+    if (parcVencErrada) { showToast('⚠️ Parcela ' + parcVencErrada.numero + ' com ano de vencimento inválido: ' + (parcVencErrada.vencimento||'—') + '. Confira a data digitada.'); return; }
   }
 
   const descricao = modalidade === 'servicos' ? (servicoOpt ? servicoOpt.id+' · '+servicoOpt.desc : '') : modalidade === 'colaborador' ? colaboradorPagto : modalidade === 'socio' ? socioSel : fornecedor;
@@ -65623,7 +65862,7 @@ const TABELAS_BPO_FINANCEIRO = [
   'bpo_impostos_v2', 'bpo_transferencias_v1'
 ];
 // Tabelas (dbLer/dbInserir/dbAtualizar/dbSalvar) que ficam SÓ na pasta central restrita.
-const TABELAS_RESTRITAS_DIRETORIA = ['ContasPagar', 'ContasReceber', 'Despesas', 'FrotaResumo', 'contratos', 'Empreendimentos', 'Outorgas', 'OrcamentosProjetos', 'Recibos', 'Concorrencias', 'CatalogoCustosOrcamento', ...TABELAS_BPO_FINANCEIRO];
+const TABELAS_RESTRITAS_DIRETORIA = ['ContasPagar', 'ContasReceber', 'Despesas', 'FrotaResumo', 'LucrosResumo', 'contratos', 'Empreendimentos', 'Outorgas', 'OrcamentosProjetos', 'Recibos', 'Concorrencias', 'CatalogoCustosOrcamento', ...TABELAS_BPO_FINANCEIRO];
 // Prefixos de subpasta (OD_FOLDERS ou caminhos relativos de upload) que ficam SÓ na pasta central restrita.
 const PASTAS_RESTRITAS_DIRETORIA = ['Contratos'];
 
@@ -71579,6 +71818,81 @@ function planilhaAgendarSync() {
   _plan.timer = setTimeout(() => planilhaSincronizar(false), 6000);
 }
 window.planilhaSincronizarAgora = () => planilhaSincronizar(true);
+
+/* == RESUMO DE ANTECIPAÇÃO DE LUCROS PARA O SEGUNDO CÉREBRO ==
+   Pedido 12/11/2026: "quero que meu controle de distribuição de lucros fique
+   sincronizado com cérebro". Mesmo padrão da frota: sempre que a diretoria
+   grava Despesas (ou abre o APP), o APP regrava db/LucrosResumo.json na pasta
+   central; o Segundo Cérebro e a página "Antecipação de Lucros — Sócios" leem
+   esse arquivo pelo conector Microsoft 365.
+   Regra (pedido 06/11/2026): conta só Despesa PAGA com subcategoria
+   "Distribuição de Lucros" dos sócios Marcelo, Luiz Evaristo, Fabiola e
+   Cassiane. Mão de obra, pró-labore, remuneração de gestão e locação de
+   veículo de sócio NÃO entram. Lançamento de Distribuição de Lucros que não
+   dá pra ligar a um sócio vai para "pendentes" (corrigir no APP). -- */
+const LUCROS_SOCIOS = [
+  { nome: 'Marcelo Marafon', chaves: ['marcelo', 'marafon'] },
+  { nome: 'Luiz Evaristo', chaves: ['luiz evaristo', 'evaristo'] },
+  { nome: 'Fabiola Rabelo', chaves: ['fabiola', 'rabelo'] },
+  { nome: 'Cassiane Scarmucin', chaves: ['cassiane', 'scarmucin'] },
+];
+const LUCROS_FORA = ['tiago']; // sócio que não entra nesse controle
+function _lucNorm(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
+function lucrosMontarResumo(desp) {
+  const lanc = [], pend = [];
+  for (const r of desp || []) {
+    if (!_lucNorm(r.Subcategoria).includes('distribuicao de lucros')) continue;
+    if (String(r.Status || '') !== 'Pago') continue;
+    const quem = _lucNorm([r.Fornecedor, r.Colaborador, r.Beneficiario].filter(Boolean).join(' '));
+    if (LUCROS_FORA.some(k => quem.includes(k))) continue;
+    const s = LUCROS_SOCIOS.find(x => x.chaves.some(k => quem.includes(k)));
+    const item = {
+      id: r.Id, data: String(r.DataPagamento || r.DataLancamento || '').slice(0, 10),
+      valor: Math.round((Number(r.Valor) || 0) * 100) / 100, banco: r.Banco || '',
+      obs: r.Descricao || 'Distribuição de lucros', empresa: r.Empresa || '',
+    };
+    if (s) lanc.push(Object.assign({ socio: s.nome }, item));
+    else pend.push(Object.assign({ fornecedor: r.Fornecedor || r.Colaborador || r.Beneficiario || '' }, item));
+  }
+  lanc.sort((a, b) => a.data.localeCompare(b.data));
+  pend.sort((a, b) => a.data.localeCompare(b.data));
+  const totais = {}, porMes = {};
+  LUCROS_SOCIOS.forEach(s => { totais[s.nome] = { valor: 0, n: 0, ultimo: '' }; });
+  for (const l of lanc) {
+    const t = totais[l.socio]; t.valor = Math.round((t.valor + l.valor) * 100) / 100; t.n++; t.ultimo = l.data;
+    const m = l.data.slice(0, 7); porMes[m] = porMes[m] || {}; porMes[m][l.socio] = Math.round(((porMes[m][l.socio] || 0) + l.valor) * 100) / 100;
+  }
+  return {
+    atualizado: new Date().toISOString(),
+    por: (window._currentUser && window._currentUser.name) || '',
+    regra: 'Despesas pagas com subcategoria Distribuição de Lucros — sem mão de obra, pró-labore, remuneração de gestão ou locação',
+    socios: LUCROS_SOCIOS.map(s => s.nome),
+    total: Math.round(lanc.reduce((a, l) => a + l.valor, 0) * 100) / 100,
+    totais, porMes, lancamentos: lanc, pendentes: pend,
+  };
+}
+let _lucrosTimer = null, _lucrosUltimo = '';
+async function lucrosGravarResumo() {
+  if (!window._currentUser || window._currentUser.profile !== 'diretoria') return;
+  try {
+    const desp = await dbLerSeguro('Despesas').catch(() => null);
+    if (!Array.isArray(desp) || !desp.length) return; // nunca sobrescreve com vazio
+    const r = lucrosMontarResumo(desp);
+    const chave = JSON.stringify([r.lancamentos, r.pendentes]);
+    if (chave === _lucrosUltimo) return;
+    if (await dbSalvar('LucrosResumo', r) === true) _lucrosUltimo = chave;
+  } catch (e) { console.warn('[Lucros] Falha ao gravar resumo', e); }
+}
+function lucrosAgendarResumo() { clearTimeout(_lucrosTimer); _lucrosTimer = setTimeout(lucrosGravarResumo, 5000); }
+dbSalvar = (function (orig) {
+  return async function (tabela, dados, etag) {
+    const r = await orig(tabela, dados, etag);
+    if (r === true && tabela === 'Despesas') lucrosAgendarResumo();
+    return r;
+  };
+})(dbSalvar);
+setTimeout(lucrosGravarResumo, 45000);
+
 dbSalvar = (function (orig) {
   return async function (tabela, dados, etag) {
     const r = await orig(tabela, dados, etag);
