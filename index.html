@@ -20754,7 +20754,11 @@ async function exportarDespesasExcel() {
       document.head.appendChild(s);
     });
   }
-  const rows = items.map(i => ({
+  // Lançamento com rateio (DivisaoCC) — ex.: Transferência seccionada por
+  // Centro de Custo — vira UMA LINHA POR CENTRO DE CUSTO na planilha (cada
+  // uma com o valor daquela parte), em vez de uma linha só com o valor
+  // total e os CCs concatenados. Lançamento sem rateio continua 1 linha.
+  const linhaBase = (i, cc, valor, medicao) => ({
     'Data Lançamento': i.DataLancamento ? new Date(i.DataLancamento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Semana': i.Semana || '',
     'Categoria': i.Categoria || '',
@@ -20766,9 +20770,9 @@ async function exportarDespesasExcel() {
     'Veículo': i.Veiculo || '',
     'Veículo da Diária': i.DiariaVeiculoDesc || '',
     'Valor Veículo da Diária': i.DiariaVeiculoValor || 0,
-    'Centro de Custo': i.CentroCusto || '',
+    'Centro de Custo': cc || '',
     'Local': i.Local || '',
-    'Valor': i.Valor || 0,
+    'Valor': valor,
     'Tipo de Pagamento': i.TipoPagamento || '',
     'Parcela': i.TotalParcelas > 1 ? (i.NumParcela+'/'+i.TotalParcelas) : '',
     'Forma de Pagamento': i.FormaPagamento || '',
@@ -20778,11 +20782,14 @@ async function exportarDespesasExcel() {
     'Data de Pagamento': i.DataPagamento ? new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR') : '',
     'Banco': i.Banco || '',
     'Status': i.Status || '',
-    'Nº Medição': i.NumMedicao || '',
+    'Nº Medição': medicao || '',
     'Comprovante': i.Comprovante || '',
     'Link do Comprovante': i.ComprovanteUrl || '',
     'Lançado Por': i.LancadoPor || '',
-  }));
+  });
+  const rows = items.flatMap(i => (i.DivisaoCC && i.DivisaoCC.length)
+    ? i.DivisaoCC.map(d => linhaBase(i, d.cc, Number(d.valor) || 0, d.medicao || i.NumMedicao))
+    : [linhaBase(i, i.CentroCusto, i.Valor || 0, i.NumMedicao)]);
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Despesas');
@@ -44651,7 +44658,7 @@ function pageChecklistVaoAVao() {
     </div>
     <div class="form-group" style="margin:0;max-width:420px"><label>Circuito Elétrico / Frente</label>
       <select onchange="vavAbrirFrente(this.value)">
-        ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${window._vavFrenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
+        ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${window._vavFrenteId === f.id ? 'selected' : ''}>${f.nome}${f.empreiteira ? ' — ' + f.empreiteira : ''}</option>`).join('')}
       </select>
     </div>
   </div>`;
@@ -52033,7 +52040,7 @@ function pageChecklistMitigacao() {
       <div class="form-group" style="flex:2"><label>Local / Frente de Serviço (Circuito Elétrico)</label>
         <select id="mit_local" onchange="mitCampo('local',this.value)">
           <option value="">Selecione...</option>
-          ${FLASH_FRENTES.map(fr => `<option value="${fr.nome.replace(/"/g,'&quot;')}" ${d.local===fr.nome?'selected':''}>${fr.nome} — ${fr.empreiteira}</option>`).join('')}
+          ${FLASH_FRENTES.map(fr => `<option value="${fr.nome.replace(/"/g,'&quot;')}" ${d.local===fr.nome?'selected':''}>${fr.nome}${fr.empreiteira ? ' — ' + fr.empreiteira : ''}</option>`).join('')}
           ${d.local && !FLASH_FRENTES.some(fr => fr.nome === d.local) ? `<option value="${d.local.replace(/"/g,'&quot;')}" selected>${d.local} (fora da lista padrão)</option>` : ''}
         </select>
       </div>
@@ -56031,15 +56038,23 @@ const FLASH_FRENTES = [
   { id: 'engm1',    nome: 'Subestação Guaporé',                        empreiteira: 'ENGM', tipo: 'canteiro', valorEscopo: 25923.12, sistemaEletrico: 'Sistema Elétrico Guaporé (Subestação)', sigla: 'SED GPO', municipio: '' },
   { id: 'engm2',    nome: 'SE Porto Velho (Bay)',                      empreiteira: 'ENGM', tipo: 'canteiro', valorEscopo: 25923.12, sistemaEletrico: 'Sistema Elétrico Porto Velho I - Guaporé (Subestação e LDAT 69 kV)', sigla: 'SED PV1-GPO', municipio: '' },
   { id: 'engm3',    nome: 'SE Presidente Médici',                      empreiteira: 'ENGM', tipo: 'canteiro', sistemaEletrico: 'Sistema Elétrico Presidente Médici (Subestação)', sigla: 'SED PMD', municipio: 'Presidente Médici - RO' },
-  { id: 'enermais', nome: 'LDAT 69 kV Porto Velho / Guaporé',          empreiteira: 'Enermais', tipo: 'linha', valorEscopo: 25923.12, sistemaEletrico: 'Sistema Elétrico Porto Velho I - Guaporé (Subestação e LDAT 69 kV)', sigla: 'LDAT PV1-GPO', municipio: '' },
+  { id: 'enermais', nome: 'LDAT 69 kV Porto Velho / Guaporé',          empreiteira: '', tipo: 'linha', valorEscopo: 25923.12, sistemaEletrico: 'Sistema Elétrico Porto Velho I - Guaporé (Subestação e LDAT 69 kV)', sigla: 'LDAT PV1-GPO', municipio: '' }, // empreiteira em branco por pedido Tiago 13/11/2026 — agora tem mais de uma empresa no projeto, inserir manualmente em cada FR/NC
   // Duas fiscalizações novas (pedido 01/10/2026, kickoff de alinhamento já
   // feito em 28/09 e 30/09 — ver HistoricoObras). empreiteira confirmada por
   // Tiago em 01/10/2026. valorEscopo ainda não confirmado (mesmo padrão do
   // engm3 — telas que mostram valor já têm fallback pra quando está vazio);
   // sigla e sistemaEletrico seguem o mesmo padrão de nomenclatura dos outros
   // circuitos 'linha', mas não foram confirmados contra um BM real ainda.
-  { id: 'ldatptbcac', nome: 'LDAT 138 kV Pimenta Bueno / Cacoal',       empreiteira: 'TC Engenharia', tipo: 'linha', sistemaEletrico: 'Sistema Elétrico Pimenta Bueno - Cacoal (LDAT 138 kV)', sigla: 'LDAT PTB-CAC', municipio: '' },
-  { id: 'ldatcjrcrb',  nome: 'LDAT 69 kV Cerejeiras / Corumbiara',       empreiteira: 'Energia e Serviços', tipo: 'linha', sistemaEletrico: 'Sistema Elétrico Cerejeiras - Corumbiara (LDAT 69 kV)', sigla: 'LDAT CJR-CRB', municipio: '' },
+  { id: 'ldatptbcac', nome: 'LDAT 138 kV Pimenta Bueno / Cacoal',       empreiteira: 'TC Engenharia', tipo: 'linha', sistemaEletrico: 'Sistema Elétrico Pimenta Bueno - Cacoal (LDAT 138 kV)', sigla: 'LDAT PTB-CAC', municipio: '', sigco: '48188', regObra: '923-269' },
+  { id: 'ldatcjrcrb',  nome: 'LDAT 69 kV Cerejeiras / Corumbiara',       empreiteira: 'Energia e Serviços', tipo: 'linha', sistemaEletrico: 'Sistema Elétrico Cerejeiras - Corumbiara (LDAT 69 kV)', sigla: 'LDAT CJR-CRB', municipio: '', sigco: '455393', regObra: '925-307' },
+  // 6 projetos novos pedidos por Tiago 13/11/2026 (Sigco/Reg. Obra confirmados por ele; empreiteira/sigla/sistemaEletrico
+  // ainda não confirmados — mesmo padrão dos demais 'sem confirmação': campos editáveis por registro, corrigir se precisar).
+  { id: 'sedcandeias',   nome: 'Subestação Candeias',             empreiteira: '', tipo: 'canteiro', sistemaEletrico: 'Sistema Elétrico Candeias (Subestação)', sigla: 'SED CAN', municipio: '', sigco: '53787', regObra: '926-843' },
+  { id: 'sednovamamore2', nome: 'Subestação Nova Mamoré II',       empreiteira: '', tipo: 'canteiro', sistemaEletrico: 'Sistema Elétrico Nova Mamoré II (Subestação)', sigla: 'SED NM2', municipio: '', sigco: '46530', regObra: '922-1165' },
+  { id: 'baycjr',        nome: 'BAY Cerejeiras',                   empreiteira: '', tipo: 'canteiro', sistemaEletrico: 'Sistema Elétrico Cerejeiras (Bay)', sigla: 'BAY CJR', municipio: '', sigco: '53833', regObra: '922-1174' },
+  { id: 'baycrb',        nome: 'BAY Corumbiara',                  empreiteira: '', tipo: 'canteiro', sistemaEletrico: 'Sistema Elétrico Corumbiara (Bay)', sigla: 'BAY CRB', municipio: '', sigco: '53785', regObra: '922-1176' },
+  { id: 'baypim',        nome: 'BAY Pimenta',                     empreiteira: '', tipo: 'canteiro', sistemaEletrico: 'Sistema Elétrico Pimenta (Bay)', sigla: 'BAY PTB', municipio: '', sigco: '53790', regObra: '922-1182' },
+  { id: 'baycac',        nome: 'BAY Cacoal',                      empreiteira: '', tipo: 'canteiro', sistemaEletrico: 'Sistema Elétrico Cacoal (Bay)', sigla: 'BAY CAC', municipio: '', sigco: '53791', regObra: '922-1179' },
 ];
 const FLASH_RTS = ['Tiago Tavares', 'Marcelo Marafon', 'Luiz Evaristo'];
 const FLASH_CLIMAS = ['Ensolarado', 'Parcialmente nublado', 'Nublado', 'Chuva leve', 'Chuva forte'];
@@ -56643,6 +56658,7 @@ function flashNovoForm(frenteIdPreSelecionado) {
     frenteId: (frenteIdPreSelecionado && FLASH_FRENTES.some(f => f.id === frenteIdPreSelecionado)) ? frenteIdPreSelecionado : FLASH_FRENTES[0].id,
     data: new Date().toISOString().split('T')[0],
     rt: '', clima: 'Ensolarado', trecho: '', equipe: '', fiscal: '',
+    empresaExecutora: '', _empresaAuto: true,
     ckAtividades: {}, ckVerificacoes: {}, ckOcorrencias: {},
     respostasAtividades: {}, respostasVerificacoes: {}, temSupressao: false, respostasSupressao: {}, obsItens: {},
     prazoItens: {}, dataCumprimentoItens: {}, statusCumprimentoItens: {}, fotosCumprimentoItens: {},
@@ -56651,6 +56667,7 @@ function flashNovoForm(frenteIdPreSelecionado) {
     orientacaoVerbal: false, orientacaoPara: '', orientacaoPrazo: '',
     orientacaoDataCumprimento: '', orientacaoStatusCumprimento: '',
   };
+  window._flashData.empresaExecutora = flashEmpresaPadrao(window._flashData.frenteId);
 }
 if (!window._flashData) flashNovoForm();
 if (window._flashHistorico === undefined) window._flashHistorico = null;
@@ -56693,6 +56710,7 @@ async function flashEditarRegistro(id) {
     fotos: (fotosHidratadas || []).map(x => ({ ...x })),
     orientacaoVerbal: !!f.OrientacaoVerbal, orientacaoPara: f.OrientacaoPara || '', orientacaoPrazo: f.OrientacaoPrazo || '',
     orientacaoDataCumprimento: f.OrientacaoDataCumprimento || '', orientacaoStatusCumprimento: f.OrientacaoStatusCumprimento || '',
+    empresaExecutora: f.Empreiteira || '', _empresaAuto: false,
   };
   window._flashRegistroAtualId = id;
   window._flashMostrarForm = true;
@@ -56704,6 +56722,27 @@ function flashMarcar(grupo, id, checked) {
   window._flashData[grupo][id] = checked;
 }
 function flashCampo(campo, valor) { window._flashData[campo] = valor; }
+/* -- Empresa executora: por padrão vem da frente/circuito (FLASH_FRENTES),
+   mas alguns circuitos (ex. Guaporé/LDAT PV1-GPO, pedido Tiago 13/11/2026)
+   passaram a ter mais de uma empresa envolvida — por isso o campo fica
+   editável na mão. Só RESSUGERE o nome da empreiteira ao trocar de frente
+   enquanto o usuário não tiver digitado nada manualmente nesse campo nesta
+   sessão de formulário (_empresaAuto), e nunca num registro que já está
+   sendo editado (mesma cautela do medAutoPreencherValorEscopo). -- */
+function flashEmpresaPadrao(frenteId) {
+  const fr = FLASH_FRENTES.find(f => f.id === frenteId);
+  return fr ? (fr.empreiteira || '') : '';
+}
+function flashAutoPreencherEmpresa() {
+  const d = window._flashData;
+  if (window._flashRegistroAtualId) return;
+  if (d._empresaAuto === false) return;
+  d.empresaExecutora = flashEmpresaPadrao(d.frenteId);
+}
+function flashCampoEmpresa(valor) {
+  window._flashData.empresaExecutora = valor;
+  window._flashData._empresaAuto = false;
+}
 
 /* -- Cumprimento do prazo de atendimento da orientação verbal (mesmo padrão
    já usado em Notificação de NC — ver ncCalcularStatusPrazoAtendimento):
@@ -57283,7 +57322,7 @@ async function flashSalvar() {
   const fotosParaSalvar = await flashPrepararFotosParaSalvar(d.fotos || [], d.data);
   const registro = {
     Title: 'Flash Report — ' + (frente ? frente.nome : d.frenteId) + ' — ' + d.data,
-    FrenteId: d.frenteId, FrenteNome: frente ? frente.nome : d.frenteId, Empreiteira: frente ? frente.empreiteira : '',
+    FrenteId: d.frenteId, FrenteNome: frente ? frente.nome : d.frenteId, Empreiteira: (d.empresaExecutora != null && d.empresaExecutora !== '') ? d.empresaExecutora : (frente ? frente.empreiteira : ''),
     Data: d.data, ResponsavelTecnico: d.rt, Clima: d.clima, Trecho: d.trecho, Equipe: d.equipe, Fiscal: d.fiscal,
     OutraAtividade: d.outraativ, OutraOcorrencia: d.outraocorr,
     Atividades: d.atividades, PrevisaoAmanha: d.amanha, Observacoes: d.obs,
@@ -57647,7 +57686,7 @@ function flashHtmlHistorico() {
     return `
     <div style="margin-bottom:18px">
       <div style="font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--brown-dark,#3F261F);margin-bottom:6px;display:flex;align-items:center;gap:6px;cursor:pointer" onclick="flashFiltrarCircuito('')">
-        ⚡ ${fr.nome} <span style="font-weight:400;color:var(--text-muted)">— ${fr.empreiteira}</span>
+        ⚡ ${fr.nome}${fr.empreiteira ? ` <span style="font-weight:400;color:var(--text-muted)">— ${fr.empreiteira}</span>` : ''}
         <span style="background:var(--surface2);border-radius:20px;padding:1px 8px;font-weight:700;letter-spacing:0">${itens.length} registro${itens.length > 1 ? 's' : ''}</span>
         <span style="font-weight:400;color:var(--text-muted);text-transform:none">← todos os circuitos</span>
       </div>
@@ -57782,11 +57821,14 @@ function pageChecklistFlash() {
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">${editando ? '✏️ Editar Flash Report' : '➕ Novo Flash Report'}</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-      <div class="form-group" style="margin:0"><label>Frente / Empreiteira</label>
-        <select onchange="flashCampo('frenteId', this.value); navigate('checklist_flash')">
-          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="form-group" style="margin:0"><label>Frente / Circuito</label>
+        <select onchange="flashCampo('frenteId', this.value); flashAutoPreencherEmpresa(); navigate('checklist_flash')">
+          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome}${f.empreiteira ? ' — ' + f.empreiteira : ''}</option>`).join('')}
         </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Empresa Executora</label>
+        <input value="${(d.empresaExecutora || '').replace(/"/g, '&quot;')}" oninput="flashCampoEmpresa(this.value)" placeholder="Nome da empresa responsável pela frente">
       </div>
       <div class="form-group" style="margin:0"><label>Data</label><input type="date" value="${d.data || ''}" onchange="flashCampo('data', this.value)"></div>
     </div>
@@ -57968,7 +58010,7 @@ async function _flashGerarDoc(d, numOverride) {
 
   // Cabeçalho de identificação em colunas: linha 1 = Data / Empresa / Clima,
   // linha 2 = Frente de Serviço / Equipe. RT removido — não aparece mais aqui.
-  const empresaTxt = 'Empresa: ' + (frente ? frente.empreiteira : (d.frenteId || '--'));
+  const empresaTxt = 'Empresa: ' + ((d.empresaExecutora != null && d.empresaExecutora !== '') ? d.empresaExecutora : (frente ? frente.empreiteira : (d.frenteId || '--')));
   // Formato curto (DD/MM/AAAA) em vez do extenso com dia da semana — cabe
   // numa linha só dentro da coluna, sem quebrar.
   const dataTxt = 'Data: ' + dtCurta;
@@ -58370,6 +58412,7 @@ async function flashExportarRegistro(id) {
     outraativ: f.OutraAtividade, outraocorr: f.OutraOcorrencia, atividades: f.Atividades, amanha: f.PrevisaoAmanha, obs: f.Observacoes, fotos: fotosHidratadas || [],
     orientacaoVerbal: !!f.OrientacaoVerbal, orientacaoPara: f.OrientacaoPara || '', orientacaoPrazo: f.OrientacaoPrazo || '',
     orientacaoDataCumprimento: f.OrientacaoDataCumprimento || '', orientacaoStatusCumprimento: f.OrientacaoStatusCumprimento || '',
+    empresaExecutora: f.Empreiteira || '',
   };
   showSyncStatus('Gerando PDF...');
   const { doc, frente } = await _flashGerarDoc(dLocal, num);
@@ -58410,7 +58453,7 @@ async function flashGerarDocResumoAtendimento(f, num) {
   doc.text('FR-' + num + ' - Resumo do Flash Report', ML + 0.3, y + 0.5);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80, 60, 50);
   let iy = y + 0.9;
-  doc.text('Data: ' + dt + '    |    Circuito/Frente: ' + (frente ? frente.nome + ' — ' + frente.empreiteira : (f.FrenteId || '--')), ML + 0.3, iy); iy += 0.4;
+  doc.text('Data: ' + dt + '    |    Circuito/Frente: ' + (frente ? frente.nome : (f.FrenteId || '--')) + ' — ' + (f.Empreiteira || (frente ? frente.empreiteira : '') || '—'), ML + 0.3, iy); iy += 0.4;
   doc.text('Responsável Técnico: ' + (f.ResponsavelTecnico || '--') + '    |    Fiscal Ambiental: ' + (f.Fiscal || '--'), ML + 0.3, iy); iy += 0.4;
   doc.text('Não conformidades atendidas: ' + itens.length, ML + 0.3, iy); iy += 0.4;
   y += boxH + 0.3;
@@ -58597,7 +58640,9 @@ function ncNovoForm(frenteIdPreSelecionado, frOrigemIdPreSelecionado) {
     fotos: [],
     atendimentoData: '', atendimentoStatus: '', atendimentoFotos: [],
     _sugestoesFechadas: false,
+    empresaExecutora: '', _empresaAuto: true,
   };
+  window._ncData.empresaExecutora = ncEmpresaPadrao(window._ncData.frenteId);
 }
 if (!window._ncData) ncNovoForm();
 if (window._ncHistorico === undefined) window._ncHistorico = null;
@@ -58606,6 +58651,24 @@ if (window._ncRegistroAtualId === undefined) window._ncRegistroAtualId = null;
 if (window._ncCircuitoFiltro === undefined) window._ncCircuitoFiltro = null;
 
 function ncCampo(campo, valor) { window._ncData[campo] = valor; }
+/* -- Mesmo padrão do Flash Report (flashEmpresaPadrao/flashAutoPreencherEmpresa) —
+   empresa executora editável na mão, só ressugerida ao trocar de circuito
+   enquanto o usuário não tiver digitado nada manualmente, e nunca num
+   registro já salvo sendo editado. -- */
+function ncEmpresaPadrao(frenteId) {
+  const fr = FLASH_FRENTES.find(f => f.id === frenteId);
+  return fr ? (fr.empreiteira || '') : '';
+}
+function ncAutoPreencherEmpresa() {
+  const d = window._ncData;
+  if (window._ncRegistroAtualId) return;
+  if (d._empresaAuto === false) return;
+  d.empresaExecutora = ncEmpresaPadrao(d.frenteId);
+}
+function ncCampoEmpresa(valor) {
+  window._ncData.empresaExecutora = valor;
+  window._ncData._empresaAuto = false;
+}
 
 function ncPreviewNumero() {
   if (window._ncData.numero) return window._ncData.numero;
@@ -58673,6 +58736,7 @@ async function ncEditarRegistro(id) {
     fotos: (n.Fotos || []).map(f => ({ ...f })),
     atendimentoData: n.AtendimentoData || '', atendimentoStatus: n.AtendimentoStatus || '',
     atendimentoFotos: (n.AtendimentoFotos || []).map(f => ({ ...f })),
+    empresaExecutora: n.Empreiteira || '', _empresaAuto: false,
   };
   window._ncRegistroAtualId = id;
   window._ncMostrarForm = true;
@@ -59131,7 +59195,7 @@ async function ncSalvar(manterFormAberto) {
   const atendFotosExternalizadas = await ncPrepararFotosParaSalvar(d.atendimentoFotos || [], 'NCAT', d.data);
   const registro = {
     Title: d.numero + ' — ' + (frente ? frente.nome : d.frenteId),
-    FrenteId: d.frenteId, FrenteNome: frente ? frente.nome : d.frenteId, Empreiteira: frente ? frente.empreiteira : '',
+    FrenteId: d.frenteId, FrenteNome: frente ? frente.nome : d.frenteId, Empreiteira: (d.empresaExecutora != null && d.empresaExecutora !== '') ? d.empresaExecutora : (frente ? frente.empreiteira : ''),
     Numero: d.numero, Data: d.data,
     Destinatario: d.destinatario, EmailEmpr: d.emailEmpr, EmailEnergisa: d.emailEnergisa,
     FrOrigemId: (d.frOrigensIds && d.frOrigensIds[0]) || d.frOrigemId || '',
@@ -59183,6 +59247,7 @@ function _ncRegistroParaPdf(n) {
     ncsExtras: n.NcsExtras, fotos: n.Fotos,
     atendimentoData: n.AtendimentoData, atendimentoStatus: n.AtendimentoStatus,
     atendimentoPrazoStatus: n.AtendimentoPrazoStatus, atendimentoFotos: n.AtendimentoFotos,
+    empresaExecutora: n.Empreiteira || '',
   };
 }
 
@@ -59224,7 +59289,7 @@ async function ncGerarDoc(n) {
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80, 60, 50);
   let iy = y + 1.0;
   doc.text('Data: ' + dt, ML + 0.3, iy); iy += 0.4;
-  doc.text('Circuito/Frente: ' + (frente ? frente.nome + ' — ' + frente.empreiteira : (n.frenteId || '--')), ML + 0.3, iy); iy += 0.4;
+  doc.text('Circuito/Frente: ' + (frente ? frente.nome : (n.frenteId || '--')) + ' — ' + (n.empresaExecutora || '—'), ML + 0.3, iy); iy += 0.4;
   doc.text('Destinatário: ' + (n.destinatario || '--'), ML + 0.3, iy); iy += 0.4;
   doc.text('Severidade: ' + (n.severidade || '--') + '    |    Status: ' + (n.status || 'Aberta'), ML + 0.3, iy); iy += 0.4;
   progLinhas.forEach(ln => { doc.text(ln, ML + 0.3, iy); iy += 0.4; });
@@ -59403,7 +59468,7 @@ async function ncGerarDocResumoAtendimento(n) {
   doc.text((n.numero || 'NCA-???') + ' - Resumo da Notificação', ML + 0.3, y + 0.5);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80, 60, 50);
   let iy = y + 0.9;
-  doc.text('Data de emissão: ' + dt + '    |    Circuito/Frente: ' + (frente ? frente.nome + ' — ' + frente.empreiteira : (n.frenteId || '--')), ML + 0.3, iy); iy += 0.4;
+  doc.text('Data de emissão: ' + dt + '    |    Circuito/Frente: ' + (frente ? frente.nome : (n.frenteId || '--')) + ' — ' + (n.empresaExecutora || '—'), ML + 0.3, iy); iy += 0.4;
   doc.text('Destinatário: ' + (n.destinatario || '--') + '    |    Severidade: ' + (n.severidade || '--'), ML + 0.3, iy); iy += 0.4;
   if (n.prazo) { doc.text('Prazo para correção: ' + new Date(n.prazo + 'T12:00').toLocaleDateString('pt-BR'), ML + 0.3, iy); iy += 0.4; }
   descLinhas.forEach(ln => { doc.text(ln, ML + 0.3, iy); iy += 0.4; });
@@ -59604,7 +59669,7 @@ function ncHtmlHistorico() {
     if (!doCircuito.length) return '';
     return `
     <div style="margin-bottom:14px">
-      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;display:flex;align-items:center;gap:6px;cursor:pointer" onclick="ncFiltrarCircuito('${filtro ? '' : fr.id}')">⚡ ${fr.nome} — ${fr.empreiteira} <span style="font-weight:400">(${doCircuito.length})</span>${filtro ? '<span style="font-weight:400;color:var(--text-muted)">← todos os circuitos</span>' : ''}</div>
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;display:flex;align-items:center;gap:6px;cursor:pointer" onclick="ncFiltrarCircuito('${filtro ? '' : fr.id}')">⚡ ${fr.nome}${fr.empreiteira ? ' — ' + fr.empreiteira : ''} <span style="font-weight:400">(${doCircuito.length})</span>${filtro ? '<span style="font-weight:400;color:var(--text-muted)">← todos os circuitos</span>' : ''}</div>
       ${doCircuito.map(linhaN).join('')}
     </div>`;
   }).join('');
@@ -59731,11 +59796,14 @@ function pageChecklistNotif() {
   <div class="card" style="margin-bottom:16px">
     <div class="card-title">${editando ? '✏️ Editar Notificação' : '➕ Nova Notificação'} — ${d.numero || ncPreviewNumero()}</div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Circuito Elétrico / Frente</label>
-        <select onchange="ncCampo('frenteId', this.value); window._ncData._sugestoesFechadas = false; navigate('checklist_notif')">
-          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
+        <select onchange="ncCampo('frenteId', this.value); ncAutoPreencherEmpresa(); window._ncData._sugestoesFechadas = false; navigate('checklist_notif')">
+          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome}${f.empreiteira ? ' — ' + f.empreiteira : ''}</option>`).join('')}
         </select>
+      </div>
+      <div class="form-group" style="margin:0"><label>Empresa Executora</label>
+        <input value="${(d.empresaExecutora || '').replace(/"/g, '&quot;')}" oninput="ncCampoEmpresa(this.value)" placeholder="Nome da empresa responsável pela frente">
       </div>
       <div class="form-group" style="margin:0"><label>Data de Emissão</label><input type="date" value="${d.data || ''}" onchange="ncCampo('data', this.value)"></div>
     </div>
@@ -60501,7 +60569,7 @@ function medNovoForm(frenteIdPre) {
   const frenteId = frenteIdPre || FLASH_FRENTES[0].id;
   const frente = FLASH_FRENTES.find(f => f.id === frenteId);
   window._medData = {
-    frenteId, periodo: '', regObras: '', sigco: '',
+    frenteId, periodo: '', regObras: (frente && frente.regObra) ? frente.regObra : '', sigco: (frente && frente.sigco) ? String(frente.sigco) : '',
     numeroMedicao: ((window._medHistorico || []).filter(r => r.FrenteId === frenteId).length) + 1,
     data: '', status: 'Em elaboração',
     itens: [{ desc: 'Fiscalização Mensal', quanti: 1, unid: 'UNT.', valorUnit: frente && frente.valorEscopo ? frente.valorEscopo : '' }],
@@ -60531,6 +60599,10 @@ function medAutoPreencherValorEscopo() {
   }
   if (!window._medRegistroAtualId && d.itens && d.itens.length === 1 && !d.itens[0].valorUnit && frente.valorEscopo) {
     d.itens[0].valorUnit = frente.valorEscopo;
+  }
+  if (!window._medRegistroAtualId) {
+    if (!d.sigco && frente.sigco) d.sigco = String(frente.sigco);
+    if (!d.regObras && frente.regObra) d.regObras = frente.regObra;
   }
   medSugerirLocalData();
 }
@@ -60759,7 +60831,7 @@ function medHtmlHistorico() {
     if (!doCircuito.length) return '';
     return `
     <div style="margin-bottom:14px">
-      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">⚡ ${fr.nome} — ${fr.empreiteira} <span style="font-weight:400">(${doCircuito.length})</span></div>
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">⚡ ${fr.nome}${fr.empreiteira ? ' — ' + fr.empreiteira : ''} <span style="font-weight:400">(${doCircuito.length})</span></div>
       ${doCircuito.map(m => linhaM(m, false)).join('')}
     </div>`;
   }).join('');
@@ -61060,7 +61132,7 @@ function fatHtmlHistorico() {
     if (!doCircuito.length) return '';
     return `
     <div style="margin-bottom:14px">
-      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">⚡ ${fr.nome} — ${fr.empreiteira} <span style="font-weight:400">(${doCircuito.length})</span></div>
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">⚡ ${fr.nome}${fr.empreiteira ? ' — ' + fr.empreiteira : ''} <span style="font-weight:400">(${doCircuito.length})</span></div>
       ${doCircuito.map(linhaF).join('')}
     </div>`;
   }).join('');
@@ -61103,7 +61175,7 @@ function pageChecklistFaturamento() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
       <div class="form-group" style="margin:0"><label>Circuito Elétrico / Frente</label>
         <select onchange="fatCampo('frenteId', this.value); navigate('checklist_faturamento')">
-          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome} — ${f.empreiteira}</option>`).join('')}
+          ${FLASH_FRENTES.map(f => `<option value="${f.id}" ${d.frenteId === f.id ? 'selected' : ''}>${f.nome}${f.empreiteira ? ' — ' + f.empreiteira : ''}</option>`).join('')}
         </select>
       </div>
       <div class="form-group" style="margin:0"><label>NF / NFS-e</label><input value="${(d.nf || '').replace(/"/g, '&quot;')}" oninput="fatCampo('nf', this.value)"></div>
