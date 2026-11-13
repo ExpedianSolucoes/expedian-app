@@ -1506,6 +1506,7 @@ function renderPage(id) {
     relatorios: () => pageRelatorios(),
     servicos: () => pageServicos(),
     custos: () => pageCustos(),
+    medicao_geral: () => pageMedicaoGeral(),
     checklist_ero: () => pageChecklistERO(),
     checklist_linha: () => pageChecklistLinha(),
     checklist_bombeamento: () => pageChecklistBombeamento(),
@@ -45089,6 +45090,280 @@ async function vavExportarPDF() {
 
 
 
+/* ============================================================================
+   MEDIÇÃO GERAL — hub Financeiro (pedido Tiago 13/11/2026): visão consolidada
+   de "o que foi medido" por CC/cliente/mês, não só Energisa. Reaproveita o
+   mesmo motor de CC↔Receita/Despesa já usado em Centros de Custo
+   (_custosValorParaCC/_ccIdPuro), só que QUEBRADO POR MÊS em vez de total
+   acumulado, e junto com um conceito de "medido" que, pros 5 contratos
+   Energisa que já têm módulo dedicado (Gestão de Obras/WS108437/WS108438/
+   Coleta Sul/Coleta Centro), vem direto das tabelas MedicoesEnergisa/
+   MedicoesContratosEnergisa já existentes (zero duplicação/lançamento
+   duplo) — pros demais CCs ativos (hoje controlados "de forma solta" fora
+   do app, conforme confirmado pelo Tiago), usa uma tabela nova e genérica
+   'MedicoesGerais' com o mesmo vocabulário de Status já usado nos módulos
+   Energisa (Em elaboração/Enviada/Aprovada/Recebida). -- */
+const MEDGERAL_STATUS_OPCOES = ['Em elaboração', 'Enviada', 'Aprovada', 'Recebida'];
+
+// CCs que já têm módulo de Medição dedicado e estruturado — aqui a aba
+// Medição Geral só EXIBE (lendo direto da tabela certa), nunca permite
+// lançar por cima, pra não duplicar/divergir do módulo original.
+const MEDGERAL_CC_DEDICADO = {
+  'CC-EXP-002': { modulo: 'obras' },                     // Gestão Ambiental de Obras (FLASH_FRENTES / MedicoesEnergisa)
+  'CC-EXP-020': { modulo: 'cmed', chave: 'ws108437' },   // Licenciamento Ambiental
+  'CC-EXP-021': { modulo: 'cmed', chave: 'ws108438' },   // Gestão Ambiental de Programas
+  'CC-EXP-027': { modulo: 'cmed', chave: 'clm108942' },  // Coleta de Resíduos Regional Sul
+  'CC-EXP-028': { modulo: 'cmed', chave: 'clm108943' },  // Coleta de Resíduos Regional Centro
+};
+
+let _medGeralReceitas = null, _medGeralDespesas = null, _medGeralLancamentos = null,
+    _medGeralEnergisaObras = null, _medGeralEnergisaContratos = null;
+
+async function medGeralCarregarDados(forcar) {
+  if (_medGeralReceitas !== null && !forcar) { navigate('medicao_geral'); return; }
+  try {
+    const [r, d, l, obras, contratos] = await Promise.all([
+      dbLerSeguro('Receitas').catch(() => []),
+      dbLerSeguro('Despesas').catch(() => []),
+      dbLer('MedicoesGerais').catch(() => []),
+      dbLer('MedicoesEnergisa').catch(() => []),
+      dbLer('MedicoesContratosEnergisa').catch(() => []),
+    ]);
+    _medGeralReceitas = Array.isArray(r) ? r : [];
+    _medGeralDespesas = Array.isArray(d) ? d : [];
+    _medGeralLancamentos = Array.isArray(l) ? l : [];
+    _medGeralEnergisaObras = Array.isArray(obras) ? obras : [];
+    _medGeralEnergisaContratos = Array.isArray(contratos) ? contratos : [];
+  } catch (e) {
+    console.warn('[Medição Geral] Falha ao carregar dados.', e);
+    _medGeralReceitas = _medGeralReceitas || [];
+    _medGeralDespesas = _medGeralDespesas || [];
+    _medGeralLancamentos = _medGeralLancamentos || [];
+    _medGeralEnergisaObras = _medGeralEnergisaObras || [];
+    _medGeralEnergisaContratos = _medGeralEnergisaContratos || [];
+  }
+  navigate('medicao_geral');
+}
+
+// CCs elegíveis: ativos, com cliente de verdade e categoria de contrato de
+// serviço (exclui "Outros recebimentos" — Consolidado/Reserva/Frota/
+// Treinamento interno sem cliente — mesmo critério já usado em
+// ctSociosCCEhContrato pra Bolsa de Gestão dos Sócios).
+function medGeralCCsElegiveis() {
+  return (centrosCustoData || []).filter(c =>
+    c.status === 'ativo' &&
+    (c.categoria || '').toLowerCase() !== 'outros recebimentos' &&
+    c.cliente && c.cliente !== '—'
+  );
+}
+
+function medGeralValorParaCC(registro, ccId) {
+  if (registro.DivisaoCC && registro.DivisaoCC.length) {
+    return registro.DivisaoCC.filter(d => _ccIdPuro(d.cc) === ccId).reduce((s, d) => s + (Number(d.valor) || 0), 0);
+  }
+  return _ccIdPuro(registro.CentroCusto) === ccId ? (Number(registro.Valor) || 0) : 0;
+}
+
+// Dados consolidados de 1 CC num mês ('YYYY-MM'): medido / recebido /
+// despesas / pendente. "Medido" pros 5 CCs dedicados vem das tabelas
+// Energisa já existentes; pros demais vem dos lançamentos de MedicoesGerais.
+// "Pendente" = medido ainda não recebido em Receitas (nunca negativo —
+// se já recebeu mais do que foi lançado como medido, mostra 0, não negativo).
+function medGeralDadosCC(ccId, mes) {
+  const dedicado = MEDGERAL_CC_DEDICADO[ccId];
+  let medido = 0;
+  if (dedicado && dedicado.modulo === 'obras') {
+    medido = (_medGeralEnergisaObras || [])
+      .filter(m => (m.Data || '').slice(0, 7) === mes)
+      .reduce((s, m) => s + (parseFloat(m.Valor) || 0), 0);
+  } else if (dedicado && dedicado.modulo === 'cmed') {
+    medido = (_medGeralEnergisaContratos || [])
+      .filter(m => m.ContratoChave === dedicado.chave && (m.Data || '').slice(0, 7) === mes)
+      .reduce((s, m) => s + (parseFloat(m.Valor) || 0), 0);
+  } else {
+    medido = (_medGeralLancamentos || [])
+      .filter(m => m.CCId === ccId && m.Periodo === mes)
+      .reduce((s, m) => s + (parseFloat(m.ValorMedido) || 0), 0);
+  }
+  const recebido = (_medGeralReceitas || [])
+    .filter(r => _ccIdPuro(r.CentroCusto) === ccId && r.Status === 'Recebido' && (r.DataRecebimento || r.DataEmissao || '').slice(0, 7) === mes)
+    .reduce((s, r) => s + medGeralValorParaCC(r, ccId), 0);
+  const despesas = (_medGeralDespesas || [])
+    .filter(d => (d.DataLancamento || '').slice(0, 7) === mes)
+    .reduce((s, d) => s + medGeralValorParaCC(d, ccId), 0);
+  const pendente = Math.max(medido - recebido, 0);
+  return { medido, recebido, despesas, pendente, dedicado: !!dedicado };
+}
+
+function medGeralNovoForm(ccId) {
+  const hoje = new Date().toISOString().slice(0, 7);
+  window._medGeralForm = { ccId, periodo: window._medGeralMes || hoje, valor: '', status: 'Em elaboração', obs: '' };
+  navigate('medicao_geral');
+}
+function medGeralFecharForm() {
+  window._medGeralForm = null;
+  navigate('medicao_geral');
+}
+function medGeralCampo(campo, valor) {
+  if (!window._medGeralForm) return;
+  window._medGeralForm[campo] = valor;
+}
+async function medGeralSalvarLancamento() {
+  const f = window._medGeralForm;
+  if (!f || !f.ccId) return;
+  const cc = (centrosCustoData || []).find(c => c.id === f.ccId);
+  const valor = rdMoedaParaNumero(f.valor);
+  if (!f.periodo || !valor) { showToast('⚠️ Preencha período e valor medido.'); return; }
+  _limparSyncError();
+  const ok = await dbInserir('MedicoesGerais', {
+    CCId: f.ccId,
+    Contrato: cc ? cc.contrato : '',
+    Cliente: cc ? cc.cliente : '',
+    Empresa: cc ? cc.empresa : '',
+    Periodo: f.periodo,
+    Data: new Date().toISOString().slice(0, 10),
+    ValorMedido: valor,
+    Status: f.status || 'Em elaboração',
+    Obs: f.obs || '',
+    CriadoPorNome: window._currentUser ? window._currentUser.name : '',
+    CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
+    DataCriacao: new Date().toISOString(),
+  });
+  if (!ok) { showToast('❌ Erro ao salvar medição.' + syncErrorDetalhe()); return; }
+  showToast('✅ Medição lançada!');
+  window._medGeralForm = null;
+  await medGeralCarregarDados(true);
+}
+async function medGeralExcluirLancamento(id) {
+  if (!confirm('Excluir esta medição?')) return;
+  const ok = await dbRemover('MedicoesGerais', id);
+  if (!ok) { showToast('❌ Erro ao excluir.' + syncErrorDetalhe()); return; }
+  await medGeralCarregarDados(true);
+}
+function medGeralFiltrarMes(valor) { window._medGeralMes = valor || null; navigate('medicao_geral'); }
+function medGeralFiltrarCliente(valor) { window._medGeralClienteFiltro = valor || null; navigate('medicao_geral'); }
+
+function medGeralAbrirListaCCsSemLancamento() {
+  const mes = window._medGeralMes || new Date().toISOString().slice(0, 7);
+  const elegiveis = medGeralCCsElegiveis();
+  const semNada = elegiveis.filter(c => {
+    const d = medGeralDadosCC(c.id, mes);
+    return !d.medido && !d.recebido && !d.despesas;
+  });
+  if (!semNada.length) { showToast('Todos os CCs ativos têm algo lançado em ' + mes + '.'); return; }
+  const lista = semNada.map(c => '• ' + c.contrato + ' (' + c.cliente + ')').join('\n');
+  alert('CCs ativos sem nada lançado em ' + mes + ':\n\n' + lista);
+}
+
+function pageMedicaoGeral() {
+  if (!_custosExtrasCarregados) { setTimeout(() => custosCarregarExtras().then(() => navigate('medicao_geral')), 50); }
+  if (currentProfile !== 'diretoria') {
+    return `<div class="page-header"><h1>Medição Geral</h1></div>
+    <div class="card" style="text-align:center;padding:48px 24px;color:var(--text-muted)">
+      <div style="font-size:2rem;margin-bottom:10px">🔒</div>
+      <div style="font-weight:700;color:var(--text)">Acesso restrito à Diretoria</div>
+      <div style="font-size:.85rem;margin-top:6px">Dados financeiros da empresa visíveis apenas para o perfil Diretoria.</div>
+      <button class="btn-secondary" style="margin-top:14px" onclick="navigate('financeiro')">← Financeiro</button>
+    </div>`;
+  }
+  if (_medGeralReceitas === null) { setTimeout(() => medGeralCarregarDados(), 100); return '<div class="card">Carregando…</div>'; }
+
+  const mes = window._medGeralMes || new Date().toISOString().slice(0, 7);
+  const clienteFiltro = window._medGeralClienteFiltro || '';
+  const elegiveis = medGeralCCsElegiveis();
+  const clientes = [...new Set(elegiveis.map(c => c.cliente))].sort();
+  const linhas = elegiveis
+    .filter(c => !clienteFiltro || c.cliente === clienteFiltro)
+    .map(c => ({ cc: c, dados: medGeralDadosCC(c.id, mes) }))
+    .filter(l => l.dados.medido || l.dados.recebido || l.dados.despesas)
+    .sort((a, b) => b.dados.medido - a.dados.medido);
+
+  const fmt = v => 'R$ ' + (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const totais = linhas.reduce((acc, l) => ({
+    medido: acc.medido + l.dados.medido, recebido: acc.recebido + l.dados.recebido,
+    despesas: acc.despesas + l.dados.despesas, pendente: acc.pendente + l.dados.pendente,
+  }), { medido: 0, recebido: 0, despesas: 0, pendente: 0 });
+
+  const f = window._medGeralForm;
+  const ccForm = f ? (centrosCustoData || []).find(c => c.id === f.ccId) : null;
+
+  return `
+  <div class="page-header">
+    <div><h1>📐 Medição Geral</h1><p>O que foi medido, recebido e gasto por cliente, mês a mês — Energisa e todos os demais contratos ativos</p></div>
+  </div>
+  <div style="margin-bottom:16px"><button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button></div>
+
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+    <label style="font-size:.8rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">📅 Mês
+      <input type="month" value="${mes}" onchange="medGeralFiltrarMes(this.value)" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px">
+    </label>
+    <label style="font-size:.8rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">🏢 Cliente
+      <select onchange="medGeralFiltrarCliente(this.value)" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px">
+        <option value="">Todos</option>
+        ${clientes.map(cl => `<option value="${cl.replace(/"/g, '&quot;')}" ${clienteFiltro === cl ? 'selected' : ''}>${cl}</option>`).join('')}
+      </select>
+    </label>
+  </div>
+
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card blue"><div class="kpi-label">Medido no mês</div><div class="kpi-value" style="font-size:1.1rem">${fmt(totais.medido)}</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Recebido no mês</div><div class="kpi-value" style="font-size:1.1rem">${fmt(totais.recebido)}</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Despesas no mês</div><div class="kpi-value" style="font-size:1.1rem">${fmt(totais.despesas)}</div></div>
+    <div class="kpi-card red"><div class="kpi-label">Pendente de receber</div><div class="kpi-value" style="font-size:1.1rem">${fmt(totais.pendente)}</div></div>
+  </div>
+
+  ${f ? `
+  <div class="card" style="margin-bottom:20px;border:2px solid var(--brand-brown,#3F261F)">
+    <div style="font-weight:700;margin-bottom:10px">➕ Lançar medição — ${ccForm ? ccForm.contrato + ' (' + ccForm.cliente + ')' : ''}</div>
+    <div class="form-row-4">
+      <div class="form-group"><label>Período</label><input type="month" value="${f.periodo || ''}" oninput="medGeralCampo('periodo', this.value)"></div>
+      <div class="form-group"><label>Valor Medido</label><input type="text" inputmode="decimal" value="${f.valor || ''}" oninput="medGeralCampo('valor', this.value)" placeholder="Ex: 15000,00"></div>
+      <div class="form-group"><label>Status</label>
+        <select onchange="medGeralCampo('status', this.value)">${MEDGERAL_STATUS_OPCOES.map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Obs.</label><input type="text" value="${(f.obs || '').replace(/"/g, '&quot;')}" oninput="medGeralCampo('obs', this.value)"></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <button class="btn-primary" onclick="medGeralSalvarLancamento()">✅ Salvar</button>
+      <button class="btn-secondary" onclick="medGeralFecharForm()">Cancelar</button>
+    </div>
+  </div>` : ''}
+
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+      <tr style="text-align:left;border-bottom:1px solid var(--border-soft,#e5e0d8)">
+        <td style="padding:7px 10px;font-weight:700">Cliente / Contrato</td>
+        <td style="padding:7px 10px;font-weight:700;text-align:right">Medido</td>
+        <td style="padding:7px 10px;font-weight:700;text-align:right">Recebido</td>
+        <td style="padding:7px 10px;font-weight:700;text-align:right">Despesas</td>
+        <td style="padding:7px 10px;font-weight:700;text-align:right">Pendente</td>
+        <td></td>
+      </tr>
+      ${!linhas.length ? `<tr><td colspan="6" style="padding:16px 10px;color:var(--text-muted);text-align:center">Nenhum valor medido, recebido ou gasto em ${mes} com os filtros atuais.</td></tr>` : ''}
+      ${linhas.map(l => `
+      <tr style="border-bottom:1px solid var(--border-soft,#e5e0d8)">
+        <td style="padding:7px 10px">
+          <div style="font-weight:700">${l.cc.contrato}</div>
+          <div style="font-size:.7rem;color:var(--text-muted)">${l.cc.cliente}${l.dados.dedicado ? ' · <span style="color:var(--blue)">módulo próprio</span>' : ''}</div>
+        </td>
+        <td style="padding:7px 10px;text-align:right;font-weight:700">${fmt(l.dados.medido)}</td>
+        <td style="padding:7px 10px;text-align:right;color:var(--green-main)">${fmt(l.dados.recebido)}</td>
+        <td style="padding:7px 10px;text-align:right;color:var(--text-muted)">${fmt(l.dados.despesas)}</td>
+        <td style="padding:7px 10px;text-align:right;${l.dados.pendente > 0 ? 'color:var(--red);font-weight:700' : 'color:var(--text-muted)'}">${fmt(l.dados.pendente)}</td>
+        <td style="padding:7px 10px;white-space:nowrap">
+          ${l.dados.dedicado ? '' : `<button onclick="medGeralNovoForm('${l.cc.id}')" style="font-size:.68rem;padding:3px 9px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">➕ Lançar</button>`}
+        </td>
+      </tr>`).join('')}
+    </table>
+  </div>
+
+  <div style="margin-top:16px">
+    <button class="btn-secondary" onclick="medGeralAbrirListaCCsSemLancamento()" style="font-size:.78rem">+ Ver CCs ativos sem nada neste mês</button>
+  </div>
+  `;
+}
+
+
 /* -- Hub "Financeiro": mesmo padrão do hub de Fiscalização Ambiental ERO acima
    (grade de cartões clicáveis, responsiva — colapsa pra 1 coluna em telas
    estreitas via auto-fill/minmax). Antes "Financeiro" era um grupo com
@@ -45123,6 +45398,7 @@ const FINANCEIRO_CATALOGO = [
   { rota: 'cadastro_empresas', icon: '🏢', titulo: 'Empresas', subtitulo: 'Empresas do grupo', perfis: ['diretoria'] },
   { rota: 'cadastro_categorias', icon: '🗂️', titulo: 'Categorias', subtitulo: 'Categorias e subcategorias de Despesas/Receitas', perfis: ['diretoria'] },
   { rota: 'custos', icon: '🗃️', titulo: 'Centros de Resultado', subtitulo: 'Contratos e projetos ativos, com valor aprovado, receitas, despesas e saldo', perfis: ['diretoria'] },
+  { rota: 'medicao_geral', icon: '📐', titulo: 'Medição Geral', subtitulo: 'O que foi medido, recebido e gasto por cliente, mês a mês — todos os contratos ativos', perfis: ['diretoria'] },
   // Pedido em 18/09/2026: faltava um jeito de chegar na tela (só existia a
   // rota, sem card nenhum apontando pra ela) — agora com Receita
   // Recebida/Despesa/Saldo automáticos por contrato e o cálculo de
