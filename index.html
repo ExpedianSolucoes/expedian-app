@@ -45249,6 +45249,9 @@ async function medGeralCarregarDados(forcar) {
     _medGeralLancamentos = Array.isArray(l) ? l : [];
     _medGeralEnergisaObras = Array.isArray(obras) ? obras : [];
     _medGeralEnergisaContratos = Array.isArray(contratos) ? contratos : [];
+    // Fecha sozinho o descasamento visto em 16/11/2026 (BM preso em
+    // "Enviada" mesmo já tendo sido recebido) — ver medGeralAutoAvancarPagos.
+    try { await medGeralAutoAvancarPagos(); } catch (e) { console.warn('[Medição Geral] auto-avanço de status falhou.', e); }
   } catch (e) {
     console.warn('[Medição Geral] Falha ao carregar dados.', e);
     _medGeralReceitas = _medGeralReceitas || [];
@@ -45426,6 +45429,70 @@ function medGeralRegistroLabel(m) {
     (m.NumeroBM ? 'BM ' + m.NumeroBM : '') || m.PeriodoReferencia || '';
 }
 function medGeralRegistroValor(m) { return parseFloat(m.ValorMedido != null ? m.ValorMedido : m.Valor) || 0; }
+// Histórico de etapas (Elaboração→Envio→Aprovação→Faturamento→Recebimento)
+// de 1 medição — pedido 16/11/2026 ("preciso ver o histórico de medido,
+// emitido, de cada medição"). Só os módulos Energisa (cmed/obras) guardam
+// essas datas por etapa (MEDICAO_ETAPAS, já existia pra outro fim — linha
+// do tempo do BM); MedicoesGerais (CCs genéricos) não tem essa estrutura,
+// aí a função devolve [] e a linha mostra só o Status normal.
+function medGeralRegistroEtapas(m) {
+  if (typeof MEDICAO_ETAPAS === 'undefined') return [];
+  const temEtapas = MEDICAO_ETAPAS.some(e => Object.prototype.hasOwnProperty.call(m, e.campoDataSalvo));
+  if (!temEtapas) return []; // registro genérico (MedicoesGerais) não tem essa estrutura — não mostra timeline vazia à toa
+  return MEDICAO_ETAPAS.map(e => ({ emoji: e.emoji, label: e.label, data: m[e.campoDataSalvo] || null }));
+}
+// Avança sozinho o status de 1 medição dedicada (obras/cmed) pra "Paga"
+// quando a Receita que ELA MESMA gerou (projetosGerarReceitaDeMedicao, via
+// ReceitaGeradaId / NotasFiscais[].receitaGeradaId — link já existente,
+// não inventei nada novo) já foi recebida de verdade, mas o status da
+// medição nunca foi atualizado à mão (pedido 16/11/2026, "pode fazer" sobre
+// o caso real do WS108438: 8 BMs presos em "Enviada" com recebimento
+// parcial já batendo em Receitas). Só AVANÇA — nunca volta status, nunca
+// mexe em outro campo, só roda quando a Receita vinculada está
+// Status==='Recebido' de fato. Rodado sempre que a Medição Geral carrega.
+async function medGeralAutoAvancarPagos() {
+  const fontes = [
+    { tabela: 'MedicoesEnergisa', lista: _medGeralEnergisaObras },
+    { tabela: 'MedicoesContratosEnergisa', lista: _medGeralEnergisaContratos },
+  ];
+  const receitasPorId = new Map((_medGeralReceitas || []).map(r => [String(r.Id), r]));
+  let mudou = false;
+  for (const { tabela, lista } of fontes) {
+    for (const m of (lista || [])) {
+      // Caso simples: 1 NF só, ligada via ReceitaGeradaId direto no registro.
+      if (m.ReceitaGeradaId && m.Status !== 'Paga') {
+        const r = receitasPorId.get(String(m.ReceitaGeradaId));
+        if (r && r.Status === 'Recebido') {
+          const dataReceb = m.DataRecebimento || (r.DataRecebimento || r.DataEmissao || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+          const ok = await dbAtualizar(tabela, m.Id, { Status: 'Paga', DataRecebimento: dataReceb });
+          if (ok) { m.Status = 'Paga'; m.DataRecebimento = dataReceb; mudou = true; }
+        }
+      }
+      // Caso seccionado (1 medição faturada em mais de 1 NF): cada NF tem
+      // seu próprio receitaGeradaId — marca só a data de recebimento
+      // daquela NF, sem mexer no Status geral (que aqui não representa
+      // "tudo pago", é por NF).
+      if (Array.isArray(m.NotasFiscais) && m.NotasFiscais.length) {
+        let notasMudaram = false;
+        const notasAtualizadas = m.NotasFiscais.map(nf => {
+          if (nf.receitaGeradaId && !nf.dataRecebimento) {
+            const r = receitasPorId.get(String(nf.receitaGeradaId));
+            if (r && r.Status === 'Recebido') {
+              notasMudaram = true;
+              return Object.assign({}, nf, { dataRecebimento: (r.DataRecebimento || r.DataEmissao || '').slice(0, 10) || new Date().toISOString().slice(0, 10) });
+            }
+          }
+          return nf;
+        });
+        if (notasMudaram) {
+          const ok = await dbAtualizar(tabela, m.Id, { NotasFiscais: notasAtualizadas });
+          if (ok) { m.NotasFiscais = notasAtualizadas; mudou = true; }
+        }
+      }
+    }
+  }
+  return mudou;
+}
 function medGeralCampoVinculo(valor) { if (window._medGeralVinculoForm) window._medGeralVinculoForm.receitaId = valor; }
 async function medGeralSalvarVinculo() {
   const vf = window._medGeralVinculoForm;
@@ -45581,7 +45648,8 @@ function pageMedicaoGeral() {
       <tr style="border-bottom:1px solid var(--border-soft,#e5e0d8);background:var(--surface2)">
         <td colspan="8" style="padding:8px 10px 12px 24px">
           ${(l.dados.registros || []).map(m => `
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:5px 0;border-bottom:1px dashed var(--border-soft,#e5e0d8);font-size:.74rem">
+          <div style="padding:5px 0;border-bottom:1px dashed var(--border-soft,#e5e0d8);font-size:.74rem">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
             <span style="font-weight:700">${fmt(medGeralRegistroValor(m))}</span>
             <span style="color:var(--text-muted)">${m.Status || ''}</span>
             ${medGeralRegistroLabel(m) ? `<span style="color:var(--text-muted)">· ${medGeralRegistroLabel(m)}</span>` : ''}
@@ -45597,6 +45665,10 @@ function pageMedicaoGeral() {
               <button onclick="medGeralAbrirVinculo('${m.Id}')" style="font-size:.68rem;padding:2px 7px;border:1px solid var(--border);border-radius:4px;background:transparent;cursor:pointer">${m.ReceitaId ? '✏️ alterar' : '🔗 vincular'}</button>
             `)}
             ${l.dados.dedicado ? '' : `<button onclick="medGeralExcluirLancamento('${m.Id}')" style="font-size:.68rem;padding:2px 7px;border:1px solid var(--border);border-radius:4px;background:transparent;cursor:pointer;color:var(--red);margin-left:auto">🗑️</button>`}
+          </div>
+          ${medGeralRegistroEtapas(m).length ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
+            ${medGeralRegistroEtapas(m).map(e => `<span title="${e.label}${e.data ? ' — ' + String(e.data).slice(0,10).split('-').reverse().join('/') : ' — ainda não'}" style="font-size:.68rem;padding:1px 6px;border-radius:10px;background:${e.data ? 'var(--surface2)' : 'transparent'};color:${e.data ? 'var(--text)' : 'var(--text-muted)'};border:1px solid ${e.data ? 'var(--border)' : 'var(--border-soft,#e5e0d8)'}">${e.emoji} ${e.data ? String(e.data).slice(0,10).split('-').reverse().slice(0,2).join('/') : '—'}</span>`).join('')}
+          </div>` : ''}
           </div>`).join('') || '<div style="font-size:.74rem;color:var(--text-muted)">Nenhum lançamento neste mês.</div>'}
         </td>
       </tr>` : ''}`; }).join('')}
@@ -72304,7 +72376,7 @@ dbSalvar = (function (orig) {
      segundos depois de salvar Despesas/ContasPagar/Receitas. -- */
 const PLAN_SYNC = {
   inicio: '2026-11-08T12:03:54.000Z',
-  caminho: ['04 - FINANCEIRO', '04 - Contas a Pagar', '07 - Ano 2026', 'FINANCEIRO 2026 - EXPEDIAN.xlsx'],
+  caminho: ['04 - FINANCEIRO', '10 - Controles e Relatórios Gerenciais', '01 - Planilhas de Controle Financeiro', '09 - Controle Financeiro 2026 - EXPEDIAN.xlsx'],
   maxLinha: 6000,
   abas: {
     saidas:   { nome: '💸 Saídas',         idCol: 'AE', limpar: ['B','E','I','J','K','L','M','N','P','R','T','U','V','X','Z','AB','AC','AD'] },
