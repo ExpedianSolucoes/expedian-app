@@ -45347,7 +45347,7 @@ function medGeralDadosCC(ccId, mes) {
   // Recebido: compara o que já entrou em Receitas (recebido) com o medido.
   const recebidoStatus = medido <= 0 ? (recebido > 0 ? 'sim' : 'sem_registro')
     : (recebido >= medido - 0.01 ? 'sim' : (recebido > 0 ? 'parcial' : 'nao'));
-  return { medido, recebido, despesas, pendente, dedicado: !!dedicado, emitido, recebidoStatus, semVinculo };
+  return { medido, recebido, despesas, pendente, dedicado: !!dedicado, emitido, recebidoStatus, semVinculo, registros };
 }
 
 function medGeralNovoForm(ccId) {
@@ -45416,6 +45416,16 @@ function medGeralAbrirVinculo(lancamentoId) {
   navigate('medicao_geral');
 }
 function medGeralFecharVinculo() { window._medGeralVinculoForm = null; navigate('medicao_geral'); }
+// Rótulo descritivo de 1 registro de medição, qualquer que seja a origem
+// (MedicoesGerais tem Obs; MedicoesEnergisa/obras tem Servicos/Title/
+// FrenteNome; MedicoesContratosEnergisa/cmed tem NumeroBM/PeriodoReferencia)
+// — pedido 16/11/2026: ao escolher 1 Contrato, abrir TODAS as medições do
+// mês desse contrato (não só as de MedicoesGerais).
+function medGeralRegistroLabel(m) {
+  return m.Obs || m.Servicos || m.Title || m.FrenteNome ||
+    (m.NumeroBM ? 'BM ' + m.NumeroBM : '') || m.PeriodoReferencia || '';
+}
+function medGeralRegistroValor(m) { return parseFloat(m.ValorMedido != null ? m.ValorMedido : m.Valor) || 0; }
 function medGeralCampoVinculo(valor) { if (window._medGeralVinculoForm) window._medGeralVinculoForm.receitaId = valor; }
 async function medGeralSalvarVinculo() {
   const vf = window._medGeralVinculoForm;
@@ -45549,13 +45559,13 @@ function pageMedicaoGeral() {
         <td></td>
       </tr>
       ${!linhas.length ? `<tr><td colspan="8" style="padding:16px 10px;color:var(--text-muted);text-align:center">Nenhum valor medido, recebido ou gasto em ${mes} com os filtros atuais.</td></tr>` : ''}
-      ${linhas.map(l => `
+      ${linhas.map(l => { const detalheAberto = !!contratoFiltro || !!(window._medGeralDetalheAberto && window._medGeralDetalheAberto.ccId === l.cc.id && window._medGeralDetalheAberto.mes === mes); return `
       <tr style="border-bottom:1px solid var(--border-soft,#e5e0d8)">
         <td style="padding:7px 10px">
           <div style="font-weight:700">${l.cc.contrato}</div>
           <div style="font-size:.7rem;color:var(--text-muted)">${l.cc.cliente}${l.dados.dedicado ? ' · <span style="color:var(--blue)">módulo próprio</span>' : ''}</div>
           ${l.dados.semVinculo ? '<div style="font-size:.68rem;color:var(--red);font-weight:700;margin-top:2px">⚠️ Recebida sem Receita vinculada</div>' : ''}
-          ${!l.dados.dedicado ? `<button onclick="medGeralToggleDetalhe('${l.cc.id}','${mes}')" style="font-size:.66rem;padding:1px 6px;margin-top:3px;border:1px solid var(--border);border-radius:4px;background:transparent;cursor:pointer;color:var(--text-muted)">${window._medGeralDetalheAberto && window._medGeralDetalheAberto.ccId === l.cc.id && window._medGeralDetalheAberto.mes === mes ? '▲ ocultar lançamentos' : '▼ ver lançamentos'}</button>` : ''}
+          ${!contratoFiltro ? `<button onclick="medGeralToggleDetalhe('${l.cc.id}','${mes}')" style="font-size:.66rem;padding:1px 6px;margin-top:3px;border:1px solid var(--border);border-radius:4px;background:transparent;cursor:pointer;color:var(--text-muted)">${detalheAberto ? '▲ ocultar lançamentos' : '▼ ver lançamentos individuais'}</button>` : ''}
         </td>
         <td style="padding:7px 10px;text-align:right;font-weight:700">${fmt(l.dados.medido)}</td>
         <td style="padding:7px 10px;text-align:center">${medGeralBadge(l.dados.emitido)}</td>
@@ -45567,15 +45577,15 @@ function pageMedicaoGeral() {
           ${l.dados.dedicado ? '' : `<button onclick="medGeralNovoForm('${l.cc.id}')" style="font-size:.68rem;padding:3px 9px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);cursor:pointer">➕ Lançar</button>`}
         </td>
       </tr>
-      ${(!l.dados.dedicado && window._medGeralDetalheAberto && window._medGeralDetalheAberto.ccId === l.cc.id && window._medGeralDetalheAberto.mes === mes) ? `
+      ${detalheAberto ? `
       <tr style="border-bottom:1px solid var(--border-soft,#e5e0d8);background:var(--surface2)">
         <td colspan="8" style="padding:8px 10px 12px 24px">
-          ${(_medGeralLancamentos || []).filter(m => m.CCId === l.cc.id && m.Periodo === mes).map(m => `
+          ${(l.dados.registros || []).map(m => `
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:5px 0;border-bottom:1px dashed var(--border-soft,#e5e0d8);font-size:.74rem">
-            <span style="font-weight:700">${fmt(m.ValorMedido)}</span>
+            <span style="font-weight:700">${fmt(medGeralRegistroValor(m))}</span>
             <span style="color:var(--text-muted)">${m.Status || ''}</span>
-            ${m.Obs ? `<span style="color:var(--text-muted)">· ${m.Obs}</span>` : ''}
-            ${window._medGeralVinculoForm && String(window._medGeralVinculoForm.lancamentoId) === String(m.Id) ? `
+            ${medGeralRegistroLabel(m) ? `<span style="color:var(--text-muted)">· ${medGeralRegistroLabel(m)}</span>` : ''}
+            ${l.dados.dedicado ? '' : (window._medGeralVinculoForm && String(window._medGeralVinculoForm.lancamentoId) === String(m.Id) ? `
               <select onchange="medGeralCampoVinculo(this.value)" style="font-size:.72rem;padding:2px 5px;border:1px solid var(--border);border-radius:4px">
                 <option value="">— Sem vínculo —</option>
                 ${medGeralReceitasCandidatas(l.cc.id).map(r => `<option value="${r.id}" ${String(window._medGeralVinculoForm.receitaId) === String(r.id) ? 'selected' : ''}>${r.label.replace(/"/g, '&quot;')}</option>`).join('')}
@@ -45585,11 +45595,11 @@ function pageMedicaoGeral() {
             ` : `
               ${m.ReceitaId ? `<span style="color:var(--green-main)">🔗 ${medGeralReceitaLabel(m.ReceitaId)}</span>` : (m.Status === 'Recebida' ? '<span style="color:var(--red);font-weight:700">⚠️ sem vínculo</span>' : '<span style="color:var(--text-muted)">sem vínculo</span>')}
               <button onclick="medGeralAbrirVinculo('${m.Id}')" style="font-size:.68rem;padding:2px 7px;border:1px solid var(--border);border-radius:4px;background:transparent;cursor:pointer">${m.ReceitaId ? '✏️ alterar' : '🔗 vincular'}</button>
-            `}
-            <button onclick="medGeralExcluirLancamento('${m.Id}')" style="font-size:.68rem;padding:2px 7px;border:1px solid var(--border);border-radius:4px;background:transparent;cursor:pointer;color:var(--red);margin-left:auto">🗑️</button>
+            `)}
+            ${l.dados.dedicado ? '' : `<button onclick="medGeralExcluirLancamento('${m.Id}')" style="font-size:.68rem;padding:2px 7px;border:1px solid var(--border);border-radius:4px;background:transparent;cursor:pointer;color:var(--red);margin-left:auto">🗑️</button>`}
           </div>`).join('') || '<div style="font-size:.74rem;color:var(--text-muted)">Nenhum lançamento neste mês.</div>'}
         </td>
-      </tr>` : ''}`).join('')}
+      </tr>` : ''}`; }).join('')}
     </table>
   </div>
 
