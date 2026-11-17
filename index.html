@@ -18169,7 +18169,7 @@ function renderDespesasTab() {
          continua com seu próprio bloco maior (pills de categoria + busca) na
          Linha 2b. -->
     <div class="form-row form-row-rd-modalidade">
-      <div class="form-group">
+      <div class="form-group" id="rd_modalidade_group">
         <label>Modalidade</label>
         <select id="rd_modalidade" onchange="rdToggleModalidade()">
           <option value="">Selecione...</option>
@@ -73145,14 +73145,38 @@ function _planPodeRodar() {
 async function _planGarantirListas(token, sessao, item) {
   // Pedido 16/11/2026: as opções novas do APP também existem nas listas da planilha
   // (subcategoria → categoria/grupo/tipo, receita → categoria, forma "Compensação").
+  // Ajuste 17/11/2026 (Tiago: "adiantamento sócio só existe no APP, não tá na
+  // planilha"): a causa real era que as faixas nomeadas SubCat_Despesas/
+  // SubCat_Receitas (que alimentam os menus de Subcategoria em 💸 Saídas/
+  // 💰 Receitas) ficavam uma linha pra trás depois que uma linha nova era
+  // gravada aqui — a opção existia na lista mas não aparecia no menu. Agora,
+  // depois de garantir a linha na _Listas, a função também estende a faixa
+  // nomeada até a última linha preenchida de verdade, pra isso nunca mais
+  // ficar dessincronizado quando uma categoria nova for adicionada.
   if (_plan.listasOk) return;
   try {
     const ler = async (aba, end) => { const r = await _planFetch(token, sessao, _planUrlAba(item, aba, end) + '?$select=values'); return r.ok ? ((await r.json()).values || []) : null; };
     const gravar = (aba, end, vals) => _planFetch(token, sessao, _planUrlAba(item, aba, end), { method: 'PATCH', body: JSON.stringify({ values: vals }) });
-    const sub = await ler('_Listas', 'P1:S300');
-    if (sub && !sub.some(l => l[0] === 'Adiantamento a sócio')) { const n = sub.findIndex((l, i) => i > 0 && !l[0]) + 1; if (n > 1) await gravar('_Listas', `P${n}:S${n}`, [['Adiantamento a sócio', 'Patrimônio/Sócios', 'Patrimônio', 'Patrimônio']]); }
+    const estenderNome = (nome, ref) => _planFetch(token, sessao, `https://graph.microsoft.com/v1.0/drives/${item.driveId}/items/${item.itemId}/workbook/names('${nome}')`, { method: 'PATCH', body: JSON.stringify({ value: '=' + ref }) });
+    const ultimaLinha = (lista) => { let u = 0; lista.forEach((l, i) => { if (l[0] !== '' && l[0] != null) u = i + 1; }); return u; };
+
+    let sub = await ler('_Listas', 'P1:S300');
+    if (sub && !sub.some(l => l[0] === 'Adiantamento a sócio')) {
+      const n = sub.findIndex((l, i) => i > 0 && !l[0]) + 1;
+      if (n > 1) { await gravar('_Listas', `P${n}:S${n}`, [['Adiantamento a sócio', 'Patrimônio/Sócios', 'Patrimônio', 'Patrimônio']]); sub = await ler('_Listas', 'P1:S300'); }
+    }
+    if (sub) { const u = ultimaLinha(sub); if (u > 1) await estenderNome('SubCat_Despesas', `_Listas!$P$2:$P$${u}`); }
+
     const fm = await ler('_Listas', 'J1:J40');
     if (fm && !fm.some(l => l[0] === 'Compensação')) { const n = fm.findIndex((l, i) => i > 0 && !l[0]) + 1; if (n > 1) await gravar('_Listas', `J${n}`, [['Compensação']]); }
+
+    let rec = await ler('_Listas', 'W1:W300');
+    if (rec && !rec.some(l => l[0] === 'Devolução de sócio')) {
+      const n = rec.findIndex((l, i) => i > 0 && !l[0]) + 1;
+      if (n > 1) { await gravar('_Listas', `W${n}`, [['Devolução de sócio']]); rec = await ler('_Listas', 'W1:W300'); }
+    }
+    if (rec) { const u = ultimaLinha(rec); if (u > 1) await estenderNome('SubCat_Receitas', `_Listas!$W$2:$W$${u}`); }
+
     const cat = await ler('Categorias', 'A1:D490');
     if (cat && !cat.some(l => l[3] === 'Devolução de sócio')) { let u = 0; cat.forEach((l, i) => { if (l.some(x => x !== '' && x != null)) u = i + 1; }); if (u && u < 490) await gravar('Categorias', `A${u + 1}:D${u + 1}`, [['Receita', 'Não Operacional', 'Reembolsos', 'Devolução de sócio']]); }
     _plan.listasOk = true;
@@ -73297,7 +73321,7 @@ const SC_FORMA_CAMPO = { rd: 'rd_forma_pgto', pag: 'pag_forma_pgto', rc: 'rc_for
 function scBlocoHTML(p) {
   return `<div class="form-row" id="${p}_sc_row" style="display:none">
     <div class="form-group" style="flex:1;min-width:180px"><label>Sócio <span style="color:var(--red)">*</span></label>
-      <select id="${p}_sc_socio" onchange="scContas('${p}')"><option value="">Selecione...</option>${SC_SOCIOS.map(s => `<option value="${s}">${s}</option>`).join('')}</select></div>
+      <select id="${p}_sc_socio" onchange="scContas('${p}');if('${p}'==='rd')_rdMirrarSocioParaModalidade()"><option value="">Selecione...</option>${SC_SOCIOS.map(s => `<option value="${s}">${s}</option>`).join('')}</select></div>
     <div class="form-group" style="flex:1;min-width:150px"><label>Conta</label><select id="${p}_sc_conta"><option value="Geral">Geral</option></select></div>
     <div class="form-group" style="flex:2;min-width:220px;align-self:end;font-size:.74rem;color:var(--text-muted)">Vai para o Controle Antecipação Lucros: adiantamento soma na dívida do sócio; devolução e compensação abatem.</div>
   </div>`;
@@ -73311,7 +73335,35 @@ function scToggle(p) {
   const row = document.getElementById(p + '_sc_row'); if (!row) return;
   const sub = (document.getElementById(p + '_subcategoria') || {}).value || '';
   const fm = (document.getElementById(SC_FORMA_CAMPO[p]) || {}).value || '';
-  row.style.display = (sub === SC_SUB_DESP || sub === SC_SUB_REC || fm === SC_FORMA) ? '' : 'none';
+  const ativo = (sub === SC_SUB_DESP || sub === SC_SUB_REC || fm === SC_FORMA);
+  row.style.display = ativo ? '' : 'none';
+  if (p === 'rd') _rdSyncModalidadeComSocio(ativo);
+}
+// Evita duplicar a escolha do sócio (pedido Tiago 17/11/2026): quando o bloco
+// "Sócio */Conta" acima (Subcategoria/Forma de Pagamento de sócio) está
+// ativo, a Modalidade vira "Sócio" automaticamente e some da tela — o nome
+// escolhido em "Sócio *" já alimenta o Fornecedor do lançamento, sem precisar
+// escolher de novo no campo de Modalidade. Se a Subcategoria deixar de ser de
+// sócio, a Modalidade volta a aparecer normalmente (só reseta se tinha sido
+// forçada por aqui, nunca sobrescreve uma escolha manual do usuário).
+function _rdSyncModalidadeComSocio(ativo) {
+  const sel = document.getElementById('rd_modalidade'); if (!sel) return;
+  const grupo = document.getElementById('rd_modalidade_group');
+  const socioRow = document.getElementById('rd_socio_row');
+  if (ativo) {
+    if (sel.value !== 'socio') { sel.value = 'socio'; sel.dataset.auto = '1'; rdToggleModalidade(); }
+    if (grupo) grupo.style.display = 'none';
+    if (socioRow) socioRow.style.display = 'none';
+    _rdMirrarSocioParaModalidade();
+  } else {
+    if (grupo) grupo.style.display = '';
+    if (sel.dataset.auto === '1') { sel.value = ''; sel.dataset.auto = ''; rdToggleModalidade(); }
+  }
+}
+function _rdMirrarSocioParaModalidade() {
+  const nome = (document.getElementById('rd_sc_socio') || {}).value || '';
+  const sel = document.getElementById('rd_socio_sel'); if (sel) sel.value = nome;
+  const inp = document.getElementById('rd_socio_input'); if (inp) inp.value = nome;
 }
 function scPreencher(p, reg) {
   const s = document.getElementById(p + '_sc_socio'); if (!s) return;
