@@ -5814,6 +5814,18 @@ function _centrosCustoVisiveis() {
   // (que so esconde de colaborador).
   return solicEhGestorGeral() ? base : base.filter(c => !c.restritoGestorGeral);
 }
+// CC encerrado ('finalizado') pra lançamento de Despesa/Receita/Contas a Pagar
+// (pedido Tiago 18/11/2026: "os centros de custos encerrados quando eu gestor
+// geral precisar usar eles, como faço?") — hoje o filtro "status==='ativo'" é
+// fixo em TODO seletor de CC do app, nem o Gestor Geral conseguia escolher um
+// CC encerrado em lugar nenhum. Esta função deixa isso selecionável SÓ pro
+// Gestor Geral, nos seletores de CC usados ao lançar/editar/ratear Despesa,
+// Receita e Contas a Pagar — os demais perfis continuam só vendo 'ativo', e
+// telas de listagem/KPI/relatório (que contam "quantos CCs ativos" etc.)
+// continuam intocadas, usando 'ativo' direto.
+function _ccStatusSelecionavel(c) {
+  return c.status === 'ativo' || (c.status === 'finalizado' && solicEhGestorGeral());
+}
 
 function atualizarCCsPrest() {
   const empresa = document.getElementById('prest_empresa').value;
@@ -9646,7 +9658,7 @@ function _pagCCsDisponiveis() {
   const empresa = normalizarEmpresa((document.getElementById('pag_empresa') || {}).value || '');
   if (!empresa) return [];
   return _centrosCustoVisiveis().filter(c => {
-    return normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo';
+    return normalizarEmpresa(c.empresa) === empresa && _ccStatusSelecionavel(c);
   });
 }
 
@@ -9744,7 +9756,7 @@ function aprovDivccToggle(pfx) {
 function aprovDivccCCsDisponiveis(pfx) {
   const empresa = normalizarEmpresa(window['_aprovEmpresa_' + pfx] || '');
   if (!empresa) return [];
-  return _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
+  return _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && _ccStatusSelecionavel(c));
 }
 function aprovDivccFiltrarCCs(pfx, texto) {
   const dd = document.getElementById(pfx + '_divcc_cc_dropdown');
@@ -10395,7 +10407,7 @@ function recTrocarEmpresaForm() { recAtualizarContratante(); }
 function rfeCCsDisponiveis() {
   const empresa = normalizarEmpresa(window._rfeEmpresa || '');
   if (!empresa) return [];
-  return _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
+  return _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && _ccStatusSelecionavel(c));
 }
 function rfeFiltrarCCs(texto) {
   const dd = document.getElementById('rfe_cc_dropdown'); if (!dd) return;
@@ -15974,7 +15986,7 @@ function rcIdentificarCCPorTexto(texto) {
     return melhor;
   };
   const empresaAtiva = normalizarEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]);
-  const doEmpresaAtiva = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresaAtiva && c.status === 'ativo');
+  const doEmpresaAtiva = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresaAtiva && _ccStatusSelecionavel(c));
   let achado = buscarEm(doEmpresaAtiva);
   if (achado) return { cliente: achado.cliente !== '—' ? achado.cliente : '', cc: achado.id + ' · ' + achado.contrato, empresaDiferente: null };
   achado = buscarEm(_centrosCustoVisiveis());
@@ -17311,7 +17323,7 @@ function rceFiltrarCCs(texto) {
   if (!dd) return;
   const t = (texto||'').trim().toLowerCase();
   const empresa = normalizarEmpresa(window._rceEmpresaAtual || RD_EMPRESAS[0]);
-  const disponiveis = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
+  const disponiveis = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && _ccStatusSelecionavel(c));
   const matches = (t ? disponiveis.filter(c => (c.id+' '+c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0,40);
   let html = matches.map(c => {
     const label = (c.id + ' · ' + c.contrato).replace(/'/g,"\\'");
@@ -19218,7 +19230,7 @@ async function rdConfirmarCadastroColaborador() {
 function _rdCCsDisponiveis() {
   const empresa = normalizarEmpresa(window._rdEmpresaAtiva || RD_EMPRESAS[0]);
   return _centrosCustoVisiveis().filter(c => {
-    return normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo';
+    return normalizarEmpresa(c.empresa) === empresa && _ccStatusSelecionavel(c);
   });
 }
 
@@ -20450,7 +20462,7 @@ function rdVerDivisaoCC(id) {
    escopado à empresa da despesa sendo dividida. -- */
 function rdccCCsDisponiveis() {
   const empresa = normalizarEmpresa(window._rdccEmpresa || (RD_EMPRESAS && RD_EMPRESAS[0]) || '');
-  return _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
+  return _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && _ccStatusSelecionavel(c));
 }
 function rdccFiltrarCCs(texto) {
   const dd = document.getElementById('rdcc_cc_dropdown');
@@ -73028,7 +73040,7 @@ function _planDesejadas(desp, contas, rec) {
   for (const c of contas) {
     if (c.DespesaId || !_planCriadoDepois(c)) continue;
     const base = _planLinhaSaida(Object.assign({}, c, { DataLancamento: c.DataLancamento || String(c.Created || '').slice(0, 10), TipoPagamento: c.Parcelamento, Status: c.Status === 'Pago' ? 'Pago' : c.Status, Banco: c.BancoPagamento }));
-    for (const [k, v] of _planDividir(base, c, 'CP-' + c.Id, (dv, n) => ({ K: dv.cc, AB: _planNum(dv.medicao), M: 'Parcelado', N: n, O: _planValor(dv.valor) }))) saidas.set(k, v);
+    for (const [k, v] of _planDividir(base, c, 'CP-' + c.Id, (dv, n) => ({ K: dv.cc, AB: _planNum(dv.medicao), M: 'Parcelado', N: n, O: _planValor(dv.valor), AC: dv.veiculo ? _planVeiculo(dv.veiculo) : base.AC }))) saidas.set(k, v);
   }
   // Despesas (inclui prestações aprovadas e contas pagas)
   for (const d of desp) {
@@ -73037,7 +73049,7 @@ function _planDesejadas(desp, contas, rec) {
     if (d.ContaPagarId) { chave = 'CP-' + d.ContaPagarId; origem = contaPorId.get(String(d.ContaPagarId)) || d; }
     if (!_planCriadoDepois(origem)) continue;
     const base = _planLinhaSaida(d, origem !== d ? { B: _planSerial(origem.DataLancamento || String(origem.Created || '').slice(0, 10)) } : null);
-    for (const [k, v] of _planDividir(base, d, chave, (dv, n) => ({ K: dv.cc, AB: _planNum(dv.medicao), M: 'Parcelado', N: n, O: _planValor(dv.valor) }))) saidas.set(k, v);
+    for (const [k, v] of _planDividir(base, d, chave, (dv, n) => ({ K: dv.cc, AB: _planNum(dv.medicao), M: 'Parcelado', N: n, O: _planValor(dv.valor), AC: dv.veiculo ? _planVeiculo(dv.veiculo) : base.AC }))) saidas.set(k, v);
   }
   // Receitas
   for (const x of rec) {
