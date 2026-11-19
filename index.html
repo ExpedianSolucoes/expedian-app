@@ -23520,6 +23520,7 @@ let PROJETOS_PROJETO_ATIVO = null; // null = hub | 'outorgas' | 'energisa'
 const PROJETOS_CATALOGO = [
   { chave: 'outorgas', icone: '💧', titulo: 'Outorgas — Recursos Hídricos (RO)', subtitulo: 'Regularização de outorgas de água junto à SEDAM-RO: orçamento comercial → cliente → licenciamento, com checklist documental por tipo.' },
   { chave: 'energisa', icone: '⚡', titulo: 'Energisa Rondônia', subtitulo: 'Gestão dos 5 contratos ativos — OS, medições, plano de ações, seguros e inspeções.' },
+  { chave: 'cghrv', icone: '🌊', titulo: 'CGH Rio Vermelho — Energisa Geração', subtitulo: 'Contrato 2026000401 · CLM 107899 (CC-EXP-019) — medições (BM), controle de RMA/protocolos/monitoramentos, financeiro e inspeções.' },
   { chave: 'treinamentos', icone: '🎓', titulo: 'Treinamentos & Eventos', subtitulo: 'Cursos e capacitações abertas ao público — programação, inscrições, patrocínio e orçamento por edição.' },
 ];
 
@@ -26629,6 +26630,7 @@ function pageProjetos() {
     if (PROJETOS_ENERGISA_CONTRATO_ATIVO === 'clm109803') return projetosHtmlEnergisaContratoFauna(PROJETOS_ENERGISA_CONTRATO_ATIVO);
     return projetosHtmlEnergisa();
   }
+  if (PROJETOS_PROJETO_ATIVO === 'cghrv') return projetosHtmlCghrv();
   if (PROJETOS_PROJETO_ATIVO === 'treinamentos') {
     if (!PROJETOS_TREIN_EVENTOS) { setTimeout(() => projetosTreinCarregar(), 100); return '<div class="page-header"><h1>🎓 Treinamentos & Eventos</h1></div><div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">⏳ Carregando eventos...</div>'; }
     if (PROJETOS_TREIN_EVENTO_ATIVO) return projetosHtmlTreinEvento();
@@ -26646,6 +26648,413 @@ function pageProjetos() {
   <div id="projetos-toolbar"></div>
   <div id="projetos-conteudo"><div style="color:var(--text-muted);font-size:.85rem;padding:12px">Carregando...</div></div>
   `;
+}
+
+/* =====================================================================
+   CGH RIO VERMELHO — pedido em 19/11/2026 ("ver se temos o Projeto da CGH
+   Rio Vermelho, se não tiver criar para controle, medição e outros").
+   Contrato Nº 2026000401 · CLM 107899 com a Energisa Geração — Usina
+   Maurício S/A (Gestão Ambiental para Operação da CGH Rio Vermelho,
+   Vilhena/RO), CC-EXP-019. Módulo nativo com 5 abas: Visão Geral,
+   Medições (BM por item da planilha contratual), Controle de Atividades
+   (RMA semestral, protocolos, análises de água, inspeções, treinamentos),
+   Financeiro (receitas × despesas do CC) e Inspeções. Persistido na
+   tabela "ProjetoCGHRioVermelho" (lista de registros {id, tipo:'bm'|'atividade'}).
+   Receitas/Despesas são só LIDAS das tabelas financeiras (nada é gravado lá).
+   ===================================================================== */
+const CGHRV_CC = 'CC-EXP-019';
+const CGHRV_CONTRATO = {
+  numero: 'Nº 2026000401', clm: 'CLM 107899',
+  cliente: 'Energisa Geração — Usina Maurício S/A', cnpj: '13.007.568/0001-86',
+  objeto: 'Gestão Ambiental para Operação da CGH Rio Vermelho',
+  local: 'Vilhena – RO', inicio: '2026-03-05', fim: '2029-03-04',
+  gestor: 'Marcelo Marafon', valorGlobal: 96909.98,
+  pasta: '01 - EXPEDIAN/03 - CLIENTES/01 - Em Andamentos/CGH Rio Vermelho'
+};
+const CGHRV_ITENS = [
+  { seq: 1, desc: 'Gestão Ambiental', prev: 6, un: 'UNT.', vu: 2620.00 },
+  { seq: 2, desc: 'Programa de Educação Ambiental', prev: 6, un: 'UNT.', vu: 2710.00 },
+  { seq: 3, desc: 'Programa de Monitoramento de Erosões', prev: 6, un: 'UNT.', vu: 1393.78 },
+  { seq: 4, desc: 'Programa de Monitoramento Limnológico e de Qualidade da Água', prev: 6, un: 'UNT.', vu: 2787.56 },
+  { seq: 5, desc: 'Programa de Segurança do Trabalho', prev: 6, un: 'UNT.', vu: 2400.00 },
+  { seq: 6, desc: 'Programa de Gerenciamento de Resíduos Sólidos', prev: 6, un: 'UNT.', vu: 1115.024 },
+  { seq: 7, desc: 'Inspeções de Campo', prev: 6, un: 'UNT.', vu: 3125.30 },
+];
+const CGHRV_BM_STATUS = {
+  elaboracao: { label: '📝 Em elaboração', bg: '#f3f4f6', cor: '#4b5563' },
+  enviado:    { label: '📤 Enviado ao cliente', bg: '#fef3c7', cor: '#92400e' },
+  aprovado:   { label: '✅ Aprovado', bg: '#dbeafe', cor: '#1e40af' },
+  faturado:   { label: '🧾 Faturado (NF)', bg: '#ede9fe', cor: '#5b21b6' },
+  recebido:   { label: '💰 Recebido', bg: '#d1fae5', cor: '#065f46' },
+};
+const CGHRV_AT_STATUS = {
+  pendente:  { label: '⏳ Pendente', bg: '#fef3c7', cor: '#92400e' },
+  andamento: { label: '🔄 Em andamento', bg: '#dbeafe', cor: '#1e40af' },
+  concluido: { label: '✅ Concluído', bg: '#d1fae5', cor: '#065f46' },
+};
+const CGHRV_AT_TIPOS = ['RMA semestral', 'Protocolo SEDAM', 'Taxa / DARE', 'Análise de água', 'Inspeção de campo', 'Treinamento / DDS', 'Medição (BM)', 'Licença / Documento legal', 'Outro'];
+const CGHRV_SEED = [
+  { id: 'bm01', tipo: 'bm', num: 1, data: '2026-05-29', periodo: '05/03/2026 a 29/05/2026', status: 'recebido', nf: '', dataRecebimento: '2026-07-30',
+    qtd: { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2 }, obs: 'BM01 aprovado pela Energisa Geração (01.1 - Aprovação Medição R$ 32.303,33).' },
+  { id: 'bm02', tipo: 'bm', num: 2, data: '2026-11-19', periodo: '', status: 'elaboracao', nf: '', dataRecebimento: '',
+    qtd: { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2 }, obs: 'Aba BM02 aberta em "BM - RO GERAÇÃO.xlsx" — conferir quantitativos e período antes do envio.' },
+  { id: 'at-rma-1s26', tipo: 'atividade', categoria: 'RMA semestral', titulo: 'RMA Fevereiro a Julho/2026', prazo: '2026-08-31', responsavel: 'Marcelo Marafon', status: 'andamento', item: 1,
+    obs: 'RMA Rev.00 elaborado, DARE paga, análises de água (montante/jusante), fotos de drone e listas de presença reunidas. Falta numerar o ofício e protocolar na SEDAM.' },
+  { id: 'at-prot-1s26', tipo: 'atividade', categoria: 'Protocolo SEDAM', titulo: 'Protocolar RMA Fev–Jul/2026 (ofício Energisa GIGT)', prazo: '2026-11-30', responsavel: 'Marcelo Marafon', status: 'pendente', item: 1, obs: '' },
+  { id: 'at-bm02', tipo: 'atividade', categoria: 'Medição (BM)', titulo: 'Enviar BM02 para aprovação da Energisa Geração', prazo: '2026-11-30', responsavel: 'Marcelo Marafon', status: 'andamento', item: '', obs: '' },
+  { id: 'at-agua-2s26', tipo: 'atividade', categoria: 'Análise de água', titulo: 'Coleta e análise de água (montante e jusante) — 2º semestre', prazo: '2027-01-15', responsavel: '', status: 'pendente', item: 4, obs: '' },
+  { id: 'at-insp-2s26', tipo: 'atividade', categoria: 'Inspeção de campo', titulo: 'Inspeção de campo e monitoramento de erosões — 2º semestre', prazo: '2027-01-15', responsavel: '', status: 'pendente', item: 7, obs: '' },
+  { id: 'at-trein-2s26', tipo: 'atividade', categoria: 'Treinamento / DDS', titulo: 'Educação ambiental e DDS com a equipe da usina — 2º semestre', prazo: '2027-01-15', responsavel: '', status: 'pendente', item: 2, obs: '' },
+  { id: 'at-rma-2s26', tipo: 'atividade', categoria: 'RMA semestral', titulo: 'RMA Agosto/2026 a Janeiro/2027', prazo: '2027-02-28', responsavel: 'Marcelo Marafon', status: 'pendente', item: 1, obs: '' },
+];
+let PROJ_CGHRV = null;          // lista de registros (bm + atividade)
+let PROJ_CGHRV_ABA = 'geral';
+let PROJ_CGHRV_FIN = null;      // { receitas:[], despesas:[], inspecoes:[] }
+
+async function projetosCghrvCarregar() {
+  try { const c = localStorage.getItem('projetos_cghrv_cache'); if (c && !PROJ_CGHRV) PROJ_CGHRV = JSON.parse(c); } catch (e) {}
+  try {
+    const dados = await dbLer('ProjetoCGHRioVermelho');
+    PROJ_CGHRV = Array.isArray(dados) && dados.length ? dados : (PROJ_CGHRV && PROJ_CGHRV.length ? PROJ_CGHRV : null);
+    if (!PROJ_CGHRV) { PROJ_CGHRV = JSON.parse(JSON.stringify(CGHRV_SEED)); await dbSalvar('ProjetoCGHRioVermelho', PROJ_CGHRV); }
+    try { localStorage.setItem('projetos_cghrv_cache', JSON.stringify(PROJ_CGHRV)); } catch (e) {}
+  } catch (e) { PROJ_CGHRV = PROJ_CGHRV || JSON.parse(JSON.stringify(CGHRV_SEED)); }
+  navigate('projetos');
+}
+async function projetosCghrvCarregarFin() {
+  if (PROJ_CGHRV_FIN && PROJ_CGHRV_FIN._carregando) return;
+  PROJ_CGHRV_FIN = { _carregando: true };
+  try {
+    const ler = t => (typeof dbLerSeguro === 'function' ? dbLerSeguro(t) : dbLer(t)).catch(() => []);
+    const [rec, desp, insp] = await Promise.all([ler('Receitas'), ler('Despesas'), dbLer('ChecklistERO').catch(() => [])]);
+    const ehCC = s => String(s || '').indexOf(CGHRV_CC) === 0;
+    const parteCC = r => Array.isArray(r.DivisaoCC) && r.DivisaoCC.length >= 2 ? r.DivisaoCC.filter(d => ehCC(d.cc)).reduce((s, d) => s + (+d.valor || 0), 0) : (+r.Valor || 0);
+    const doCC = r => ehCC(r.CentroCusto) || (Array.isArray(r.DivisaoCC) && r.DivisaoCC.some(d => ehCC(d.cc)));
+    const receitas = (rec || []).filter(doCC).map(r => Object.assign({}, r, { _valorCC: parteCC(r) }));
+    const despesas = (desp || []).filter(doCC).map(d => Object.assign({}, d, { _valorCC: parteCC(d) }));
+    const inspecoes = (insp || []).filter(i => /RIO\s*VERMELHO/i.test(String(i.empreendimento || i.Title || '')));
+    PROJ_CGHRV_FIN = { receitas, despesas, inspecoes };
+  } catch (e) { PROJ_CGHRV_FIN = { receitas: [], despesas: [], inspecoes: [], erro: true }; }
+  if (PROJETOS_PROJETO_ATIVO === 'cghrv') navigate('projetos');
+}
+async function projetosCghrvSalvar() {
+  const ok = await dbSalvar('ProjetoCGHRioVermelho', PROJ_CGHRV);
+  try { localStorage.setItem('projetos_cghrv_cache', JSON.stringify(PROJ_CGHRV)); } catch (e) {}
+  if (ok === false) showToast('⚠️ Não foi possível salvar no OneDrive — verifique a conexão.');
+}
+function projetosCghrvAba(a) { PROJ_CGHRV_ABA = a; navigate('projetos'); }
+
+const _cghrvEsc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const _cghrvData = d => d ? String(d).slice(0, 10).split('-').reverse().join('/') : '—';
+const _cghrvNum = v => (Math.round(v * 100) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const _cghrvBRL = v => fmtBRL(Math.round((+v || 0) * 100) / 100);
+function _cghrvBadge(map, k) { const s = map[k] || { label: k || '—', bg: '#f3f4f6', cor: '#4b5563' }; return `<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:.7rem;font-weight:700;background:${s.bg};color:${s.cor};white-space:nowrap">${s.label}</span>`; }
+function _cghrvBMs() { return (PROJ_CGHRV || []).filter(r => r.tipo === 'bm').sort((a, b) => (a.num || 0) - (b.num || 0)); }
+function _cghrvAtivs() { return (PROJ_CGHRV || []).filter(r => r.tipo === 'atividade'); }
+function _cghrvValorBM(bm) { return CGHRV_ITENS.reduce((s, it) => s + (+((bm.qtd || {})[it.seq]) || 0) * it.vu, 0); }
+function _cghrvBMconta(bm) { return bm.status !== 'elaboracao'; }   // BM em elaboração não entra no acumulado oficial
+function _cghrvAcum(exceptoId) {
+  const q = {}; CGHRV_ITENS.forEach(it => q[it.seq] = 0);
+  _cghrvBMs().filter(b => _cghrvBMconta(b) && b.id !== exceptoId).forEach(b => CGHRV_ITENS.forEach(it => q[it.seq] += (+((b.qtd || {})[it.seq]) || 0)));
+  return q;
+}
+function _cghrvKpi(t, v, sub, cor) { return `<div class="card" style="padding:14px"><div style="font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">${t}</div><div style="font-size:1.25rem;font-weight:800;margin-top:4px;color:${cor || 'inherit'}">${v}</div>${sub ? `<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${sub}</div>` : ''}</div>`; }
+
+function projetosHtmlCghrv() {
+  if (!PROJ_CGHRV) { setTimeout(() => projetosCghrvCarregar(), 50); return '<div class="page-header"><h1>🌊 CGH Rio Vermelho</h1></div><div class="card" style="text-align:center;padding:32px;color:var(--text-muted)">⏳ Carregando projeto...</div>'; }
+  if (!PROJ_CGHRV_FIN) setTimeout(() => projetosCghrvCarregarFin(), 50);
+  const abas = [['geral', '📊 Visão Geral'], ['medicoes', '📐 Medições (BM)'], ['atividades', '🗓️ Controle de Atividades'], ['financeiro', '💵 Financeiro'], ['inspecoes', '🔎 Inspeções']];
+  const corpo = PROJ_CGHRV_ABA === 'medicoes' ? _cghrvHtmlMedicoes() : PROJ_CGHRV_ABA === 'atividades' ? _cghrvHtmlAtividades() : PROJ_CGHRV_ABA === 'financeiro' ? _cghrvHtmlFinanceiro() : PROJ_CGHRV_ABA === 'inspecoes' ? _cghrvHtmlInspecoes() : _cghrvHtmlGeral();
+  return `
+  <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+    <div><h1>🌊 CGH Rio Vermelho</h1><p>${CGHRV_CONTRATO.cliente} · Contrato ${CGHRV_CONTRATO.numero} · ${CGHRV_CONTRATO.clm} · ${CGHRV_CC}</p></div>
+    <button class="btn-secondary" onclick="projetosVoltarHub()">← Todos os Projetos</button>
+  </div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">
+    ${abas.map(([k, l]) => `<button class="btn-secondary" style="${PROJ_CGHRV_ABA === k ? 'border-color:var(--green-main);color:var(--green-main)' : ''}" onclick="projetosCghrvAba('${k}')">${l}</button>`).join('')}
+  </div>
+  ${corpo}`;
+}
+function _cghrvFinPronto() { return PROJ_CGHRV_FIN && !PROJ_CGHRV_FIN._carregando; }
+
+function _cghrvHtmlGeral() {
+  const C = CGHRV_CONTRATO;
+  const bms = _cghrvBMs();
+  const medido = bms.filter(_cghrvBMconta).reduce((s, b) => s + _cghrvValorBM(b), 0);
+  const emElab = bms.filter(b => !_cghrvBMconta(b)).reduce((s, b) => s + _cghrvValorBM(b), 0);
+  const saldo = C.valorGlobal - medido;
+  const ini = new Date(C.inicio + 'T00:00:00'), fim = new Date(C.fim + 'T00:00:00'), hoje = new Date();
+  const pPrazo = Math.max(0, Math.min(100, (hoje - ini) / (fim - ini) * 100));
+  const pMed = medido / C.valorGlobal * 100;
+  const F = _cghrvFinPronto() ? PROJ_CGHRV_FIN : null;
+  const recebido = F ? F.receitas.filter(r => /recebid/i.test(r.Status || '')).reduce((s, r) => s + r._valorCC, 0) : null;
+  const despesas = F ? F.despesas.reduce((s, d) => s + d._valorCC, 0) : null;
+  const hojeISO = new Date().toISOString().slice(0, 10);
+  const ativs = _cghrvAtivs().filter(a => a.status !== 'concluido').sort((a, b) => String(a.prazo || '9').localeCompare(String(b.prazo || '9'))).slice(0, 6);
+  const atrasoMed = pMed + 0.01 < pPrazo;
+  return `
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-bottom:16px">
+    ${_cghrvKpi('Valor global', _cghrvBRL(C.valorGlobal), '36 meses · ' + _cghrvData(C.inicio) + ' a ' + _cghrvData(C.fim))}
+    ${_cghrvKpi('Medido (BMs enviados/aprovados)', _cghrvBRL(medido), _cghrvNum(pMed) + '% do contrato' + (emElab ? ' · ' + _cghrvBRL(emElab) + ' em elaboração' : ''), 'var(--green-main)')}
+    ${_cghrvKpi('Saldo contratual', _cghrvBRL(saldo), _cghrvNum(100 - pMed) + '% a medir')}
+    ${_cghrvKpi('Prazo decorrido', _cghrvNum(pPrazo) + '%', atrasoMed ? '⚠️ medição abaixo do prazo decorrido' : 'medição em dia com o prazo', atrasoMed ? '#b45309' : 'inherit')}
+    ${_cghrvKpi('Recebido (CC-EXP-019)', recebido == null ? '…' : _cghrvBRL(recebido))}
+    ${_cghrvKpi('Despesas (CC-EXP-019)', despesas == null ? '…' : _cghrvBRL(despesas))}
+    ${_cghrvKpi('Resultado do caixa', recebido == null ? '…' : _cghrvBRL(recebido - despesas), recebido ? 'margem ' + _cghrvNum((recebido - despesas) / recebido * 100) + '%' : '', recebido != null && recebido - despesas < 0 ? '#b91c1c' : 'var(--green-main)')}
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px">
+    <div class="card">
+      <div class="card-title" style="margin-bottom:10px">Dados do contrato</div>
+      <table class="data-table"><tbody>
+        <tr><td><b>Contratante</b></td><td>${C.cliente}<br><span style="font-size:.72rem;color:var(--text-muted)">CNPJ ${C.cnpj}</span></td></tr>
+        <tr><td><b>Objeto</b></td><td>${C.objeto}</td></tr>
+        <tr><td><b>Contrato</b></td><td>${C.numero} · ${C.clm}</td></tr>
+        <tr><td><b>Local</b></td><td>${C.local}</td></tr>
+        <tr><td><b>Vigência</b></td><td>${_cghrvData(C.inicio)} a ${_cghrvData(C.fim)}</td></tr>
+        <tr><td><b>Gestor Expedian</b></td><td>${C.gestor}</td></tr>
+        <tr><td><b>Centro de custo</b></td><td>${CGHRV_CC}</td></tr>
+        <tr><td><b>Pasta</b></td><td style="font-size:.72rem">${C.pasta}</td></tr>
+      </tbody></table>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div class="card-title">Próximas atividades</div><button class="btn-secondary" onclick="projetosCghrvAba('atividades')">Ver todas →</button></div>
+      ${ativs.length ? `<table class="data-table"><tbody>${ativs.map(a => `<tr><td style="white-space:nowrap;${a.prazo && a.prazo < hojeISO ? 'color:#b91c1c;font-weight:700' : ''}">${_cghrvData(a.prazo)}</td><td><b>${_cghrvEsc(a.titulo)}</b><br><span style="font-size:.7rem;color:var(--text-muted)">${_cghrvEsc(a.categoria)}${a.responsavel ? ' · ' + _cghrvEsc(a.responsavel) : ''}</span></td><td>${_cghrvBadge(CGHRV_AT_STATUS, a.status)}</td></tr>`).join('')}</tbody></table>` : '<div style="color:var(--text-muted);font-size:.85rem">Nenhuma atividade pendente.</div>'}
+    </div>
+  </div>`;
+}
+
+function _cghrvHtmlMedicoes() {
+  const acum = _cghrvAcum();
+  const bms = _cghrvBMs();
+  const totMed = CGHRV_ITENS.reduce((s, it) => s + acum[it.seq] * it.vu, 0);
+  return `
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <div class="card-title">Escopo contratual × medido acumulado</div>
+      <div style="font-size:.72rem;color:var(--text-muted)">O acumulado considera BMs enviados, aprovados, faturados ou recebidos (BM em elaboração não conta)</div>
+    </div>
+    <div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Seq.</th><th>Trabalhos previstos</th><th>Prev.</th><th>Un.</th><th>R$ unit.</th><th>Valor do item</th><th>Medido</th><th>R$ medido</th><th>Saldo qtd.</th><th>Saldo R$</th></tr></thead>
+      <tbody>${CGHRV_ITENS.map(it => { const m = acum[it.seq]; return `<tr><td>${it.seq}</td><td>${it.desc}</td><td>${it.prev}</td><td>${it.un}</td><td>${_cghrvBRL(it.vu)}</td><td>${_cghrvBRL(it.prev * it.vu)}</td><td><b>${_cghrvNum(m)}</b></td><td>${_cghrvBRL(m * it.vu)}</td><td style="${it.prev - m < 0 ? 'color:#b91c1c;font-weight:700' : ''}">${_cghrvNum(it.prev - m)}</td><td>${_cghrvBRL((it.prev - m) * it.vu)}</td></tr>`; }).join('')}
+      <tr style="font-weight:800"><td colspan="5">TOTAL</td><td>${_cghrvBRL(CGHRV_CONTRATO.valorGlobal)}</td><td></td><td>${_cghrvBRL(totMed)}</td><td></td><td>${_cghrvBRL(CGHRV_CONTRATO.valorGlobal - totMed)}</td></tr>
+      </tbody></table></div>
+  </div>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="card-title">Boletins de Medição</div>
+      <button class="btn-primary" onclick="projetosCghrvModalBM()">+ Novo BM</button>
+    </div>
+    ${bms.length ? `<div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>BM</th><th>Data</th><th>Período</th><th>Valor</th><th>Situação</th><th>NF</th><th>Recebimento</th><th></th></tr></thead>
+      <tbody>${bms.map(b => `<tr>
+        <td><b>BM${String(b.num).padStart(2, '0')}</b></td><td>${_cghrvData(b.data)}</td><td style="font-size:.75rem">${_cghrvEsc(b.periodo || '—')}</td>
+        <td><b>${_cghrvBRL(_cghrvValorBM(b))}</b></td><td>${_cghrvBadge(CGHRV_BM_STATUS, b.status)}</td><td>${_cghrvEsc(b.nf || '—')}</td><td>${_cghrvData(b.dataRecebimento)}</td>
+        <td style="white-space:nowrap"><button class="btn-secondary" title="Imprimir boletim" onclick="projetosCghrvImprimirBM('${b.id}')">🖨️</button> <button class="btn-secondary" title="Editar" onclick="projetosCghrvModalBM('${b.id}')">✏️</button> <button class="btn-secondary" title="Excluir" onclick="projetosCghrvExcluir('${b.id}')">🗑️</button></td>
+      </tr>${b.obs ? `<tr><td></td><td colspan="7" style="font-size:.72rem;color:var(--text-muted);padding-top:0">${_cghrvEsc(b.obs)}</td></tr>` : ''}`).join('')}</tbody></table></div>` : '<div style="color:var(--text-muted);font-size:.85rem">Nenhum BM cadastrado.</div>'}
+  </div>`;
+}
+
+function projetosCghrvModalBM(id) {
+  const b = id ? (PROJ_CGHRV || []).find(r => r.id === id) : null;
+  const nums = _cghrvBMs().map(x => x.num || 0);
+  const num = b ? b.num : (nums.length ? Math.max(...nums) + 1 : 1);
+  const acum = _cghrvAcum(b ? b.id : null);
+  document.body.insertAdjacentHTML('beforeend', `
+  <div id="cghrv-modal" onclick="if(event.target===this)projetosFecharModal('cghrv-modal')" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px">
+    <div class="card" style="width:100%;max-width:760px;max-height:90vh;overflow-y:auto;border-radius:16px">
+      <h2 style="font-family:'Mont',sans-serif;font-size:1rem;font-weight:800;margin-bottom:14px">${b ? 'Editar' : 'Novo'} Boletim de Medição — BM${String(num).padStart(2, '0')}</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
+        <div class="form-group"><label>Nº do BM</label><input type="number" id="cghrv-bNum" value="${num}"></div>
+        <div class="form-group"><label>Data da medição</label><input type="date" id="cghrv-bData" value="${b ? b.data || '' : new Date().toISOString().slice(0, 10)}"></div>
+        <div class="form-group"><label>Período medido</label><input id="cghrv-bPeriodo" value="${_cghrvEsc(b ? b.periodo : '')}" placeholder="Ex: 30/05/2026 a 19/11/2026"></div>
+        <div class="form-group"><label>Situação</label><select id="cghrv-bStatus">${Object.keys(CGHRV_BM_STATUS).map(k => `<option value="${k}" ${(b ? b.status : 'elaboracao') === k ? 'selected' : ''}>${CGHRV_BM_STATUS[k].label}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Nota fiscal</label><input id="cghrv-bNF" value="${_cghrvEsc(b ? b.nf : '')}"></div>
+        <div class="form-group"><label>Data de recebimento</label><input type="date" id="cghrv-bReceb" value="${b ? b.dataRecebimento || '' : ''}"></div>
+      </div>
+      <table class="data-table" style="margin:8px 0 12px">
+        <thead><tr><th>Seq.</th><th>Item</th><th>R$ unit.</th><th>Saldo disp.</th><th>Qtd. deste BM</th></tr></thead>
+        <tbody>${CGHRV_ITENS.map(it => `<tr><td>${it.seq}</td><td style="font-size:.78rem">${it.desc}</td><td>${_cghrvBRL(it.vu)}</td><td>${_cghrvNum(it.prev - acum[it.seq])}</td>
+          <td><input type="number" step="0.01" min="0" class="cghrv-q" data-seq="${it.seq}" data-vu="${it.vu}" value="${b && b.qtd && b.qtd[it.seq] != null ? b.qtd[it.seq] : 0}" oninput="projetosCghrvRecalc()" style="width:90px"></td></tr>`).join('')}
+        <tr style="font-weight:800"><td colspan="4">Valor do BM</td><td id="cghrv-bTotal">—</td></tr></tbody>
+      </table>
+      <div class="form-group"><label>Observações</label><textarea id="cghrv-bObs" rows="2">${_cghrvEsc(b ? b.obs : '')}</textarea></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+        <button class="btn-secondary" onclick="projetosFecharModal('cghrv-modal')">Cancelar</button>
+        <button class="btn-primary" onclick="projetosCghrvSalvarBM('${b ? b.id : ''}')">Salvar</button>
+      </div>
+    </div>
+  </div>`);
+  projetosCghrvRecalc();
+}
+function projetosCghrvRecalc() {
+  let t = 0; document.querySelectorAll('#cghrv-modal .cghrv-q').forEach(i => t += (+i.value || 0) * (+i.dataset.vu));
+  const el = document.getElementById('cghrv-bTotal'); if (el) el.textContent = _cghrvBRL(t);
+}
+async function projetosCghrvSalvarBM(id) {
+  const qtd = {}; document.querySelectorAll('#cghrv-modal .cghrv-q').forEach(i => qtd[i.dataset.seq] = +i.value || 0);
+  const reg = {
+    tipo: 'bm', num: +document.getElementById('cghrv-bNum').value || 1,
+    data: document.getElementById('cghrv-bData').value, periodo: document.getElementById('cghrv-bPeriodo').value.trim(),
+    status: document.getElementById('cghrv-bStatus').value, nf: document.getElementById('cghrv-bNF').value.trim(),
+    dataRecebimento: document.getElementById('cghrv-bReceb').value, qtd, obs: document.getElementById('cghrv-bObs').value.trim(),
+  };
+  if (_cghrvBMs().find(x => x.num === reg.num && x.id !== id)) { showToast('⚠️ Já existe o BM' + String(reg.num).padStart(2, '0') + '.'); return; }
+  if (reg.status !== 'elaboracao') {
+    const acum = _cghrvAcum(id || null);
+    const estoura = CGHRV_ITENS.filter(it => acum[it.seq] + (qtd[it.seq] || 0) > it.prev + 1e-9);
+    if (estoura.length && !confirm('Este BM ultrapassa o quantitativo contratado em: ' + estoura.map(i => i.desc).join(', ') + '. Salvar mesmo assim?')) return;
+  }
+  if (id) { const i = PROJ_CGHRV.findIndex(r => r.id === id); PROJ_CGHRV[i] = Object.assign({}, PROJ_CGHRV[i], reg, { modificadoEm: new Date().toISOString() }); }
+  else PROJ_CGHRV.push(Object.assign({ id: 'bm' + Date.now(), criadoEm: new Date().toISOString() }, reg));
+  projetosFecharModal('cghrv-modal');
+  await projetosCghrvSalvar(); navigate('projetos'); showToast('✅ BM salvo.');
+}
+async function projetosCghrvExcluir(id) {
+  const r = (PROJ_CGHRV || []).find(x => x.id === id); if (!r) return;
+  if (!confirm('Excluir ' + (r.tipo === 'bm' ? 'o BM' + String(r.num).padStart(2, '0') : '"' + r.titulo + '"') + '?')) return;
+  PROJ_CGHRV = PROJ_CGHRV.filter(x => x.id !== id);
+  await projetosCghrvSalvar(); navigate('projetos');
+}
+function projetosCghrvImprimirBM(id) {
+  const b = (PROJ_CGHRV || []).find(r => r.id === id); if (!b) return;
+  const C = CGHRV_CONTRATO;
+  const ant = {}; CGHRV_ITENS.forEach(it => ant[it.seq] = 0);
+  _cghrvBMs().filter(x => _cghrvBMconta(x) && (x.num || 0) < (b.num || 0)).forEach(x => CGHRV_ITENS.forEach(it => ant[it.seq] += (+((x.qtd || {})[it.seq]) || 0)));
+  const f = _cghrvBRL, n = _cghrvNum;
+  let tAnt = 0, tMes = 0;
+  const linhas = CGHRV_ITENS.map(it => { const a = ant[it.seq], m = +((b.qtd || {})[it.seq]) || 0; tAnt += a * it.vu; tMes += m * it.vu;
+    return `<tr><td>${it.seq}</td><td style="text-align:left">${it.desc}</td><td>${it.prev}</td><td>${it.un}</td><td>${f(it.vu)}</td><td>${n(a)}</td><td>${n(m)}</td><td>${n(a + m)}</td><td>${f(a * it.vu)}</td><td>${f(m * it.vu)}</td><td>${f((a + m) * it.vu)}</td><td>${f(it.prev * it.vu)}</td><td>${f((it.prev - a - m) * it.vu)}</td></tr>`; }).join('');
+  const acum = tAnt + tMes;
+  const w = window.open('', '_blank'); if (!w) { showToast('Permita pop-ups para imprimir o BM.'); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>BM${String(b.num).padStart(2, '0')} - CGH Rio Vermelho</title>
+  <style>body{font-family:Arial,sans-serif;font-size:11px;margin:18px;color:#222}h1{font-size:15px;text-align:center;margin:0 0 10px}table{border-collapse:collapse;width:100%;margin-bottom:10px}td,th{border:1px solid #888;padding:4px 5px;text-align:center}th{background:#3F261F;color:#fff}.k td{text-align:left}.tot td{font-weight:bold;background:#E2EFDA}.ass td{height:60px;vertical-align:bottom;border:none;border-top:1px solid #444;width:25%}@page{size:A4 landscape;margin:10mm}</style></head><body>
+  <h1>BOLETIM DE MEDIÇÃO DETALHADO — BM${String(b.num).padStart(2, '0')}</h1>
+  <table class="k"><tr><td><b>Contrato</b></td><td>${C.numero} · ${C.clm}</td><td><b>Contratada</b></td><td>Expedian Soluções Ambientais</td></tr>
+  <tr><td><b>Contratante</b></td><td>${C.cliente}</td><td><b>Objeto</b></td><td>${C.objeto}</td></tr>
+  <tr><td><b>Valor do contrato</b></td><td>${f(C.valorGlobal)}</td><td><b>Vigência</b></td><td>${_cghrvData(C.inicio)} a ${_cghrvData(C.fim)}</td></tr>
+  <tr><td><b>Valor medido acumulado</b></td><td>${f(acum)} (${n(acum / C.valorGlobal * 100)}%)</td><td><b>Data da medição / período</b></td><td>${_cghrvData(b.data)}${b.periodo ? ' · ' + _cghrvEsc(b.periodo) : ''}</td></tr>
+  <tr><td><b>Saldo residual</b></td><td>${f(C.valorGlobal - acum)} (${n(100 - acum / C.valorGlobal * 100)}%)</td><td><b>Nº da medição</b></td><td>${b.num}</td></tr></table>
+  <table><tr><th rowspan="2">Seq.</th><th rowspan="2">Trabalhos previstos</th><th rowspan="2">Previsto</th><th rowspan="2">Un.</th><th rowspan="2">R$ unit.</th><th colspan="3">Quantitativos</th><th colspan="3">Valores da medição (R$)</th><th colspan="2">Saldo contratual</th></tr>
+  <tr><th>Acum. anterior</th><th>Do mês</th><th>Total acum.</th><th>Acum. anterior</th><th>Do mês</th><th>Total acum.</th><th>Valor do item</th><th>Saldo</th></tr>
+  ${linhas}<tr class="tot"><td colspan="8">TOTAL GERAL</td><td>${f(tAnt)}</td><td>${f(tMes)}</td><td>${f(acum)}</td><td>${f(C.valorGlobal)}</td><td>${f(C.valorGlobal - acum)}</td></tr></table>
+  ${b.obs ? '<p><b>Observações:</b> ' + _cghrvEsc(b.obs) + '</p>' : ''}
+  <table class="ass"><tr><td>Contratante</td><td>Contratada – Expedian</td><td>Controladoria</td><td>Gerência Geral</td></tr></table>
+  <script>window.onload=()=>window.print()<\/script></body></html>`);
+  w.document.close();
+}
+
+function _cghrvHtmlAtividades() {
+  const hojeISO = new Date().toISOString().slice(0, 10);
+  const lista = _cghrvAtivs().sort((a, b) => (a.status === 'concluido') - (b.status === 'concluido') || String(a.prazo || '9').localeCompare(String(b.prazo || '9')));
+  const cont = k => lista.filter(a => a.status === k).length;
+  const atras = lista.filter(a => a.status !== 'concluido' && a.prazo && a.prazo < hojeISO).length;
+  return `
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:16px">
+    ${_cghrvKpi('Pendentes', cont('pendente'))}${_cghrvKpi('Em andamento', cont('andamento'))}${_cghrvKpi('Concluídas', cont('concluido'), '', 'var(--green-main)')}${_cghrvKpi('Atrasadas', atras, '', atras ? '#b91c1c' : 'inherit')}
+  </div>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="card-title">Controle de atividades e entregas</div>
+      <button class="btn-primary" onclick="projetosCghrvModalAtiv()">+ Nova atividade</button>
+    </div>
+    <div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Prazo</th><th>Atividade</th><th>Tipo</th><th>Item do contrato</th><th>Responsável</th><th>Situação</th><th></th></tr></thead>
+      <tbody>${lista.map(a => { const it = CGHRV_ITENS.find(i => String(i.seq) === String(a.item)); const atr = a.status !== 'concluido' && a.prazo && a.prazo < hojeISO;
+        return `<tr><td style="white-space:nowrap;${atr ? 'color:#b91c1c;font-weight:700' : ''}">${_cghrvData(a.prazo)}${atr ? '<br><span style="font-size:.65rem">ATRASADA</span>' : ''}</td>
+        <td><b>${_cghrvEsc(a.titulo)}</b>${a.obs ? `<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">${_cghrvEsc(a.obs)}</div>` : ''}${a.concluidoEm ? `<div style="font-size:.68rem;color:var(--green-main)">Concluída em ${_cghrvData(a.concluidoEm)}</div>` : ''}</td>
+        <td style="font-size:.75rem">${_cghrvEsc(a.categoria)}</td><td style="font-size:.72rem">${it ? it.seq + ' · ' + it.desc : '—'}</td><td style="font-size:.75rem">${_cghrvEsc(a.responsavel || '—')}</td>
+        <td style="cursor:pointer" title="Clique para avançar a situação" onclick="projetosCghrvAvancar('${a.id}')">${_cghrvBadge(CGHRV_AT_STATUS, a.status)}</td>
+        <td style="white-space:nowrap"><button class="btn-secondary" title="Editar" onclick="projetosCghrvModalAtiv('${a.id}')">✏️</button> <button class="btn-secondary" title="Excluir" onclick="projetosCghrvExcluir('${a.id}')">🗑️</button></td></tr>`; }).join('')}</tbody></table></div>
+  </div>`;
+}
+async function projetosCghrvAvancar(id) {
+  const a = PROJ_CGHRV.find(r => r.id === id); if (!a) return;
+  a.status = a.status === 'pendente' ? 'andamento' : a.status === 'andamento' ? 'concluido' : 'pendente';
+  a.concluidoEm = a.status === 'concluido' ? new Date().toISOString().slice(0, 10) : '';
+  await projetosCghrvSalvar(); navigate('projetos');
+}
+function projetosCghrvModalAtiv(id) {
+  const a = id ? PROJ_CGHRV.find(r => r.id === id) : null;
+  document.body.insertAdjacentHTML('beforeend', `
+  <div id="cghrv-modal" onclick="if(event.target===this)projetosFecharModal('cghrv-modal')" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px">
+    <div class="card" style="width:100%;max-width:560px;max-height:90vh;overflow-y:auto;border-radius:16px">
+      <h2 style="font-family:'Mont',sans-serif;font-size:1rem;font-weight:800;margin-bottom:14px">${a ? 'Editar' : 'Nova'} atividade</h2>
+      <div class="form-group"><label>Atividade *</label><input id="cghrv-aTit" value="${_cghrvEsc(a ? a.titulo : '')}" placeholder="Ex: RMA Agosto/2026 a Janeiro/2027"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label>Tipo</label><select id="cghrv-aTipo">${CGHRV_AT_TIPOS.map(t => `<option ${a && a.categoria === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Prazo</label><input type="date" id="cghrv-aPrazo" value="${a ? a.prazo || '' : ''}"></div>
+        <div class="form-group"><label>Responsável</label><input id="cghrv-aResp" value="${_cghrvEsc(a ? a.responsavel : '')}"></div>
+        <div class="form-group"><label>Situação</label><select id="cghrv-aStatus">${Object.keys(CGHRV_AT_STATUS).map(k => `<option value="${k}" ${(a ? a.status : 'pendente') === k ? 'selected' : ''}>${CGHRV_AT_STATUS[k].label}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-group"><label>Item do contrato vinculado</label><select id="cghrv-aItem"><option value="">—</option>${CGHRV_ITENS.map(i => `<option value="${i.seq}" ${a && String(a.item) === String(i.seq) ? 'selected' : ''}>${i.seq} · ${i.desc}</option>`).join('')}</select></div>
+      <div class="form-group"><label>Observações</label><textarea id="cghrv-aObs" rows="3">${_cghrvEsc(a ? a.obs : '')}</textarea></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+        <button class="btn-secondary" onclick="projetosFecharModal('cghrv-modal')">Cancelar</button>
+        <button class="btn-primary" onclick="projetosCghrvSalvarAtiv('${a ? a.id : ''}')">Salvar</button>
+      </div>
+    </div>
+  </div>`);
+}
+async function projetosCghrvSalvarAtiv(id) {
+  const titulo = document.getElementById('cghrv-aTit').value.trim();
+  if (!titulo) { showToast('Informe a atividade.'); return; }
+  const reg = { tipo: 'atividade', titulo, categoria: document.getElementById('cghrv-aTipo').value, prazo: document.getElementById('cghrv-aPrazo').value,
+    responsavel: document.getElementById('cghrv-aResp').value.trim(), status: document.getElementById('cghrv-aStatus').value,
+    item: document.getElementById('cghrv-aItem').value, obs: document.getElementById('cghrv-aObs').value.trim() };
+  const hoje = new Date().toISOString().slice(0, 10);
+  if (id) { const i = PROJ_CGHRV.findIndex(r => r.id === id); const ant = PROJ_CGHRV[i];
+    reg.concluidoEm = reg.status === 'concluido' ? (ant.concluidoEm || hoje) : '';
+    PROJ_CGHRV[i] = Object.assign({}, ant, reg); }
+  else PROJ_CGHRV.push(Object.assign({ id: 'at' + Date.now(), criadoEm: new Date().toISOString(), concluidoEm: reg.status === 'concluido' ? hoje : '' }, reg));
+  projetosFecharModal('cghrv-modal');
+  await projetosCghrvSalvar(); navigate('projetos');
+}
+
+function _cghrvHtmlFinanceiro() {
+  if (!_cghrvFinPronto()) return '<div class="card" style="text-align:center;padding:28px;color:var(--text-muted)">⏳ Carregando receitas e despesas do CC-EXP-019...</div>';
+  const F = PROJ_CGHRV_FIN;
+  const rec = F.receitas.slice().sort((a, b) => String(b.DataEmissao || '').localeCompare(String(a.DataEmissao || '')));
+  const dataD = d => d.DataPagamento || d.DataLancamento || d.Vencimento || '';
+  const desp = F.despesas.slice().sort((a, b) => String(dataD(b)).localeCompare(String(dataD(a))));
+  const totRec = rec.reduce((s, r) => s + r._valorCC, 0), totRecebido = rec.filter(r => /recebid/i.test(r.Status || '')).reduce((s, r) => s + r._valorCC, 0);
+  const totDesp = desp.reduce((s, d) => s + d._valorCC, 0);
+  const porCat = {}; desp.forEach(d => { const k = (d.Categoria || 'Sem categoria') + (d.Subcategoria ? ' › ' + d.Subcategoria : ''); porCat[k] = (porCat[k] || 0) + d._valorCC; });
+  const cats = Object.entries(porCat).sort((a, b) => b[1] - a[1]);
+  const bmDe = d => d.NumMedicao || (Array.isArray(d.DivisaoCC) ? ((d.DivisaoCC.find(x => String(x.cc || '').indexOf(CGHRV_CC) === 0) || {}).medicao || '') : '');
+  return `
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-bottom:16px">
+    ${_cghrvKpi('Receitas lançadas', _cghrvBRL(totRec), rec.length + ' lançamento(s)')}
+    ${_cghrvKpi('Recebido', _cghrvBRL(totRecebido), '', 'var(--green-main)')}
+    ${_cghrvKpi('Despesas do CC', _cghrvBRL(totDesp), desp.length + ' lançamento(s)')}
+    ${_cghrvKpi('Resultado (recebido − despesas)', _cghrvBRL(totRecebido - totDesp), totRecebido ? 'margem ' + _cghrvNum((totRecebido - totDesp) / totRecebido * 100) + '%' : '', totRecebido - totDesp < 0 ? '#b91c1c' : 'var(--green-main)')}
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-bottom:14px">
+    <div class="card"><div class="card-title" style="margin-bottom:10px">Receitas (CC-EXP-019)</div>
+      ${rec.length ? `<table class="data-table"><thead><tr><th>Emissão</th><th>BM</th><th>Valor</th><th>Situação</th><th>Recebimento</th></tr></thead><tbody>${rec.map(r => `<tr><td>${_cghrvData(r.DataEmissao)}</td><td>${_cghrvEsc(r.NumMedicao || '—')}</td><td>${_cghrvBRL(r._valorCC)}</td><td>${_cghrvEsc(r.Status || '—')}</td><td>${_cghrvData(r.DataRecebimento)}</td></tr>`).join('')}</tbody></table>` : '<div style="color:var(--text-muted);font-size:.85rem">Sem receitas lançadas.</div>'}
+    </div>
+    <div class="card"><div class="card-title" style="margin-bottom:10px">Despesas por categoria</div>
+      ${cats.length ? `<table class="data-table"><tbody>${cats.map(([k, v]) => `<tr><td style="font-size:.78rem">${_cghrvEsc(k)}</td><td style="text-align:right;white-space:nowrap">${_cghrvBRL(v)}</td><td style="text-align:right;font-size:.72rem;color:var(--text-muted)">${_cghrvNum(totDesp ? v / totDesp * 100 : 0)}%</td></tr>`).join('')}</tbody></table>` : '<div style="color:var(--text-muted);font-size:.85rem">Sem despesas lançadas.</div>'}
+    </div>
+  </div>
+  <div class="card"><div class="card-title" style="margin-bottom:10px">Despesas lançadas no CC-EXP-019</div>
+    <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Descrição</th><th>Fornecedor / beneficiário</th><th>Categoria</th><th>BM</th><th>Valor (CC)</th><th>Situação</th></tr></thead>
+    <tbody>${desp.map(d => `<tr><td style="white-space:nowrap">${_cghrvData(dataD(d))}</td><td style="font-size:.78rem">${_cghrvEsc(d.ServicoDesc || d.Title || '')}</td><td style="font-size:.78rem">${_cghrvEsc(d.Fornecedor || d.Beneficiario || '—')}</td><td style="font-size:.72rem">${_cghrvEsc(d.Subcategoria || d.Categoria || '')}</td><td>${_cghrvEsc(bmDe(d) || '—')}</td><td style="white-space:nowrap">${_cghrvBRL(d._valorCC)}${Array.isArray(d.DivisaoCC) && d.DivisaoCC.length >= 2 ? '<br><span style="font-size:.65rem;color:var(--text-muted)">rateado</span>' : ''}</td><td style="font-size:.75rem">${_cghrvEsc(d.Status || '—')}</td></tr>`).join('')}</tbody></table></div>
+    <div style="font-size:.7rem;color:var(--text-muted);margin-top:8px">Valores lidos de Receitas e Despesas (somente leitura). Lançamentos rateados entram só com a parcela deste CC. <a href="#" onclick="PROJ_CGHRV_FIN=null;projetosCghrvCarregarFin();return false">🔄 Atualizar</a></div>
+  </div>`;
+}
+
+function _cghrvHtmlInspecoes() {
+  const ins = _cghrvFinPronto() ? PROJ_CGHRV_FIN.inspecoes.slice().sort((a, b) => String(b.data || '').localeCompare(String(a.data || ''))) : null;
+  const ativ = _cghrvAtivs().filter(a => /Inspe|Análise|Treinamento/.test(a.categoria || ''));
+  return `
+  <div class="card" style="margin-bottom:14px"><div class="card-title" style="margin-bottom:10px">Inspeções e monitoramentos programados (contrato)</div>
+    ${ativ.length ? `<table class="data-table"><thead><tr><th>Prazo</th><th>Atividade</th><th>Situação</th></tr></thead><tbody>${ativ.map(a => `<tr><td>${_cghrvData(a.prazo)}</td><td>${_cghrvEsc(a.titulo)}</td><td>${_cghrvBadge(CGHRV_AT_STATUS, a.status)}</td></tr>`).join('')}</tbody></table>` : '<div style="color:var(--text-muted);font-size:.85rem">Nenhuma programada.</div>'}
+    <div style="font-size:.7rem;color:var(--text-muted);margin-top:6px">Cadastre e atualize em 🗓️ Controle de Atividades.</div>
+  </div>
+  <div class="card"><div class="card-title" style="margin-bottom:10px">Checklists ERO registrados no App para a SED / CGH Rio Vermelho</div>
+    ${ins == null ? '<div style="color:var(--text-muted)">⏳ Carregando...</div>' : ins.length ? `<table class="data-table"><thead><tr><th>Data</th><th>Empreendimento</th><th>Responsáveis</th><th>Atendimento</th><th></th></tr></thead><tbody>${ins.map(i => `<tr><td>${_cghrvData(i.data)}</td><td>${_cghrvEsc(i.empreendimento)}</td><td style="font-size:.78rem">${_cghrvEsc(i.responsaveis || i.Responsavel || '')}</td><td><b>${_cghrvEsc(i.Percentual || '—')}</b></td><td>${i.documentoUrl ? `<a href="${_cghrvEsc(i.documentoUrl)}" target="_blank">📄 Abrir</a>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div style="color:var(--text-muted);font-size:.85rem">Nenhum checklist encontrado.</div>'}
+    <div style="font-size:.7rem;color:var(--text-muted);margin-top:6px">Checklists da fiscalização da Energisa Rondônia na subestação (SED) do mesmo sítio — exibidos aqui como referência.</div>
+  </div>`;
 }
 
 function projetosHtmlHub() {
