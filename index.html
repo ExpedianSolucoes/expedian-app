@@ -7227,8 +7227,18 @@ function pcColherAjustesModal() {
     const v = parseFloat(valorEl.value);
     if (!isNaN(v) && v > 0) ajustes.Valor = v;
   }
+  // Pedido Tiago 19/11/2026 (prestação consolidada do Auto Posto Carga Pesada
+  // virou 1 linha só na planilha): se o lançamento JÁ tinha rateio por CC/BM e
+  // ninguém escolheu um CC único no seletor, o rateio original é mantido — antes
+  // a conferência/aprovação com a caixa de rateio desmarcada apagava o
+  // DivisaoCC e gravava os CCs juntos ("CC-A + CC-B") numa linha só.
+  const rateioOrig = window._aprovDivisaoCC_pcv || [];
+  const ccJunto = rateioOrig.map(d => d.cc).join(' + ');
+  const manterRateio = !rateio.ativo && rateioOrig.length >= 2 && (!ccEl || !ccEl.value || ccEl.value === ccJunto || ccEl.value.includes(' + '));
   if (rateio.ativo) {
     ajustes.DivisaoCC = rateio.divisaoCC; ajustes.CentroCusto = rateio.centroCusto; ajustes.NumMedicao = '';
+  } else if (manterRateio) {
+    ajustes.DivisaoCC = JSON.parse(JSON.stringify(rateioOrig)); ajustes.CentroCusto = ccJunto; ajustes.NumMedicao = '';
   } else {
     if (ccEl && ccEl.value) ajustes.CentroCusto = ccEl.value;
     if (medicaoEl) ajustes.NumMedicao = medicaoEl.value.trim();
@@ -19957,6 +19967,13 @@ async function salvarDespesa() {
       NumParcela: 1, TotalParcelas: 1,
       Distribuicoes: distribuicoes,
     };
+    // Pedido Tiago 19/11/2026 (compensação da Cassiane gravada 2x): avisa se
+    // já existe uma despesa idêntica antes de criar outra.
+    try {
+      const atuais = await dbLerSeguro('Despesas');
+      const igual = (Array.isArray(atuais) ? atuais : []).find(x => Math.abs((Number(x.Valor) || 0) - (Number(dados.Valor) || 0)) < 0.005 && String(x.Fornecedor || '') === String(dados.Fornecedor || '') && String(x.Descricao || '') === String(dados.Descricao || '') && String(x.DataLancamento || '') === String(dados.DataLancamento || '') && String(x.FormaPagamento || '') === String(dados.FormaPagamento || ''));
+      if (igual && !confirm('Já existe uma despesa idêntica (mesmo fornecedor, valor, data e descrição). Lançar outra mesmo assim?')) { showToast('Lançamento cancelado — já existia.'); return; }
+    } catch (e) {}
     ok = await dbInserir('Despesas', dados);
   }
   } finally {
@@ -31479,20 +31496,22 @@ function ctSociosDivisaoCCDoSocio(nomeSocio, valorPago) {
   const porCC = {};
   let totalCalc = 0;
   itensMes.forEach(r => {
-    const valorR = Number(r.Valor) || 0;
+    const valorR = ctSociosValorLiquido(r); // mesmo critério do card (receita líquida)
     const pctR = receitaMes > 0 ? valorR / receitaMes : 0;
     const shareSoc = bolsa * pctR * pctSoc;
     if (!shareSoc || !r.CentroCusto) return; // sem CC cadastrado não dá pra ratear
-    if (!porCC[r.CentroCusto]) porCC[r.CentroCusto] = { valor: 0, medicoes: new Set() };
-    porCC[r.CentroCusto].valor += shareSoc;
-    if (r.NumMedicao) porCC[r.CentroCusto].medicoes.add(String(r.NumMedicao));
+    // Pedido Tiago 19/11/2026: uma linha por CC + BM (antes juntava "4, 06" na
+    // mesma linha e a planilha não lia). Chave = CC|medição.
+    const k = r.CentroCusto + '|||' + String(r.NumMedicao || '').trim();
+    if (!porCC[k]) porCC[k] = { cc: r.CentroCusto, medicao: String(r.NumMedicao || '').trim(), valor: 0 };
+    porCC[k].valor += shareSoc;
     totalCalc += shareSoc;
   });
   const escala = (valorPago && totalCalc > 0) ? valorPago / totalCalc : 1;
-  return Object.keys(porCC).map(cc => ({
-    cc, medicao: Array.from(porCC[cc].medicoes).join(', '),
-    valor: Math.round(porCC[cc].valor * escala * 100) / 100,
-  })).filter(d => d.valor);
+  const linhas = Object.values(porCC).map(d => ({ cc: d.cc, medicao: d.medicao, valor: Math.round(d.valor * escala * 100) / 100 })).filter(d => d.valor);
+  // fecha centavos de arredondamento na maior linha
+  if (valorPago && linhas.length) { const dif = Math.round((valorPago - linhas.reduce((t, d) => t + d.valor, 0)) * 100) / 100; if (dif) { const m = linhas.reduce((a, b) => b.valor > a.valor ? b : a); m.valor = Math.round((m.valor + dif) * 100) / 100; } }
+  return linhas;
 }
 
 async function ctSociosConfirmarPagamento() {
@@ -73037,8 +73056,11 @@ function _planDesejadas(desp, contas, rec) {
     });
   }
   // Contas a pagar ainda sem despesa (inclui "Aguardando Aprovação" — ajuste 08/11/2026: Tiago lança e aprova; se for reprovada/excluída, a linha é limpa)
+  // Pedido Tiago 19/11/2026: provisão de DAS (gerada ao marcar NF como
+  // recebida) NÃO vai para a planilha — só o lançamento consolidado da
+  // reconciliação mensal (Provisorio:false). Linhas já gravadas são limpas.
   for (const c of contas) {
-    if (c.DespesaId || !_planCriadoDepois(c)) continue;
+    if (c.DespesaId || c.Provisorio || !_planCriadoDepois(c)) continue;
     const base = _planLinhaSaida(Object.assign({}, c, { DataLancamento: c.DataLancamento || String(c.Created || '').slice(0, 10), TipoPagamento: c.Parcelamento, Status: c.Status === 'Pago' ? 'Pago' : c.Status, Banco: c.BancoPagamento }));
     for (const [k, v] of _planDividir(base, c, 'CP-' + c.Id, (dv, n) => ({ K: dv.cc, AB: _planNum(dv.medicao), M: 'Parcelado', N: n, O: _planValor(dv.valor), AC: dv.veiculo ? _planVeiculo(dv.veiculo) : base.AC }))) saidas.set(k, v);
   }
@@ -73047,7 +73069,7 @@ function _planDesejadas(desp, contas, rec) {
     if (d.TransferenciaId) continue;
     let chave = 'D-' + d.Id, origem = d;
     if (d.ContaPagarId) { chave = 'CP-' + d.ContaPagarId; origem = contaPorId.get(String(d.ContaPagarId)) || d; }
-    if (!_planCriadoDepois(origem)) continue;
+    if (origem.Provisorio || d.Provisorio || !_planCriadoDepois(origem)) continue;
     const base = _planLinhaSaida(d, origem !== d ? { B: _planSerial(origem.DataLancamento || String(origem.Created || '').slice(0, 10)) } : null);
     for (const [k, v] of _planDividir(base, d, chave, (dv, n) => ({ K: dv.cc, AB: _planNum(dv.medicao), M: 'Parcelado', N: n, O: _planValor(dv.valor), AC: dv.veiculo ? _planVeiculo(dv.veiculo) : base.AC }))) saidas.set(k, v);
   }
@@ -73425,6 +73447,9 @@ function _scReceitaDe(d) {
     Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: d.Empresa || 'Expedian',
     ResponsavelLancamento: d.ResponsavelLancamento || d.LancadoPor || '', LancadoPor: d.LancadoPor || '',
     AdiantSocio: socio, AdiantConta: _scContaDe(d), CompensacaoDespesaId: d.Id, GeradoAutomaticamente: true,
+    // Pedido Tiago 19/11/2026: o espelho carrega o rateio CC/BM da despesa,
+    // para a planilha gravar uma linha por contrato e boletim.
+    DivisaoCC: (Array.isArray(d.DivisaoCC) ? d.DivisaoCC : []).filter(x => x && x.cc).map(x => ({ cc: x.cc, medicao: x.medicao || '', valor: Math.round((Number(x.valor) || 0) * 100) / 100 })),
   };
 }
 let _scTimer = null, _scRodando = false, _scUltimo = '';
@@ -73449,7 +73474,7 @@ async function scReconciliar() {
       if (!_scSocioDe(d)) continue;
       const alvo = _scReceitaDe(d), ex = porDesp.get(String(d.Id));
       if (!ex) { await dbInserir('Receitas', alvo); mudou++; continue; }
-      if (['DataEmissao', 'Valor', 'CentroCusto', 'Descricao', 'NumMedicao', 'Empresa', 'AdiantSocio', 'AdiantConta', 'Subcategoria'].some(k => String(ex[k] ?? '') !== String(alvo[k] ?? ''))) { await dbAtualizar('Receitas', ex.Id, alvo); mudou++; }
+      if (['DataEmissao', 'Valor', 'CentroCusto', 'Descricao', 'NumMedicao', 'Empresa', 'AdiantSocio', 'AdiantConta', 'Subcategoria'].some(k => String(ex[k] ?? '') !== String(alvo[k] ?? '')) || JSON.stringify(ex.DivisaoCC || []) !== JSON.stringify(alvo.DivisaoCC || [])) { await dbAtualizar('Receitas', ex.Id, alvo); mudou++; }
     }
     for (const r of espelhos) if (!ids.has(String(r.CompensacaoDespesaId))) { await dbRemover('Receitas', r.Id); mudou++; }
     // resumo para o Controle Antecipação Lucros
