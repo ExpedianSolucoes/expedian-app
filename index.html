@@ -13403,6 +13403,40 @@ let _bancosCache = [];
 async function carregarBancosLista() {
   try { _bancosCache = await dbLer('Bancos') || []; } catch (e) { _bancosCache = _bancosCache || []; }
 }
+/* -- Conta de APLICAÇÃO (investimento) ligada a uma Aplicação/Resgate —
+   pedido Tiago 20/11/2026: Aplicação e Resgate passam a ir para a aba
+   "🔄 Transferências" da planilha FINANCEIRO 2026 (Saiu do Banco → Entrou no
+   Banco), igual ele já lança à mão (ex.: Sicoob 5024 → Sicoob 5024 -
+   Investimentos). Para isso o lançamento guarda a conta de aplicação
+   (ContaAplicacao); lançamentos antigos sem esse campo usam a sugestão. -- */
+function _bancosAplicacaoDaEmpresa(empresa) {
+  const emp = normalizarEmpresa(empresa) || empresa;
+  return (_bancosCache || []).filter(b => normalizarEmpresa(b.Empresa) === emp && String(b.Tipo || '') === 'Aplicação').map(b => b.Title).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+function _contaAplicacaoSugerida(empresa, banco, subcategoria, descricao) {
+  const b = String(banco || '').trim(); if (!b) return '';
+  const txt = (subcategoria || '') + ' ' + (descricao || '');
+  const daEmpresa = _bancosAplicacaoDaEmpresa(empresa);
+  const lista = daEmpresa.length ? daEmpresa : (typeof _PLAN_CONTAS_APLICACAO !== 'undefined' ? (_PLAN_CONTAS_APLICACAO[normalizarEmpresa(empresa) || empresa] || []) : []);
+  const doBanco = lista.filter(t => t.toLowerCase().startsWith(b.toLowerCase()));
+  if (/capital|cota/i.test(txt)) { const c = doBanco.find(t => /capital/i.test(t)); if (c) return c; return b + ' - Conta Capital'; }
+  if (/cons[oó]rcio/i.test(txt)) { const c = doBanco.find(t => /cons[oó]rcio/i.test(t)); if (c) return c; }
+  if (/icatu|capitaliza/i.test(txt)) { const c = doBanco.find(t => /icatu/i.test(t)); if (c) return c; }
+  return doBanco.find(t => /invest/i.test(t)) || doBanco[0] || (b + ' - Investimentos');
+}
+function _contaAplicacaoOptions(empresa, atual, banco, subcategoria) {
+  const lista = _bancosAplicacaoDaEmpresa(empresa);
+  const sel = atual || _contaAplicacaoSugerida(empresa, banco, subcategoria, '');
+  const todas = lista.includes(sel) || !sel ? lista : [sel].concat(lista);
+  return todas.map(t => `<option ${t === sel ? 'selected' : ''}>${t}</option>`).join('');
+}
+function _aplAtualizarContaAplic(pfx) {
+  const emp = (document.getElementById(pfx + '_empresa') || {}).value || RD_EMPRESAS[0];
+  const banco = (document.getElementById(pfx + '_banco') || {}).value || '';
+  const sub = (document.getElementById(pfx + '_subcategoria') || {}).value || '';
+  const sel = document.getElementById(pfx + '_conta_aplic');
+  if (sel) sel.innerHTML = _contaAplicacaoOptions(emp, '', banco, sub);
+}
 function bancosDaEmpresa(empresa) {
   const emp = normalizarEmpresa(empresa) || empresa;
   const daTabela = _bancosCache.filter(b => normalizarEmpresa(b.Empresa) === emp).map(b => b.Title);
@@ -14503,6 +14537,7 @@ function aplicacaoEmpresaAlterada() {
   const empresa = (document.getElementById('apl_empresa')||{}).value || RD_EMPRESAS[0];
   const sel = document.getElementById('apl_banco');
   if (sel) sel.innerHTML = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
+  _aplAtualizarContaAplic('apl');
   // Centro de Custo (Origem/Destino) muda de lista ao trocar de empresa —
   // mesma fonte/formato (datalist) já usado em Transferências.
   const ccDlOpts = _trfOpcoesCCDatalist(empresa);
@@ -14563,11 +14598,15 @@ async function aplicacaoAbrirForm(id, empresaPre, bancoPre) {
         <div class="form-row">
           <div class="form-group">
             <label>Tipo de Aplicação</label>
-            <select id="apl_subcategoria">${subs.map(s => `<option ${registro && registro.Subcategoria===s?'selected':''}>${s}</option>`).join('')}</select>
+            <select id="apl_subcategoria" onchange="_aplAtualizarContaAplic('apl')">${subs.map(s => `<option ${registro && registro.Subcategoria===s?'selected':''}>${s}</option>`).join('')}</select>
           </div>
           <div class="form-group">
             <label>Conta (sai o dinheiro)</label>
-            <select id="apl_banco">${bancosDaEmpresa(empresa).map(b => `<option ${registro ? (registro.Banco===b?'selected':'') : (b===bancoPre?'selected':'')}>${b}</option>`).join('')}</select>
+            <select id="apl_banco" onchange="_aplAtualizarContaAplic('apl')">${bancosDaEmpresa(empresa).map(b => `<option ${registro ? (registro.Banco===b?'selected':'') : (b===bancoPre?'selected':'')}>${b}</option>`).join('')}</select>
+          </div>
+          <div class="form-group">
+            <label>Conta da aplicação (entra o dinheiro)</label>
+            <select id="apl_conta_aplic">${_contaAplicacaoOptions(empresa, registro ? registro.ContaAplicacao : '', registro ? registro.Banco : (bancoPre || bancosDaEmpresa(empresa)[0]), registro ? registro.Subcategoria : subs[0])}</select>
           </div>
         </div>
         <!-- Centro de Custo — Origem/Destino (pedido Tiago 23/10/2026, mesmo
@@ -14712,6 +14751,7 @@ async function aplicacaoSalvar() {
     ServicoId: '', ServicoDesc: '', Fornecedor: 'Aplicação Financeira', Beneficiario: '', Veiculo: '',
     CentroCusto: cc, Local: '', TipoPagamento: 'avista', FormaPagamento: 'Transferência',
     ResponsavelLancamento: responsavel, Empresa: empresa, DataPagamento: data, Banco: banco,
+    ContaAplicacao: (document.getElementById('apl_conta_aplic')||{}).value || _contaAplicacaoSugerida(empresa, banco, subcategoria, obs),
     NumMedicao: medicaoDestino || medicaoOrigem, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '',
     Vencimento: data, Valor: valor, ValorTotal: valor, Status: 'Pago',
     NumParcela: 1, TotalParcelas: 1, Distribuicoes: [], DivisaoCC: divisaoCCFinal,
@@ -14867,11 +14907,15 @@ async function resgateAbrirForm(id, empresaPre, bancoPre) {
         <div class="form-row">
           <div class="form-group">
             <label>Tipo de Resgate</label>
-            <select id="rsg_subcategoria">${subs.map(s => `<option ${registro && registro.Subcategoria===s?'selected':''}>${s}</option>`).join('')}</select>
+            <select id="rsg_subcategoria" onchange="_aplAtualizarContaAplic('rsg')">${subs.map(s => `<option ${registro && registro.Subcategoria===s?'selected':''}>${s}</option>`).join('')}</select>
           </div>
           <div class="form-group">
             <label>Conta (entra o dinheiro)</label>
-            <select id="rsg_banco">${bancosDaEmpresa(empresa).map(b => `<option ${registro ? (registro.Banco===b?'selected':'') : (b===bancoPre?'selected':'')}>${b}</option>`).join('')}</select>
+            <select id="rsg_banco" onchange="_aplAtualizarContaAplic('rsg')">${bancosDaEmpresa(empresa).map(b => `<option ${registro ? (registro.Banco===b?'selected':'') : (b===bancoPre?'selected':'')}>${b}</option>`).join('')}</select>
+          </div>
+          <div class="form-group">
+            <label>Conta da aplicação (sai o dinheiro)</label>
+            <select id="rsg_conta_aplic">${_contaAplicacaoOptions(empresa, registro ? registro.ContaAplicacao : '', registro ? registro.Banco : (bancoPre || bancosDaEmpresa(empresa)[0]), registro ? registro.Subcategoria : subs[0])}</select>
           </div>
         </div>
         <!-- Centro de Custo — Origem/Destino (pedido Tiago 23/10/2026, mesmo
@@ -14948,6 +14992,7 @@ function resgateEmpresaAlterada() {
   const empresa = (document.getElementById('rsg_empresa')||{}).value || RD_EMPRESAS[0];
   const sel = document.getElementById('rsg_banco');
   if (sel) sel.innerHTML = bancosDaEmpresa(empresa).map(b => `<option>${b}</option>`).join('');
+  _aplAtualizarContaAplic('rsg');
   const ccDlOpts = _trfOpcoesCCDatalist(empresa);
   const ccOrigInp = document.getElementById('rsg_cc_origem'); if (ccOrigInp) ccOrigInp.value = '';
   const ccDestInp = document.getElementById('rsg_cc_destino'); if (ccDestInp) ccDestInp.value = '';
@@ -15033,6 +15078,7 @@ async function resgateSalvar() {
     Cliente: 'Resgate de Aplicação Financeira', Descricao: descricao,
     CentroCusto: cc, Valor: valor, DataPrevista: data, FormaRecebimento: 'Transferência',
     ResponsavelLancamento: responsavel, DataRecebimento: data, Banco: banco,
+    ContaAplicacao: (document.getElementById('rsg_conta_aplic')||{}).value || _contaAplicacaoSugerida(empresa, banco, subcategoria, obs),
     Status: 'Recebido', NumMedicao: medicaoOrigem || medicaoDestino, NumeroNF: '', ISSRetido: '', ISSValorRetido: 0, ISSPercentual: 0,
     OutrasRetencoes: '', OutrasRetencoesValor: 0, OutrasRetencoesMotivo: '', DivisaoCC: divisaoCCFinal,
     ValorLiquido: valor, Comprovante: 'Não', ComprovanteUrl: '', ComprovanteNome: '', Empresa: empresa,
@@ -26734,6 +26780,7 @@ async function projetosCghrvCarregarFin() {
     const despesas = (desp || []).filter(doCC).map(d => Object.assign({}, d, { _valorCC: parteCC(d) }));
     const inspecoes = (insp || []).filter(i => /RIO\s*VERMELHO/i.test(String(i.empreendimento || i.Title || '')));
     PROJ_CGHRV_FIN = { receitas, despesas, inspecoes };
+    try { await _cghrvSincronizarComReceitas(); } catch (e) { console.warn('[CGH] sync BM×Receitas falhou', e); }
   } catch (e) { PROJ_CGHRV_FIN = { receitas: [], despesas: [], inspecoes: [], erro: true }; }
   if (PROJETOS_PROJETO_ATIVO === 'cghrv') navigate('projetos');
 }
@@ -26845,12 +26892,12 @@ function _cghrvHtmlMedicoes() {
       <button class="btn-primary" onclick="projetosCghrvModalBM()">+ Novo BM</button>
     </div>
     ${bms.length ? `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>BM</th><th>Data</th><th>Período</th><th>Valor</th><th>Situação</th><th>NF</th><th>Recebimento</th><th></th></tr></thead>
+      <thead><tr><th>BM</th><th>Data</th><th>Período</th><th>Valor</th><th>Situação</th><th>NF</th><th>Receita (sincronizada)</th><th>Recebimento</th><th></th></tr></thead>
       <tbody>${bms.map(b => `<tr>
         <td><b>BM${String(b.num).padStart(2, '0')}</b></td><td>${_cghrvData(b.data)}</td><td style="font-size:.75rem">${_cghrvEsc(b.periodo || '—')}</td>
-        <td><b>${_cghrvBRL(_cghrvValorBM(b))}</b></td><td>${_cghrvBadge(CGHRV_BM_STATUS, b.status)}</td><td>${_cghrvEsc(b.nf || '—')}</td><td>${_cghrvData(b.dataRecebimento)}</td>
-        <td style="white-space:nowrap"><button class="btn-secondary" title="Imprimir boletim" onclick="projetosCghrvImprimirBM('${b.id}')">🖨️</button> <button class="btn-secondary" title="Editar" onclick="projetosCghrvModalBM('${b.id}')">✏️</button> <button class="btn-secondary" title="Excluir" onclick="projetosCghrvExcluir('${b.id}')">🗑️</button></td>
-      </tr>${b.obs ? `<tr><td></td><td colspan="7" style="font-size:.72rem;color:var(--text-muted);padding-top:0">${_cghrvEsc(b.obs)}</td></tr>` : ''}`).join('')}</tbody></table></div>` : '<div style="color:var(--text-muted);font-size:.85rem">Nenhum BM cadastrado.</div>'}
+        <td><b>${_cghrvBRL(_cghrvValorBM(b))}</b></td><td>${_cghrvBadge(CGHRV_BM_STATUS, b.status)}</td><td>${_cghrvEsc(b.nf || '—')}</td><td style="font-size:.75rem">${(() => { if (!_cghrvFinPronto()) return '…'; const rs = _cghrvReceitasDoBM(b.num); if (!rs.length) return '<span style="color:var(--text-muted)">sem receita lançada</span>'; const fat = rs.reduce((s, r) => s + r._valorCC, 0), rec = rs.filter(r => r.Status === 'Recebido').reduce((s, r) => s + r._valorCC, 0); return _cghrvBRL(fat) + '<br>' + (rec >= fat - 0.05 ? '<span style="color:var(--green-main);font-weight:700">✅ recebida</span>' : rec > 0 ? '<span style="color:#b8860b;font-weight:700">🟡 ' + _cghrvBRL(rec) + ' recebido</span>' : '<span style="color:#92400e">⏳ a receber' + (rs[0].DataPrevista ? ' · prev. ' + _cghrvData(rs[0].DataPrevista) : '') + '</span>') + (Math.abs(fat - _cghrvValorBM(b)) > 0.05 ? '<br><span style="color:#b8860b">⚠️ difere do BM</span>' : ''); })()}</td><td>${_cghrvData(b.dataRecebimento)}</td>
+        <td style="white-space:nowrap"><button class="btn-secondary" title="Gerar PDF do boletim (timbrado Expedian)" onclick="projetosCghrvImprimirBM('${b.id}')">🖨️</button> <button class="btn-secondary" title="Editar" onclick="projetosCghrvModalBM('${b.id}')">✏️</button> <button class="btn-secondary" title="Excluir" onclick="projetosCghrvExcluir('${b.id}')">🗑️</button></td>
+      </tr>${b.obs ? `<tr><td></td><td colspan="8" style="font-size:.72rem;color:var(--text-muted);padding-top:0">${_cghrvEsc(b.obs)}</td></tr>` : ''}`).join('')}</tbody></table></div>` : '<div style="color:var(--text-muted);font-size:.85rem">Nenhum BM cadastrado.</div>'}
   </div>`;
 }
 
@@ -26915,32 +26962,164 @@ async function projetosCghrvExcluir(id) {
   PROJ_CGHRV = PROJ_CGHRV.filter(x => x.id !== id);
   await projetosCghrvSalvar(); navigate('projetos');
 }
-function projetosCghrvImprimirBM(id) {
+/* -- BM da CGH Rio Vermelho em PDF no timbrado Expedian — pedido 20/11/2026
+   ("ver se dá pra adaptar pro nosso layout que já usamos na Energisa, porém
+   com o escopo da CGH"). Mesmo padrão visual do cmedGerarDoc (faixa marrom
+   com logo, caixas de campo, tabela de escopo, total em destaque, rodapé
+   Expedian), mas em A4 PAISAGEM e mantendo as colunas que a Energisa Geração
+   já aprovou no BM01 (acumulado anterior / do mês / acumulado / saldo por
+   item) e as 4 assinaturas do modelo deles. -- */
+async function projetosCghrvImprimirBM(id) {
   const b = (PROJ_CGHRV || []).find(r => r.id === id); if (!b) return;
+  showToast('🔄 Gerando PDF do BM...');
+  await _garantirJsPDF();
   const C = CGHRV_CONTRATO;
   const ant = {}; CGHRV_ITENS.forEach(it => ant[it.seq] = 0);
   _cghrvBMs().filter(x => _cghrvBMconta(x) && (x.num || 0) < (b.num || 0)).forEach(x => CGHRV_ITENS.forEach(it => ant[it.seq] += (+((x.qtd || {})[it.seq]) || 0)));
-  const f = _cghrvBRL, n = _cghrvNum;
+  const nBM = String(b.num).padStart(2, '0');
+  const doc = new window.jspdf.jsPDF({ unit: 'cm', format: 'a4', orientation: 'landscape' });
+  const pageW = 29.7, pageH = 21.0, ML = 1.2, CW = pageW - 2.4;
+  const titulo = 'BOLETIM DE MEDIÇÃO DETALHADO';
+  const subtitulo = 'Contrato ' + C.numero.replace('Nº ', '') + ' · ' + C.clm + ' · Energisa Geração · BM ' + nBM;
+  _pdfCabecalhoRodape(doc, pageW, pageH, titulo, subtitulo);
+  let y = 2.0;
+  const brl = v => (Math.round((+v || 0) * 100) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const qt = v => (Math.round((+v || 0) * 100) / 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+  const quebrar = h => { if (y + h > pageH - 1.5) y = _pdfNovaPagina(doc, pageW, pageH, titulo, subtitulo); };
+  function box(x, w, h, label, valor, o) {
+    o = o || {};
+    doc.setDrawColor(200, 190, 185); doc.setLineWidth(0.02);
+    if (o.destaque) { doc.setFillColor(224, 238, 219); doc.rect(x, y, w, h, 'FD'); } else doc.rect(x, y, w, h);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(140, 120, 110);
+    doc.text(label.toUpperCase(), x + 0.15, y + 0.28);
+    doc.setFont('helvetica', o.bold === false ? 'normal' : 'bold'); doc.setFontSize(o.size || 9.5); doc.setTextColor(40, 40, 40);
+    doc.text(doc.splitTextToSize(String(valor == null || valor === '' ? '—' : valor), w - 0.3), x + 0.15, y + 0.6 + ((o.size || 9.5) > 11 ? 0.14 : 0));
+  }
+  // valores
   let tAnt = 0, tMes = 0;
-  const linhas = CGHRV_ITENS.map(it => { const a = ant[it.seq], m = +((b.qtd || {})[it.seq]) || 0; tAnt += a * it.vu; tMes += m * it.vu;
-    return `<tr><td>${it.seq}</td><td style="text-align:left">${it.desc}</td><td>${it.prev}</td><td>${it.un}</td><td>${f(it.vu)}</td><td>${n(a)}</td><td>${n(m)}</td><td>${n(a + m)}</td><td>${f(a * it.vu)}</td><td>${f(m * it.vu)}</td><td>${f((a + m) * it.vu)}</td><td>${f(it.prev * it.vu)}</td><td>${f((it.prev - a - m) * it.vu)}</td></tr>`; }).join('');
-  const acum = tAnt + tMes;
-  const w = window.open('', '_blank'); if (!w) { showToast('Permita pop-ups para imprimir o BM.'); return; }
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>BM${String(b.num).padStart(2, '0')} - CGH Rio Vermelho</title>
-  <style>body{font-family:Arial,sans-serif;font-size:11px;margin:18px;color:#222}h1{font-size:15px;text-align:center;margin:0 0 10px}table{border-collapse:collapse;width:100%;margin-bottom:10px}td,th{border:1px solid #888;padding:4px 5px;text-align:center}th{background:#3F261F;color:#fff}.k td{text-align:left}.tot td{font-weight:bold;background:#E2EFDA}.ass td{height:60px;vertical-align:bottom;border:none;border-top:1px solid #444;width:25%}@page{size:A4 landscape;margin:10mm}</style></head><body>
-  <h1>BOLETIM DE MEDIÇÃO DETALHADO — BM${String(b.num).padStart(2, '0')}</h1>
-  <table class="k"><tr><td><b>Contrato</b></td><td>${C.numero} · ${C.clm}</td><td><b>Contratada</b></td><td>Expedian Soluções Ambientais</td></tr>
-  <tr><td><b>Contratante</b></td><td>${C.cliente}</td><td><b>Objeto</b></td><td>${C.objeto}</td></tr>
-  <tr><td><b>Valor do contrato</b></td><td>${f(C.valorGlobal)}</td><td><b>Vigência</b></td><td>${_cghrvData(C.inicio)} a ${_cghrvData(C.fim)}</td></tr>
-  <tr><td><b>Valor medido acumulado</b></td><td>${f(acum)} (${n(acum / C.valorGlobal * 100)}%)</td><td><b>Data da medição / período</b></td><td>${_cghrvData(b.data)}${b.periodo ? ' · ' + _cghrvEsc(b.periodo) : ''}</td></tr>
-  <tr><td><b>Saldo residual</b></td><td>${f(C.valorGlobal - acum)} (${n(100 - acum / C.valorGlobal * 100)}%)</td><td><b>Nº da medição</b></td><td>${b.num}</td></tr></table>
-  <table><tr><th rowspan="2">Seq.</th><th rowspan="2">Trabalhos previstos</th><th rowspan="2">Previsto</th><th rowspan="2">Un.</th><th rowspan="2">R$ unit.</th><th colspan="3">Quantitativos</th><th colspan="3">Valores da medição (R$)</th><th colspan="2">Saldo contratual</th></tr>
-  <tr><th>Acum. anterior</th><th>Do mês</th><th>Total acum.</th><th>Acum. anterior</th><th>Do mês</th><th>Total acum.</th><th>Valor do item</th><th>Saldo</th></tr>
-  ${linhas}<tr class="tot"><td colspan="8">TOTAL GERAL</td><td>${f(tAnt)}</td><td>${f(tMes)}</td><td>${f(acum)}</td><td>${f(C.valorGlobal)}</td><td>${f(C.valorGlobal - acum)}</td></tr></table>
-  ${b.obs ? '<p><b>Observações:</b> ' + _cghrvEsc(b.obs) + '</p>' : ''}
-  <table class="ass"><tr><td>Contratante</td><td>Contratada – Expedian</td><td>Controladoria</td><td>Gerência Geral</td></tr></table>
-  <script>window.onload=()=>window.print()<\/script></body></html>`);
-  w.document.close();
+  const linhas = CGHRV_ITENS.map(it => { const a = ant[it.seq], m = +((b.qtd || {})[it.seq]) || 0; tAnt += a * it.vu; tMes += m * it.vu; return { it, a, m }; });
+  const acum = tAnt + tMes, pAcum = acum / C.valorGlobal * 100;
+  const stLabel = (CGHRV_BM_STATUS[b.status] || { label: b.status }).label.replace(/[^\wÀ-ÿ ()\/.-]/g, '').trim();
+  const g = 0.2;
+  // linha 1: contrato | contratante | nº BM
+  const w1 = [7.2, CW - 7.2 - 3.2 - 2 * g, 3.2];
+  box(ML, w1[0], 0.95, 'Contrato', C.numero.replace('Nº ', '') + ' · ' + C.clm, { size: 11 });
+  box(ML + w1[0] + g, w1[1], 0.95, 'Contratante', C.cliente + ' · CNPJ ' + C.cnpj + ' · ' + C.local, { size: 9 });
+  box(ML + w1[0] + w1[1] + 2 * g, w1[2], 0.95, 'Nº BM', nBM, { destaque: true, size: 13 });
+  y += 0.95 + 0.15;
+  // linha 2: objeto
+  box(ML, CW, 0.85, 'Objeto do contrato', 'Prestação de Serviços de ' + C.objeto + ' — Energisa Geração Usina Maurício S/A', { bold: false, size: 9 });
+  y += 0.85 + 0.15;
+  // linha 3: 6 campos
+  const c6 = (CW - 5 * g) / 6;
+  const campos = [
+    ['Período de referência', b.periodo || '—'], ['Data da medição', b.data ? b.data.split('-').reverse().join('/') : '—'],
+    ['Valor do contrato', 'R$ ' + brl(C.valorGlobal)], ['Medido acumulado', 'R$ ' + brl(acum) + ' (' + qt(pAcum) + '%)'],
+    ['Saldo contratual', 'R$ ' + brl(C.valorGlobal - acum) + ' (' + qt(100 - pAcum) + '%)'], ['Vigência', C.inicio.split('-').reverse().join('/') + ' a ' + C.fim.split('-').reverse().join('/')],
+  ];
+  campos.forEach((cp, i) => box(ML + i * (c6 + g), c6, 0.85, cp[0], cp[1], { size: 8.6 }));
+  y += 0.85 + 0.15;
+  if (b.nf || b.status) {
+    const c2 = (CW - g) / 2;
+    box(ML, c2, 0.8, 'Situação', stLabel, { size: 9 });
+    box(ML + c2 + g, c2, 0.8, 'Nota fiscal', b.nf || '—', { size: 9 });
+    y += 0.8 + 0.25;
+  }
+  // tabela de escopo
+  doc.setFillColor(63, 38, 31); doc.rect(ML, y, CW, 0.55, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(255, 255, 255);
+  doc.text('ESCOPO DOS SERVIÇOS A SEREM MEDIDOS (Lista de Serviços do Contrato)', ML + 0.25, y + 0.37);
+  y += 0.55;
+  const cols = [
+    { k: 'seq', t: 'Seq.', w: 0.9, al: 'center' }, { k: 'desc', t: 'Trabalhos previstos', w: 0, al: 'left' },
+    { k: 'prev', t: 'Prev.', w: 1.0, al: 'center' }, { k: 'un', t: 'Unid.', w: 1.1, al: 'center' }, { k: 'vu', t: 'R$ unitário', w: 1.9, al: 'right' },
+    { k: 'a', t: 'Acum. ant.', w: 1.45, al: 'center' }, { k: 'm', t: 'Do mês', w: 1.25, al: 'center' }, { k: 'ta', t: 'Total acum.', w: 1.5, al: 'center' },
+    { k: 'ra', t: 'R$ acum. ant.', w: 2.1, al: 'right' }, { k: 'rm', t: 'R$ do mês', w: 2.1, al: 'right' }, { k: 'rt', t: 'R$ total acum.', w: 2.2, al: 'right' },
+    { k: 'vi', t: 'Valor do item', w: 2.2, al: 'right' }, { k: 'sd', t: 'Saldo', w: 2.1, al: 'right' },
+  ];
+  cols[1].w = CW - cols.reduce((s, c) => s + c.w, 0);
+  const xs = []; cols.reduce((x, c) => { xs.push(x); return x + c.w; }, ML);
+  const tx = (c, i, val, yy) => { const x = c.al === 'right' ? xs[i] + c.w - 0.12 : c.al === 'center' ? xs[i] + c.w / 2 : xs[i] + 0.12; doc.text(String(val), x, yy, { align: c.al }); };
+  // cabeçalho de grupo
+  const grupo = (desde, ate, label) => { const x0 = xs[desde], x1 = xs[ate] + cols[ate].w; doc.setFillColor(235, 228, 222); doc.rect(x0, y, x1 - x0, 0.42, 'F'); doc.setDrawColor(200, 190, 185); doc.rect(x0, y, x1 - x0, 0.42); doc.setFont('helvetica', 'bold'); doc.setFontSize(6.8); doc.setTextColor(63, 38, 31); doc.text(label, (x0 + x1) / 2, y + 0.29, { align: 'center' }); };
+  grupo(5, 7, 'QUANTITATIVOS'); grupo(8, 10, 'VALORES DA MEDIÇÃO (R$)'); grupo(11, 12, 'SALDO CONTRATUAL');
+  y += 0.42;
+  doc.setFillColor(245, 240, 237); doc.rect(ML, y, CW, 0.6, 'F'); doc.setDrawColor(200, 190, 185); doc.rect(ML, y, CW, 0.6);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(63, 38, 31);
+  cols.forEach((c, i) => tx(c, i, c.t, y + 0.38));
+  y += 0.6;
+  doc.setTextColor(40, 40, 40);
+  linhas.forEach(({ it, a, m }, idx) => {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.8);
+    const dl = doc.splitTextToSize(it.desc, cols[1].w - 0.24);
+    const h = Math.max(0.55, 0.22 + dl.length * 0.33);
+    quebrar(h);
+    if (m > 0) { doc.setFillColor(247, 251, 245); doc.rect(ML, y, CW, h, 'F'); }
+    doc.setDrawColor(220, 212, 206); doc.line(ML, y + h, ML + CW, y + h);
+    const yy = y + 0.36;
+    const vals = { seq: it.seq, prev: qt(it.prev), un: it.un, vu: brl(it.vu), a: qt(a), m: qt(m), ta: qt(a + m), ra: brl(a * it.vu), rm: brl(m * it.vu), rt: brl((a + m) * it.vu), vi: brl(it.prev * it.vu), sd: brl((it.prev - a - m) * it.vu) };
+    cols.forEach((c, i) => { if (c.k === 'desc') { doc.text(dl, xs[i] + 0.12, yy); return; } if (c.k === 'm' || c.k === 'rm') doc.setFont('helvetica', 'bold'); else doc.setFont('helvetica', 'normal'); tx(c, i, vals[c.k], yy); });
+    y += h;
+  });
+  quebrar(0.6);
+  doc.setFillColor(224, 238, 219); doc.rect(ML, y, CW, 0.6, 'F'); doc.setDrawColor(200, 190, 185); doc.rect(ML, y, CW, 0.6);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(40, 40, 40);
+  doc.text('TOTAL GERAL', xs[1] + 0.12, y + 0.39);
+  tx(cols[8], 8, brl(tAnt), y + 0.39); tx(cols[9], 9, brl(tMes), y + 0.39); tx(cols[10], 10, brl(acum), y + 0.39); tx(cols[11], 11, brl(C.valorGlobal), y + 0.39); tx(cols[12], 12, brl(C.valorGlobal - acum), y + 0.39);
+  y += 0.6 + 0.3;
+  // total da medição em destaque + observações
+  quebrar(1.3);
+  const wTot = 7.5;
+  doc.setFillColor(63, 38, 31); doc.rect(ML + CW - wTot, y, wTot, 1.1, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(224, 238, 219);
+  doc.text('TOTAL DESTE BOLETIM', ML + CW - wTot + 0.3, y + 0.4);
+  doc.setFontSize(14); doc.setTextColor(255, 255, 255);
+  doc.text('R$ ' + brl(tMes), ML + CW - 0.3, y + 0.85, { align: 'right' });
+  const wObs = CW - wTot - g;
+  box(ML, wObs, 1.1, 'Observações', b.obs || '—', { bold: false, size: 8 });
+  y += 1.1 + 0.9;
+  // assinaturas (4, como no modelo da Energisa Geração)
+  quebrar(1.6);
+  const ass = ['Contratante — Energisa Geração', 'Contratada — Expedian Soluções Ambientais', 'Controladoria', 'Gerência Geral'];
+  const wa = (CW - 3 * 0.8) / 4;
+  ass.forEach((a, i) => { const x = ML + i * (wa + 0.8); doc.setDrawColor(90, 90, 90); doc.setLineWidth(0.02); doc.line(x, y + 0.9, x + wa, y + 0.9); doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(63, 38, 31); doc.text(a, x + wa / 2, y + 1.25, { align: 'center' }); });
+  _pdfNumerarPaginas(doc, pageW, pageH);
+  doc.save('BM' + nBM + '_CGH_Rio_Vermelho_' + (b.data || new Date().toISOString().slice(0, 10)) + '.pdf');
+  showToast('✅ PDF do BM' + nBM + ' gerado!');
+}
+
+/* -- Sincronização BM ⇄ Receitas (pedido 20/11/2026): só AVANÇA o status do
+   BM da CGH quando existe Receita do CC-EXP-019 com o mesmo Nº Medição —
+   receita lançada ⇒ "Faturado"; receita(s) com status Recebido cobrindo o
+   valor do BM ⇒ "Recebido" (com a data). Nunca volta status. -- */
+function _cghrvReceitasDoBM(num) {
+  const F = PROJ_CGHRV_FIN; if (!F || !F.receitas) return [];
+  const alvo = String(num);
+  return F.receitas.filter(r => {
+    const viaDiv = Array.isArray(r.DivisaoCC) && r.DivisaoCC.length >= 2 ? r.DivisaoCC.some(d => String(d.cc || '').indexOf(CGHRV_CC) === 0 && String(parseFloat(d.medicao)) === alvo) : false;
+    const nm = parseFloat(String(r.NumMedicao || '').replace(',', '.'));
+    const viaDesc = !r.NumMedicao && /\bBM\s*0*(\d+)/i.test(r.Descricao || '') ? String(parseFloat((r.Descricao.match(/\bBM\s*0*(\d+)/i) || [])[1])) === alvo : false;
+    return viaDiv || (!isNaN(nm) && String(nm) === alvo) || viaDesc;
+  });
+}
+async function _cghrvSincronizarComReceitas() {
+  if (!PROJ_CGHRV || !PROJ_CGHRV_FIN || !PROJ_CGHRV_FIN.receitas) return false;
+  const ordem = ['elaboracao', 'enviado', 'aprovado', 'faturado', 'recebido'];
+  let mudou = false;
+  _cghrvBMs().forEach(b => {
+    const recs = _cghrvReceitasDoBM(b.num); if (!recs.length) return;
+    const valor = _cghrvValorBM(b);
+    const recebido = recs.filter(r => r.Status === 'Recebido').reduce((s, r) => s + r._valorCC, 0);
+    const novo = recebido > 0 && recebido >= valor - 0.05 ? 'recebido' : 'faturado';
+    if (ordem.indexOf(novo) > ordem.indexOf(b.status)) {
+      b.status = novo; mudou = true;
+      if (novo === 'recebido' && !b.dataRecebimento) b.dataRecebimento = (recs.map(r => r.DataRecebimento || '').filter(Boolean).sort().pop() || '').slice(0, 10);
+    }
+    const nf = recs.map(r => r.NumeroNF).filter(v => v && v !== 'N/A')[0];
+    if (nf && !b.nf) { b.nf = String(nf); mudou = true; }
+  });
+  if (mudou) await projetosCghrvSalvar();
+  return mudou;
 }
 
 function _cghrvHtmlAtividades() {
@@ -46141,26 +46320,38 @@ const MEDGERAL_CC_DEDICADO = {
   'CC-EXP-021': { modulo: 'cmed', chave: 'ws108438' },   // Gestão Ambiental de Programas
   'CC-EXP-027': { modulo: 'cmed', chave: 'clm108942' },  // Coleta de Resíduos Regional Sul
   'CC-EXP-028': { modulo: 'cmed', chave: 'clm108943' },  // Coleta de Resíduos Regional Centro
+  'CC-EXP-019': { modulo: 'cghrv' },                     // CGH Rio Vermelho (Projetos › CGH Rio Vermelho, tabela ProjetoCGHRioVermelho) — 20/11/2026
 };
 
 let _medGeralReceitas = null, _medGeralDespesas = null, _medGeralLancamentos = null,
-    _medGeralEnergisaObras = null, _medGeralEnergisaContratos = null;
+    _medGeralEnergisaObras = null, _medGeralEnergisaContratos = null, _medGeralCghrv = null;
+// BMs da CGH Rio Vermelho no formato comum (Id/NumeroBM/Data/Valor/Status/...)
+const _MEDGERAL_CGHRV_STATUS = { elaboracao: 'Em elaboração', enviado: 'Enviada', aprovado: 'Aprovada', faturado: 'NF emitida', recebido: 'Paga' };
+function _medGeralCghrvNormalizar(lista) {
+  return (lista || []).filter(r => r && r.tipo === 'bm').map(b => ({
+    Id: 'cghrv-' + b.id, NumeroBM: String(b.num), Data: b.data || '', Valor: (typeof _cghrvValorBM === 'function') ? Math.round(_cghrvValorBM(b) * 100) / 100 : 0,
+    Status: _MEDGERAL_CGHRV_STATUS[b.status] || b.status || '', Descricao: 'BM' + String(b.num).padStart(2, '0') + ' — Gestão Ambiental CGH Rio Vermelho' + (b.periodo ? ' (' + b.periodo + ')' : ''),
+    NumeroNF: b.nf || '', DataRecebimento: b.dataRecebimento || '', Obs: b.obs || '',
+  }));
+}
 
 async function medGeralCarregarDados(forcar) {
   if (_medGeralReceitas !== null && !forcar) { navigate('medicao_geral'); return; }
   try {
-    const [r, d, l, obras, contratos] = await Promise.all([
+    const [r, d, l, obras, contratos, cghrv] = await Promise.all([
       dbLerSeguro('Receitas').catch(() => []),
       dbLerSeguro('Despesas').catch(() => []),
       dbLer('MedicoesGerais').catch(() => []),
       dbLer('MedicoesEnergisa').catch(() => []),
       dbLer('MedicoesContratosEnergisa').catch(() => []),
+      dbLer('ProjetoCGHRioVermelho').catch(() => []),
     ]);
     _medGeralReceitas = Array.isArray(r) ? r : [];
     _medGeralDespesas = Array.isArray(d) ? d : [];
     _medGeralLancamentos = Array.isArray(l) ? l : [];
     _medGeralEnergisaObras = Array.isArray(obras) ? obras : [];
     _medGeralEnergisaContratos = Array.isArray(contratos) ? contratos : [];
+    _medGeralCghrv = _medGeralCghrvNormalizar(Array.isArray(cghrv) ? cghrv : []);
     // Fecha sozinho o descasamento visto em 16/11/2026 (BM preso em
     // "Enviada" mesmo já tendo sido recebido) — ver medGeralAutoAvancarPagos.
     try { await medGeralAutoAvancarPagos(); } catch (e) { console.warn('[Medição Geral] auto-avanço de status falhou.', e); }
@@ -46239,6 +46430,9 @@ function medGeralDadosCC(ccId, mes) {
   } else if (dedicado && dedicado.modulo === 'cmed') {
     registros = (_medGeralEnergisaContratos || []).filter(m => m.ContratoChave === dedicado.chave && (m.Data || '').slice(0, 7) === mes);
     medido = registros.reduce((s, m) => s + (parseFloat(m.Valor) || 0), 0);
+  } else if (dedicado && dedicado.modulo === 'cghrv') {
+    registros = (_medGeralCghrv || []).filter(m => (m.Data || '').slice(0, 7) === mes);
+    medido = registros.reduce((s, m) => s + (parseFloat(m.Valor) || 0), 0);
   } else {
     registros = (_medGeralLancamentos || []).filter(m => m.CCId === ccId && m.Periodo === mes);
     medido = registros.reduce((s, m) => s + (parseFloat(m.ValorMedido) || 0), 0);
@@ -46267,7 +46461,7 @@ function medGeralDadosCC(ccId, mes) {
 
 function medGeralNovoForm(ccId) {
   const hoje = new Date().toISOString().slice(0, 7);
-  window._medGeralForm = { ccId, periodo: window._medGeralMes || hoje, valor: '', status: 'Em elaboração', obs: '', receitaId: '' };
+  window._medGeralForm = { ccId, periodo: window._medGeralMes || hoje, numeroBM: '', valor: '', status: 'Em elaboração', obs: '', receitaId: '' };
   navigate('medicao_geral');
 }
 function medGeralFecharForm() {
@@ -46295,6 +46489,7 @@ async function medGeralSalvarLancamento() {
     ValorMedido: valor,
     Status: f.status || 'Em elaboração',
     Obs: f.obs || '',
+    NumeroBM: (f.numeroBM || '').trim(),
     ReceitaId: f.receitaId || null,
     CriadoPorNome: window._currentUser ? window._currentUser.name : '',
     CriadoPorEmail: window._currentUser ? window._currentUser.email : '',
@@ -46494,6 +46689,254 @@ function medGeralAbrirListaCCsSemLancamento() {
   alert('CCs ativos sem nada lançado em ' + mes + ':\n\n' + lista);
 }
 
+
+/* -- MEDIÇÃO GERAL › "BMs por contrato" — pedido Tiago 20/11/2026: "as
+   medições individuais dentro de cada contrato apareçam separadas por
+   coluna, seus status de recebimento, valor, nº BM, despesas, receitas, %
+   das despesas em cima de receitas e que seja sincronizada com receitas,
+   pra saber se foram faturadas, emitidas, recebidas e a identificação de
+   cada BM". Visão alternativa à "Por mês": 1 card por contrato (CC), 1
+   linha por BM. Junta 3 pontas, sem gravar nada:
+     • a medição (módulo dedicado — Obras/cmed/CGH — ou MedicoesGerais);
+     • a(s) Receita(s) do BM — por vínculo explícito (OrigemMedicaoId,
+       ReceitaGeradaId, NotasFiscais[].receitaGeradaId, ReceitaId) ou pelo
+       Nº Medição da Receita (NumMedicao / DivisaoCC[].medicao / "BM nn"
+       na descrição); medição genérica sem nº de BM casa por valor igual;
+     • as Despesas lançadas com o mesmo Nº de Medição (medGeralDespesasDoBM).
+   Receita lançada = faturada (NF emitida); Status "Recebido" = recebida. -- */
+function medGeralTrocarVisao(v) { window._medGeralVisao = v; navigate('medicao_geral'); }
+function medGeralFiltrarAno(v) { window._medGeralAno = v || ''; navigate('medicao_geral'); }
+function medGeralHtmlToggleVisao() {
+  const v = window._medGeralVisao || 'bms';
+  const b = (k, l) => `<button class="btn-secondary" style="${v === k ? 'border-color:var(--green-main);color:var(--green-main);font-weight:700' : ''}" onclick="medGeralTrocarVisao('${k}')">${l}</button>`;
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${b('bms', '📋 BMs por contrato')}${b('mes', '📅 Visão por mês')}</div>`;
+}
+function _mgbNumBM(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v).trim(); if (!s || /^n\/?a$/i.test(s)) return '';
+  const m = s.match(/(\d+(?:[.,]\d+)?)/); if (!m) return '';
+  const n = parseFloat(m[1].replace(',', '.')); return isNaN(n) ? '' : String(n);
+}
+function _mgbNumBMdoTexto(t) {
+  const m = String(t || '').match(/\b(?:BM|Boletim|Medi[cç][aã]o)\s*(?:n[ºo°.]?\s*)?0*(\d+(?:\.\d+)?)/i);
+  return m ? String(parseFloat(m[1])) : '';
+}
+function _mgbRegistrosDoCC(ccId) {
+  const ded = MEDGERAL_CC_DEDICADO[ccId];
+  if (ded && ded.modulo === 'obras') return (_medGeralEnergisaObras || []).slice();
+  if (ded && ded.modulo === 'cmed') return (_medGeralEnergisaContratos || []).filter(m => m.ContratoChave === ded.chave);
+  if (ded && ded.modulo === 'cghrv') return (_medGeralCghrv || []).slice();
+  return (_medGeralLancamentos || []).filter(m => m.CCId === ccId);
+}
+function _mgbNumDoRegistro(m) {
+  return _mgbNumBM(m.NumeroBM) || _mgbNumBM(medGeralNumeroBMdoRegistro(m)) || _mgbNumBMdoTexto(m.Obs) || _mgbNumBMdoTexto(m.Title) || '';
+}
+function _mgbIdentificacao(m) {
+  if (!m) return '';
+  if (m.ContratoChave && typeof cmedIdentificacao === 'function') {
+    const d = m.Descricao || ''; const id = cmedIdentificacao(m);
+    return d && id && id !== '—' && id !== d ? d + ' — ' + id : (d || id || '');
+  }
+  const t = m.Servicos || m.Descricao || m.FrenteNome || m.Title || m.Obs || '';
+  return String(t).replace(/\s*\(importado da planilha financeira[^)]*\)/i, '').trim();
+}
+// Receitas do CC quebradas por BM (1 receita rateada pode cair em mais de 1 BM)
+function _mgbReceitasDoCC(ccId) {
+  const out = [];
+  (_medGeralReceitas || []).forEach(r => {
+    if (Array.isArray(r.DivisaoCC) && r.DivisaoCC.length) {
+      r.DivisaoCC.filter(d => _ccIdPuro(d.cc) === ccId).forEach(d => out.push({ r, valor: Number(d.valor) || 0, bm: _mgbNumBM(d.medicao) || _mgbNumBM(r.NumMedicao) || _mgbNumBMdoTexto(r.Descricao) }));
+    } else if (_ccIdPuro(r.CentroCusto) === ccId) {
+      out.push({ r, valor: Number(r.Valor) || 0, bm: _mgbNumBM(r.NumMedicao) || _mgbNumBMdoTexto(r.Descricao) });
+    }
+  });
+  return out;
+}
+function _mgbIdsReceitaDoRegistro(m) {
+  const ids = new Set();
+  if (m.ReceitaGeradaId) ids.add(String(m.ReceitaGeradaId));
+  if (m.ReceitaId) ids.add(String(m.ReceitaId));
+  (m.NotasFiscais || []).forEach(nf => { if (nf && nf.receitaGeradaId) ids.add(String(nf.receitaGeradaId)); });
+  return ids;
+}
+function medGeralBMsDoCC(ccId, ano) {
+  const regs = _mgbRegistrosDoCC(ccId);
+  const recs = _mgbReceitasDoCC(ccId);
+  const linhas = new Map();
+  const linha = k => { if (!linhas.has(k)) linhas.set(k, { key: k, bm: '', registros: [], receitas: [] }); return linhas.get(k); };
+  const usadas = new Set();
+  // 1) medições
+  regs.forEach(m => { const n = _mgbNumDoRegistro(m); const L = linha(n ? 'bm:' + n : 'id:' + m.Id); L.bm = n; L.registros.push(m); });
+  // 2) receitas por vínculo explícito
+  recs.forEach((x, i) => {
+    const alvo = [...linhas.values()].find(L => L.registros.some(m => String(x.r.OrigemMedicaoId || '') === String(m.Id) || _mgbIdsReceitaDoRegistro(m).has(String(x.r.Id))));
+    if (alvo) { alvo.receitas.push(x); usadas.add(i); }
+  });
+  // 3) receitas pelo nº do BM
+  recs.forEach((x, i) => { if (usadas.has(i) || !x.bm) return; const L = linha('bm:' + x.bm); L.bm = x.bm; L.receitas.push(x); usadas.add(i); });
+  // 4) medição genérica sem nº de BM (ex.: "Janeiro de 2026" importado da
+  //    planilha): junta com o BM que só existe em Receitas e tem o MESMO valor
+  //    (data da receita mais próxima do período). Se não achar, tenta uma
+  //    receita solta de mesmo valor.
+  [...linhas.values()].filter(L => !L.bm && L.registros.length && !L.receitas.length).forEach(L => {
+    const v = L.registros.reduce((s, m) => s + medGeralRegistroValor(m), 0);
+    const ref = String(L.registros[0].Data || (L.registros[0].Periodo ? L.registros[0].Periodo + '-01' : ''));
+    const dist = R => { const d = R.receitas.map(x => x.r.DataEmissao || '').filter(Boolean)[0] || ''; return ref && d ? Math.abs(new Date(d) - new Date(ref)) : 9e15; };
+    const cands = tol => [...linhas.values()].filter(R => R !== L && R.bm && !R.registros.length && R.receitas.length && Math.abs(R.receitas.reduce((s, x) => s + x.valor, 0) - v) <= tol).sort((p, q) => dist(p) - dist(q))[0];
+    // 1º valor idêntico; 2º diferença de centavos/arredondamento (até 1%) — nesse caso a linha sai com ⚠️ de divergência
+    const alvo = cands(0.05) || cands(Math.max(1, v * 0.01));
+    if (alvo) { alvo.registros.push(...L.registros); linhas.delete(L.key); return; }
+    const i = recs.findIndex((x, j) => !usadas.has(j) && Math.abs(x.valor - v) < 0.05);
+    if (i >= 0) { L.receitas.push(recs[i]); usadas.add(i); }
+  });
+  // 5) receitas que sobraram sem nº nem vínculo (só as que parecem de serviço, não transferência/rendimento)
+  recs.forEach((x, i) => { if (usadas.has(i)) return; if (/transfer|rendimento|resgate|estorno|reembolso/i.test(x.r.Descricao || '') || x.r.TipoMovimentacao === 'Transferencia') return; linha('rec:' + x.r.Id).receitas.push(x); usadas.add(i); });
+
+  const res = [...linhas.values()].map(L => {
+    const medido = L.registros.reduce((s, m) => s + medGeralRegistroValor(m), 0);
+    const faturado = L.receitas.reduce((s, x) => s + x.valor, 0);
+    const recebido = L.receitas.filter(x => x.r.Status === 'Recebido').reduce((s, x) => s + x.valor, 0);
+    const emAtraso = L.receitas.some(x => x.r.Status === 'Em atraso' || (x.r.Status !== 'Recebido' && x.r.DataPrevista && x.r.DataPrevista < new Date().toISOString().slice(0, 10)));
+    const m0 = L.registros[0];
+    const statusReg = m0 ? (m0.Status || '') : '';
+    const emitida = L.receitas.length ? 'sim' : (L.registros.length ? (L.registros.every(m => medGeralFoiEmitido(m.Status)) ? 'sim' : (L.registros.some(m => medGeralFoiEmitido(m.Status)) ? 'parcial' : 'nao')) : 'nao');
+    const nfReg = L.registros.map(m => m.NumeroNF).filter(Boolean);
+    const nfRec = L.receitas.map(x => x.r.NumeroNF).filter(v => v && v !== 'N/A');
+    const nfs = [...new Set([...nfReg, ...nfRec].map(String))];
+    const faturadaReg = L.registros.some(m => ['NF emitida', 'Paga', 'Recebida'].includes(m.Status) || m.NumeroNF);
+    const faturada = L.receitas.length ? 'sim' : (faturadaReg ? 'sim' : 'nao');
+    const base = faturado || medido;
+    const recebida = base <= 0 ? 'nao' : (recebido >= base - 0.01 ? 'sim' : (recebido > 0 ? 'parcial' : 'nao'));
+    const despesas = L.bm ? (medGeralDespesasDoBM(ccId, L.bm) || 0) : 0;
+    const datas = [...L.registros.map(m => m.Data || ''), ...L.receitas.map(x => x.r.DataEmissao || '')].filter(Boolean).sort();
+    const dataRef = datas[0] || '';
+    const dataReceb = L.receitas.map(x => x.r.DataRecebimento || '').filter(Boolean).sort().pop() || (L.registros.map(m => m.DataRecebimento || '').filter(Boolean).pop() || '');
+    const previsao = L.receitas.filter(x => x.r.Status !== 'Recebido').map(x => x.r.DataPrevista || '').filter(Boolean).sort()[0] || '';
+    const identRec = L.receitas.map(x => x.r.Descricao || '').filter(Boolean)[0] || '';
+    const ident = [_mgbIdentificacao(m0), identRec].filter(Boolean).filter((t, i, arr) => arr.indexOf(t) === i).join(' · ');
+    return { key: L.key, bm: L.bm, ident, dataRef, medido, faturado, recebido, despesas, base, emitida, faturada, recebida, emAtraso, nfs, dataReceb, previsao, statusReg,
+      semMedicao: !L.registros.length, divergencia: medido > 0 && faturado > 0 && Math.abs(medido - faturado) > 0.05 };
+  }).filter(x => !ano || String(x.dataRef || '').slice(0, 4) === String(ano) || (!x.dataRef && false));
+  res.sort((a, b) => {
+    const na = a.bm === '' ? Infinity : parseFloat(a.bm), nb = b.bm === '' ? Infinity : parseFloat(b.bm);
+    return na - nb || String(a.dataRef).localeCompare(String(b.dataRef));
+  });
+  return res;
+}
+function medGeralDespesasTotalCC(ccId, ano) {
+  return (_medGeralDespesas || []).filter(d => !ano || String(d.DataLancamento || d.DataPagamento || '').slice(0, 4) === String(ano)).reduce((s, d) => s + medGeralValorParaCC(d, ccId), 0);
+}
+
+function medGeralHtmlBMs() {
+  const clienteFiltro = window._medGeralClienteFiltro || '';
+  const contratoFiltro = window._medGeralContratoFiltro || '';
+  const ano = window._medGeralAno != null ? window._medGeralAno : String(new Date().getFullYear());
+  const elegiveis = medGeralCCsElegiveis();
+  const clientes = [...new Set(elegiveis.map(c => c.cliente))].sort();
+  const contratos = [...new Set(elegiveis.map(c => c.contrato))].sort();
+  const fmt = v => 'R$ ' + (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const dt = d => d ? String(d).slice(0, 10).split('-').reverse().join('/') : '—';
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const badge = (e, extra) => e === 'sim' ? `<span style="color:var(--green-main);font-weight:700">✅ Sim</span>${extra || ''}` : e === 'parcial' ? `<span style="color:#b8860b;font-weight:700">🟡 Parcial</span>${extra || ''}` : `<span style="color:var(--red)">❌ Não</span>${extra || ''}`;
+  const cards = elegiveis
+    .filter(c => !clienteFiltro || c.cliente === clienteFiltro)
+    .filter(c => !contratoFiltro || c.contrato === contratoFiltro)
+    .map(c => {
+      const bms = medGeralBMsDoCC(c.id, ano);
+      const despTot = medGeralDespesasTotalCC(c.id, ano);
+      return { c, bms, despTot };
+    })
+    .filter(x => x.bms.length || x.despTot)
+    .sort((a, b) => b.bms.reduce((s, r) => s + (r.faturado || r.medido), 0) - a.bms.reduce((s, r) => s + (r.faturado || r.medido), 0));
+  const tot = cards.reduce((t, x) => {
+    x.bms.forEach(r => { t.medido += r.medido; t.faturado += r.faturado; t.recebido += r.recebido; });
+    t.desp += x.despTot; return t;
+  }, { medido: 0, faturado: 0, recebido: 0, desp: 0 });
+  const anos = [];
+  for (let a = new Date().getFullYear() + 1; a >= 2024; a--) anos.push(String(a));
+  const th = (t, al) => `<th style="padding:7px 8px;text-align:${al || 'left'};font-size:.7rem;white-space:nowrap">${t}</th>`;
+  return `
+  <div class="page-header">
+    <div><h1>📐 Medição Geral</h1><p>Cada BM de cada contrato — emissão, faturamento e recebimento sincronizados com Receitas, e as despesas lançadas no BM</p></div>
+  </div>
+  <div style="margin-bottom:12px"><button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button></div>
+  ${medGeralHtmlToggleVisao()}
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+    <label style="font-size:.8rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">📅 Ano
+      <select onchange="medGeralFiltrarAno(this.value)" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px">
+        <option value="" ${ano === '' ? 'selected' : ''}>Todos</option>${anos.map(a => `<option ${ano === a ? 'selected' : ''}>${a}</option>`).join('')}
+      </select></label>
+    <label style="font-size:.8rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">🏢 Cliente
+      <select onchange="medGeralFiltrarCliente(this.value)" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px">
+        <option value="">Todos</option>${clientes.map(cl => `<option value="${esc(cl)}" ${clienteFiltro === cl ? 'selected' : ''}>${esc(cl)}</option>`).join('')}
+      </select></label>
+    <label style="font-size:.8rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">📄 Contrato
+      <select onchange="medGeralFiltrarContrato(this.value)" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px">
+        <option value="">Todos</option>${contratos.map(ct => `<option value="${esc(ct)}" ${contratoFiltro === ct ? 'selected' : ''}>${esc(ct)}</option>`).join('')}
+      </select></label>
+    <button class="btn-secondary" style="font-size:.75rem" onclick="medGeralCarregarDados(true)">🔄 Atualizar</button>
+  </div>
+  <div class="kpi-grid" style="margin-bottom:20px">
+    <div class="kpi-card blue"><div class="kpi-label">Medido</div><div class="kpi-value" style="font-size:1.1rem">${fmt(tot.medido)}</div></div>
+    <div class="kpi-card blue"><div class="kpi-label">Faturado (receitas lançadas)</div><div class="kpi-value" style="font-size:1.1rem">${fmt(tot.faturado)}</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Recebido</div><div class="kpi-value" style="font-size:1.1rem">${fmt(tot.recebido)}</div></div>
+    <div class="kpi-card red"><div class="kpi-label">A receber</div><div class="kpi-value" style="font-size:1.1rem">${fmt(Math.max(tot.faturado - tot.recebido, 0))}</div></div>
+    <div class="kpi-card amber"><div class="kpi-label">Despesas · % s/ receita</div><div class="kpi-value" style="font-size:1.1rem">${fmt(tot.desp)} · ${tot.faturado ? (tot.desp / tot.faturado * 100).toFixed(1) : '0'}%</div></div>
+  </div>
+  ${!cards.length ? `<div class="card" style="text-align:center;color:var(--text-muted);padding:24px">Nenhum BM, receita ou despesa encontrado${ano ? ' em ' + ano : ''} com os filtros atuais.</div>` : ''}
+  ${cards.map(({ c, bms, despTot }) => {
+    const sMed = bms.reduce((s, r) => s + r.medido, 0), sFat = bms.reduce((s, r) => s + r.faturado, 0), sRec = bms.reduce((s, r) => s + r.recebido, 0), sDesp = bms.reduce((s, r) => s + r.despesas, 0);
+    const despSemBM = Math.max(despTot - sDesp, 0);
+    const ded = MEDGERAL_CC_DEDICADO[c.id];
+    const pctTot = sFat ? despTot / sFat * 100 : (sMed ? despTot / sMed * 100 : null);
+    return `
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <div><div style="font-weight:800;font-size:.95rem">${esc(c.contrato)}</div>
+          <div style="font-size:.72rem;color:var(--text-muted)">${esc(c.cliente)} · ${esc(c.id)}${ded ? ' · <span style="color:var(--blue)">medições pelo módulo próprio</span>' : ''}</div></div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74rem">
+          <span>BMs: <b>${bms.filter(r => r.bm).length}</b></span>
+          <span>Faturado: <b>${fmt(sFat)}</b></span>
+          <span>Recebido: <b style="color:var(--green-main)">${fmt(sRec)}</b></span>
+          <span>A receber: <b style="color:${sFat - sRec > 0.01 ? 'var(--red)' : 'inherit'}">${fmt(Math.max(sFat - sRec, 0))}</b></span>
+          <span>Despesas: <b>${fmt(despTot)}</b>${pctTot != null ? ` (<b style="color:${pctTot > 100 ? 'var(--red)' : 'inherit'}">${pctTot.toFixed(1)}%</b>)` : ''}</span>
+        </div>
+      </div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.76rem">
+        <thead><tr style="border-bottom:2px solid var(--border-soft,#e5e0d8);background:var(--surface2)">
+          ${th('Nº BM')}${th('Identificação')}${th('Data')}${th('Valor medido', 'right')}${th('Emitida', 'center')}${th('Faturada (NF)', 'center')}${th('Recebida', 'center')}${th('Receita', 'right')}${th('Despesas', 'right')}${th('% Desp./Receita', 'right')}${th('Resultado', 'right')}
+        </tr></thead>
+        <tbody>
+        ${bms.map(r => { const pct = r.base > 0 ? r.despesas / r.base * 100 : null; const resultado = (r.faturado || r.medido) - r.despesas; return `
+          <tr style="border-bottom:1px solid var(--border-soft,#e5e0d8)">
+            <td style="padding:6px 8px;font-weight:800;white-space:nowrap">${r.bm ? 'BM ' + esc(r.bm) : '<span style="color:var(--text-muted)">s/ nº</span>'}</td>
+            <td style="padding:6px 8px;max-width:340px">${esc(r.ident) || '—'}${r.semMedicao ? '<div style="font-size:.66rem;color:var(--text-muted)">só em Receitas (sem medição lançada)</div>' : ''}${r.divergencia ? `<div style="font-size:.66rem;color:#b8860b;font-weight:700">⚠️ medido ${fmt(r.medido)} ≠ receita ${fmt(r.faturado)}</div>` : ''}</td>
+            <td style="padding:6px 8px;white-space:nowrap">${dt(r.dataRef)}</td>
+            <td style="padding:6px 8px;text-align:right;white-space:nowrap">${r.medido ? fmt(r.medido) : '—'}</td>
+            <td style="padding:6px 8px;text-align:center;white-space:nowrap">${badge(r.emitida, r.statusReg ? `<div style="font-size:.64rem;color:var(--text-muted)">${esc(r.statusReg)}</div>` : '')}</td>
+            <td style="padding:6px 8px;text-align:center;white-space:nowrap">${badge(r.faturada, r.nfs.length ? `<div style="font-size:.64rem;color:var(--text-muted)">NF ${esc(r.nfs.join(', '))}</div>` : '')}</td>
+            <td style="padding:6px 8px;text-align:center;white-space:nowrap">${badge(r.recebida, r.recebida === 'sim' ? `<div style="font-size:.64rem;color:var(--text-muted)">${dt(r.dataReceb)}</div>` : (r.previsao ? `<div style="font-size:.64rem;color:${r.emAtraso ? 'var(--red);font-weight:700' : 'var(--text-muted)'}">${r.emAtraso ? 'atrasada · ' : 'prev. '}${dt(r.previsao)}</div>` : ''))}</td>
+            <td style="padding:6px 8px;text-align:right;white-space:nowrap">${r.faturado ? fmt(r.faturado) : '—'}${r.recebido && r.recebido < r.faturado - 0.01 ? `<div style="font-size:.64rem;color:var(--green-main)">recebido ${fmt(r.recebido)}</div>` : ''}</td>
+            <td style="padding:6px 8px;text-align:right;white-space:nowrap">${r.bm ? fmt(r.despesas) : '—'}</td>
+            <td style="padding:6px 8px;text-align:right;white-space:nowrap;${pct != null && pct > 100 ? 'color:var(--red);font-weight:700' : ''}">${pct != null && r.bm ? pct.toFixed(1) + '%' : '—'}</td>
+            <td style="padding:6px 8px;text-align:right;white-space:nowrap;font-weight:700;color:${resultado < 0 ? 'var(--red)' : 'var(--green-main)'}">${r.bm || r.faturado ? fmt(resultado) : '—'}</td>
+          </tr>`; }).join('')}
+          ${despSemBM > 0.01 ? `<tr style="border-bottom:1px solid var(--border-soft,#e5e0d8);color:var(--text-muted)">
+            <td style="padding:6px 8px">—</td><td style="padding:6px 8px" colspan="7">Despesas do contrato sem nº de BM informado${ano ? ' (' + ano + ')' : ''}</td>
+            <td style="padding:6px 8px;text-align:right;white-space:nowrap">${fmt(despSemBM)}</td><td></td><td></td></tr>` : ''}
+          <tr style="font-weight:800;background:var(--surface2)">
+            <td style="padding:7px 8px" colspan="3">TOTAL</td>
+            <td style="padding:7px 8px;text-align:right;white-space:nowrap">${fmt(sMed)}</td><td></td><td></td><td></td>
+            <td style="padding:7px 8px;text-align:right;white-space:nowrap">${fmt(sFat)}</td>
+            <td style="padding:7px 8px;text-align:right;white-space:nowrap">${fmt(despTot)}</td>
+            <td style="padding:7px 8px;text-align:right;white-space:nowrap">${pctTot != null ? pctTot.toFixed(1) + '%' : '—'}</td>
+            <td style="padding:7px 8px;text-align:right;white-space:nowrap;color:${(sFat || sMed) - despTot < 0 ? 'var(--red)' : 'var(--green-main)'}">${fmt((sFat || sMed) - despTot)}</td>
+          </tr>
+        </tbody></table></div>
+    </div>`; }).join('')}
+  <div style="font-size:.7rem;color:var(--text-muted);margin-top:6px">Faturada = Receita lançada para o BM (NF emitida) · Recebida = Receita com status "Recebido" · % Desp./Receita = despesas lançadas com o nº do BM ÷ valor da receita (ou do medido, se ainda não houver receita).</div>`;
+}
+
 function pageMedicaoGeral() {
   if (!_custosExtrasCarregados) { setTimeout(() => custosCarregarExtras().then(() => navigate('medicao_geral')), 50); }
   if (currentProfile !== 'diretoria') {
@@ -46506,6 +46949,7 @@ function pageMedicaoGeral() {
     </div>`;
   }
   if (_medGeralReceitas === null) { setTimeout(() => medGeralCarregarDados(), 100); return '<div class="card">Carregando…</div>'; }
+  if ((window._medGeralVisao || 'bms') === 'bms') return medGeralHtmlBMs();
 
   const mes = window._medGeralMes || new Date().toISOString().slice(0, 7);
   const clienteFiltro = window._medGeralClienteFiltro || '';
@@ -46539,8 +46983,8 @@ function pageMedicaoGeral() {
   <div class="page-header">
     <div><h1>📐 Medição Geral</h1><p>O que foi medido, recebido e gasto por cliente, mês a mês — Energisa e todos os demais contratos ativos</p></div>
   </div>
-  <div style="margin-bottom:16px"><button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button></div>
-
+  <div style="margin-bottom:12px"><button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button></div>
+  ${medGeralHtmlToggleVisao()}
   <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
     <label style="font-size:.8rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">📅 Mês
       <input type="month" value="${mes}" onchange="medGeralFiltrarMes(this.value)" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px">
@@ -46575,7 +47019,8 @@ function pageMedicaoGeral() {
       <div class="form-group"><label>Status</label>
         <select onchange="medGeralCampo('status', this.value)">${MEDGERAL_STATUS_OPCOES.map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
       </div>
-      <div class="form-group"><label>Obs.</label><input type="text" value="${(f.obs || '').replace(/"/g, '&quot;')}" oninput="medGeralCampo('obs', this.value)"></div>
+      <div class="form-group"><label>Identificação do BM</label><input type="text" value="${(f.obs || '').replace(/"/g, '&quot;')}" oninput="medGeralCampo('obs', this.value)" placeholder="Do que se trata o BM"></div>
+      <div class="form-group"><label>Nº do BM</label><input type="text" value="${(f.numeroBM || '').replace(/"/g, '&quot;')}" oninput="medGeralCampo('numeroBM', this.value)" placeholder="Ex: 05"></div>
     </div>
     <div class="form-group" style="margin-top:8px">
       <label>🔗 Vincular a uma Receita existente (opcional)</label>
@@ -73360,11 +73805,21 @@ const PLAN_SYNC = {
   abas: {
     saidas:   { nome: '💸 Saídas',         idCol: 'AE', limpar: ['B','E','I','J','K','L','M','N','P','R','T','U','V','X','Z','AB','AC','AD'] },
     receitas: { nome: '💰 Receitas',       idCol: 'BM', limpar: ['B','E','G','H','I','J','K','L','N','O','Q','S','U','V','X'] },
-    transf:   { nome: '🔄 Transferências', idCol: 'O',  limpar: ['B','D','E','F','G','H','I','J','K','L','M','N'] }
+    transf:   { nome: '🔄 Transferências', idCol: 'O',  limpar: ['B','D','E','F','G','H','I','J','K','L','M','N'], casarManual: true }
   },
   tabelas: ['Despesas', 'ContasPagar', 'Receitas']
 };
 const _plan = { item: null, rodando: false, pendente: false, timer: null };
+// Contas do tipo "Aplicação" da aba _Listas da planilha (fallback se o cadastro de Bancos do APP ainda não carregou)
+const _PLAN_CONTAS_APLICACAO = {
+  'Expedian': ['Sicoob 5024 - Investimentos', 'Sicoob 5024 - Conta Capital', 'Sicoob 5024 - Consórcio', 'Sicoob 3325 - Icatu', 'Stone - Investimentos'],
+  'TL3': ['Inter - Investimentos'],
+  'EXP Brasil': ['PagBank-Invest'],
+};
+// Pedido Tiago 20/11/2026: Aplicação e Resgate vão para "🔄 Transferências"
+// (e não mais para Saídas/Receitas). Rendimento continua em Receitas.
+function _planEhAplicacao(d) { return !d.TransferenciaId && String(d.Categoria || '') === 'Aplicações Financeiras'; }
+function _planEhResgate(x) { return !x.TransferenciaId && /^resgate/i.test(String(x.Subcategoria || '')); }
 
 function _planCol(c) { let n = 0; for (const ch of c) n = n * 26 + (ch.charCodeAt(0) - 64); return n; }
 function _planLetra(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
@@ -73445,11 +73900,25 @@ function _planDesejadas(desp, contas, rec) {
   const trf = new Map();
   for (const d of desp) if (d.TransferenciaId) { const t = trf.get(d.TransferenciaId) || {}; t.d = d; trf.set(d.TransferenciaId, t); }
   for (const x of rec) if (x.TransferenciaId) { const t = trf.get(x.TransferenciaId) || {}; t.r = x; trf.set(x.TransferenciaId, t); }
+  // Pedido Tiago 20/11/2026: transferência com rateio (DivisaoCC) vai em UMA
+  // LINHA POR CENTRO DE CUSTO/BM (o Excel não lê vários CCs/BMs na mesma linha
+  // — mesma regra de Saídas/Receitas). Chave T-<id>#n por parte.
+  const lados = (r) => { const dv = Array.isArray(r && r.DivisaoCC) ? r.DivisaoCC.filter(z => z && z.cc) : []; return dv.length >= 2 ? dv : null; };
+  const pushTransf = (chave, base, dO, dD) => {
+    const pO = lados(dO), pD = lados(dD);
+    if (!pO && !pD) { transf.set(chave, base); return; }
+    const partes = pO || pD, ehOrigem = !!pO;
+    partes.forEach((p, i) => {
+      const parD = (pO && pD && pD.length === pO.length) ? pD[i] : null;
+      transf.set(chave + '#' + (i + 1), Object.assign({}, base, ehOrigem ? { F: p.cc, G: _planNum(p.medicao) } : { I: p.cc, J: _planNum(p.medicao) },
+        parD ? { I: parD.cc, J: _planNum(parD.medicao) } : {}, { K: _planValor(p.valor) }));
+    });
+  };
   for (const [id, t] of trf) {
     const o = t.d || t.r;
     if (!_planCriadoDepois(o)) continue;
     const d = t.d || {}, x = t.r || {};
-    transf.set('T-' + id, {
+    pushTransf('T-' + id, {
       B: _planSerial(d.DataPagamento || d.DataLancamento || x.DataRecebimento || x.DataEmissao),
       D: o.Empresa || '',
       E: d.Banco || x.TransferenciaContraparte || '',
@@ -73462,7 +73931,31 @@ function _planDesejadas(desp, contas, rec) {
       L: o.Descricao || o.Title || '',
       M: o.LancadoPor || o.ResponsavelLancamento || '',
       N: (d.Status === 'Pago' || x.Status === 'Recebido') ? 'Concluído ✅' : 'Pendente'
-    });
+    }, d, x);
+  }
+  // Aplicação (Despesa "Aplicações Financeiras"): Saiu do Banco = conta → Entrou = conta de aplicação
+  for (const d of desp) {
+    if (!_planEhAplicacao(d) || d.Provisorio || !_planCriadoDepois(d)) continue;
+    pushTransf('A-' + d.Id, {
+      B: _planSerial(d.DataPagamento || d.DataLancamento), D: d.Empresa || '',
+      E: d.Banco || '', F: '', G: '',
+      H: d.ContaAplicacao || _contaAplicacaoSugerida(d.Empresa, d.Banco, d.Subcategoria, d.Descricao),
+      I: d.CentroCusto || '', J: _planNum(d.NumMedicao),
+      K: _planValor(d.Valor), L: d.Descricao || d.Title || ('Aplicação · ' + (d.Subcategoria || '')),
+      M: d.LancadoPor || d.ResponsavelLancamento || '', N: d.Status === 'Pago' ? 'Concluído ✅' : 'Pendente'
+    }, null, d);
+  }
+  // Resgate (Receita "Resgate de ..."): Saiu = conta de aplicação → Entrou = conta
+  for (const x of rec) {
+    if (!_planEhResgate(x) || !_planCriadoDepois(x)) continue;
+    pushTransf('G-' + x.Id, {
+      B: _planSerial(x.DataRecebimento || x.DataEmissao), D: x.Empresa || '',
+      E: x.ContaAplicacao || _contaAplicacaoSugerida(x.Empresa, x.Banco, x.Subcategoria, x.Descricao),
+      F: x.CentroCusto || '', G: _planNum(x.NumMedicao),
+      H: x.Banco || '', I: '', J: '',
+      K: _planValor(x.Valor), L: x.Descricao || x.Title || ('Resgate · ' + (x.Subcategoria || '')),
+      M: x.LancadoPor || x.ResponsavelLancamento || '', N: x.Status === 'Recebido' ? 'Concluído ✅' : 'Pendente'
+    }, x, null);
   }
   // Contas a pagar ainda sem despesa (inclui "Aguardando Aprovação" — ajuste 08/11/2026: Tiago lança e aprova; se for reprovada/excluída, a linha é limpa)
   // Pedido Tiago 19/11/2026: provisão de DAS (gerada ao marcar NF como
@@ -73475,7 +73968,7 @@ function _planDesejadas(desp, contas, rec) {
   }
   // Despesas (inclui prestações aprovadas e contas pagas)
   for (const d of desp) {
-    if (d.TransferenciaId) continue;
+    if (d.TransferenciaId || _planEhAplicacao(d)) continue;
     let chave = 'D-' + d.Id, origem = d;
     if (d.ContaPagarId) { chave = 'CP-' + d.ContaPagarId; origem = contaPorId.get(String(d.ContaPagarId)) || d; }
     if (origem.Provisorio || d.Provisorio || !_planCriadoDepois(origem)) continue;
@@ -73484,7 +73977,7 @@ function _planDesejadas(desp, contas, rec) {
   }
   // Receitas
   for (const x of rec) {
-    if (x.TransferenciaId || !_planCriadoDepois(x)) continue;
+    if (x.TransferenciaId || _planEhResgate(x) || !_planCriadoDepois(x)) continue;
     const recebido = x.Status === 'Recebido' && x.DataRecebimento;
     const iss = String(x.ISSRetido || '') === 'Sim';
     const base = {
@@ -73557,7 +74050,32 @@ async function _planSincronizarAba(token, sessao, item, cfg, desejadas, res) {
   const colB = await _planLerColuna(token, sessao, item, aba, 'B');
   if (!ids[1]) await _planEscreverLinha(token, sessao, item, aba, 2, { [idCol]: 'Sync APP' }, idCol);
   const existentes = new Map();
-  ids.forEach((v, i) => { const s = String(v || ''); if (i >= 2 && /^(D|CP|R|T)-/.test(s)) { const [k, h] = s.split(' · '); existentes.set(k, { linha: i + 1, hash: h || '' }); } });
+  ids.forEach((v, i) => { const s = String(v || ''); if (i >= 2 && /^(D|CP|R|T|A|G)-/.test(s)) { const [k, h] = s.split(' · '); existentes.set(k, { linha: i + 1, hash: h || '' }); } });
+  // Transferências: antes de criar linha nova, "adota" uma linha já lançada à
+  // mão (sem chave) com mesma data, valor, banco de saída e CC/BM de origem —
+  // só grava a chave nela, sem mexer no conteúdo (pedido 20/11/2026: as linhas
+  // de rateio de frota já estavam certas na planilha e o APP duplicava).
+  let casar = null;
+  if (cfg.casarManual) {
+    const cols = {};
+    for (const c of ['D', 'E', 'F', 'G', 'K']) cols[c] = await _planLerColuna(token, sessao, item, aba, c);
+    const norm = v => String(v == null ? '' : v).trim().toLowerCase();
+    const ccId = v => String(v || '').split(' · ')[0].trim().toUpperCase();
+    const usadas = new Set();
+    casar = (cel) => {
+      for (let i = 2; i < colB.length; i++) {
+        if (usadas.has(i) || String(ids[i] || '').trim() || colB[i] === '' || colB[i] == null) continue;
+        if (Number(colB[i]) !== Number(cel.B)) continue;
+        if (Math.abs((Number(cols.K[i]) || 0) - (Number(cel.K) || 0)) > 0.011) continue;
+        if (norm(cols.E[i]) !== norm(cel.E)) continue;
+        if (cel.D && norm(cols.D[i]) && norm(cols.D[i]) !== norm(cel.D)) continue;
+        if (cel.F && ccId(cols.F[i]) !== ccId(cel.F)) continue;
+        if (cel.G !== '' && cel.G != null && String(cols.G[i] == null ? '' : cols.G[i]).trim() !== '' && String(Number(cols.G[i])) !== String(Number(cel.G))) continue;
+        usadas.add(i); return i + 1;
+      }
+      return 0;
+    };
+  }
   let ultima = 2;
   colB.forEach((v, i) => { if (i >= 2 && v !== '' && v != null) ultima = i + 1; });
   for (const { linha } of existentes.values()) ultima = Math.max(ultima, linha);
@@ -73565,6 +74083,10 @@ async function _planSincronizarAba(token, sessao, item, cfg, desejadas, res) {
     const h = _planHash(celulas), ex = existentes.get(chave);
     existentes.delete(chave);
     if (ex && ex.hash === h) continue;
+    if (!ex && casar) {
+      const lm = casar(celulas);
+      if (lm) { await _planFetch(token, sessao, _planUrlAba(item, aba, `${idCol}${lm}`), { method: 'PATCH', body: JSON.stringify({ values: [[chave + ' · ' + h]] }) }); res.adotadas = (res.adotadas || 0) + 1; continue; }
+    }
     const linha = ex ? ex.linha : ++ultima;
     const gravar = Object.assign({}, celulas, { [idCol]: chave + ' · ' + h });
     await _planEscreverLinha(token, sessao, item, aba, linha, gravar, idCol);
