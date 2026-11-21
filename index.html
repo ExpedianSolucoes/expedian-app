@@ -4569,17 +4569,12 @@ function prestFrentesAtivas() {
 // aqui, todo CC ativo aparece na Prestação de Contas — os que já têm frente
 // cadastrada usam a frente (com BM/gestor dela); os demais entram como uma
 // liberação automática do próprio CC. CC encerrado sai da lista sozinho.
-const PREST_ACESSO_TODOS_CCS = ['Enoque Lima de Assunção'];
+const PREST_ACESSO_TODOS_CCS = ['Enoque Lima de Assunção', 'Enoque Lima'];
 function prestTemAcessoTodosCCs(nome) {
+  if (!_prestNormNome(nome)) return false;
   const n = _prestNormNome(nome);
-  if (!n) return false;
-  const tn = n.split(' ');
-  return PREST_ACESSO_TODOS_CCS.some(x => {
-    const k = _prestNormNome(x), tk = k.split(' ');
-    if (k === n) return true;
-    // "Enoque" ou "Enoque Assunção" também valem (mesmo 1º nome e, se houver, mesmo último)
-    return tn[0] === tk[0] && (tn.length === 1 || tn[tn.length - 1] === tk[tk.length - 1]);
-  });
+  // "Enoque" sozinho também vale; demais casos pela regra de _prestMesmaPessoa
+  return PREST_ACESSO_TODOS_CCS.some(x => _prestMesmaPessoa(x, nome) || _prestNormNome(x).split(' ')[0] === n);
 }
 function prestFrentesAutomaticas() {
   const comFrente = new Set(prestFrentesAtivas().map(f => _ccIdPuro(f.CentroCusto)));
@@ -4619,8 +4614,13 @@ function _prestMesmaPessoa(a, b) {
   if (!x || !y) return false;
   if (x === y) return true;
   const tx = x.split(' '), ty = y.split(' ');
-  if (tx.length < 2 || ty.length < 2) return false;
-  return tx[0] === ty[0] && tx[tx.length - 1] === ty[ty.length - 1];
+  if (tx.length < 2 || ty.length < 2 || tx[0] !== ty[0]) return false;
+  // Mesmo 1º nome e: mesmo último nome ("Nathalia Pereira" x "Nathalia Olivio
+  // Pereira") OU todas as palavras do nome mais curto estão no mais longo
+  // ("Enoque Lima" — nome do login — x "Enoque Lima de Assunção").
+  if (tx[tx.length - 1] === ty[ty.length - 1]) return true;
+  const [curto, longo] = tx.length <= ty.length ? [tx, ty] : [ty, tx];
+  return curto.every(p => longo.includes(p));
 }
 function prestFrentesDaPessoa(nome, ignorarValidade) {
   const n = _prestNormNome(nome);
@@ -33027,7 +33027,10 @@ function pageMinhaArea() {
   const u = window._currentUser || {};
   const fallback = profiles[currentProfile] || {};
   const ov = window._perfilOverride || {};
-  const nome     = ov.Nome     || u.name     || fallback.name     || '';
+  // Nome sempre o COMPLETO do cadastro (pedido Tiago 21/11/2026); o nome
+  // digitado em Meus Dados só vale para quem não está no cadastro.
+  const cadNome  = (usuarioCadastroPorEmailOuNome(u.email, u.name) || {}).name || '';
+  const nome     = cadNome || ov.Nome || u.name || fallback.name || '';
   const cargo    = ov.Cargo    || u.role     || fallback.role     || '';
   const initials = u.initials  || fallback.initials || '??';
   const email    = u.email     || '';
@@ -33053,7 +33056,7 @@ function pageMinhaArea() {
       <div><div style="font-size:1.1rem;font-weight:700" id="md-nome-preview">${nome}</div><div style="color:var(--text-muted)" id="md-cargo-preview">${cargo}</div></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>Nome Completo</label><input id="md-nome" value="${nome}"></div>
+      <div class="form-group"><label>Nome Completo</label><input id="md-nome" value="${nome}" ${cadNome ? 'readonly title="Nome do cadastro da empresa — para corrigir, fale com a Diretoria" style="opacity:.75"' : ''}></div>
       <div class="form-group"><label>Cargo</label><input id="md-cargo" value="${cargo}"></div>
     </div>
     <div class="form-row">
@@ -33469,10 +33472,10 @@ async function carregarMeusDados() {
     if (!reg) return;
     window._perfilOverride   = reg;
     window._perfilOverrideId = reg.Id;
-    const nomeI  = document.getElementById('md-nome');     if (nomeI  && reg.Nome)     nomeI.value = reg.Nome;
+    const nomeI  = document.getElementById('md-nome');     if (nomeI  && reg.Nome && !nomeI.readOnly) nomeI.value = reg.Nome;
     const cargoI = document.getElementById('md-cargo');    if (cargoI && reg.Cargo)    cargoI.value = reg.Cargo;
     const telI   = document.getElementById('md-telefone'); if (telI   && reg.Telefone) telI.value = reg.Telefone;
-    const pNome  = document.getElementById('md-nome-preview');  if (pNome  && reg.Nome)  pNome.textContent = reg.Nome;
+    const pNome  = document.getElementById('md-nome-preview');  if (pNome  && reg.Nome && !(nomeI && nomeI.readOnly))  pNome.textContent = reg.Nome;
     const pCargo = document.getElementById('md-cargo-preview'); if (pCargo && reg.Cargo) pCargo.textContent = reg.Cargo;
     const av = document.getElementById('md-avatar');
     if (av && reg.FotoUrl) av.innerHTML = `<img src="${reg.FotoUrl}" style="width:100%;height:100%;object-fit:cover">`;
@@ -33707,9 +33710,37 @@ const users = {
   'marcos@expediansolucoes.com.br': { profile: 'colaborador', name: 'Marcos Fernandes da Silva', initials: 'MF', role: 'Biólogo', tipo: 'email' },
   'nathaliaolivio@expediansolucoes.com.br': { profile: 'colaborador', name: 'Nathalia Olívio Pereira', initials: 'NO', role: 'Técnica Ambiental', tipo: 'email' },
 };
+// E-mails Microsoft reais que diferem do cadastro acima (pedido Tiago 21/11/2026:
+// "deixar sempre nome completo do colaborador como login"). O Enoque entra como
+// enoquelima@ e o Marcos como marcosfernandes@ — sem isso o app pegava o nome
+// curto da conta Microsoft ("Enoque Lima") e as liberações/lançamentos não
+// batiam com o cadastro ("Enoque Lima de Assunção").
+users['enoquelima@expediansolucoes.com.br'] = { ...users['enoque@expediansolucoes.com.br'] };
+users['marcosfernandes@expediansolucoes.com.br'] = { ...users['marcos@expediansolucoes.com.br'] };
 // Garante que cada usuário "conheça" o próprio e-mail (usado em Meus Dados, uploads de perfil etc.),
 // sem precisar repetir o campo manualmente em cada entrada acima.
 Object.keys(users).forEach(email => { users[email].email = email; });
+// Mesma pessoa pelo nome (sem acento/maiúscula): igual, mesmo 1º e último nome,
+// ou o nome curto contido no completo ("Enoque Lima" ⊂ "Enoque Lima de Assunção").
+function _nomeMesmaPessoa(a, b) {
+  const nn = v => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const x = nn(a), y = nn(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const tx = x.split(' '), ty = y.split(' ');
+  if (tx.length < 2 || ty.length < 2 || tx[0] !== ty[0]) return false;
+  if (tx[tx.length - 1] === ty[ty.length - 1]) return true;
+  const [c, l] = tx.length <= ty.length ? [tx, ty] : [ty, tx];
+  return c.every(p => l.includes(p));
+}
+// Cadastro (nome completo) de quem logou: pelo e-mail; se o e-mail não estiver
+// no cadastro, pelo nome da conta (só se bater com UMA pessoa).
+function usuarioCadastroPorEmailOuNome(email, nome) {
+  const e = String(email || '').toLowerCase();
+  if (users[e]) return users[e];
+  const cand = [...new Map(Object.values(users).filter(u => _nomeMesmaPessoa(u.name, nome)).map(u => [u.name, u])).values()];
+  return cand.length === 1 ? cand[0] : null;
+}
 
 function formatCPFInput(el) {
   let v = el.value.replace(/\D/g, '');
@@ -67570,7 +67601,7 @@ function initMsal() {
     // fazia o login via Microsoft cair como "Diretoria" comum, e ele perdia
     // a visão de tudo (Central de Aprovações, Solicitações de todo mundo,
     // etc.) — bug reportado em 09/09/2026.
-    const cadastro = users[email];
+    const cadastro = usuarioCadastroPorEmailOuNome(email, account.name);
     if (cadastro) return { ...cadastro, password: null, tipo: 'microsoft', email };
     const name    = account.name || account.username;
     const profile = resolveProfileFromEmail(email);
