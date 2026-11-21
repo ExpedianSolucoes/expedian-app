@@ -4553,8 +4553,40 @@ async function prestFrentesCarregar(forcar) {
   return window._prestFrentes;
 }
 
+// Frente de um centro de custo ENCERRADO some sozinha das listas (pedido Tiago
+// 21/11/2026: "sempre sincronizado se o contrato está ativo ou não") — não
+// precisa desativar a frente à mão; se o CC for reativado ela volta.
+function _prestCCAtivo(cc) {
+  const c = (centrosCustoData || []).find(x => x.id === _ccIdPuro(cc));
+  return !c || c.status === 'ativo';
+}
 function prestFrentesAtivas() {
-  return (window._prestFrentes || []).filter(f => f.Ativa !== false);
+  return (window._prestFrentes || []).filter(f => f.Ativa !== false && _prestCCAtivo(f.CentroCusto));
+}
+// Colaboradores com acesso a TODOS os centros de custo ativos (pedido Tiago
+// 21/11/2026: "libere todos centro de custos ativo para colaborador Enoque,
+// lógico sempre sincronizado se o contrato está ativo ou não"). Para quem está
+// aqui, todo CC ativo aparece na Prestação de Contas — os que já têm frente
+// cadastrada usam a frente (com BM/gestor dela); os demais entram como uma
+// liberação automática do próprio CC. CC encerrado sai da lista sozinho.
+const PREST_ACESSO_TODOS_CCS = ['Enoque Lima de Assunção'];
+function prestTemAcessoTodosCCs(nome) {
+  const n = _prestNormNome(nome);
+  if (!n) return false;
+  const tn = n.split(' ');
+  return PREST_ACESSO_TODOS_CCS.some(x => {
+    const k = _prestNormNome(x), tk = k.split(' ');
+    if (k === n) return true;
+    // "Enoque" ou "Enoque Assunção" também valem (mesmo 1º nome e, se houver, mesmo último)
+    return tn[0] === tk[0] && (tn.length === 1 || tn[tn.length - 1] === tk[tk.length - 1]);
+  });
+}
+function prestFrentesAutomaticas() {
+  const comFrente = new Set(prestFrentesAtivas().map(f => _ccIdPuro(f.CentroCusto)));
+  return (centrosCustoData || []).filter(c => c.status === 'ativo' && !c.restritoGestorGeral && !comFrente.has(c.id)).map(c => ({
+    Id: 'cc-' + c.id, Nome: c.contrato, CentroCusto: c.id + ' · ' + c.contrato, Empresa: c.empresa, BMAtual: '', Ativa: true,
+    Colaboradores: PREST_ACESSO_TODOS_CCS.slice(), Gestor: _prestGestorPadraoDoCC(c.id), Automatica: true,
+  }));
 }
 // Nome de quem está lançando: o "Lançado por" escolhido (login compartilhado
 // do estagiário etc.) ou, se vazio, o próprio usuário logado.
@@ -4581,6 +4613,7 @@ function _prestFmtDia(iso) { return iso ? iso.split('-').reverse().slice(0, 2).j
 function prestFrentesDaPessoa(nome, ignorarValidade) {
   const n = _prestNormNome(nome);
   if (!n) return [];
+  if (prestTemAcessoTodosCCs(nome)) return prestFrentesAtivas().concat(prestFrentesAutomaticas());
   return prestFrentesAtivas().filter(f => (f.Colaboradores || []).some(c => _prestNormNome(c) === n)
     && (ignorarValidade || prestLiberacaoVigente(f, nome)));
 }
@@ -4853,6 +4886,7 @@ function prestFrenteToggleMultiAtualizarRotulos() {
 }
 
 function prestFrentePorId(id) {
+  if (String(id).startsWith('cc-')) return prestFrentesAutomaticas().find(f => String(f.Id) === String(id));
   return (window._prestFrentes || []).find(f => String(f.Id) === String(id));
 }
 
@@ -5859,7 +5893,7 @@ function atualizarCCsPrest() {
   // Adicionar também os que não têm cliente nomeado do array centrosCustoData
   // (já filtrado pra esconder Contratos Administrativos de 'colaborador').
   const semCliente = _centrosCustoVisiveis().filter(c=> {
-    return normalizarEmpresa(c.empresa) === chave && c.status==='ativo';
+    return normalizarEmpresa(c.empresa) === chave && _ccStatusSelecionavel(c);
   }).map(c=>c.id+' · '+c.contrato);
   const todos = [...new Set([...ccs,...semCliente])];
   sel.innerHTML='<option value="">Selecione o centro de custo...</option>'+todos.map(c=>`<option>${c}</option>`).join('');
@@ -7612,7 +7646,7 @@ async function pcAbrirVisualizar(id) {
     const chaveEmpresa = normalizarEmpresa(i.Empresa);
     const ccsDisp = [...new Set([
       ...((EMPRESAS_CC[chaveEmpresa]) || []),
-      ...((centrosCustoData||[]).filter(c => normalizarEmpresa(c.empresa) === chaveEmpresa && c.status === 'ativo').map(c => c.id + ' · ' + c.contrato))
+      ...((centrosCustoData||[]).filter(c => normalizarEmpresa(c.empresa) === chaveEmpresa && _ccStatusSelecionavel(c)).map(c => c.id + ' · ' + c.contrato))
     ])];
     acoesHtml = `
       <div style="margin-top:16px;padding:14px;background:var(--surface2);border-radius:10px">
@@ -14135,7 +14169,7 @@ function rcPresetResgate() {
 // "🔄 Transferências" da planilha FINANCEIRO 2026, que já trata Banco e
 // Centro de Custo/Contrato como duas dimensões independentes por lado.
 function _trfOpcoesCC(empresa) {
-  const ccs = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && c.status === 'ativo');
+  const ccs = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && _ccStatusSelecionavel(c));
   return '<option value="">— Nenhum —</option>' + ccs.map(c => {
     const label = (c.id + ' · ' + c.contrato).replace(/"/g, '&quot;');
     return `<option value="${label}">${label}</option>`;
@@ -14147,7 +14181,7 @@ function _trfOpcoesCC(empresa) {
    filtrar em vez de rolar a lista inteira. Sem a opção "— Nenhum —": campo
    vazio já significa nenhum Centro de Custo selecionado. -- */
 function _trfOpcoesCCDatalist(empresa) {
-  const ccs = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && c.status === 'ativo');
+  const ccs = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa) && _ccStatusSelecionavel(c));
   return ccs.map(c => {
     const label = (c.id + ' · ' + c.contrato).replace(/"/g, '&quot;');
     return `<option value="${label}">`;
@@ -32258,38 +32292,21 @@ async function ctSociosConfirmarPagamento() {
 }
 
 function pageContratos() {
-  ctCarregar().then(function() {
-    ctRenderizarLista();
-    ctCarregarFinanceiro().then(function() { ctRenderizarLista(); });
-  });
+  // Pedido Tiago 21/11/2026: "em gestão de contrato pode remover as
+  // informações contratuais que aparece, deixa somente a parte de remuneração
+  // de sócios". Status do contrato (ativo/encerrado) fica em Centros de Custo.
   setTimeout(function() { ctSociosCarregar(); }, 150);
   return `
   <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
     <div>
       <h1>📜 Gestão de Contratos</h1>
-      <p>Contratos ativos, valores, vigências, alertas de vencimento e financeiro automático a partir do faturamento recebido — acesso restrito à Diretoria</p>
+      <p>Remuneração dos sócios por receita recebida no mês — acesso restrito à Diretoria. Para marcar um contrato como ativo ou encerrado, use Centros de Custo.</p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-secondary" onclick="navigate('financeiro')">← Financeiro</button>
-      <button class="btn-primary" onclick="ctAbrirModal()">+ Novo Contrato</button>
+      <button class="btn-secondary" onclick="navigate('custos')">🏷️ Centros de Custo</button>
     </div>
   </div>
-
-  <div class="kpi-grid" style="margin-bottom:20px">
-    <div class="kpi-card green" id="ct-kpi-card-total" onclick="ctResetarFiltros()" style="cursor:pointer" title="Ver todos os contratos ativos"><div class="kpi-label">Contratos Ativos</div><div class="kpi-value" id="ct-kpi-total">—</div><div class="kpi-icon">📜</div></div>
-    <div class="kpi-card blue" style="cursor:default"><div class="kpi-label">Valor Total Estimado</div><div class="kpi-value" id="ct-kpi-valor" style="font-size:1.25rem">—</div><div class="kpi-icon">💰</div></div>
-    <div class="kpi-card yellow" id="ct-kpi-card-vencendo" onclick="ctFiltrarStatus('vencendo')" style="cursor:pointer" title="Filtrar: vencendo em 90 dias"><div class="kpi-label">Vencendo em 90d</div><div class="kpi-value" id="ct-kpi-vencendo">—</div><div class="kpi-icon">⚠️</div></div>
-    <div class="kpi-card red" style="cursor:default"><div class="kpi-label">Alertas Críticos (14d)</div><div class="kpi-value" id="ct-kpi-alertas">—</div><div class="kpi-icon">🔔</div></div>
-  </div>
-
-  <div id="ct-alertas-consolidados" class="card" style="padding:0;margin-bottom:20px;overflow:hidden">
-    <div id="ct-alertas-card-header" style="padding:12px 16px;font-weight:700;font-size:.85rem;background:var(--surface2);border-bottom:1px solid var(--border)">
-      ⚠️ <span id="ct-alertas-header-txt">Verificando alertas críticos...</span>
-    </div>
-    <div id="ct-alertas-lista"></div>
-  </div>
-
-  <div id="ct-lista"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
 
   <!-- Remuneração dos Sócios — pedido em 18/09/2026, espelhando a aba "📐 Gestão
        de Contratos" da planilha: reparte um teto mensal de gestão entre os
@@ -32332,73 +32349,6 @@ function pageContratos() {
     </div>
   </div>
 
-  <!-- MODAL: Novo/Editar Contrato -->
-  <div id="ct-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px">
-    <div style="background:var(--surface);border-radius:16px;width:min(620px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
-      <div style="padding:20px 20px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border)">
-        <div style="font-family:Mont,sans-serif;font-weight:800;font-size:1rem;color:var(--brand-brown)" id="ct-modal-titulo">Novo Contrato</div>
-        <button onclick="ctFecharModal()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
-      </div>
-      <div style="padding:20px">
-        <input type="hidden" id="ct-id">
-
-        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em">Cliente</div>
-        <div class="form-row">
-          <div class="form-group" style="flex:2"><label>Razão Social / Cliente</label><input type="text" id="ct-cliente" placeholder="Nome do cliente"></div>
-          <div class="form-group"><label>CNPJ</label><input type="text" id="ct-cliente-cnpj" placeholder="00.000.000/0001-00"></div>
-        </div>
-
-        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.04em">Contrato</div>
-        <div class="form-row">
-          <div class="form-group"><label>Número do Contrato</label><input type="text" id="ct-numero" placeholder="Ex: Nº 0037/26"></div>
-          <div class="form-group" style="flex:0 0 140px"><label>Status</label>
-            <select id="ct-status"><option value="ativo">Ativo</option><option value="suspenso">Suspenso</option><option value="encerrado">Encerrado</option></select>
-          </div>
-        </div>
-        <div class="form-group"><label>Objeto</label><input type="text" id="ct-objeto" placeholder="Objeto do contrato"></div>
-        <div class="form-row">
-          <div class="form-group"><label>Início</label><input type="date" id="ct-inicio"></div>
-          <div class="form-group"><label>Término</label><input type="date" id="ct-fim"></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Gestor Expedian</label><input type="text" id="ct-gestor" placeholder="Responsável interno"></div>
-          <div class="form-group"><label>Valor Global (R$)</label><input type="number" step="0.01" id="ct-valor-global" placeholder="0,00"></div>
-        </div>
-        <div class="form-group"><label>Observações</label><input type="text" id="ct-obs" placeholder="Observações gerais"></div>
-
-        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.04em">💰 Financeiro automático (a partir do faturamento recebido)</div>
-        <div class="form-group">
-          <label>Empresa do contrato</label>
-          <select id="ct-empresa" onchange="ctMudarEmpresaForm()">
-            <option value="">Selecione...</option>
-            ${RD_EMPRESAS.map(emp => `<option value="${emp}">${emp}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Centro(s) de Custo vinculado(s)</label>
-          <div id="ct-ccs-lista"></div>
-          <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">Marque o(s) CC(s) que faturam por esse contrato — Receita Recebida, Despesa, Saldo e % Margem passam a ser calculados ao vivo a partir das Receitas/Despesas/Contas a Pagar já lançadas neles.</div>
-        </div>
-
-        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.04em">Campos adicionais (exibidos no card)</div>
-        <div id="ct-campos-lista"></div>
-        <button type="button" class="btn-secondary" style="font-size:.78rem;padding:6px 12px;margin-top:4px" onclick="ctAddCampo()">+ Campo</button>
-
-        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:18px 0 8px;text-transform:uppercase;letter-spacing:.04em">Alertas de vencimento</div>
-        <div id="ct-alertas-form-lista"></div>
-        <button type="button" class="btn-secondary" style="font-size:.78rem;padding:6px 12px;margin-top:4px" onclick="ctAddAlerta()">+ Alerta</button>
-
-        <div style="font-size:.78rem;font-weight:700;color:var(--brand-green);margin:18px 0 8px;text-transform:uppercase;letter-spacing:.04em">Anexo do contrato</div>
-        <div id="ct-anexo-atual" style="font-size:.78rem;margin-bottom:6px"></div>
-        <input type="file" id="ct-anexo-file" accept="application/pdf,image/*">
-
-        <div style="display:flex;gap:10px;margin-top:24px">
-          <button class="btn-primary" style="flex:1" onclick="ctSalvarRegistro()">💾 Salvar Contrato</button>
-          <button class="btn-secondary" onclick="ctFecharModal()">Cancelar</button>
-        </div>
-      </div>
-    </div>
-  </div>
   `;
 }
 
@@ -34271,7 +34221,7 @@ function servFiltrarCCs(tipo, texto) {
   const dd = document.getElementById('val_cc_dropdown_' + tipo);
   if (!dd) return;
   const t = (texto || '').trim().toLowerCase();
-  const disponiveis = _centrosCustoVisiveis().filter(c => c.status === 'ativo');
+  const disponiveis = _centrosCustoVisiveis().filter(c => _ccStatusSelecionavel(c));
   const matches = (t ? disponiveis.filter(c => (c.id + ' ' + c.contrato).toLowerCase().includes(t)) : disponiveis).slice(0, 40);
   let html = matches.map(c => {
     const label = (c.id + ' · ' + c.contrato).replace(/'/g, "\\'");
@@ -35889,7 +35839,7 @@ async function servAbrirAprovacao(id) {
 
   const empresa = servEmpresaDoCC(l.cc);
   const ccsDaEmpresa = _centrosCustoVisiveis()
-    .filter(c => c.status === 'ativo' && normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa))
+    .filter(c => _ccStatusSelecionavel(c) && normalizarEmpresa(c.empresa) === normalizarEmpresa(empresa))
     .map(c => c.id + ' · ' + c.contrato);
   const ccAtual = l.cc || '';
   const opcoesCC = ccsDaEmpresa.includes(ccAtual) || !ccAtual ? ccsDaEmpresa : [ccAtual, ...ccsDaEmpresa];
@@ -36374,6 +36324,9 @@ function custosToggleAcoesMenu(ev, ccId) {
   menu.innerHTML = `
     <button onclick="document.getElementById('custos-acoes-menu').remove();abrirDetalheCC('${ccId}')" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:.74rem;font-family:'Mont',sans-serif;color:var(--text)">📋 Detalhes</button>
     <button onclick="document.getElementById('custos-acoes-menu').remove();abrirModalNovoCC('${ccId}')" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:.74rem;font-family:'Mont',sans-serif;color:var(--text)">✏️ Editar</button>
+    ${(() => { const cc0 = centrosCustoData.find(c => c.id === ccId) || {}; return cc0.status === 'ativo'
+      ? `<button onclick="document.getElementById('custos-acoes-menu').remove();custosAlterarStatus('${ccId}','finalizado')" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:.74rem;font-family:'Mont',sans-serif;color:var(--text)">🔒 Encerrar contrato</button>`
+      : `<button onclick="document.getElementById('custos-acoes-menu').remove();custosAlterarStatus('${ccId}','ativo')" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:.74rem;font-family:'Mont',sans-serif;color:var(--text)">✅ Reativar contrato</button>`; })()}
     <button onclick="document.getElementById('custos-acoes-menu').remove();excluirCC('${ccId}')" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:.74rem;font-family:'Mont',sans-serif;color:var(--red)">🗑️ Excluir</button>
   `;
   document.body.appendChild(menu);
@@ -36384,6 +36337,27 @@ function custosToggleAcoesMenu(ev, ccId) {
       document.removeEventListener('click', fecharCustosAcoesMenu);
     });
   }, 0);
+}
+
+/* -- Encerrar / reativar contrato direto do menu ⋮ de Centros de Custo
+   (pedido Tiago 21/11/2026: "quero poder editar no APP se o contrato está
+   ativo ou encerrado ... e também já mudar na planilha financeira").
+   Encerrado ('finalizado'): some das listas de lançamento para todo mundo,
+   menos para o Gestor Geral (ver _ccStatusSelecionavel); some também das
+   liberações de Prestação de Contas. A planilha (coluna Status da aba
+   📋 Contratos) é atualizada na sincronização que roda logo em seguida. -- */
+async function custosAlterarStatus(ccId, status) {
+  const cc = centrosCustoData.find(c => c.id === ccId);
+  if (!cc) { showToast('❌ Centro de custo não encontrado.'); return; }
+  if (status === 'finalizado' && !confirm('Encerrar o contrato "' + cc.id + ' · ' + cc.contrato + '"?\n\nEle deixa de aparecer para lançamentos (só o Gestor Geral continua vendo) e a planilha financeira é atualizada.')) return;
+  cc.status = status;
+  const campos = { Title: cc.id + ' · ' + cc.contrato, CCId: cc.id, Contrato: cc.contrato, Empresa: cc.empresa, Cliente: cc.cliente || '—', Gestor: cc.gestor, Categoria: cc.categoria, Subcategoria: cc.subcategoria || '', Status: status };
+  let ok;
+  if (cc._spId) ok = await dbAtualizar('CentrosCusto', cc._spId, campos);
+  else { const ins = await dbInserir('CentrosCusto', campos); ok = !!ins; if (ins) cc._spId = ins.Id; }
+  showToast(ok ? (status === 'ativo' ? '✅ Contrato reativado: ' : '🔒 Contrato encerrado: ') + cc.id + ' — planilha atualiza em instantes.' : '⚠️ Alterado só neste aparelho — erro ao sincronizar.' + syncErrorDetalhe());
+  if (ok && typeof planilhaAgendarSync === 'function') planilhaAgendarSync();
+  navigate('custos');
 }
 
 function pageCustos() {
@@ -36421,7 +36395,7 @@ function pageCustos() {
 
   const statusPill = s => s === 'ativo'
     ? `<span class="status-pill green">* Ativo</span>`
-    : `<span class="status-pill red">* Finalizado</span>`;
+    : `<span class="status-pill red">* Encerrado</span>`;
 
   const empresaPill = e => {
     const colors = { 'Expedian':'green', 'TL3':'blue', 'EXP Brasil':'amber' };
@@ -36530,7 +36504,7 @@ function pageCustos() {
           <label>Status</label>
           <select id="novocc_status">
             <option value="ativo">✅ Ativo</option>
-            <option value="finalizado">🔒 Finalizado</option>
+            <option value="finalizado">🔒 Encerrado</option>
           </select>
         </div>
         <div class="form-group">
@@ -37426,6 +37400,7 @@ async function confirmarCC() {
       if (inserido) cc._spId = inserido.Id;
     }
     showToast(ok ? '✅ Centro de custo "' + cc.id + '" atualizado!' : '⚠️ Alterado localmente, mas houve erro ao sincronizar.' + syncErrorDetalhe());
+    if (ok && typeof planilhaAgendarSync === 'function') planilhaAgendarSync();
     fecharModalNovoCC();
     navigate('custos');
     return;
@@ -47230,7 +47205,7 @@ const FINANCEIRO_CATALOGO = [
   // rota, sem card nenhum apontando pra ela) — agora com Receita
   // Recebida/Despesa/Saldo automáticos por contrato e o cálculo de
   // Remuneração dos Sócios, ambos a partir do faturamento recebido.
-  { rota: 'contratos', icon: '📜', titulo: 'Gestão de Contratos', subtitulo: 'Prazos, alertas, financeiro automático por contrato e remuneração dos sócios', perfis: ['diretoria'] },
+  { rota: 'contratos', icon: '📜', titulo: 'Gestão de Contratos', subtitulo: 'Remuneração dos sócios', perfis: ['diretoria'] },
 ];
 
 function pageFinanceiroHub() {
@@ -49645,7 +49620,7 @@ function empresaContasPagarCardHtml(empresa, dados) {
 async function empresaBancosECCsCarregar(empresa) {
   if (!_bancosCache || !_bancosCache.length) { try { await carregarBancosLista(); } catch (e) {} }
   const bancos = bancosDaEmpresa(empresa);
-  const ccs = (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === empresa && c.status === 'ativo');
+  const ccs = (centrosCustoData || []).filter(c => normalizarEmpresa(c.empresa) === empresa && _ccStatusSelecionavel(c));
   return { bancos, ccs };
 }
 function empresaBancosCCsCardHtml(empresa, dados) {
@@ -74402,6 +74377,28 @@ async function _planReconciliarSaidas(token, sessao, item, res) {
   res.reconciliacaoSaidas = { vinculadas: gravadas, faltou };
   console.info('[Planilha] reconciliação Saídas 20/11/2026:', res.reconciliacaoSaidas);
 }
+/* -- Status dos contratos na aba 📋 Contratos (coluna E) espelha o status do
+   Centro de Custo no APP (pedido Tiago 21/11/2026). Ativo → "Ativo",
+   encerrado → "Finalizado" (rótulo que já existe na lista L_Status_Con da
+   planilha), suspenso → "Suspenso". Só mexe em linha cujo contrato (coluna B)
+   é um CC cadastrado no APP; cabeçalhos e linhas sem CC ficam como estão. -- */
+async function _planSincronizarContratos(token, sessao, item, res) {
+  const aba = '📋 Contratos';
+  try { if (typeof custosCarregarExtras === 'function') await custosCarregarExtras(); } catch (e) {}
+  const r = await _planFetch(token, sessao, _planUrlAba(item, aba, 'B1:E400') + '?$select=values');
+  if (!r.ok) return;
+  const vals = (await r.json()).values || [];
+  const rot = { ativo: 'Ativo', finalizado: 'Finalizado', encerrado: 'Finalizado', suspenso: 'Suspenso' };
+  for (let i = 0; i < vals.length; i++) {
+    const m = String(vals[i][0] || '').match(/^(CC-[A-Z0-9]+-\d+)/);
+    if (!m) continue;
+    const cc = (centrosCustoData || []).find(c => c.id === m[1]);
+    if (!cc || !rot[cc.status]) continue;
+    if (String(vals[i][3] || '').trim() === rot[cc.status]) continue;
+    const w = await _planFetch(token, sessao, _planUrlAba(item, aba, 'E' + (i + 1)), { method: 'PATCH', body: JSON.stringify({ values: [[rot[cc.status]]] }) });
+    if (w.ok) res.contratos = (res.contratos || 0) + 1;
+  }
+}
 async function planilhaSincronizar(manual) {
   if (!_planPodeRodar()) return null;
   if (_plan.rodando) { _plan.pendente = true; return null; }
@@ -74426,6 +74423,7 @@ async function planilhaSincronizar(manual) {
     await _planSincronizarAba(token, sessao, item, PLAN_SYNC.abas.saidas, des.saidas, res);
     await _planSincronizarAba(token, sessao, item, PLAN_SYNC.abas.receitas, des.receitas, res);
     await _planSincronizarAba(token, sessao, item, PLAN_SYNC.abas.transf, des.transf, res);
+    try { await _planSincronizarContratos(token, sessao, item, res); } catch (e) { console.warn('[Planilha] status contratos', e); }
   } catch (e) {
     res.erro = (e && e.message) || String(e);
     console.warn('[Planilha] sincronização falhou:', res.erro);
