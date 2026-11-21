@@ -4610,17 +4610,33 @@ function prestLiberacaoVigente(f, nome, diaISO) {
   return !v || v >= (diaISO || _prestHojeISO());
 }
 function _prestFmtDia(iso) { return iso ? iso.split('-').reverse().slice(0, 2).join('/') : ''; }
+// Mesma pessoa? Nome igual (sem acento/maiúscula) ou mesmo 1º e último nome
+// (pedido Tiago 21/11/2026: liberação "que realmente funcione" — o nome do
+// login às vezes vem diferente do cadastro, ex. "Nathalia Pereira" x
+// "Nathalia Olivio Pereira").
+function _prestMesmaPessoa(a, b) {
+  const x = _prestNormNome(a), y = _prestNormNome(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const tx = x.split(' '), ty = y.split(' ');
+  if (tx.length < 2 || ty.length < 2) return false;
+  return tx[0] === ty[0] && tx[tx.length - 1] === ty[ty.length - 1];
+}
 function prestFrentesDaPessoa(nome, ignorarValidade) {
   const n = _prestNormNome(nome);
   if (!n) return [];
   if (prestTemAcessoTodosCCs(nome)) return prestFrentesAtivas().concat(prestFrentesAutomaticas());
-  return prestFrentesAtivas().filter(f => (f.Colaboradores || []).some(c => _prestNormNome(c) === n)
-    && (ignorarValidade || prestLiberacaoVigente(f, nome)));
+  return prestFrentesAtivas().filter(f => (f.Colaboradores || []).some(c => _prestMesmaPessoa(c, nome))
+    && (ignorarValidade || prestLiberacaoVigente(f, (f.Colaboradores || []).find(c => _prestMesmaPessoa(c, nome)) || nome)));
 }
 // Lista que aparece no formulário: colaborador comum vê só as frentes
 // liberadas pra ele; gestão vê todas as ativas.
 function prestFrentesDoFormulario() {
   if (!prestFrentesModoSimples()) return prestFrentesAtivas();
+  // Quem tem acesso a todos os CCs ativos (Enoque) não usa o campo "liberados
+  // pelo gestor" — lança direto por Empresa + Centro de Custo (pedido Tiago
+  // 21/11/2026: "pode remover do Enoque campo ali em cima liberados pelo gestor").
+  if (prestTemAcessoTodosCCs(prestFrentesPessoaAtual())) return [];
   return prestFrentesDaPessoa(prestFrentesPessoaAtual());
 }
 // Rótulo na lista: se a liberação tem o mesmo nome do contrato (caso normal),
@@ -4775,7 +4791,13 @@ function prestFrenteRenderizarSelect(manterValor) {
   // de Custo de sempre (que ja esconde os Contratos Administrativos do
   // colaborador via _centrosCustoVisiveis). Mantido window._prestBloqueado
   // em vez de apagar o mecanismo pra nao quebrar o resto do codigo que o le.
-  window._prestBloqueado = false;
+  // Pedido Tiago 21/11/2026: "para os demais colaboradores não liberar
+  // nenhum ... somente diretoria pode deixar todos ativos liberados". Volta o
+  // bloqueio: perfil colaborador SEM centro de custo liberado não lança
+  // (exceto quem tem acesso a todos os CCs — PREST_ACESSO_TODOS_CCS). Só
+  // bloqueia quando a lista de liberações foi lida de verdade.
+  window._prestBloqueado = currentProfile === 'colaborador' && !!window._prestFrentesCarregadas && !lista.length
+    && !prestTemAcessoTodosCCs(prestFrentesPessoaAtual());
   let html;
   if (!window._prestFrentesCarregadas) {
     html = '<option value="">Carregando frentes...</option>';
@@ -4790,6 +4812,8 @@ function prestFrenteRenderizarSelect(manterValor) {
   }
   sel.innerHTML = html;
   if (atual && [...sel.options].some(o => o.value === String(atual))) sel.value = String(atual);
+  const linhaFrente = document.getElementById('prest_frente_row');
+  if (linhaFrente) linhaFrente.style.display = (simples && prestTemAcessoTodosCCs(prestFrentesPessoaAtual())) ? 'none' : '';
   prestFrenteAtualizarVisibilidade();
 }
 
@@ -5107,7 +5131,7 @@ function _prestFrentesChaveVistas(nome) { return 'prest_frentes_vistas_' + _pres
 function prestFrenteChecarNovaLiberacao() {
   if (!prestFrentesModoSimples()) return;
   const nome = prestFrentesPessoaAtual();
-  if (!nome) return;
+  if (!nome || prestTemAcessoTodosCCs(nome)) return;
   const atuais = prestFrentesDaPessoa(nome).map(f => String(f.Id));
   const chave = _prestFrentesChaveVistas(nome);
   let vistas = null;
@@ -5267,9 +5291,17 @@ function prestFrentesRenderizarNova() {
         <datalist id="pfn_bm_dl"></datalist>
       </div>
       <div style="flex:1;font-size:.7rem;color:var(--text-muted);padding-bottom:9px">BM só para contrato mensal (Jirau, Nova 364, Resíduos…) — por demanda/OS, deixe em branco.</div>
-      <button class="btn-primary" style="padding:9px 18px;font-size:.82rem;white-space:nowrap" onclick="prestFrentesCriar()">✅ Liberar</button>
     </div>
-    <div id="pfn_bm_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:6px"></div>`;
+    <div id="pfn_bm_hint" style="font-size:.68rem;color:var(--text-muted);margin-top:6px"></div>
+    <div style="font-size:.74rem;font-weight:700;margin:14px 0 6px">👥 Liberar para quais colaboradores?</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px 12px;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;max-height:240px;overflow-y:auto">
+      ${prestListaLancadores().map(p => `<label style="display:flex;align-items:center;gap:6px;font-size:.78rem;cursor:pointer"><input type="checkbox" class="pfn-colab" value="${_prestEsc(p)}" style="width:auto"> ${_prestEsc(p)}</label>`).join('')}
+    </div>
+    <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-top:10px">
+      <div class="form-group" style="flex:0 1 180px;margin:0"><label>Até <span style="text-transform:none;font-weight:400">(opcional)</span></label><input type="date" id="pfn_ate"></div>
+      <div style="flex:1;font-size:.7rem;color:var(--text-muted);padding-bottom:9px">O colaborador passa a ver esse centro de custo na Prestação de Contas na hora (ou ao tocar em "🔄 Atualizar liberações"). Se o contrato já estiver liberado, os colaboradores marcados são acrescentados a ele.</div>
+      <button class="btn-primary" style="padding:9px 18px;font-size:.82rem;white-space:nowrap" onclick="prestFrentesCriar()">✅ Liberar</button>
+    </div>`;
 }
 
 // Preenche o datalist de BM com as medições já cadastradas do CC e sugere a
@@ -5318,18 +5350,38 @@ async function prestFrentesCriar() {
   if (!nome) { showToast('⚠️ Escolha o centro de custo.'); return; }
   if (!cc) { showToast('⚠️ Escolha o Centro de Custo.'); return; }
   const empresa = ccSel.selectedOptions[0] ? (ccSel.selectedOptions[0].dataset.emp || '') : '';
+  const colabsSel = [...document.querySelectorAll('.pfn-colab')].filter(c => c.checked).map(c => c.value);
+  const ate = (document.getElementById('pfn_ate') || {}).value || '';
+  const validadesNovas = {}; if (ate) colabsSel.forEach(c => { validadesNovas[_prestNormNome(c)] = ate; });
+  // Já existe liberação ATIVA desse mesmo CC (e mesmo nome)? Acrescenta os
+  // colaboradores nela em vez de criar outra (evita liberação duplicada).
+  const existente = (window._prestFrentes || []).find(f => f.Ativa !== false && _ccIdPuro(f.CentroCusto) === _ccIdPuro(cc) && _prestNormNome(f.Nome) === _prestNormNome(nome));
+  if (existente) {
+    const atuais = existente.Colaboradores || [];
+    const novos = colabsSel.filter(c => !atuais.some(a => _prestMesmaPessoa(a, c)));
+    const campos = { Colaboradores: [...atuais, ...novos], Validades: Object.assign({}, existente.Validades || {}, validadesNovas) };
+    if (gestor) campos.Gestor = gestor;
+    const ok = await dbAtualizar('FrentesPrestacao', existente.Id, campos);
+    if (!ok) { showToast('❌ Erro ao liberar.' + (typeof syncErrorDetalhe === 'function' ? syncErrorDetalhe() : '')); return; }
+    showToast(novos.length ? '✅ ' + nome + ' liberado para: ' + novos.join(', ') : 'ℹ️ Esses colaboradores já estavam liberados em ' + nome + '.');
+    await prestFrentesCarregar(true);
+    prestFrentesRenderizarNova(); prestFrentesRenderizarGestao();
+    if (novos.length) prestAbrirAvisoLiberacaoWhatsapp({ ...existente, ...campos }, novos);
+    return;
+  }
   const novo = await dbInserir('FrentesPrestacao', {
-    Title: nome + ' · ' + _ccIdPuro(cc), Nome: nome, CentroCusto: cc, Empresa: empresa, BMAtual: bm, Ativa: true, Colaboradores: [], Gestor: gestor,
+    Title: nome + ' · ' + _ccIdPuro(cc), Nome: nome, CentroCusto: cc, Empresa: empresa, BMAtual: bm, Ativa: true, Colaboradores: colabsSel, Validades: validadesNovas, Gestor: gestor,
     HistoricoBM: bm ? [{ bm, em: new Date().toISOString(), por: window._currentUser ? window._currentUser.name : '' }] : [],
     CriadoPor: window._currentUser ? window._currentUser.name : '',
   });
   if (!novo) { showToast('❌ Erro ao criar a frente.' + (typeof syncErrorDetalhe === 'function' ? syncErrorDetalhe() : '')); return; }
   window._pfnNomeAuto = ''; window._pfnGestorAuto = '';
-  showToast('✅ Centro de custo liberado — agora marque os colaboradores.');
+  showToast(colabsSel.length ? '✅ ' + nome + ' liberado para: ' + colabsSel.join(', ') : '✅ Centro de custo cadastrado — marque os colaboradores abaixo.');
   await prestFrentesCarregar(true);
   prestFrentesRenderizarNova();
-  window._prestFrentesAbertaId = novo.Id;
+  if (!colabsSel.length) window._prestFrentesAbertaId = novo.Id;
   prestFrentesRenderizarGestao();
+  if (colabsSel.length) prestAbrirAvisoLiberacaoWhatsapp({ ...novo, Nome: nome, CentroCusto: cc }, colabsSel);
 }
 
 function prestFrentesRenderizarGestao() {
@@ -5860,7 +5912,9 @@ function pcToggleFormNovo(forcar) {
 
 function _centrosCustoVisiveis() {
   const todos = centrosCustoData || [];
-  const base = currentProfile !== 'colaborador' ? todos : todos.filter(c => !c.administrativo);
+  // Colaborador com acesso a todos os CCs ativos (PREST_ACESSO_TODOS_CCS) vê também os administrativos (frota etc.)
+  const acessoTotal = typeof prestTemAcessoTodosCCs === 'function' && prestTemAcessoTodosCCs((typeof prestFrentesPessoaAtual === 'function' && prestFrentesPessoaAtual()) || (window._currentUser || {}).name);
+  const base = (currentProfile !== 'colaborador' || acessoTotal) ? todos : todos.filter(c => !c.administrativo);
   // Contratos restritoGestorGeral:true (pedido Tiago 04/11/2026, fechamento do
   // exercicio) ficam visiveis SO pro Gestor Geral -- nem diretoria/coordenador
   // (Luiz/Marcelo/Cassiane) veem, diferente do filtro de administrativo acima
@@ -5880,6 +5934,13 @@ function _ccStatusSelecionavel(c) {
   return c.status === 'ativo' || (c.status === 'finalizado' && solicEhGestorGeral());
 }
 
+// CCs que o colaborador pode usar no Centro de Custo manual / rateio (só os
+// liberados pra ele). null = sem restrição (diretoria/gerência ou acesso total).
+function _prestCCsPermitidosColab() {
+  if (currentProfile !== 'colaborador') return null;
+  if (typeof prestTemAcessoTodosCCs === 'function' && prestTemAcessoTodosCCs(prestFrentesPessoaAtual())) return null;
+  return new Set(prestFrentesDaPessoa(prestFrentesPessoaAtual()).map(f => _ccIdPuro(f.CentroCusto)));
+}
 function atualizarCCsPrest() {
   const empresa = document.getElementById('prest_empresa').value;
   const sel = document.getElementById('prest_cc');
@@ -5895,7 +5956,9 @@ function atualizarCCsPrest() {
   const semCliente = _centrosCustoVisiveis().filter(c=> {
     return normalizarEmpresa(c.empresa) === chave && _ccStatusSelecionavel(c);
   }).map(c=>c.id+' · '+c.contrato);
-  const todos = [...new Set([...ccs,...semCliente])];
+  let todos = [...new Set([...ccs,...semCliente])];
+  const permitidos = _prestCCsPermitidosColab();
+  if (permitidos) todos = todos.filter(c => permitidos.has(_ccIdPuro(c)));
   sel.innerHTML='<option value="">Selecione o centro de custo...</option>'+todos.map(c=>`<option>${c}</option>`).join('');
 }
 
@@ -9821,7 +9884,9 @@ function aprovDivccToggle(pfx) {
 function aprovDivccCCsDisponiveis(pfx) {
   const empresa = normalizarEmpresa(window['_aprovEmpresa_' + pfx] || '');
   if (!empresa) return [];
-  return _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && _ccStatusSelecionavel(c));
+  let lista = _centrosCustoVisiveis().filter(c => normalizarEmpresa(c.empresa) === empresa && _ccStatusSelecionavel(c));
+  if (pfx === 'prest' && typeof _prestCCsPermitidosColab === 'function') { const p = _prestCCsPermitidosColab(); if (p) lista = lista.filter(c => p.has(c.id)); }
+  return lista;
 }
 function aprovDivccFiltrarCCs(pfx, texto) {
   const dd = document.getElementById(pfx + '_divcc_cc_dropdown');
