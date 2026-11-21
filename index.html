@@ -18998,6 +18998,7 @@ function rdToggleFormNovaDespesa(forcar) {
   // padrão de pagToggleFormNovo em Contas a Pagar (pedido em 31/08/2026).
   if (!abrir) {
     window._rdEditandoId = null;
+    if (typeof rdParcelaEdicaoLimpar === 'function') rdParcelaEdicaoLimpar();
     const titulo = document.getElementById('rd-form-titulo'); if (titulo) titulo.textContent = '➕ Nova Despesa';
   }
 }
@@ -20163,13 +20164,35 @@ async function salvarDespesa() {
     // originais (não fazem parte de `dados`, então dbAtualizar não mexe neles).
     const vencimento = (document.getElementById('rd_vencimento')||{}).value || '';
     if (!vencimento) { showToast('⚠️ Informe o vencimento.'); return; }
+    const parcEd = window._rdEditandoParcela;
+    let novoTotalProduto = null;
+    if (parcEd) {
+      const chkTot = document.getElementById('rd_parc_alterar_total');
+      if (chkTot && chkTot.checked) {
+        novoTotalProduto = rdMoedaParaNumero((document.getElementById('rd_parc_valor_total') || {}).value || '');
+        if (!novoTotalProduto) { showToast('⚠️ Informe o novo valor total do produto parcelado.'); return; }
+      }
+    }
     const dados = {
       ...base,
       Title: descricao + ' · ' + (vencimento || dataLancamento),
       Vencimento: vencimento, Valor: valorTotal, Status: status,
       Distribuicoes: distribuicoes,
     };
+    if (parcEd) {
+      // Parcela: continua "parcelado"; Valor = valor da parcela (col. O),
+      // ValorTotal = valor total do produto (col. L), que só muda pela opção explícita.
+      dados.TipoPagamento = 'parcelado';
+      dados.ValorTotal = novoTotalProduto || parcEd.valorTotalProduto;
+      dados.Title = descricao + ' · parcela ' + (parcEd.num || '?') + '/' + parcEd.tot + ' · ' + vencimento;
+    }
     ok = await dbAtualizar('Despesas', editandoId, dados);
+    if (ok && parcEd && novoTotalProduto && Math.abs(novoTotalProduto - parcEd.valorTotalProduto) > 0.009) {
+      for (const idIrma of parcEd.irmasIds) {
+        const okI = await dbAtualizar('Despesas', idIrma, { ValorTotal: novoTotalProduto, TipoPagamento: 'parcelado' });
+        ok = ok && !!okI;
+      }
+    }
   } else if (tipoPagamento === 'parcelado') {
     const parcelas = window._rdParcelas || [];
     if (!parcelas.length) { showToast('⚠️ Configure a quantidade de parcelas e o vencimento da 1ª parcela.'); return; }
@@ -20228,6 +20251,7 @@ async function salvarDespesa() {
   const medDl = document.getElementById('rd_medicao_dl'); if (medDl) medDl.innerHTML = '';
   const ccInp = document.getElementById('rd_cc_input'); if (ccInp) ccInp.value='';
   const ccHid = document.getElementById('rd_cc'); if (ccHid) ccHid.value='';
+  rdParcelaEdicaoLimpar();
   const tipoSel = document.getElementById('rd_tipo_pagamento'); if (tipoSel) tipoSel.selectedIndex = 0;
   const statusSel = document.getElementById('rd_status'); if (statusSel) statusSel.selectedIndex = 0;
   window._rdComprovanteUrl = null; window._rdComprovanteNome = null;
@@ -21297,6 +21321,52 @@ async function rdVisualizarDespesa(id) {
    Despesas — editar aqui edita só essa parcela específica, então força
    "à vista" no formulário (esconde a geração de novas parcelas), mesma
    simplificação já usada em Contas a Pagar. -- */
+/* -- Edição de PARCELA (pedido Tiago 21/11/2026): editar uma parcela não pode
+   virar "à vista" nem gravar o valor da parcela como valor total do produto
+   (coluna L da planilha) — o valor digitado no formulário é só o da parcela
+   (coluna O). O valor total do produto só muda pela opção explícita
+   "Alterar o valor total do produto parcelado", que aplica a todas as parcelas
+   da mesma compra (GrupoCompraId). Também: se a parcela não tem descrição,
+   herda a descrição das outras parcelas da mesma compra. -- */
+function _rdTirarSufixoParc(s) { return String(s || '').replace(/\s*-?\s*parc\.?\s*\d+\s*\/\s*\d+\s*$/i, '').trim(); }
+function rdParcelaEdicaoLimpar() {
+  window._rdEditandoParcela = null;
+  const b = document.getElementById('rd_parcela_edicao_box'); if (b) b.remove();
+  const lbl = document.getElementById('rd_valor_label'); if (lbl) lbl.textContent = 'Valor Total (R$)';
+  const tp = document.getElementById('rd_tipo_pagamento'); if (tp) { tp.disabled = false; tp.title = ''; }
+}
+async function rdParcelaEdicaoPreparar(i) {
+  rdParcelaEdicaoLimpar();
+  const tot = Number(i.TotalParcelas) || 1;
+  const ehParcela = tot > 1 || i.TipoPagamento === 'parcelado';
+  let irmas = [];
+  if (i.GrupoCompraId) {
+    try { const todos = await dbLerSeguro('Despesas'); irmas = (todos || []).filter(r => r.GrupoCompraId === i.GrupoCompraId && r.Id !== i.Id); } catch (e) {}
+  }
+  if (!i.Descricao) {
+    const comDesc = irmas.find(r => r.Descricao);
+    const e = document.getElementById('rd_desc');
+    if (comDesc && e && !e.value) e.value = _rdTirarSufixoParc(comDesc.Descricao);
+  }
+  if (!ehParcela) return;
+  const todasParc = [i, ...irmas];
+  const cands = todasParc.filter(r => r.TipoPagamento === 'parcelado' && (Number(r.ValorTotal) || 0) > (Number(r.Valor) || 0) + 0.009).map(r => Number(r.ValorTotal));
+  const valorTotalProduto = cands.length ? Math.max(...cands) : Math.round(todasParc.reduce((s, r) => s + (Number(r.Valor) || 0), 0) * 100) / 100;
+  window._rdEditandoParcela = { grupo: i.GrupoCompraId || '', num: Number(i.NumParcela) || 0, tot, valorTotalProduto, irmasIds: irmas.map(r => r.Id) };
+  const lbl = document.getElementById('rd_valor_label'); if (lbl) lbl.textContent = 'Valor da Parcela' + (i.NumParcela ? ' ' + i.NumParcela + '/' + tot : '') + ' (R$)';
+  const tp = document.getElementById('rd_tipo_pagamento'); if (tp) { tp.disabled = true; tp.title = 'Editando uma parcela — o lançamento continua Parcelado.'; }
+  const valorEl = document.getElementById('rd_valor');
+  const row = valorEl ? valorEl.closest('.form-row') : null;
+  if (!row) return;
+  const box = document.createElement('div');
+  box.id = 'rd_parcela_edicao_box';
+  box.style.cssText = 'margin:6px 0 10px;padding:10px 12px;border:1px dashed var(--border);border-radius:10px;font-size:.78rem';
+  box.innerHTML = `<div style="margin-bottom:6px">📦 Parcela <b>${i.NumParcela || '?'}/${tot}</b> de uma compra parcelada — o valor acima altera <b>só esta parcela</b>. Valor total do produto: <b>R$ ${rdNumeroParaMoeda(valorTotalProduto)}</b></div>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="rd_parc_alterar_total" onchange="document.getElementById('rd_parc_valor_total').disabled=!this.checked"> Alterar o valor total do produto parcelado (vale para todas as ${tot} parcelas)</label>
+    <input type="text" inputmode="decimal" id="rd_parc_valor_total" disabled style="margin-top:6px;max-width:220px" value="${rdNumeroParaMoeda(valorTotalProduto)}" oninput="rdFormatarMoedaInput(this)">`;
+  row.insertAdjacentElement('afterend', box);
+}
+
 async function rdAbrirEdicaoDespesa(id) {
   let i = (window._rdDespesasPorId || {})[id];
   if (!i) { try { const todos = await dbLerSeguro('Despesas'); i = todos.find(r => r.Id === id); } catch(e) {} }
@@ -21368,6 +21438,7 @@ async function rdAbrirEdicaoDespesa(id) {
   const tipoOriginal = i.TipoPagamento || 'avista';
   set('rd_tipo_pagamento', tipoOriginal === 'parcelado' ? 'avista' : tipoOriginal);
   rdTogglePagamento();
+  await rdParcelaEdicaoPreparar(i);
 
   if (i.DivisaoCC && i.DivisaoCC.length) {
     // Divisão por Centro de Custo — reabre o editor já preenchido com os
@@ -74259,6 +74330,7 @@ async function _planSincronizarAba(token, sessao, item, cfg, desejadas, res) {
       return 0;
     };
   }
+  let casarRH = null;
   let ultima = 2;
   colB.forEach((v, i) => { if (i >= 2 && v !== '' && v != null) ultima = i + 1; });
   for (const { linha } of existentes.values()) ultima = Math.max(ultima, linha);
@@ -74267,6 +74339,29 @@ async function _planSincronizarAba(token, sessao, item, cfg, desejadas, res) {
     existentes.delete(chave);
     if (ex && ex.hash === h) continue;
     if (!ex && /^(DH|CPH)-/.test(chave)) continue; // histórico de Saídas: só atualiza linha já vinculada
+    // Receita histórica (RH-) sem linha vinculada: antes de criar linha nova,
+    // procura a linha manual equivalente (mesma data, valor e NF) e só grava a
+    // chave nela — nunca duplica receita que já está digitada na planilha
+    // (achado na conferência de 21/11/2026: 19 linhas tinham perdido a chave).
+    if (!ex && /^RH-/.test(chave)) {
+      if (!casarRH) {
+        const cI = await _planLerColuna(token, sessao, item, aba, 'I'), cQ = await _planLerColuna(token, sessao, item, aba, 'Q');
+        const nfN = v => String(v == null ? '' : v).split('.')[0].replace(/\D/g, '').replace(/^0+/, '');
+        const usadasRH = new Set();
+        casarRH = (cel) => {
+          for (let i = 2; i < colB.length; i++) {
+            if (usadasRH.has(i) || String(ids[i] || '').trim() || colB[i] === '' || colB[i] == null) continue;
+            if (Number(colB[i]) !== Number(cel.B)) continue;
+            if (Math.abs((Number(cI[i]) || 0) - (Number(cel.I) || 0)) > 0.011) continue;
+            if (nfN(cel.Q) && nfN(cQ[i]) && nfN(cQ[i]) !== nfN(cel.Q)) continue;
+            usadasRH.add(i); return i + 1;
+          }
+          return 0;
+        };
+      }
+      const lr = casarRH(celulas);
+      if (lr) { await _planFetch(token, sessao, _planUrlAba(item, aba, `${idCol}${lr}`), { method: 'PATCH', body: JSON.stringify({ values: [[chave]] }) }); res.adotadas = (res.adotadas || 0) + 1; continue; }
+    }
     // limite por rodada (a 1ª atualização do histórico reescreve milhares de
     // linhas): continua na próxima rodada, sem limpar nada nesta.
     if ((res.escritas = (res.escritas || 0) + 1) > 400) { res.parcial = true; return; }
