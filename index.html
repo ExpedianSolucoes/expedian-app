@@ -9200,6 +9200,7 @@ function pagToggleFormNovo(forcar) {
   if (!abrir) {
     window._pagEditandoId = null;
     window._pagEditandoOutlookId = null;
+    if (typeof pagParcelaEdicaoLimpar === 'function') pagParcelaEdicaoLimpar();
     const titulo = document.getElementById('pag-form-titulo'); if (titulo) titulo.textContent = '➕ Novo Lançamento';
   }
 }
@@ -11610,7 +11611,28 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
       window._pagEditandoOutlookId || null
     );
     const dados = { ...base, Title: fornecedor + ' · ' + (vencimento||''), Vencimento: vencimento, Valor: valor, Status: statusP, OutlookEventId: rOutlookEdit.id };
+    const parcEd = window._pagEditandoParcela;
+    let novoTotalProduto = null;
+    if (parcEd) {
+      const chkTot = document.getElementById('pag_parc_alterar_total');
+      if (chkTot && chkTot.checked) {
+        novoTotalProduto = rdMoedaParaNumero((document.getElementById('pag_parc_valor_total') || {}).value || '');
+        if (!novoTotalProduto) { showToast('⚠️ Informe o novo valor total do produto parcelado.'); return; }
+      }
+      // Parcela: continua "parcelado"; Valor = valor desta parcela (col. O da
+      // planilha); ValorTotal = valor total do produto (col. L), que só muda
+      // pela opção explícita.
+      dados.Parcelamento = 'parcelado';
+      dados.ValorTotal = novoTotalProduto || parcEd.valorTotalProduto;
+      dados.Title = fornecedor + ' · parcela ' + (parcEd.num || '?') + '/' + parcEd.tot + ' · ' + vencimento;
+    }
     ok = await dbAtualizar('ContasPagar', editandoId, dados);
+    if (ok && parcEd && novoTotalProduto && Math.abs(novoTotalProduto - parcEd.valorTotalProduto) > 0.009) {
+      for (const idIrma of parcEd.irmasIds) {
+        const okI = await dbAtualizar('ContasPagar', idIrma, { ValorTotal: novoTotalProduto, Parcelamento: 'parcelado' });
+        ok = ok && !!okI;
+      }
+    }
   } else if (parcelamento === 'parcelado') {
     const parcelas = window._pagParcelas || [];
     if (!parcelas.length) { showToast('⚠️ Configure a quantidade de parcelas e o vencimento da 1ª parcela.'); return; }
@@ -11662,6 +11684,7 @@ async function _salvarContaPagarInterno(enviarFinanceiro=false) {
   showToast(ok ? (editandoId ? '✅ Lançamento atualizado!' : (enviarFinanceiro?'📤 Enviado ao Financeiro!':'✅ Lançamento salvo!')) : (editandoId ? ('❌ Erro ao atualizar.'+syncErrorDetalhe()) : '✅ Salvo localmente!'));
   window._pagEditandoId = null;
   window._pagEditandoOutlookId = null;
+  pagParcelaEdicaoLimpar();
   ['pag_empresa','pag_cc','pag_cc_input','pag_desc','pag_data_lanc','pag_vencimento','pag_valor','pag_numero_boleto','pag_num_parcelas','pag_venc_1parcela','pag_medicao'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   const pagMedDlReset=document.getElementById('pag_medicao_dl');if(pagMedDlReset)pagMedDlReset.innerHTML='';
   const pagMedHintReset=document.getElementById('pag_medicao_hint');if(pagMedHintReset)pagMedHintReset.textContent='';
@@ -13017,6 +13040,61 @@ async function pagSalvarParcelamentoCompleto(grupoCompraId) {
    Reaproveita o mesmo formulário "Novo Lançamento", só pré-preenchido; ao
    salvar, _salvarContaPagarInterno detecta window._pagEditandoId e faz
    dbAtualizar no registro em vez de criar um novo. -- */
+/* -- Edição de PARCELA em Contas a Pagar (pedido Tiago 22/11/2026: "em
+   contas a pagar também, deixar da mesma forma quando editar um lançamento
+   de parcela") — mesmo comportamento de Despesas (rdParcelaEdicaoPreparar):
+   editar uma parcela NÃO vira "à vista" nem grava o valor da parcela como
+   valor total do produto; o valor do formulário é só o desta parcela. O
+   valor total só muda pela opção explícita "Alterar o valor total do produto
+   parcelado", que vale para todas as parcelas da mesma compra. Parcela sem
+   descrição herda a descrição das outras parcelas. -- */
+function pagParcelaEdicaoLimpar() {
+  window._pagEditandoParcela = null;
+  const b = document.getElementById('pag_parcela_edicao_box'); if (b) b.remove();
+  const lbl = document.getElementById('pag_valor_label'); if (lbl) lbl.textContent = 'Valor (R$)';
+  const tp = document.getElementById('pag_parcelamento'); if (tp) { tp.disabled = false; tp.title = ''; }
+}
+async function pagParcelaEdicaoPreparar(i) {
+  pagParcelaEdicaoLimpar();
+  const tot = Number(i.TotalParcelas) || 1;
+  const ehParcela = tot > 1 || i.Parcelamento === 'parcelado';
+  let irmas = [];
+  try {
+    const todos = await dbLerSeguro('ContasPagar');
+    if (i.GrupoCompraId) irmas = (todos || []).filter(r => r.GrupoCompraId === i.GrupoCompraId && r.Id !== i.Id);
+    else if (ehParcela) {
+      // parcelas antigas sem GrupoCompraId: mesma compra = mesmo fornecedor,
+      // empresa, nº de parcelas e descrição (sem o "Parc x/y")
+      const base = _rdTirarSufixoParc(i.Descricao || '');
+      irmas = (todos || []).filter(r => r.Id !== i.Id && r.Parcelamento === 'parcelado' && (r.Fornecedor || '') === (i.Fornecedor || '')
+        && normalizarEmpresa(r.Empresa) === normalizarEmpresa(i.Empresa) && (Number(r.TotalParcelas) || 0) === tot
+        && (!base || _rdTirarSufixoParc(r.Descricao || '') === base));
+    }
+  } catch (e) {}
+  if (!i.Descricao) {
+    const comDesc = irmas.find(r => r.Descricao);
+    const e = document.getElementById('pag_desc');
+    if (comDesc && e && !e.value) e.value = _rdTirarSufixoParc(comDesc.Descricao);
+  }
+  if (!ehParcela) return;
+  const todasParc = [i, ...irmas];
+  const cands = todasParc.filter(r => (Number(r.ValorTotal) || 0) > (Number(r.Valor) || 0) + 0.009).map(r => Number(r.ValorTotal));
+  const valorTotalProduto = cands.length ? Math.max(...cands) : Math.round(todasParc.reduce((s, r) => s + (Number(r.Valor) || 0), 0) * 100) / 100;
+  window._pagEditandoParcela = { grupo: i.GrupoCompraId || '', num: Number(i.NumParcela) || 0, tot, valorTotalProduto, irmasIds: irmas.map(r => r.Id) };
+  const lbl = document.getElementById('pag_valor_label'); if (lbl) lbl.textContent = 'Valor da Parcela' + (i.NumParcela ? ' ' + i.NumParcela + '/' + tot : '') + ' (R$)';
+  const tp = document.getElementById('pag_parcelamento'); if (tp) { tp.disabled = true; tp.title = 'Editando uma parcela — o lançamento continua Parcelado.'; }
+  const valorEl = document.getElementById('pag_valor');
+  const row = valorEl ? valorEl.closest('.form-row') : null;
+  if (!row) return;
+  const box = document.createElement('div');
+  box.id = 'pag_parcela_edicao_box';
+  box.style.cssText = 'margin:6px 0 10px;padding:10px 12px;border:1px dashed var(--border);border-radius:10px;font-size:.78rem';
+  box.innerHTML = `<div style="margin-bottom:6px">📦 Parcela <b>${i.NumParcela || '?'}/${tot}</b> de uma compra parcelada — o valor acima altera <b>só esta parcela</b>. Valor total do produto: <b>R$ ${rdNumeroParaMoeda(valorTotalProduto)}</b></div>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="pag_parc_alterar_total" style="width:auto" onchange="document.getElementById('pag_parc_valor_total').disabled=!this.checked"> Alterar o valor total do produto parcelado (vale para todas as ${tot} parcelas)</label>
+    <input type="text" inputmode="decimal" id="pag_parc_valor_total" disabled style="margin-top:6px;max-width:220px" value="${rdNumeroParaMoeda(valorTotalProduto)}" oninput="rdFormatarMoedaInput(this)">`;
+  row.insertAdjacentElement('afterend', box);
+}
+
 async function pagEditarLancamento(id) {
   const todos = await dbLerSeguro('ContasPagar');
   const i = todos.find(r => r.Id === id);
@@ -13050,6 +13128,7 @@ async function pagEditarLancamento(id) {
   // só essa parcela específica, então força "à vista" no formulário (esconde
   // a UI de gerar novas parcelas) independente de i.Parcelamento original.
   const parcSel = document.getElementById('pag_parcelamento'); if (parcSel) { parcSel.value = 'avista'; pagToggleParcelas(); }
+  await pagParcelaEdicaoPreparar(i);
   set('pag_vencimento', i.Vencimento);
   set('pag_data_lanc', i.DataLancamento || String(i.Created || '').slice(0, 10));
   set('pag_valor', i.Valor);
