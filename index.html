@@ -7819,7 +7819,7 @@ async function pcAbrirVisualizar(id) {
       ${linha('Responsável', i.Responsavel||i.EnviadoPor||'—')}
       ${i.LancadoPor && i.LancadoPor !== i.Responsavel ? linha('Lançado por', i.LancadoPor) : ''}
       ${i.Conferido ? linha('Conferido por', i.ConferidoPor + (i.DataConferencia ? ' em ' + fmtData(i.DataConferencia) : '')) : ''}
-      ${linha('Status', i.Status||'—')}
+      ${linha('Status', finStatusLabel(i.Status)||'—')}
       ${(i.ComprovantesOrigem && i.ComprovantesOrigem.length)
         ? `<div style="margin-top:8px"><div style="font-size:.78rem;font-weight:700;margin-bottom:4px">📎 Comprovantes (${i.ComprovantesOrigem.length})</div>${i.ComprovantesOrigem.map(c => `<div style="font-size:.76rem;margin-bottom:2px"><a href="${c.url}" target="_blank" style="color:var(--blue)">📎 ${c.fornecedor||'comprovante'}${c.data?(' — '+fmtData(c.data)):''} — R$ ${(c.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</a></div>`).join('')}</div>`
         : (i.ComprovanteUrl ? `<div style="margin-top:8px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.8rem">📎 Ver comprovante</a></div>` : '')}
@@ -9469,7 +9469,7 @@ function pagePagar() {
       <div class="form-group">
         <label>Status <span style="font-size:.7rem;color:var(--text-muted)">(calculado automaticamente)</span></label>
         <select id="pag_status">
-          <option>Pendente</option>
+          <option value="Pendente">A vencer</option>
           <option>Vence em breve</option>
           <option>Vence hoje</option>
           <option>Em atraso</option>
@@ -9560,7 +9560,7 @@ function pagePagar() {
     <input type="number" id="pag_filtro_valor_max" placeholder="Valor máx." title="Casa tanto o valor da parcela quanto o valor total do parcelamento" oninput="dbDebounce('carregarContasPagar')" style="width:100px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface)">
     <select id="filtro-status-pagar" onchange="PAG_FILTRO_KPI='';carregarContasPagar()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
       <option value="">Todos os status</option>
-      <option value="Pendente">Pendente</option>
+      <option value="Pendente">A vencer</option>
       <option value="Vence em breve">Vence em breve</option>
       <option value="Vence hoje">Vence hoje</option>
       <option value="Em atraso">Em atraso</option>
@@ -11834,7 +11834,7 @@ async function pagAbrirVisualizar(id) {
       ${linha('Lançado em', i.Created ? new Date(i.Created).toLocaleDateString('pt-BR') : '—')}
       ${linha('Lançado por', i.LancadoPor||'—')}
       ${i.DataAgendada ? linha('Data Agendada', fmtData(i.DataAgendada)) : ''}
-      ${linha('Status', i.Status||'—')}
+      ${linha('Status', finStatusLabel(i.Status)||'—')}
       ${i.Observacao ? linha('Observação', i.Observacao) : ''}
       ${i.ComprovanteUrl ? `<div style="margin-top:8px"><a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue);font-size:.8rem">📎 Ver comprovante</a></div>` : ''}
       ${acoesHtml}
@@ -12575,7 +12575,7 @@ async function carregarContasPagar() {
           <td style="font-size:.72rem">${pgtoTxt}</td>
           <td style="font-size:.8rem">${i.Vencimento?new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></td>
-          <td><span class="status-pill ${statusColor(i.Status)}">* ${i.Status||'—'}</span></td>
+          <td><span class="status-pill ${statusColor(i.Status)}">* ${finStatusLabel(i.Status)||'—'}</span></td>
           <td style="display:flex;gap:3px;padding:8px 10px;flex-wrap:wrap;align-items:center">
             <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="pagAbrirVisualizar(${i.Id})">👁️ Visualizar</button>
             ${(i.Status==='Aguardando Aprovação' && isDir)?`<button class="btn-primary" style="padding:2px 6px;font-size:.65rem" onclick="pagAbrirVisualizar(${i.Id})">✅ Aprovar</button>`:''}
@@ -13872,6 +13872,10 @@ const RC_FORMAS = ['PIX','Boleto','Transferência','Cartão de Crédito','Cartã
    gravado continua 'Pendente', pra não precisar migrar dado nem reescrever
    os filtros que já comparam com esse valor) — pedido em 27/08/2026. -- */
 function rcStatusLabel(status) { return status === 'Pendente' ? 'A Receber' : status; }
+// Contas a Pagar / Despesas (pedido Tiago 22/11/2026: "pendente dá sensação de
+// que está vencida"): o status gravado continua 'Pendente' (planilha, filtros e
+// relatórios não mudam) — só o texto mostrado vira "A vencer".
+function finStatusLabel(status) { return status === 'Pendente' ? 'A vencer' : status; }
 
 // -- Ao preencher a Data de Recebimento, o Status muda pra "Recebido" sozinho —
 // pedido em 30/08/2026, pra não depender de lembrar de mudar os dois campos.
@@ -17021,6 +17025,130 @@ async function rcVisualizarReceita(id) {
   document.body.appendChild(modal);
 }
 
+/* == Receitas × Despesas, mês a mês (pedido Tiago 22/11/2026: "no lugar do
+   mapa, tanto em receitas como despesas, mudar para gráfico de colunas de
+   receitas por despesas mês a mês") ==
+   Substitui o "📆 Calendário Mensal" das abas Receitas e Despesas. Mesma
+   empresa selecionada no topo (ou as 3, no Consolidado). Receita pelo mês de
+   recebimento → previsão → emissão (mesmo critério da lista de Receitas);
+   despesa pelo vencimento → lançamento (mesmo critério da lista de Despesas).
+   Fora: transferências entre contas, aplicações/resgates e cancelados.
+   Clicar num mês filtra a lista daquele mês (como o calendário fazia). -- */
+function finRxDCardHtml(pfx, ano, fMesAtivo) {
+  const mudar = pfx === 'rc' ? 'rcMudarAnoResumo' : 'rdMudarAnoResumo';
+  const limpar = pfx === 'rc'
+    ? "document.getElementById('rc_filtro_mes').value='';carregarReceitas()"
+    : "document.getElementById('rd_filtro_mes').value='';window._rdFiltroAnoConsolidado='';carregarDespesas()";
+  return `
+    <div class="card" style="margin-bottom:0;height:100%">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;flex-wrap:wrap">
+        <div class="card-title" style="margin:0">${pfx === 'rc' ? '📊 Receitas — mês a mês' : '📊 Receita × Contas — mês a mês'}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button onclick="${mudar}(-1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">‹</button>
+          <span style="font-weight:800;font-size:.9rem;min-width:38px;text-align:center">${ano}</span>
+          <button onclick="${mudar}(1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">›</button>
+        </div>
+      </div>
+      <div id="${pfx}-rxd-grafico" style="min-height:190px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:.78rem">Carregando…</div>
+      <div id="${pfx}-rxd-totais" style="display:flex;gap:12px;flex-wrap:wrap;font-size:.7rem;margin-top:6px"></div>
+      ${fMesAtivo ? `<button onclick="${limpar}" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);font-size:.72rem;cursor:pointer">✕ Ver o ano todo</button>` : ''}
+    </div>`;
+}
+async function finRxDPreencher(pfx, ano, fMesAtivo) {
+  // Ajuste Tiago 22/11/2026:
+  //  • Despesas: barra "Receita do mês" + barra de contas empilhada (Pagas / Vencidas / A pagar).
+  //  • Receitas: Receita bruta · Receita líquida · A receber + Vencidas (empilhada) · Contas pagas.
+  const alvo = document.getElementById(pfx + '-rxd-grafico');
+  if (!alvo) return;
+  let rec = [], desp = [];
+  try { [rec, desp] = await Promise.all([dbLerSeguro('Receitas'), dbLerSeguro('Despesas')]); } catch (e) {}
+  const consolidado = !!window._rdConsolidado;
+  const empresa = window._rdEmpresaAtiva || (typeof RD_EMPRESAS !== 'undefined' ? RD_EMPRESAS[0] : '');
+  const daEmpresa = r => consolidado || normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa);
+  const hoje = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const z = () => Array(13).fill(0);
+  const RB = z(), RL = z(), RAr = z(), RVc = z(), DP = z(), DV = z(), DA = z(), DPg = z();
+  const mesDe = k => (k || '').slice(0, 4) === String(ano) ? parseInt(k.slice(5, 7), 10) : 0;
+  (rec || []).forEach(r => {
+    if (!r || r.TransferenciaId || r.Status === 'Cancelado' || /^resgate/i.test(r.Subcategoria || '') || !daEmpresa(r)) return;
+    const m = mesDe((typeof _rcDataPeriodo === 'function' ? _rcDataPeriodo(r) : (r.DataRecebimento || r.DataPrevista || r.DataEmissao || '')) || '');
+    if (!m) return;
+    const v = Number(r.Valor) || 0;
+    const liq = (r.ValorLiquido != null && r.ValorLiquido !== '') ? Number(r.ValorLiquido) || 0 : Math.max(v - (Number(r.ISSValorRetido) || 0) - (Number(r.OutrasRetencoesValor) || 0), 0);
+    RB[m] += v; RL[m] += liq;
+    if (r.Status !== 'Recebido') { if (r.Status === 'Em atraso' || (r.DataPrevista && r.DataPrevista < hoje)) RVc[m] += v; else RAr[m] += v; }
+  });
+  (desp || []).forEach(d => {
+    if (!d || d.TransferenciaId || d.Status === 'Cancelado' || d.Provisorio || d.Categoria === 'Aplicações Financeiras' || !daEmpresa(d)) return;
+    const v = Number(d.Valor) || 0;
+    const m = mesDe(d.Vencimento || d.DataLancamento || '');
+    if (m) {
+      if (d.Status === 'Pago') DP[m] += v;
+      else if (d.Status === 'Em atraso' || (d.Vencimento && d.Vencimento < hoje)) DV[m] += v;
+      else DA[m] += v;
+    }
+    if (d.Status === 'Pago') { const mp = mesDe(d.DataPagamento || d.Vencimento || d.DataLancamento || ''); if (mp) DPg[mp] += v; }
+  });
+  const C = { rec: '#2e9e5b', liq: '#7cc49a', arec: '#e0b12c', venc: '#d9480f', pago: '#3d7bd9', apagar: '#e0b12c' };
+  // spec: lista de barras; cada barra = lista de segmentos {v, cor, nome}
+  const barrasDoMes = m => pfx === 'rd'
+    ? [[{ v: RB[m], cor: C.rec, nome: 'Receita do mês' }],
+       [{ v: DP[m], cor: C.pago, nome: 'Contas pagas' }, { v: DV[m], cor: C.venc, nome: 'Vencidas' }, { v: DA[m], cor: C.apagar, nome: 'A pagar' }]]
+    : [[{ v: RB[m], cor: C.rec, nome: 'Receita bruta' }],
+       [{ v: RL[m], cor: C.liq, nome: 'Receita líquida' }],
+       [{ v: RAr[m], cor: C.arec, nome: 'A receber' }, { v: RVc[m], cor: C.venc, nome: 'Vencidas' }],
+       [{ v: DPg[m], cor: C.pago, nome: 'Contas pagas' }]];
+  const legenda = pfx === 'rd'
+    ? [['Receita do mês', C.rec], ['Contas pagas', C.pago], ['Vencidas', C.venc], ['A pagar', C.apagar]]
+    : [['Receita bruta', C.rec], ['Receita líquida', C.liq], ['A receber', C.arec], ['Vencidas', C.venc], ['Contas pagas', C.pago]];
+  let max = 1;
+  for (let m = 1; m <= 12; m++) barrasDoMes(m).forEach(b => { max = Math.max(max, b.reduce((s, x) => s + x.v, 0)); });
+  const nomes = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+  const W = 660, H = 200, top = 12, base = 170, esq = 34, larg = (W - esq) / 12;
+  const nb = pfx === 'rd' ? 2 : 4, gap = 1.5, bw = Math.min(pfx === 'rd' ? 16 : 10, (larg - 8) / nb - gap);
+  const fmt0 = v => v.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const fmt2 = v => v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const curto = v => v >= 1e6 ? (v / 1e6).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 'M' : v >= 1e3 ? Math.round(v / 1e3) + 'k' : fmt0(v);
+  const filtro = pfx === 'rc' ? 'rc_filtro_mes' : 'rd_filtro_mes';
+  const recarregar = pfx === 'rc' ? 'carregarReceitas()' : "window._rdFiltroAnoConsolidado='';var _d=document.getElementById('rd_filtro_dia');if(_d)_d.value='';carregarDespesas()";
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  let svgBarras = '';
+  for (let m = 1; m <= 12; m++) {
+    const cx = esq + (m - 0.5) * larg, chave = ano + '-' + String(m).padStart(2, '0'), ativo = fMesAtivo === chave;
+    const barras = barrasDoMes(m), temDado = barras.some(b => b.some(x => x.v));
+    const x0 = cx - (nb * bw + (nb - 1) * gap) / 2;
+    let rects = '';
+    barras.forEach((b, bi) => {
+      let y = base;
+      b.forEach(seg => {
+        const h = (seg.v / max) * (base - top);
+        if (seg.v > 0) { y -= Math.max(h, 1); rects += `<rect x="${x0 + bi * (bw + gap)}" y="${y}" width="${bw}" height="${Math.max(h, 1)}" fill="${seg.cor}"></rect>`; }
+      });
+    });
+    const tip = `${nomes[m]}/${ano}\n` + barras.flat().map(x => `${x.nome}: R$ ${fmt2(x.v)}`).join('\n');
+    let rodape = '';
+    if (pfx === 'rd' && temDado) { const saldo = RB[m] - (DP[m] + DV[m] + DA[m]); rodape = `<text x="${cx}" y="${base + 26}" text-anchor="middle" font-size="8.5" font-weight="700" fill="${saldo >= 0 ? C.rec : C.venc}">${saldo >= 0 ? '+' : '−'}${curto(Math.abs(saldo))}</text>`; }
+    svgBarras += `<g style="cursor:pointer" onclick="document.getElementById('${filtro}').value='${temDado && !ativo ? chave : ''}';${recarregar}">
+      <title>${esc(tip)}</title>
+      <rect x="${cx - larg / 2 + 1}" y="${top - 6}" width="${larg - 2}" height="${base - top + 26}" rx="6" fill="${ativo ? 'rgba(13,110,253,.10)' : 'transparent'}"></rect>
+      ${rects}
+      <text x="${cx}" y="${base + 14}" text-anchor="middle" font-size="10" font-weight="700" fill="currentColor" opacity=".75">${nomes[m]}</text>${rodape}
+    </g>`;
+  }
+  const grade = [0.25, 0.5, 0.75, 1].map(f => `<line x1="${esq}" x2="${W}" y1="${base - f * (base - top)}" y2="${base - f * (base - top)}" stroke="currentColor" stroke-opacity=".08"></line><text x="${esq - 4}" y="${base - f * (base - top) + 3}" text-anchor="end" font-size="8" fill="currentColor" opacity=".5">${curto(max * f)}</text>`).join('');
+  alvo.style.display = 'block';
+  alvo.innerHTML = `<svg viewBox="0 0 ${W} ${H + 8}" style="width:100%;height:auto;color:var(--text);display:block" role="img" aria-label="Gráfico mês a mês de ${ano}">
+    ${grade}<line x1="${esq}" x2="${W}" y1="${base}" y2="${base}" stroke="currentColor" stroke-opacity=".25"></line>${svgBarras}</svg>`;
+  const soma = a => a.reduce((x, y) => x + y, 0);
+  const totais = pfx === 'rd'
+    ? { 'Receita do mês': soma(RB), 'Contas pagas': soma(DP), 'Vencidas': soma(DV), 'A pagar': soma(DA) }
+    : { 'Receita bruta': soma(RB), 'Receita líquida': soma(RL), 'A receber': soma(RAr), 'Vencidas': soma(RVc), 'Contas pagas': soma(DPg) };
+  const tot = document.getElementById(pfx + '-rxd-totais');
+  if (tot) tot.innerHTML = legenda.map(([n, c]) => `<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${c};margin-right:4px"></span>${n} <b>R$ ${fmt0(totais[n] || 0)}</b></span>`).join('') +
+    (pfx === 'rd' ? `<span>Saldo do ano <b style="color:${soma(RB) - soma(DP) - soma(DV) - soma(DA) >= 0 ? C.rec : C.venc}">R$ ${fmt0(soma(RB) - soma(DP) - soma(DV) - soma(DA))}</b></span>` : '') +
+    `<span style="color:var(--text-muted)">· passe o mouse para ver os valores; clique num mês para filtrar</span>`;
+}
+
 function rcRenderResumoMensal(items) {
   const el = document.getElementById('rc-resumo-mensal');
   if (!el) return;
@@ -17048,33 +17176,8 @@ function rcRenderResumoMensal(items) {
   const fMesAtivo = (document.getElementById('rc_filtro_mes')||{}).value || '';
   const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const fmt0 = (v) => v.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0});
-  el.innerHTML = `
-    <div class="card" style="margin-bottom:0;height:100%">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div class="card-title" style="margin:0">📆 Calendário Mensal</div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <button onclick="rcMudarAnoResumo(-1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">‹</button>
-          <span style="font-weight:800;font-size:.9rem;min-width:38px;text-align:center">${ano}</span>
-          <button onclick="rcMudarAnoResumo(1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">›</button>
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:7px">
-        ${nomesMes.map((nome, idx) => {
-          const m = idx + 1;
-          const d = porMes[m];
-          const chaveMes = ano + '-' + String(m).padStart(2,'0');
-          const ativo = fMesAtivo === chaveMes;
-          const vazio = d.qtd === 0;
-          const pendente = Math.max(d.total - d.recebido - d.vencido, 0);
-          return `<div onclick="document.getElementById('rc_filtro_mes').value='${vazio?'':chaveMes}';carregarReceitas()" style="cursor:pointer;padding:8px 6px;border-radius:9px;text-align:center;border:${ativo?'2px solid var(--green-main)':'1px solid var(--border)'};background:${ativo?'var(--green-pale)':(vazio?'var(--bg)':'var(--surface2)')};opacity:${vazio?'.55':'1'}">
-            <div style="font-size:.7rem;font-weight:800;color:var(--text-muted)">${nome}</div>
-            <div style="font-size:.74rem;font-weight:800;margin:3px 0">${vazio?'—':'R$ '+fmt0(d.total)}</div>
-            ${!vazio ? `<div style="font-size:.56rem;color:var(--text-muted);line-height:1.5">${d.recebido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✅ ${fmt0(d.recebido)} receb.</div>`):''}${pendente>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🟡 ${fmt0(pendente)} a receber</div>`):''}${d.vencido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">⚠️ ${fmt0(d.vencido)} venc.</div>`):''}</div>` : ''}
-          </div>`;
-        }).join('')}
-      </div>
-      ${fMesAtivo ? `<button onclick="document.getElementById('rc_filtro_mes').value='';carregarReceitas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
-    </div>`;
+  el.innerHTML = finRxDCardHtml('rc', ano, fMesAtivo);
+  finRxDPreencher('rc', ano, fMesAtivo);
 
   // Título do card do gráfico muda conforme o modo (ver comentário acima do
   // canvas em renderReceitasTab()).
@@ -18786,7 +18889,7 @@ function renderDespesasTab() {
       <div class="form-group">
         <label>Status de Pagamento</label>
         <select id="rd_status">
-          ${RD_STATUS.map(s => `<option>${s}</option>`).join('')}
+          ${RD_STATUS.map(s => `<option value="${s}">${finStatusLabel(s)}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -19020,7 +19123,7 @@ function renderDespesasTab() {
     </select>
     <select id="rd_filtro_status" onchange="RD_FILTRO_KPI='';carregarDespesas()" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);cursor:pointer">
       <option value="">Todos os status</option>
-      ${RD_STATUS.map(s => `<option>${s}</option>`).join('')}
+      ${RD_STATUS.map(s => `<option value="${s}">${finStatusLabel(s)}</option>`).join('')}
     </select>
     <div style="display:flex;gap:5px">
       <button type="button" id="rd-chip-pago" onclick="rdFiltrarKpi('pago')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);font-size:.76rem;color:var(--text);cursor:pointer;white-space:nowrap">✅ Pagos</button>
@@ -20726,7 +20829,7 @@ async function carregarDespesas() {
           <td style="font-size:.8rem">${i.Vencimento ? new Date(i.Vencimento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td style="font-size:.8rem;color:${i.DataPagamento?'var(--green-mid)':'var(--text-muted)'}">${i.DataPagamento ? new Date(i.DataPagamento+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
           <td><strong>R$ ${(i.Valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></td>
-          <td><span class="status-pill ${statusColor(i.Status)}">${i.Status||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
+          <td><span class="status-pill ${statusColor(i.Status)}">${finStatusLabel(i.Status)||'—'}</span>${i.Conciliado==='Sim'?' <span title="Conciliado com o extrato bancário" style="font-size:.72rem">🏦</span>':''}</td>
           <td style="font-size:.72rem">${i.ComprovanteUrl?`<a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver</a>`:'— Não'}</td>
           <td style="white-space:nowrap"><button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="rdVisualizarDespesa(${i.Id})">👁️ Visualizar</button> <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="rdAbrirEdicaoDespesa(${i.Id})">✏️ Editar</button> <button class="btn-secondary" style="padding:2px 6px;font-size:.65rem;color:var(--red)" onclick="rdExcluirDespesa(${i.Id})">🗑️</button></td>
         </tr>`;
@@ -20975,41 +21078,8 @@ function rdRenderResumoMensal(items) {
   const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const fmt0 = (v) => v.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0});
 
-  el.innerHTML = `
-    <div class="card" style="margin-bottom:0;height:100%">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div class="card-title" style="margin:0">📆 Calendário Mensal</div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <button onclick="rdMudarAnoResumo(-1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">‹</button>
-          <span style="font-weight:800;font-size:.9rem;min-width:38px;text-align:center">${ano}</span>
-          <button onclick="rdMudarAnoResumo(1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">›</button>
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:7px">
-        ${nomesMes.map((nome, idx) => {
-          const m = idx + 1;
-          const d = porMes[m];
-          const chaveMes = ano + '-' + String(m).padStart(2,'0');
-          const ativo = fMesAtivo === chaveMes;
-          const vazio = d.qtd === 0;
-          return `<div onclick="document.getElementById('rd_filtro_mes').value='${vazio?'':chaveMes}';document.getElementById('rd_filtro_dia').value='';window._rdFiltroAnoConsolidado='';carregarDespesas()" style="cursor:pointer;padding:8px 6px;border-radius:9px;text-align:center;border:${ativo?'2px solid var(--red)':'1px solid var(--border)'};background:${ativo?'#fce8e8':(vazio?'var(--bg)':'var(--surface2)')};opacity:${vazio?'.55':'1'}">
-            <div style="font-size:.7rem;font-weight:800;color:var(--text-muted)">${nome}</div>
-            <div style="font-size:.74rem;font-weight:800;margin:3px 0">${vazio?'—':'R$ '+fmt0(d.total)}</div>
-            ${!vazio ? `<div style="font-size:.5rem;color:var(--text-muted);line-height:1.45">${d.pago>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✅ ${fmt0(d.pago)}</div>`):''}${d.aVencer>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🟡 ${fmt0(d.aVencer)}</div>`):''}${d.vencido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">⚠️ ${fmt0(d.vencido)}</div>`):''}</div>` : ''}
-          </div>`;
-        }).join('')}
-        <!-- O campo de busca rápida (Fornecedor/valor, cruzando Contas a
-             Pagar/Despesas/Prestação) que morava aqui como 13º item da grade
-             foi removido (pedido Tiago 11/10/2026) — o filtro "Valor exato"
-             da barra de filtros acima agora já cobre as 3 tabelas sozinho
-             (ver carregarDespesas -> fValorExatoExtras), então ficava
-             duplicado ter os dois. -->
-      </div>
-      <div style="font-size:.62rem;color:var(--text-muted);display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
-        <span>✅ Pago</span><span>🟡 A pagar</span><span>⚠️ Vencido</span>
-      </div>
-      ${fMesAtivo ? `<button onclick="document.getElementById('rd_filtro_mes').value='';window._rdFiltroAnoConsolidado='';carregarDespesas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
-    </div>`;
+  el.innerHTML = finRxDCardHtml('rd', ano, fMesAtivo);
+  finRxDPreencher('rd', ano, fMesAtivo);
 
   // Título do card do gráfico muda conforme o modo (mesmo padrão de Receitas,
   // 3ª rodada em 27/09/2026).
@@ -21377,7 +21447,7 @@ async function rdVisualizarDespesa(id) {
       ${linha('Data de Pagamento', fmtData(i.DataPagamento))}
       ${linha('Forma de Pagamento', pgtoTxt)}
       ${i.TransferenciaId ? linha('Banco Origem', i.Banco||'—') + linha('Banco Destino', i.TransferenciaContraparte||'—') : (i.Banco ? linha('Banco', i.Banco) : '')}
-      ${linha('Status', i.Status||'—')}
+      ${linha('Status', finStatusLabel(i.Status)||'—')}
       ${i.Conciliado==='Sim' ? linha('Conciliado', '🏦 Sim') : ''}
       ${linha('Responsável', i.ResponsavelLancamento||'—')}
       ${i.LancadoPor && i.LancadoPor !== i.ResponsavelLancamento ? linha('Lançado por', i.LancadoPor) : ''}
