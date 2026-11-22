@@ -8076,6 +8076,27 @@ const EMPRESAS_CC = {
 };
 
 // Status automático baseado em vencimento
+// == Classificação ÚNICA de Pago / Vencido / A vencer (pedido Tiago 22/11/2026:
+// o calendário mostrava R$ 650 mil pagos em jan e o gráfico ~R$ 340 mil — o
+// calendário somava aplicações financeiras e transferências entre contas).
+// Calendário, cartões, botões de filtro (Pagos/Vencido/A vencer) e gráficos
+// usam estas mesmas funções. Movimentação entre contas (transferência,
+// aplicação, resgate) NÃO é despesa/receita — igual à planilha, onde essas
+// linhas vão para a aba 🔄 Transferências e não entram em Saídas/Receitas.
+function _finEhMovimentacaoDesp(d) { return !!(d && (d.TransferenciaId || d.Categoria === 'Aplicações Financeiras')); }
+function _finEhMovimentacaoRec(r) { return !!(r && (r.TransferenciaId || /^resgate/i.test(r.Subcategoria || ''))); }
+function _finClasseDesp(d) {
+  if (!d || d.Status === 'Cancelado' || d.Provisorio || _finEhMovimentacaoDesp(d)) return null;
+  if (d.Status === 'Pago') return 'pago';
+  const st = d.Vencimento ? calcularStatusVencimento(d.Vencimento) : 'Pendente';
+  return st === 'Em atraso' ? 'vencido' : 'apagar';
+}
+function _finClasseRec(r) {
+  if (!r || r.Status === 'Cancelado' || _finEhMovimentacaoRec(r)) return null;
+  if (r.Status === 'Recebido') return 'recebido';
+  const st = r.DataPrevista ? calcularStatusVencimento(r.DataPrevista) : 'Pendente';
+  return st === 'Em atraso' ? 'vencido' : 'areceber';
+}
 function calcularStatusVencimento(vencimento) {
   if (!vencimento) return 'Pendente';
   const hoje = new Date(); hoje.setHours(0,0,0,0);
@@ -15991,9 +16012,9 @@ function renderReceitasTab() {
       <div class="kpi-grid" style="margin-bottom:0;align-content:start">
         <div class="kpi-card blue" id="rc-kpi-card-total" onclick="rcFiltrarKpi('')" style="cursor:pointer" title="Ver todos os lançamentos"><div class="kpi-label">Total de Lançamentos</div><div class="kpi-value" id="rc-kpi-total">—</div><div class="kpi-icon">📑</div></div>
         <div class="kpi-card green" id="rc-kpi-card-valor" style="cursor:default" title="Soma dos valores filtrados"><div class="kpi-label">Valor Total</div><div class="kpi-value" id="rc-kpi-valor" style="font-size:1.05rem">—</div><div class="kpi-icon">💰</div></div>
-        <div class="kpi-card green" id="rc-kpi-card-recebido" onclick="rcFiltrarKpi('recebido')" style="cursor:pointer" title="Filtrar: recebidos"><div class="kpi-label">Recebido</div><div class="kpi-value" id="rc-kpi-recebido" style="font-size:1.05rem">—</div><div class="kpi-icon">✅</div></div>
-        <div class="kpi-card red" id="rc-kpi-card-vencido" onclick="rcFiltrarKpi('vencido')" style="cursor:pointer" title="Filtrar: vencido"><div class="kpi-label">Vencido</div><div class="kpi-value" id="rc-kpi-vencido" style="font-size:1.05rem">—</div><div class="kpi-icon">⚠️</div></div>
-        <div class="kpi-card amber" id="rc-kpi-card-avencer" onclick="rcFiltrarKpi('avencer')" style="cursor:pointer" title="Filtrar: a receber"><div class="kpi-label">A Receber</div><div class="kpi-value" id="rc-kpi-avencer" style="font-size:1.05rem">—</div><div class="kpi-icon">⏳</div></div>
+        <div class="kpi-card green" id="rc-kpi-card-recebido" onclick="rcFiltrarKpi('recebido')" style="cursor:pointer" title="Filtrar: recebidas"><div class="kpi-label">Recebidas</div><div class="kpi-value" id="rc-kpi-recebido" style="font-size:1.05rem">—</div><div class="kpi-icon">✅</div></div>
+        <div class="kpi-card red" id="rc-kpi-card-vencido" onclick="rcFiltrarKpi('vencido')" style="cursor:pointer" title="Filtrar: vencidas"><div class="kpi-label">Vencidas</div><div class="kpi-value" id="rc-kpi-vencido" style="font-size:1.05rem">—</div><div class="kpi-icon">⚠️</div></div>
+        <div class="kpi-card amber" id="rc-kpi-card-avencer" onclick="rcFiltrarKpi('avencer')" style="cursor:pointer" title="Filtrar: a receber"><div class="kpi-label">A receber</div><div class="kpi-value" id="rc-kpi-avencer" style="font-size:1.05rem">—</div><div class="kpi-icon">⏳</div></div>
       </div>
       <div class="card" style="margin-bottom:0;flex:1;min-height:110px;display:flex;flex-direction:column">
         <!-- Pedido em 27/09/2026 (3ª rodada): não existe mais select de mês
@@ -16873,12 +16894,14 @@ async function carregarReceitas() {
 
     const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
     const fmtR = (v) => 'R$ ' + v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-    setKpi('rc-kpi-total', items.length);
-    const somaValor = items.reduce((s,i)=>s+(i.Valor||0),0);
+    const _rcPer = (document.getElementById('rc_filtro_mes')||{}).value || String(window._rcAnoResumo || new Date().getFullYear());
+    const _rcReais = items.filter(r => _finClasseRec(r) && (_rcDataPeriodo(r) || '').startsWith(_rcPer));
+    setKpi('rc-kpi-total', _rcReais.length);
+    const somaValor = _rcReais.reduce((s,i)=>s+(i.Valor||0),0);
     setKpi('rc-kpi-valor', fmtR(somaValor));
-    const somaRecebido = items.filter(r=>r.Status==='Recebido').reduce((s,i)=>s+(i.Valor||0),0);
-    const somaVencido = items.filter(r=>r.Status==='Em atraso').reduce((s,i)=>s+(i.Valor||0),0);
-    const somaAVencer = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje').reduce((s,i)=>s+(i.Valor||0),0);
+    const somaRecebido = _rcReais.filter(r=>_finClasseRec(r)==='recebido').reduce((s,i)=>s+(i.Valor||0),0);
+    const somaVencido = _rcReais.filter(r=>_finClasseRec(r)==='vencido').reduce((s,i)=>s+(i.Valor||0),0);
+    const somaAVencer = _rcReais.filter(r=>_finClasseRec(r)==='areceber').reduce((s,i)=>s+(i.Valor||0),0);
     setKpi('rc-kpi-recebido', fmtR(somaRecebido));
     setKpi('rc-kpi-vencido', fmtR(somaVencido));
     setKpi('rc-kpi-avencer', fmtR(somaAVencer));
@@ -16948,9 +16971,9 @@ async function carregarReceitas() {
       if (fValorMin > 0) items = items.filter(r => (r.Valor||0) >= fValorMin || _rcLiq(r) >= fValorMin);
       if (fValorMax > 0) items = items.filter(r => (r.Valor||0) <= fValorMax || _rcLiq(r) <= fValorMax);
     }
-    if (RC_FILTRO_KPI === 'avencer') items = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje');
-    else if (RC_FILTRO_KPI === 'recebido') items = items.filter(r=>r.Status==='Recebido');
-    else if (RC_FILTRO_KPI === 'vencido') items = items.filter(r=>r.Status==='Em atraso');
+    if (RC_FILTRO_KPI === 'avencer') items = items.filter(r=>_finClasseRec(r)==='areceber');
+    else if (RC_FILTRO_KPI === 'recebido') items = items.filter(r=>_finClasseRec(r)==='recebido');
+    else if (RC_FILTRO_KPI === 'vencido') items = items.filter(r=>_finClasseRec(r)==='vencido');
 
     // Soma/contagem do filtro ATUAL (pedido 04/10/2026, mesmo padrão de Despesas
     // 03/10/2026) — calculada sobre TODOS os lançamentos que batem com os
@@ -17137,15 +17160,17 @@ async function finRxDPreencher(pfx, ano, fMesAtivo) {
     const v = Number(r.Valor) || 0;
     const liq = (r.ValorLiquido != null && r.ValorLiquido !== '') ? Number(r.ValorLiquido) || 0 : Math.max(v - (Number(r.ISSValorRetido) || 0) - (Number(r.OutrasRetencoesValor) || 0), 0);
     RB[m] += v; RL[m] += liq;
-    if (r.Status !== 'Recebido') { if (r.Status === 'Em atraso' || (r.DataPrevista && r.DataPrevista < hoje)) RVc[m] += v; else RAr[m] += v; }
+    const clR = _finClasseRec(r);
+    if (clR === 'vencido') RVc[m] += v; else if (clR === 'areceber') RAr[m] += v;
   });
   (desp || []).forEach(d => {
     if (!d || d.TransferenciaId || d.Status === 'Cancelado' || d.Provisorio || d.Categoria === 'Aplicações Financeiras' || !daEmpresa(d)) return;
     const v = Number(d.Valor) || 0;
     const m = mesDe(d.Vencimento || d.DataLancamento || '');
-    if (m) {
-      if (d.Status === 'Pago') DP[m] += v;
-      else if (d.Status === 'Em atraso' || (d.Vencimento && d.Vencimento < hoje)) DV[m] += v;
+    const clD = _finClasseDesp(d);
+    if (m && clD) {
+      if (clD === 'pago') DP[m] += v;
+      else if (clD === 'vencido') DV[m] += v;
       else DA[m] += v;
     }
     if (d.Status === 'Pago') { const mp = mesDe(d.DataPagamento || d.Vencimento || d.DataLancamento || ''); if (mp) DPg[mp] += v; }
@@ -17154,14 +17179,14 @@ async function finRxDPreencher(pfx, ano, fMesAtivo) {
   // spec: lista de barras; cada barra = lista de segmentos {v, cor, nome}
   const barrasDoMes = m => pfx === 'rd'
     ? [[{ v: RB[m], cor: C.rec, nome: 'Receita do mês' }],
-       [{ v: DP[m], cor: C.pago, nome: 'Contas pagas' }, { v: DV[m], cor: C.venc, nome: 'Vencidas' }, { v: DA[m], cor: C.apagar, nome: 'A pagar' }]]
+       [{ v: DP[m], cor: C.pago, nome: 'Pagas' }, { v: DV[m], cor: C.venc, nome: 'Vencidas' }, { v: DA[m], cor: C.apagar, nome: 'A vencer' }]]
     : [[{ v: RB[m], cor: C.rec, nome: 'Receita bruta' }],
        [{ v: RL[m], cor: C.liq, nome: 'Receita líquida' }],
        [{ v: RAr[m], cor: C.arec, nome: 'A receber' }, { v: RVc[m], cor: C.venc, nome: 'Vencidas' }],
        [{ v: DPg[m], cor: C.pago, nome: 'Contas pagas' }]];
   const legenda = pfx === 'rd'
-    ? [['Receita do mês', C.rec], ['Contas pagas', C.pago], ['Vencidas', C.venc], ['A pagar', C.apagar]]
-    : [['Receita bruta', C.rec], ['Receita líquida', C.liq], ['A receber', C.arec], ['Vencidas', C.venc], ['Contas pagas', C.pago]];
+    ? [['Receita do mês', C.rec], ['Pagas', C.pago], ['Vencidas', C.venc], ['A vencer', C.apagar]]
+    : [['Receita bruta', C.rec], ['Recebidas', 'transparent'], ['Receita líquida', C.liq], ['A receber', C.arec], ['Vencidas', C.venc], ['Contas pagas', C.pago]];
   let max = 1;
   for (let m = 1; m <= 12; m++) barrasDoMes(m).forEach(b => { max = Math.max(max, b.reduce((s, x) => s + x.v, 0)); });
   const nomes = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
@@ -17200,13 +17225,18 @@ async function finRxDPreencher(pfx, ano, fMesAtivo) {
   alvo.style.display = 'block';
   alvo.innerHTML = `<svg viewBox="0 0 ${W} ${H + 8}" style="width:100%;height:auto;color:var(--text);display:block" role="img" aria-label="Gráfico mês a mês de ${ano}">
     ${grade}<line x1="${esq}" x2="${W}" y1="${base}" y2="${base}" stroke="currentColor" stroke-opacity=".25"></line>${svgBarras}</svg>`;
-  const soma = a => a.reduce((x, y) => x + y, 0);
+  // Legenda do PERÍODO: com um mês escolhido no calendário, mostra os valores
+  // daquele mês; sem mês, o ano inteiro (pedido Tiago 22/11/2026).
+  const mesSel = (fMesAtivo && fMesAtivo.slice(0, 4) === String(ano)) ? parseInt(fMesAtivo.slice(5, 7), 10) : 0;
+  const nomesLongos = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+  const soma = a => mesSel ? (a[mesSel] || 0) : a.reduce((x, y) => x + y, 0);
+  const rotuloPer = mesSel ? nomesLongos[mesSel] + '/' + ano : 'Ano ' + ano;
   const totais = pfx === 'rd'
-    ? { 'Receita do mês': soma(RB), 'Contas pagas': soma(DP), 'Vencidas': soma(DV), 'A pagar': soma(DA) }
-    : { 'Receita bruta': soma(RB), 'Receita líquida': soma(RL), 'A receber': soma(RAr), 'Vencidas': soma(RVc), 'Contas pagas': soma(DPg) };
+    ? { 'Receita do mês': soma(RB), 'Pagas': soma(DP), 'Vencidas': soma(DV), 'A vencer': soma(DA) }
+    : { 'Receita bruta': soma(RB), 'Recebidas': soma(RB) - soma(RAr) - soma(RVc), 'Receita líquida': soma(RL), 'A receber': soma(RAr), 'Vencidas': soma(RVc), 'Contas pagas': soma(DPg) };
   const tot = document.getElementById(pfx + '-rxd-totais');
-  if (tot) tot.innerHTML = legenda.map(([n, c]) => `<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${c};margin-right:4px"></span>${n} <b>R$ ${fmt0(totais[n] || 0)}</b></span>`).join('') +
-    (pfx === 'rd' ? `<span>Saldo do ano <b style="color:${soma(RB) - soma(DP) - soma(DV) - soma(DA) >= 0 ? C.rec : C.venc}">R$ ${fmt0(soma(RB) - soma(DP) - soma(DV) - soma(DA))}</b></span>` : '') +
+  if (tot) tot.innerHTML = `<span style="font-weight:800;width:100%">📅 ${rotuloPer}</span>` + legenda.map(([n, c]) => `<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${c};margin-right:4px;${c === 'transparent' ? 'border:1px solid #2e9e5b' : ''}"></span>${n} <b>R$ ${fmt0(totais[n] || 0)}</b></span>`).join('') +
+    (pfx === 'rd' ? `<span>Saldo ${mesSel ? 'do mês' : 'do ano'} <b style="color:${soma(RB) - soma(DP) - soma(DV) - soma(DA) >= 0 ? C.rec : C.venc}">R$ ${fmt0(soma(RB) - soma(DP) - soma(DV) - soma(DA))}</b></span>` : '') +
     `<span style="color:var(--text-muted)">· passe o mouse para ver os valores; clique num mês para filtrar</span>`;
 }
 
@@ -17229,10 +17259,12 @@ function rcRenderResumoMensal(items) {
     if (chave.slice(0,4) !== String(ano)) return;
     const m = parseInt(chave.slice(5,7), 10);
     if (!m || !porMes[m]) return;
+    const cl = _finClasseRec(i);
+    if (!cl) return; // transferência/resgate/cancelado não é receita (igual ao gráfico e à planilha)
     porMes[m].qtd++;
     porMes[m].total += (i.Valor || 0);
-    if (i.Status === 'Recebido') porMes[m].recebido += (i.Valor || 0);
-    else if (i.Status === 'Em atraso') porMes[m].vencido += (i.Valor || 0);
+    if (cl === 'recebido') porMes[m].recebido += (i.Valor || 0);
+    else if (cl === 'vencido') porMes[m].vencido += (i.Valor || 0);
   });
   const fMesAtivo = (document.getElementById('rc_filtro_mes')||{}).value || '';
   const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
@@ -19088,9 +19120,9 @@ function renderDespesasTab() {
       <div class="kpi-grid" style="margin-bottom:0;align-content:start;gap:8px">
         <div class="kpi-card blue" id="rd-kpi-card-total" onclick="rdFiltrarKpi('')" style="cursor:pointer;padding:8px 10px" title="Ver todos os lançamentos (total real)"><div class="kpi-label" style="font-size:.64rem">Total de Lançamentos</div><div class="kpi-value" id="rd-kpi-total" style="font-size:1.1rem">—</div><div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">📑</div></div>
         <div class="kpi-card red" id="rd-kpi-card-valor" style="cursor:default;padding:8px 10px" title="Soma de todos os valores"><div class="kpi-label" style="font-size:.64rem">Valor Total</div><div class="kpi-value" id="rd-kpi-valor" style="font-size:.92rem">—</div><div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">💸</div></div>
-        <div class="kpi-card green" id="rd-kpi-card-pago" onclick="rdFiltrarKpi('pago')" style="cursor:pointer;padding:8px 10px" title="Filtrar: pagos"><div class="kpi-label" style="font-size:.64rem">Pagos</div><div class="kpi-value" id="rd-kpi-pago" style="font-size:.92rem">—</div><div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">✅</div></div>
-        <div class="kpi-card red" id="rd-kpi-card-atraso" onclick="rdFiltrarKpi('atraso')" style="cursor:pointer;padding:8px 10px" title="Filtrar: vencido"><div class="kpi-label" style="font-size:.64rem">Vencido</div><div class="kpi-value" id="rd-kpi-atraso" style="font-size:.92rem">—</div><div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">⚠️</div></div>
-        <div class="kpi-card amber" id="rd-kpi-card-pendente" onclick="rdFiltrarKpi('pendente')" style="cursor:pointer;padding:8px 10px" title="Filtrar: a vencer"><div class="kpi-label" style="font-size:.64rem">A Vencer</div><div class="kpi-value" id="rd-kpi-pendente" style="font-size:.92rem">—</div><div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">⏳</div></div>
+        <div class="kpi-card green" id="rd-kpi-card-pago" onclick="rdFiltrarKpi('pago')" style="cursor:pointer;padding:8px 10px" title="Filtrar: pagas"><div class="kpi-label" style="font-size:.64rem">Pagas</div><div class="kpi-value" id="rd-kpi-pago" style="font-size:.92rem">—</div><div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">✅</div></div>
+        <div class="kpi-card red" id="rd-kpi-card-atraso" onclick="rdFiltrarKpi('atraso')" style="cursor:pointer;padding:8px 10px" title="Filtrar: vencidas"><div class="kpi-label" style="font-size:.64rem">Vencidas</div><div class="kpi-value" id="rd-kpi-atraso" style="font-size:.92rem">—</div><div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">⚠️</div></div>
+        <div class="kpi-card amber" id="rd-kpi-card-pendente" onclick="rdFiltrarKpi('pendente')" style="cursor:pointer;padding:8px 10px" title="Filtrar: a vencer"><div class="kpi-label" style="font-size:.64rem">A vencer</div><div class="kpi-value" id="rd-kpi-pendente" style="font-size:.92rem">—</div><div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">⏳</div></div>
       </div>
       <div class="card" style="margin-bottom:0;flex:1;min-height:110px;display:flex;flex-direction:column">
         <div class="card-title" style="margin-bottom:6px;font-size:.8rem" id="rd-grafico-titulo">📊 Receita × Contas — mês a mês</div>
@@ -19212,9 +19244,9 @@ function renderDespesasTab() {
       ${RD_STATUS.map(s => `<option value="${s}">${finStatusLabel(s)}</option>`).join('')}
     </select>
     <div style="display:flex;gap:5px">
-      <button type="button" id="rd-chip-pago" onclick="rdFiltrarKpi('pago')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);font-size:.76rem;color:var(--text);cursor:pointer;white-space:nowrap">✅ Pagos</button>
-      <button type="button" id="rd-chip-atraso" onclick="rdFiltrarKpi('atraso')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);font-size:.76rem;color:var(--text);cursor:pointer;white-space:nowrap">⚠️ Vencido</button>
-      <button type="button" id="rd-chip-pendente" onclick="rdFiltrarKpi('pendente')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);font-size:.76rem;color:var(--text);cursor:pointer;white-space:nowrap">🟡 A Vencer</button>
+      <button type="button" id="rd-chip-pago" onclick="rdFiltrarKpi('pago')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);font-size:.76rem;color:var(--text);cursor:pointer;white-space:nowrap">✅ Pagas</button>
+      <button type="button" id="rd-chip-atraso" onclick="rdFiltrarKpi('atraso')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);font-size:.76rem;color:var(--text);cursor:pointer;white-space:nowrap">⚠️ Vencidas</button>
+      <button type="button" id="rd-chip-pendente" onclick="rdFiltrarKpi('pendente')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);font-size:.76rem;color:var(--text);cursor:pointer;white-space:nowrap">🟡 A vencer</button>
     </div>
     <input type="text" inputmode="decimal" id="rd_filtro_valor_exato" placeholder="Valor exato" title="Buscar por valor exato" oninput="rdFormatarMoedaInput(this);dbDebounce('carregarDespesas')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);width:100px">
     <input type="text" inputmode="decimal" id="rd_filtro_valor_min" placeholder="Valor mín." oninput="rdFormatarMoedaInput(this);dbDebounce('carregarDespesas')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border);font-size:.78rem;background:var(--surface);width:100px">
@@ -20720,12 +20752,17 @@ async function carregarDespesas() {
 
     const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
     const fmtR = (v) => 'R$ ' + v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-    setKpi('rd-kpi-total', items.length);
-    const somaValor = items.reduce((s,i)=>s+(i.Valor||0),0);
+    // Cartões Pagos / Vencido / A vencer = mesma regra e mesmo PERÍODO da
+    // legenda do gráfico (mês escolhido no calendário; sem mês, o ano do
+    // calendário) — pedido Tiago 22/11/2026.
+    const _rdPer = (document.getElementById('rd_filtro_mes')||{}).value || String(window._rdAnoResumo || new Date().getFullYear());
+    const _rdReais = items.filter(r => _finClasseDesp(r) && (r.Vencimento || r.DataLancamento || '').startsWith(_rdPer));
+    setKpi('rd-kpi-total', _rdReais.length);
+    const somaValor = _rdReais.reduce((s,i)=>s+(i.Valor||0),0);
     setKpi('rd-kpi-valor', fmtR(somaValor));
-    const somaAVencer = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje').reduce((s,i)=>s+(i.Valor||0),0);
-    const somaPago = items.filter(r=>r.Status==='Pago').reduce((s,i)=>s+(i.Valor||0),0);
-    const somaVencido = items.filter(r=>r.Status==='Em atraso').reduce((s,i)=>s+(i.Valor||0),0);
+    const somaAVencer = _rdReais.filter(r=>_finClasseDesp(r)==='apagar').reduce((s,i)=>s+(i.Valor||0),0);
+    const somaPago = _rdReais.filter(r=>_finClasseDesp(r)==='pago').reduce((s,i)=>s+(i.Valor||0),0);
+    const somaVencido = _rdReais.filter(r=>_finClasseDesp(r)==='vencido').reduce((s,i)=>s+(i.Valor||0),0);
     setKpi('rd-kpi-pendente', fmtR(somaAVencer));
     setKpi('rd-kpi-pago', fmtR(somaPago));
     setKpi('rd-kpi-atraso', fmtR(somaVencido));
@@ -20884,9 +20921,9 @@ async function carregarDespesas() {
     // clicado antes continuaria escondendo o lançamento do outro status durante
     // a busca (pedido em 27/09/2026).
     if (!fBusca) {
-      if (RD_FILTRO_KPI === 'pendente') items = items.filter(r=>r.Status==='Pendente'||r.Status==='Vence em breve'||r.Status==='Vence hoje');
-      else if (RD_FILTRO_KPI === 'pago') items = items.filter(r=>r.Status==='Pago');
-      else if (RD_FILTRO_KPI === 'atraso') items = items.filter(r=>r.Status==='Em atraso');
+      if (RD_FILTRO_KPI === 'pendente') items = items.filter(r=>_finClasseDesp(r)==='apagar');
+      else if (RD_FILTRO_KPI === 'pago') items = items.filter(r=>_finClasseDesp(r)==='pago');
+      else if (RD_FILTRO_KPI === 'atraso') items = items.filter(r=>_finClasseDesp(r)==='vencido');
     }
 
     // Separa a lista abaixo em Em Aberto x Histórico de Pagos (pedido em 30/08/2026) —
@@ -21198,11 +21235,13 @@ function rdRenderResumoMensal(items) {
     if (chave.slice(0,4) !== String(ano)) return;
     const m = parseInt(chave.slice(5,7), 10);
     if (!m || !porMes[m]) return;
+    const cl = _finClasseDesp(i);
+    if (!cl) return; // aplicação/transferência/cancelado não é despesa (igual ao gráfico e à planilha)
     porMes[m].qtd++;
     porMes[m].total += (i.Valor || 0);
-    if (i.Status === 'Pago') porMes[m].pago += (i.Valor || 0);
-    else if (i.Status === 'Em atraso') porMes[m].vencido += (i.Valor || 0);
-    else if (i.Status !== 'Cancelado') porMes[m].aVencer += (i.Valor || 0);
+    if (cl === 'pago') porMes[m].pago += (i.Valor || 0);
+    else if (cl === 'vencido') porMes[m].vencido += (i.Valor || 0);
+    else porMes[m].aVencer += (i.Valor || 0);
   });
 
   const fMesAtivo = (document.getElementById('rd_filtro_mes')||{}).value || '';
@@ -21240,7 +21279,7 @@ function rdRenderResumoMensal(items) {
              duplicado ter os dois. -->
       </div>
       <div style="font-size:.62rem;color:var(--text-muted);display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
-        <span>✅ Pago</span><span>🟡 A pagar</span><span>⚠️ Vencido</span>
+        <span>✅ Pagas</span><span>🟡 A vencer</span><span>⚠️ Vencidas</span>
       </div>
       ${fMesAtivo ? `<button onclick="document.getElementById('rd_filtro_mes').value='';window._rdFiltroAnoConsolidado='';carregarDespesas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
     </div>`;
@@ -74505,7 +74544,12 @@ function _planLinhaSaida(r, extra) {
     K: r.CentroCusto || '',
     L: _planValor(r.ValorTotal || r.Valor),
     M: tipo,
-    N: tot,
+    // N = quantidade da fórmula da planilha (O = L × N quando À Vista/Faturado;
+    // O = L ÷ N quando Parcelado). Só o Parcelado leva o nº de parcelas — antes
+    // ia o nº de parcelas também em À Vista/Faturado (ex.: parcela 3/48 de
+    // financiamento) e a planilha multiplicava a parcela por 48 (corrigido
+    // 22/11/2026; as linhas já gravadas são reescritas na próxima sincronização).
+    N: tipo === 'Parcelado' ? tot : 1,
     P: _planSerial(r.Vencimento || r.DataPagamento || r.DataLancamento),
     R: _planForma(r.FormaPagamento),
     T: r.Descricao || r.Title || '',
