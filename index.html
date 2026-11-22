@@ -6922,17 +6922,32 @@ function pcAtualizarBarraSelecao() {
   const acoesEl = document.getElementById('prest-bulk-acoes');
   if (!acoesEl) return;
   if (n < 2) {
-    acoesEl.innerHTML = `<span style="font-size:.74rem;color:var(--text-muted)">Selecione pelo menos 2 lançamentos pra consolidar.</span>
+    const so1 = itens.filter(r => r.Status === 'Ag. Financeiro');
+    acoesEl.innerHTML = `${(currentProfile === 'diretoria' && so1.length) ? '<button class="btn-primary" style="font-size:.76rem;padding:5px 10px;background:var(--green-main)" onclick="pcAprovarSelecionados()">✅ Aprovar selecionado</button>' : ''}<span style="font-size:.74rem;color:var(--text-muted)">Selecione pelo menos 2 lançamentos pra consolidar.</span>
+      <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="pcLimparSelecaoConsolidar()">✕ Limpar seleção</button>`;
+    return;
+  }
+  // Aprovação em lote (pedido Tiago 22/11/2026): aprova de uma vez os
+  // selecionados que estão "Ag. Financeiro" — cada parcela continua sendo uma
+  // parcela (vai para Contas a Pagar no mês dela), sem juntar nada.
+  const aprovaveis = itens.filter(r => r.Status === 'Ag. Financeiro');
+  const btnAprovar = (currentProfile === 'diretoria' && aprovaveis.length)
+    ? `<button class="btn-primary" style="font-size:.76rem;padding:5px 10px;background:var(--green-main)" onclick="pcAprovarSelecionados()">✅ Aprovar ${aprovaveis.length} selecionado${aprovaveis.length === 1 ? '' : 's'}</button>` : '';
+  // Parcela de compra parcelada NÃO pode ser consolidada: a consolidação junta
+  // tudo em 1 lançamento à vista (perderia o valor e o mês de cada parcela).
+  const temParcela = itens.some(r => r.Parcelamento === 'parcelado');
+  if (temParcela) {
+    acoesEl.innerHTML = `${btnAprovar}<span style="font-size:.74rem;color:var(--text-muted)">Parcelas de compra parcelada não são consolidadas — aprove cada parcela (cada uma vai para Contas a Pagar no mês dela).</span>
       <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="pcLimparSelecaoConsolidar()">✕ Limpar seleção</button>`;
     return;
   }
   const empresas = new Set(itens.map(r => normalizarEmpresa(r.Empresa) || r.Empresa || ''));
   if (empresas.size > 1) {
-    acoesEl.innerHTML = `<span style="font-size:.74rem;color:var(--red)">⚠️ Selecione lançamentos de uma única empresa pra consolidar.</span>
+    acoesEl.innerHTML = `${btnAprovar}<span style="font-size:.74rem;color:var(--red)">⚠️ Selecione lançamentos de uma única empresa pra consolidar.</span>
       <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="pcLimparSelecaoConsolidar()">✕ Limpar seleção</button>`;
     return;
   }
-  acoesEl.innerHTML = `<button id="prest-bulk-btn-consolidar" class="btn-primary" style="font-size:.76rem;padding:5px 10px;background:var(--blue)" onclick="pcAbrirConsolidar()">🧩 Consolidar em 1 lançamento</button>
+  acoesEl.innerHTML = `${btnAprovar}<button id="prest-bulk-btn-consolidar" class="btn-primary" style="font-size:.76rem;padding:5px 10px;background:var(--blue)" onclick="pcAbrirConsolidar()">🧩 Consolidar em 1 lançamento</button>
     <button class="btn-secondary" style="font-size:.76rem;padding:5px 10px" onclick="pcLimparSelecaoConsolidar()">✕ Limpar seleção</button>`;
 }
 
@@ -6963,6 +6978,7 @@ function pcAbrirConsolidar() {
   const ids = Array.from(window._pcSelecionados || []);
   const itens = (window._prestFiltradas||[]).filter(r => ids.includes(r.Id));
   if (itens.length < 2) { showToast('⚠️ Selecione pelo menos 2 lançamentos.'); return; }
+  if (itens.some(r => r.Parcelamento === 'parcelado')) { showToast('⚠️ Parcelas não podem ser consolidadas — use "Aprovar selecionados".'); return; }
   const empresas = new Set(itens.map(r => normalizarEmpresa(r.Empresa) || r.Empresa || ''));
   if (empresas.size > 1) { showToast('⚠️ Selecione lançamentos de uma única empresa.'); return; }
 
@@ -7010,10 +7026,28 @@ function pcAbrirConsolidar() {
    (ComprovantesOrigem) e o histórico de auditoria
    (HistoricoConsolidacaoPrestacao), depois exclui os N originais. Mesmo
    padrão de financeiroConfirmarReconciliacaoDAS. -- */
+async function pcAprovarSelecionados() {
+  if (currentProfile !== 'diretoria') { showToast('⛔ Aprovação restrita à Diretoria.'); return; }
+  const ids = Array.from(window._pcSelecionados || []);
+  const itens = (window._prestFiltradas || []).filter(r => ids.includes(r.Id) && r.Status === 'Ag. Financeiro');
+  if (!itens.length) { showToast('⚠️ Nenhum selecionado aguardando o Financeiro.'); return; }
+  const soma = itens.reduce((s, r) => s + (Number(r.Valor) || 0), 0);
+  if (!confirm('Aprovar ' + itens.length + ' lançamento(s), total R$ ' + soma.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '?\n\nParcelas de cartão/parcelado vão para Contas a Pagar, cada uma no mês dela.')) return;
+  showToast('✅ Aprovando ' + itens.length + '...');
+  let ok = 0;
+  for (const r of itens.sort((a, b) => (Number(a.NumParcela) || 0) - (Number(b.NumParcela) || 0))) {
+    try { await aprovarPrestacaoFinanceiro(r.Id); ok++; } catch (e) { console.warn('[Prestação] aprovar em lote', r.Id, e); }
+  }
+  window._pcSelecionados = new Set();
+  showToast('✅ ' + ok + ' de ' + itens.length + ' aprovado(s).');
+  setTimeout(() => { carregarPrestacoes(); }, 800);
+}
+
 async function pcConfirmarConsolidar() {
   const ids = Array.from(window._pcSelecionados || []);
   const itens = (window._prestFiltradas||[]).filter(r => ids.includes(r.Id));
   if (itens.length < 2) { showToast('⚠️ Selecione pelo menos 2 lançamentos.'); return; }
+  if (itens.some(r => r.Parcelamento === 'parcelado')) { showToast('⚠️ Parcelas não podem ser consolidadas — use "Aprovar selecionados".'); return; }
   const empresas = new Set(itens.map(r => normalizarEmpresa(r.Empresa) || r.Empresa || ''));
   if (empresas.size > 1) { showToast('⚠️ Selecione lançamentos de uma única empresa.'); return; }
 
@@ -7460,6 +7494,26 @@ function _prestSplitParcelasAuto(total, qtd, dataBaseStr) {
 async function _enviarPrestacaoParaContasPagar(pc) {
   if (!pc || pc.Parcelamento !== 'parcelado' || pc.EnviadoContasPagar) return;
   const ehParcelaIndividual = !!pc.NumParcela;
+  // Pedido Tiago 22/11/2026: cada parcela continua no mês dela, mas o Contas
+  // a Pagar (e a planilha, coluna L) também precisa saber o VALOR TOTAL da
+  // compra e ligar as parcelas entre si (Histórico da Compra). As parcelas de
+  // uma mesma compra na Prestação de Contas são as do mesmo fornecedor,
+  // lançador, nº de parcelas e data de lançamento.
+  let valorTotalCompra = Number(pc.Valor) || 0, grupoCompra = pc.GrupoCompraId || '';
+  if (ehParcelaIndividual) {
+    try {
+      const todasPC = await dbLer('PrestacaoContas');
+      const tot = Number(pc.TotalParcelas || pc.NumParcelas) || 1;
+      const dia = v => String(v || '').slice(0, 10);
+      const irmas = (todasPC || []).filter(r => r.Parcelamento === 'parcelado' && r.NumParcela && (r.Fornecedor || '') === (pc.Fornecedor || '')
+        && (Number(r.TotalParcelas || r.NumParcelas) || 1) === tot && (r.LancadoPor || r.EnviadoPor || '') === (pc.LancadoPor || pc.EnviadoPor || '')
+        && dia(r.DataLancamento || r.Created) === dia(pc.DataLancamento || pc.Created));
+      const porNum = new Map(); irmas.forEach(r => { if (!porNum.has(r.NumParcela)) porNum.set(r.NumParcela, r); });
+      if (porNum.size === tot) valorTotalCompra = Math.round([...porNum.values()].reduce((s, r) => s + (Number(r.Valor) || 0), 0) * 100) / 100;
+      else valorTotalCompra = Math.round((Number(pc.Valor) || 0) * tot * 100) / 100;
+      if (!grupoCompra) grupoCompra = 'GC-PC-' + Math.min(...(irmas.length ? irmas : [pc]).map(r => Number(r.Id) || 0));
+    } catch (e) { valorTotalCompra = Math.round((Number(pc.Valor) || 0) * (Number(pc.TotalParcelas || pc.NumParcelas) || 1) * 100) / 100; }
+  } else if (!grupoCompra) grupoCompra = 'GC-PC-' + pc.Id;
   const parcelas = ehParcelaIndividual
     ? [{ numero: pc.NumParcela, total: pc.TotalParcelas || pc.NumParcelas || 1, vencimento: pc.DataDespesa, valor: Number(pc.Valor) || 0 }]
     : _prestSplitParcelasAuto(Number(pc.Valor) || 0, pc.NumParcelas || 2, pc.DataDespesa);
@@ -7491,6 +7545,7 @@ async function _enviarPrestacaoParaContasPagar(pc) {
       // financeiro).
       Status: calcularStatusVencimento(p.vencimento),
       Parcelamento: 'parcelado', NumParcela: p.numero, TotalParcelas: p.total,
+      ValorTotal: valorTotalCompra, GrupoCompraId: grupoCompra,
       PrestacaoContasId: pc.Id, OrigemPrestacaoContas: true,
       OutlookEventId: rOutlookPC.id,
     });
@@ -12058,6 +12113,7 @@ async function pagConfirmarPagamento(id) {
     if (pagRegPago && pagRegPago.OutlookEventId) cpExcluirEventoOutlook(pagRegPago.OutlookEventId);
   }
   showToast(ok ? '✅ Pagamento registrado!' : ('❌ Erro' + syncErrorDetalhe()));
+  if (ok && document.getElementById('lista-despesas') && typeof carregarDespesas === 'function') setTimeout(() => carregarDespesas(), 900); // conta paga aberta a partir de Despesas › Em aberto sai da lista
   const m = document.getElementById('pag-view-modal'); if (m) m.remove(); else _pagvDesbloquearBotoes();
   if (ok && pagRegPago) pagAbrirAvisoWhatsapp([{ ...pagRegPago, DataPagamento: dataPag, BancoPagamento: banco }]);
   setTimeout(() => { carregarContasPagar(); carregarPagarPendentesDespesas(); }, 600);
@@ -12343,6 +12399,7 @@ async function registrarPagamentoAdiantamento(id) {
   _limparSyncError();
   const ok = await dbAtualizar('Adiantamentos', parseInt(id), { Status: 'Pago', BancoPagamento: banco, DataPagamento: dataPag });
   showToast(ok ? '✅ Pagamento registrado!' : ('❌ Erro' + syncErrorDetalhe()));
+  if (ok && document.getElementById('lista-despesas') && typeof carregarDespesas === 'function') setTimeout(() => carregarDespesas(), 900); // conta paga aberta a partir de Despesas › Em aberto sai da lista
   setTimeout(() => { carregarAdiantamentos(); atualizarBadgeNotificacoes(); }, 600);
 }
 
@@ -17060,11 +17117,14 @@ async function finRxDPreencher(pfx, ano, fMesAtivo) {
   //  • Receitas: Receita bruta · Receita líquida · A receber + Vencidas (empilhada) · Contas pagas.
   const alvo = document.getElementById(pfx + '-rxd-grafico');
   if (!alvo) return;
-  let rec = [], desp = [];
+  let rec = [], desp = [], cpAbertas = [];
   try { [rec, desp] = await Promise.all([dbLerSeguro('Receitas'), dbLerSeguro('Despesas')]); } catch (e) {}
   const consolidado = !!window._rdConsolidado;
   const empresa = window._rdEmpresaAtiva || (typeof RD_EMPRESAS !== 'undefined' ? RD_EMPRESAS[0] : '');
   const daEmpresa = r => consolidado || normalizarEmpresa(r.Empresa) === normalizarEmpresa(empresa);
+  // contas a pagar ainda não pagas (mesmas da lista "Em aberto") entram em Vencidas / A pagar
+  try { cpAbertas = await _rdContasPagarEmAberto(empresa); } catch (e) {}
+  desp = (desp || []).concat(cpAbertas);
   const hoje = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const z = () => Array(13).fill(0);
   const RB = z(), RL = z(), RAr = z(), RVc = z(), DP = z(), DV = z(), DA = z(), DPg = z();
@@ -20536,6 +20596,46 @@ function rdSyncFiltroMesSelect() {
   else sel.value = 'todos';
 }
 
+/* -- Contas a Pagar em aberto dentro de Despesas › Em aberto (pedido Tiago
+   22/11/2026). Só as que ainda não viraram Despesa (sem DespesaId), não pagas,
+   não canceladas/reprovadas e que não são provisão. Viram linhas "somente
+   leitura" da lista (Id próprio do Contas a Pagar, marca _origemCP); clicar
+   abre o lançamento em Contas a Pagar. -- */
+async function _rdContasPagarEmAberto(empresaAtiva) {
+  const contas = await dbLerSeguro('ContasPagar');
+  const fora = ['Pago', 'Cancelado', 'Reprovado', 'Rejeitado', 'Indeferido'];
+  return (contas || []).filter(c => c && !c.DespesaId && !c.Provisorio && !fora.includes(c.Status)
+      && (window._rdConsolidado || normalizarEmpresa(c.Empresa) === normalizarEmpresa(empresaAtiva)))
+    .map(c => ({
+      ...c,
+      _origemCP: true, _statusCP: c.Status || '',
+      DataLancamento: c.DataLancamento || String(c.Created || '').slice(0, 10),
+      TipoPagamento: c.Parcelamento === 'parcelado' ? 'parcelado' : 'avista',
+      TotalParcelas: Number(c.TotalParcelas) || 1, NumParcela: c.NumParcela,
+      Status: c.Vencimento ? calcularStatusVencimento(c.Vencimento) : 'Pendente',
+    }));
+}
+function _rdLinhaContaPagar(i, statusColor) {
+  const fmtD = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
+  const parc = (Number(i.TotalParcelas) || 1) > 1 ? ` · ${i.NumParcela || '?'}/${i.TotalParcelas}` : '';
+  const aguardando = /Aguardando Aprova|Aprovado/.test(i._statusCP) ? `<div style="font-size:.64rem;color:var(--text-muted)">${i._statusCP}</div>` : '';
+  return `<tr style="background:rgba(61,123,217,.05)">
+    <td><input type="checkbox" disabled title="Conta a pagar — gerencie em Contas a Pagar"></td>
+    <td style="font-size:.78rem">${fmtD(i.DataLancamento)}</td>
+    <td style="font-size:.76rem">${i.Categoria || '—'}${i.Subcategoria ? `<div style="font-size:.66rem;color:var(--text-muted)">${i.Subcategoria}</div>` : ''}</td>
+    <td style="font-size:.78rem"><strong>${i.Fornecedor || '—'}</strong><div><span class="status-pill blue" style="font-size:.6rem;padding:1px 6px">📋 Contas a Pagar</span></div>${i.Descricao ? `<div style="font-size:.68rem;color:var(--text-muted)">${i.Descricao}</div>` : ''}</td>
+    <td style="font-size:.72rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px" title="${(i.CentroCusto || '').replace(/"/g, '&quot;')}">${i.CentroCusto || '—'}</td>
+    <td style="font-size:.75rem">${normalizarEmpresa(i.Empresa) || '—'}</td>
+    <td style="font-size:.72rem">${(i.FormaPagamento || '—') + parc}</td>
+    <td style="font-size:.8rem">${fmtD(i.Vencimento)}</td>
+    <td style="font-size:.8rem;color:var(--text-muted)">—</td>
+    <td><strong>R$ ${(i.Valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td>
+    <td><span class="status-pill ${statusColor(i.Status)}">${finStatusLabel(i.Status) || '—'}</span>${aguardando}</td>
+    <td style="font-size:.72rem">${i.ComprovanteUrl ? `<a href="${i.ComprovanteUrl}" target="_blank" style="color:var(--blue)">📎 Ver</a>` : '— Não'}</td>
+    <td style="white-space:nowrap"><button class="btn-secondary" style="padding:2px 6px;font-size:.65rem" onclick="pagAbrirVisualizar(${i.Id})">📋 Abrir em Contas a Pagar</button></td>
+  </tr>`;
+}
+
 async function carregarDespesas() {
   const el = document.getElementById('lista-despesas');
   if (!el) return;
@@ -20587,6 +20687,10 @@ async function carregarDespesas() {
         i.Status = calcularStatusVencimento(i.Vencimento);
       }
     });
+    // Contas a Pagar ainda NÃO pagas entram em "Em aberto" (pedido Tiago
+    // 22/11/2026) — com a etiqueta 📋 Contas a Pagar; ao pagar, viram a Despesa
+    // de sempre (DespesaId) e saem daqui, sem contar duas vezes.
+    try { items = items.concat(await _rdContasPagarEmAberto(empresaAtiva)); } catch (e) { console.warn('[Despesas] contas a pagar em aberto', e); }
 
     const setKpi = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
     const fmtR = (v) => 'R$ ' + v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -20812,6 +20916,7 @@ async function carregarDespesas() {
     const htmlToolbarSelecao = '<div id="rd_bulk_toolbar" style="display:none;align-items:center;gap:10px;background:#fff3e0;border:1px solid #ffb74d;border-radius:8px;padding:6px 12px;margin-bottom:8px"></div>';
     el.innerHTML = htmlValorExatoExtras + avisoBusca + htmlToolbarSelecao + '<div style="overflow-x:auto"><table class="data-table data-table-compact"><thead><tr><th style="width:26px"><input type="checkbox" id="rd_sel_all" onchange="rdToggleSelecionarTodos(this.checked)" title="Selecionar todos"></th><th>Data</th><th>Categoria</th><th>Descrição</th><th>CC</th><th>Empresa</th><th>Pagamento</th><th>Vencimento</th><th>Data Pagto</th><th>Valor</th><th>Status</th><th>Comprovante</th><th></th></tr></thead><tbody>' +
       items.map(i => {
+        if (i._origemCP) return _rdLinhaContaPagar(i, statusColor);
         const desc = rdDescricaoModalidade(i);
         const ehParcelado = i.TotalParcelas > 1;
         const pgtoTxt = ehParcelado ? `${i.FormaPagamento||''} · ${i.NumParcela}/${i.TotalParcelas}` : (i.FormaPagamento || i.TipoPagamento || '—');
@@ -33875,21 +33980,52 @@ function pageConfig() {
    TOAST
 =============================== */
 function showToast(msg) {
+  // Pedido Tiago 22/11/2026: "quando estou com formulário aberto e tem algum
+  // impedimento de salvar, não aparece nada na frente do formulário". O aviso
+  // ficava no canto de baixo, com z-index 9999 — ATRÁS dos formulários/modais
+  // (que usam 9999–99999) — e sumia em 2,5 s. Agora:
+  //  • sempre por cima de tudo (z-index máximo);
+  //  • aviso de impedimento/erro (⚠️ ❌ ⛔ 🔒) aparece no TOPO, no centro,
+  //    em destaque (amarelo/vermelho), fica 7 s e tem ✕ para fechar;
+  //  • avisos normais continuam discretos no canto, um em cima do outro.
+  const texto = String(msg == null ? '' : msg);
+  const ehAlerta = /^\s*(⚠️|⚠|❌|⛔|🔒)/.test(texto) || /^\s*erro/i.test(texto);
+  const ehErro = /^\s*(❌|⛔)/.test(texto) || /^\s*erro/i.test(texto);
+  const zona = ehAlerta ? 'toast-zona-alerta' : 'toast-zona-normal';
+  let box = document.getElementById(zona);
+  if (!box) {
+    box = document.createElement('div');
+    box.id = zona;
+    Object.assign(box.style, ehAlerta
+      ? { position: 'fixed', top: '16px', left: '50%', transform: 'translateX(-50%)', zIndex: '2147483646', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center', width: 'min(560px, calc(100vw - 32px))', pointerEvents: 'none' }
+      : { position: 'fixed', bottom: '24px', right: '24px', zIndex: '2147483645', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end', maxWidth: 'calc(100vw - 48px)', pointerEvents: 'none' });
+    document.body.appendChild(box);
+  }
+  if (ehAlerta) {
+    // não empilha o mesmo aviso repetido (clique várias vezes em Salvar)
+    [...box.children].forEach(c => { if (c.dataset.msg === texto) c.remove(); });
+  }
   const t = document.createElement('div');
-  t.textContent = msg;
-  Object.assign(t.style, {
-    position: 'fixed', bottom: '24px', right: '24px',
-    background: 'var(--green-deep)', color: '#fff',
-    padding: '12px 20px', borderRadius: '10px',
-    fontSize: '.85rem', fontFamily: "\'Mont\'",
-    boxShadow: '0 8px 24px rgba(0,0,0,.2)',
-    zIndex: '9999', opacity: '0',
-    transform: 'translateY(10px)',
-    transition: 'all .25s',
-  });
-  document.body.appendChild(t);
+  t.dataset.msg = texto;
+  t.setAttribute('role', ehAlerta ? 'alert' : 'status');
+  Object.assign(t.style, ehAlerta
+    ? { background: ehErro ? '#fdecec' : '#fff7e0', color: ehErro ? '#8a1c1c' : '#6b4e00', border: '1px solid ' + (ehErro ? '#f3b4b4' : '#f0cf7a'),
+        padding: '14px 44px 14px 16px', borderRadius: '12px', fontSize: '.92rem', fontWeight: '600', lineHeight: '1.4', width: '100%', boxSizing: 'border-box',
+        boxShadow: '0 12px 32px rgba(0,0,0,.25)', position: 'relative', pointerEvents: 'auto', opacity: '0', transform: 'translateY(-8px)', transition: 'all .25s' }
+    : { background: 'var(--green-deep)', color: '#fff', padding: '12px 20px', borderRadius: '10px', fontSize: '.85rem', fontFamily: "'Mont'",
+        boxShadow: '0 8px 24px rgba(0,0,0,.2)', opacity: '0', transform: 'translateY(10px)', transition: 'all .25s', pointerEvents: 'auto' });
+  t.textContent = texto;
+  if (ehAlerta) {
+    const x = document.createElement('button');
+    x.textContent = '✕'; x.setAttribute('aria-label', 'Fechar aviso');
+    Object.assign(x.style, { position: 'absolute', top: '8px', right: '10px', border: 'none', background: 'transparent', color: 'inherit', fontSize: '1rem', cursor: 'pointer', padding: '2px 6px' });
+    x.onclick = () => t.remove();
+    t.appendChild(x);
+  }
+  box.appendChild(t);
   requestAnimationFrame(() => { t.style.opacity = '1'; t.style.transform = 'none'; });
-  setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateY(10px)'; setTimeout(() => t.remove(), 300); }, 2500);
+  const dur = ehAlerta ? 7000 : 2500;
+  setTimeout(() => { t.style.opacity = '0'; t.style.transform = ehAlerta ? 'translateY(-8px)' : 'translateY(10px)'; setTimeout(() => t.remove(), 300); }, dur);
 }
 
 /* -- MOBILE -- */
