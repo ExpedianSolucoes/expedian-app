@@ -16005,8 +16005,9 @@ function renderReceitasTab() {
              comparativo das 3 empresas (rcRenderGraficoComparativoEmpresas)
              em vez do detalhamento Recebido x A Receber x Vencido de uma
              empresa só. -->
-        <div class="card-title" style="margin-bottom:6px;font-size:.8rem" id="rc-grafico-titulo">${window._rdConsolidado ? '📈 Comparativo entre Empresas' : '📈 Recebido x A Receber x Vencido'}</div>
-        <div style="position:relative;flex:1;min-height:90px"><canvas id="rc-grafico-mensal"></canvas></div>
+        <div class="card-title" style="margin-bottom:6px;font-size:.8rem" id="rc-grafico-titulo">📊 Receitas — mês a mês</div>
+        <div id="rc-rxd-grafico" style="flex:1;min-height:150px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:.78rem">Carregando…</div>
+        <div id="rc-rxd-totais" style="display:flex;gap:10px;flex-wrap:wrap;font-size:.66rem;margin-top:4px"></div>
       </div>
     </div>
     <div style="flex:1;min-width:320px;display:flex;flex-direction:column;gap:12px">
@@ -17236,13 +17237,41 @@ function rcRenderResumoMensal(items) {
   const fMesAtivo = (document.getElementById('rc_filtro_mes')||{}).value || '';
   const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const fmt0 = (v) => v.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0});
-  el.innerHTML = finRxDCardHtml('rc', ano, fMesAtivo);
-  finRxDPreencher('rc', ano, fMesAtivo);
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:0;height:100%">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="card-title" style="margin:0">📆 Calendário Mensal</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button onclick="rcMudarAnoResumo(-1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">‹</button>
+          <span style="font-weight:800;font-size:.9rem;min-width:38px;text-align:center">${ano}</span>
+          <button onclick="rcMudarAnoResumo(1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">›</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:7px">
+        ${nomesMes.map((nome, idx) => {
+          const m = idx + 1;
+          const d = porMes[m];
+          const chaveMes = ano + '-' + String(m).padStart(2,'0');
+          const ativo = fMesAtivo === chaveMes;
+          const vazio = d.qtd === 0;
+          const pendente = Math.max(d.total - d.recebido - d.vencido, 0);
+          return `<div onclick="document.getElementById('rc_filtro_mes').value='${vazio?'':chaveMes}';carregarReceitas()" style="cursor:pointer;padding:8px 6px;border-radius:9px;text-align:center;border:${ativo?'2px solid var(--green-main)':'1px solid var(--border)'};background:${ativo?'var(--green-pale)':(vazio?'var(--bg)':'var(--surface2)')};opacity:${vazio?'.55':'1'}">
+            <div style="font-size:.7rem;font-weight:800;color:var(--text-muted)">${nome}</div>
+            <div style="font-size:.74rem;font-weight:800;margin:3px 0">${vazio?'—':'R$ '+fmt0(d.total)}</div>
+            ${!vazio ? `<div style="font-size:.56rem;color:var(--text-muted);line-height:1.5">${d.recebido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✅ ${fmt0(d.recebido)} receb.</div>`):''}${pendente>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🟡 ${fmt0(pendente)} a receber</div>`):''}${d.vencido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">⚠️ ${fmt0(d.vencido)} venc.</div>`):''}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+      ${fMesAtivo ? `<button onclick="document.getElementById('rc_filtro_mes').value='';carregarReceitas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
+    </div>`;
 
   // Título do card do gráfico muda conforme o modo (ver comentário acima do
   // canvas em renderReceitasTab()).
   const elTitulo = document.getElementById('rc-grafico-titulo');
-  if (elTitulo) elTitulo.textContent = window._rdConsolidado ? '📈 Comparativo entre Empresas' : '📈 Recebido x A Receber x Vencido';
+  // Pedido Tiago 22/11/2026: no lugar do gráfico "Recebido x A Receber x
+  // Vencido" entra o de colunas (bruta, líquida, a receber/vencidas, contas
+  // pagas) mês a mês — o Calendário Mensal fica.
+  if (elTitulo) elTitulo.textContent = '📊 Receitas — mês a mês' + (window._rdConsolidado ? ' (3 empresas)' : '');
 
   // Pedido em 27/09/2026 (3ª rodada): o gráfico não tem mais lista suspensa de
   // mês própria — reusa o mês já escolhido no Calendário Mensal acima
@@ -17250,11 +17279,7 @@ function rcRenderResumoMensal(items) {
   // Consolidado" está ativo, o gráfico vira uma comparação das 3 empresas
   // (items aqui já vem com as 3 somadas — ver carregarReceitas) em vez do
   // detalhamento Recebido x A Receber x Vencido de uma empresa só.
-  if (window._rdConsolidado) rcRenderGraficoComparativoEmpresas(items, ano);
-  else if (fMesAtivo) {
-    const [anoSel, mesSel] = fMesAtivo.split('-').map(n => parseInt(n, 10));
-    rcRenderGraficoDiario(items, anoSel, mesSel);
-  } else rcRenderGraficoMensal(porMes, ano, nomesMes);
+  finRxDPreencher('rc', ano, fMesAtivo);
 }
 
 /* -- Gráfico de linha Recebido x A Receber x Vencido, mesmo ano do Calendário Mensal
@@ -19068,8 +19093,9 @@ function renderDespesasTab() {
         <div class="kpi-card amber" id="rd-kpi-card-pendente" onclick="rdFiltrarKpi('pendente')" style="cursor:pointer;padding:8px 10px" title="Filtrar: a vencer"><div class="kpi-label" style="font-size:.64rem">A Vencer</div><div class="kpi-value" id="rd-kpi-pendente" style="font-size:.92rem">—</div><div class="kpi-icon" style="font-size:1rem;top:8px;right:8px">⏳</div></div>
       </div>
       <div class="card" style="margin-bottom:0;flex:1;min-height:110px;display:flex;flex-direction:column">
-        <div class="card-title" style="margin-bottom:6px;font-size:.8rem" id="rd-grafico-titulo">${window._rdConsolidado ? '📈 Comparativo entre Empresas' : '📈 Pago x A Pagar x Vencido'}</div>
-        <div style="position:relative;flex:1;min-height:90px"><canvas id="rd-grafico-mensal"></canvas></div>
+        <div class="card-title" style="margin-bottom:6px;font-size:.8rem" id="rd-grafico-titulo">📊 Receita × Contas — mês a mês</div>
+        <div id="rd-rxd-grafico" style="flex:1;min-height:150px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:.78rem">Carregando…</div>
+        <div id="rd-rxd-totais" style="display:flex;gap:10px;flex-wrap:wrap;font-size:.66rem;margin-top:4px"></div>
       </div>
     </div>
     <div style="flex:1;min-width:320px;display:flex;flex-direction:column;gap:12px">
@@ -21183,21 +21209,55 @@ function rdRenderResumoMensal(items) {
   const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const fmt0 = (v) => v.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0});
 
-  el.innerHTML = finRxDCardHtml('rd', ano, fMesAtivo);
-  finRxDPreencher('rd', ano, fMesAtivo);
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:0;height:100%">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="card-title" style="margin:0">📆 Calendário Mensal</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button onclick="rdMudarAnoResumo(-1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">‹</button>
+          <span style="font-weight:800;font-size:.9rem;min-width:38px;text-align:center">${ano}</span>
+          <button onclick="rdMudarAnoResumo(1)" style="border:1px solid var(--border);background:var(--surface2);border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:.8rem">›</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(85px,1fr));gap:7px">
+        ${nomesMes.map((nome, idx) => {
+          const m = idx + 1;
+          const d = porMes[m];
+          const chaveMes = ano + '-' + String(m).padStart(2,'0');
+          const ativo = fMesAtivo === chaveMes;
+          const vazio = d.qtd === 0;
+          return `<div onclick="document.getElementById('rd_filtro_mes').value='${vazio?'':chaveMes}';document.getElementById('rd_filtro_dia').value='';window._rdFiltroAnoConsolidado='';carregarDespesas()" style="cursor:pointer;padding:8px 6px;border-radius:9px;text-align:center;border:${ativo?'2px solid var(--red)':'1px solid var(--border)'};background:${ativo?'#fce8e8':(vazio?'var(--bg)':'var(--surface2)')};opacity:${vazio?'.55':'1'}">
+            <div style="font-size:.7rem;font-weight:800;color:var(--text-muted)">${nome}</div>
+            <div style="font-size:.74rem;font-weight:800;margin:3px 0">${vazio?'—':'R$ '+fmt0(d.total)}</div>
+            ${!vazio ? `<div style="font-size:.5rem;color:var(--text-muted);line-height:1.45">${d.pago>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✅ ${fmt0(d.pago)}</div>`):''}${d.aVencer>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🟡 ${fmt0(d.aVencer)}</div>`):''}${d.vencido>0?(`<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">⚠️ ${fmt0(d.vencido)}</div>`):''}</div>` : ''}
+          </div>`;
+        }).join('')}
+        <!-- O campo de busca rápida (Fornecedor/valor, cruzando Contas a
+             Pagar/Despesas/Prestação) que morava aqui como 13º item da grade
+             foi removido (pedido Tiago 11/10/2026) — o filtro "Valor exato"
+             da barra de filtros acima agora já cobre as 3 tabelas sozinho
+             (ver carregarDespesas -> fValorExatoExtras), então ficava
+             duplicado ter os dois. -->
+      </div>
+      <div style="font-size:.62rem;color:var(--text-muted);display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
+        <span>✅ Pago</span><span>🟡 A pagar</span><span>⚠️ Vencido</span>
+      </div>
+      ${fMesAtivo ? `<button onclick="document.getElementById('rd_filtro_mes').value='';window._rdFiltroAnoConsolidado='';carregarDespesas()" style="margin-top:8px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:transparent;font-size:.72rem;color:var(--text-muted);cursor:pointer">✕ Limpar filtro de mês</button>` : ''}
+    </div>`;
 
   // Título do card do gráfico muda conforme o modo (mesmo padrão de Receitas,
   // 3ª rodada em 27/09/2026).
   const elTitulo = document.getElementById('rd-grafico-titulo');
-  if (elTitulo) elTitulo.textContent = window._rdConsolidado ? '📈 Comparativo entre Empresas' : '📈 Pago x A Pagar x Vencido';
+  // Pedido Tiago 22/11/2026: no lugar do gráfico "Pago x A Pagar x Vencido"
+  // entra o de colunas Receita × Contas (mês a mês) — o Calendário Mensal fica.
+  if (elTitulo) elTitulo.textContent = '📊 Receita × Contas — mês a mês' + (window._rdConsolidado ? ' (3 empresas)' : '');
 
   // Pedido em 27/09/2026: com "🌐 Consolidado" ativo, o gráfico vira uma
   // comparação das 3 empresas (valor total lançado por mês por empresa) em vez
   // do detalhamento Pago x A Pagar x Vencido somado — mesmo tratamento que
   // Receitas já tinha (rcRenderGraficoComparativoEmpresas). `items` aqui já
   // vem com as 3 empresas juntas quando consolidado (ver carregarDespesas).
-  if (window._rdConsolidado) rdRenderGraficoComparativoEmpresas(items, ano);
-  else rdRenderGraficoMensal(porMes, ano, nomesMes);
+  finRxDPreencher('rd', ano, fMesAtivo);
 }
 
 /* -- Gráfico de linha Pago x A Pagar x Vencido, mesmo ano do Calendário Mensal acima
