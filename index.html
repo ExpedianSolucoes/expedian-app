@@ -75407,6 +75407,83 @@ async function dbRemover(tabela, id) {
   return { ok, lista };
 }
 
+/* -- Aviso de mês conferido (pedido Tiago 25/11/2026: "tem como colocar algum
+   aviso que se for tentar lançar algo nos mês conferido, que as contas já
+   foram validadas"). Antes de gravar em Despesas/Receitas, se o lançamento
+   (novo, alterado ou excluído) mexe no saldo de uma conta+mês que já tem o
+   selo de ConciliacoesMensais, pede confirmação. Só conta o que entra no
+   saldo dia a dia: Despesa "Pago" (Banco + DataPagamento) e Receita
+   "Recebido" (Banco + DataRecebimento). A decisão (continuar ou cancelar) vale
+   por 60 s para a mesma conta+mês, pra não perguntar a cada parcela de um
+   lançamento parcelado. -- */
+const _CONC_CAMPOS_SALDO = ['Valor', 'ValorLiquido', 'ISSValorRetido', 'OutrasRetencoesValor', 'Banco', 'DataPagamento', 'DataRecebimento', 'Status', 'Empresa'];
+let _concCacheLista = { t: 0, lista: [] };
+const _concDecisoes = {};
+async function _concListaConferidos() {
+  if (Date.now() - _concCacheLista.t < 60000) return _concCacheLista.lista;
+  try { const l = await dbLerSeguro('ConciliacoesMensais'); _concCacheLista = { t: Date.now(), lista: l || [] }; } catch (e) {}
+  return _concCacheLista.lista;
+}
+function _concChave(tabela, r) {
+  if (!r) return null;
+  if (tabela === 'Despesas' && r.Status === 'Pago' && r.DataPagamento && r.Banco) return { banco: String(r.Banco).trim(), empresa: r.Empresa, mes: String(r.DataPagamento).slice(0, 7) };
+  if (tabela === 'Receitas' && r.Status === 'Recebido' && r.DataRecebimento && r.Banco) return { banco: String(r.Banco).trim(), empresa: r.Empresa, mes: String(r.DataRecebimento).slice(0, 7) };
+  return null;
+}
+function _concRegistroAtual(tabela, id) {
+  const l = (window._dbListaCache && window._dbListaCache[tabela]) || [];
+  return l.find(x => x && x.Id === id) || null;
+}
+async function _concPermitir(tabela, antigo, novo, acao) {
+  if (window._concIgnorarAviso) return true;
+  if (tabela !== 'Despesas' && tabela !== 'Receitas') return true;
+  if (antigo && novo && !_CONC_CAMPOS_SALDO.some(f => String(antigo[f] ?? '') !== String(novo[f] ?? ''))) return true;
+  const chaves = [_concChave(tabela, antigo), _concChave(tabela, novo)].filter(Boolean);
+  if (!chaves.length) return true;
+  const lista = await _concListaConferidos();
+  for (const k of chaves) {
+    const c = lista.find(x => x.Banco === k.banco && normalizarEmpresa(x.Empresa) === normalizarEmpresa(k.empresa) && x.Mes === k.mes);
+    if (!c) continue;
+    const chave = c.Empresa + '|' + c.Banco + '|' + c.Mes;
+    const d = _concDecisoes[chave];
+    if (d && Date.now() - d.t < 60000) { if (!d.ok) return false; continue; }
+    const [a, m] = c.Mes.split('-').map(Number);
+    const mesLabel = new Date(a, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    const quando = c.DataConferencia ? new Date(c.DataConferencia + 'T00:00:00').toLocaleDateString('pt-BR') : '';
+    const ok = confirm(`⚠️ MÊS JÁ CONFERIDO\n\n${acao} mexe no saldo da conta ${c.Banco} (${normalizarEmpresa(c.Empresa)}) em ${mesLabel}, que já foi conferido e validado com o extrato do banco${c.ConferidoPor ? ' por ' + c.ConferidoPor : ''}${quando ? ' em ' + quando : ''}.\n\nSe continuar, o saldo desse mês pode deixar de bater com o extrato e a conferência precisará ser refeita.\n\nDeseja continuar mesmo assim?`);
+    _concDecisoes[chave] = { ok, t: Date.now() };
+    if (!ok) return false;
+  }
+  return true;
+}
+function _concAvisoCancelado() { if (typeof showToast === 'function') showToast('🔒 Não salvo — o mês dessa conta já foi conferido com o extrato.'); }
+dbInserir = (function (orig) {
+  return async function (tabela, registro) {
+    if (!(await _concPermitir(tabela, null, registro, 'Este lançamento'))) { _concAvisoCancelado(); return null; }
+    return orig(tabela, registro);
+  };
+})(dbInserir);
+dbAtualizar = (function (orig) {
+  return async function (tabela, id, campos) {
+    if ((tabela === 'Despesas' || tabela === 'Receitas') && campos && _CONC_CAMPOS_SALDO.some(f => f in campos)) {
+      let antigo = _concRegistroAtual(tabela, id);
+      if (!antigo) { try { antigo = ((await dbLerSeguro(tabela)) || []).find(x => x && x.Id === id) || null; } catch (e) {} }
+      if (antigo && !(await _concPermitir(tabela, antigo, { ...antigo, ...campos }, 'Esta alteração'))) { _concAvisoCancelado(); return false; }
+    }
+    return orig(tabela, id, campos);
+  };
+})(dbAtualizar);
+dbRemover = (function (orig) {
+  return async function (tabela, id) {
+    if (tabela === 'Despesas' || tabela === 'Receitas') {
+      let antigo = _concRegistroAtual(tabela, id);
+      if (!antigo) { try { antigo = ((await dbLerSeguro(tabela)) || []).find(x => x && x.Id === id) || null; } catch (e) {} }
+      if (antigo && !(await _concPermitir(tabela, antigo, null, 'Esta exclusão'))) { _concAvisoCancelado(); return { ok: false, lista: null }; }
+    }
+    return orig(tabela, id);
+  };
+})(dbRemover);
+
 /* == LOG LOCAL DE SINCRONIZAÇÃO ==
    Guarda, só neste navegador/dispositivo, os últimos registros que foram
    enviados com sucesso para o OneDrive (via dbInserir/dbAtualizar). Usado
